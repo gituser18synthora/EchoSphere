@@ -1,0 +1,417 @@
+import {
+  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes,
+} from "react";
+import { createPortal } from "react-dom";
+import { Icon, type IconName } from "./Icon";
+import { Sparkline } from "./charts";
+import type { Severity } from "@/types/domain";
+import { useApp } from "@/state/AppContext";
+
+/* ---------- Button ---------- */
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-ghost";
+interface BtnProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: Variant;
+  size?: "sm" | "md" | "lg";
+  icon?: IconName;
+  busy?: boolean;
+}
+export function Button({ variant = "secondary", size = "md", icon, busy, children, className = "", ...rest }: BtnProps) {
+  const cls = `btn btn-${variant}${size !== "md" ? ` btn-${size}` : ""} ${className}`;
+  return (
+    <button className={cls} disabled={busy || rest.disabled} {...rest}>
+      {busy ? <span className="spinner" aria-hidden /> : icon ? <Icon name={icon} size={size === "sm" ? 14 : 16} /> : null}
+      {children}
+    </button>
+  );
+}
+
+/* ---------- Status chip ---------- */
+const chipTone: Record<string, string> = {
+  // bot / release lifecycle
+  draft: "neutral", in_review: "info", review: "info", approved: "brand",
+  published: "good", rolled_back: "serious", archived: "neutral",
+  // generic
+  active: "good", trial: "info", suspended: "critical", provisioning: "warning",
+  paid: "good", open: "info", past_due: "critical", void: "neutral", cancelled: "neutral",
+  indexed: "good", indexing: "info", failed: "critical", pending: "neutral", stale: "warning",
+  healthy: "good", degraded: "warning", failing: "critical", untested: "neutral",
+  live: "good", configured: "info", testing: "warning", not_configured: "neutral",
+  connected: "good", available: "neutral", error: "critical",
+  pending_approval: "warning",
+  needs_samples: "warning", disabled: "neutral",
+  acknowledged: "info", resolved: "good",
+  assigned: "good", porting: "warning",
+  invited: "info", deactivated: "neutral",
+  deprecated: "neutral",
+  positive: "good", neutral: "neutral", negative: "critical",
+  good: "good", warning: "warning", serious: "serious", critical: "critical",
+};
+const chipIcon: Record<string, IconName> = {
+  published: "check-circle", live: "check-circle", failed: "x-circle", failing: "x-circle",
+  suspended: "x-circle", past_due: "alert", rolled_back: "undo", in_review: "eye",
+  review: "eye", pending_approval: "clock", indexing: "refresh", provisioning: "refresh",
+  testing: "refresh", stale: "clock", degraded: "alert", error: "x-circle",
+};
+export function StatusChip({ status, label }: { status: string; label?: string }) {
+  const tone = chipTone[status] ?? "neutral";
+  const icon = chipIcon[status];
+  const text = label ?? status.replace(/_/g, " ");
+  return (
+    <span className={`chip chip-${tone}`}>
+      {icon ? <Icon name={icon} size={12} /> : <span className="chip-dot" />}
+      <span style={{ textTransform: "capitalize" }}>{text}</span>
+    </span>
+  );
+}
+
+/* ---------- Health indicator ---------- */
+export function Health({ level, label }: { level: Severity; label?: string }) {
+  const names: Record<Severity, string> = {
+    good: "Healthy", warning: "Degraded", serious: "At risk", critical: "Critical", neutral: "No data",
+  };
+  return (
+    <span className="health">
+      <span className={`health-dot ${level}`} />
+      {label ?? names[level]}
+    </span>
+  );
+}
+
+/* ---------- KPI card ---------- */
+export function KpiCard({ label, value, delta, deltaLabel, spark, intent = "up-good", icon }: {
+  label: string; value: string; delta?: number; deltaLabel?: string;
+  spark?: number[]; intent?: "up-good" | "down-good"; icon?: IconName;
+}) {
+  const dir = delta === undefined || delta === 0 ? "flat" : delta > 0 ? "up" : "down";
+  const good = delta !== undefined && ((delta > 0 && intent === "up-good") || (delta < 0 && intent === "down-good"));
+  return (
+    <div className="kpi">
+      <div className="kpi-label">
+        {icon && <Icon name={icon} size={14} />}
+        {label}
+      </div>
+      <div className="row-between">
+        <span className="kpi-value t-num">{value}</span>
+        {spark && spark.length > 1 && <Sparkline data={spark} width={72} height={26} />}
+      </div>
+      {delta !== undefined && (
+        <span className={`kpi-delta ${dir === "flat" ? "flat" : good ? "up" : "down"}`}>
+          {dir !== "flat" && <Icon name={dir === "up" ? "arrow-up" : "arrow-down"} size={12} />}
+          {Math.abs(delta).toFixed(1)}% {deltaLabel ?? "vs last period"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Empty / error / loading states ---------- */
+export function EmptyState({ icon = "search", title, body, action }: {
+  icon?: IconName; title: string; body?: string; action?: ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      <div className="empty-state-icon"><Icon name={icon} size={22} /></div>
+      <div className="t-section">{title}</div>
+      {body && <p className="t-sub" style={{ maxWidth: 420 }}>{body}</p>}
+      {action && <div className="mt-8">{action}</div>}
+    </div>
+  );
+}
+
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className="empty-state" role="alert">
+      <div className="empty-state-icon error"><Icon name="alert" size={22} /></div>
+      <div className="t-section">Couldn’t load this view</div>
+      <p className="t-sub">{message}</p>
+      {onRetry && <Button variant="secondary" icon="refresh" onClick={onRetry} className="mt-8">Try again</Button>}
+    </div>
+  );
+}
+
+export function Skeleton({ w = "100%", h = 14, style }: { w?: number | string; h?: number; style?: React.CSSProperties }) {
+  return <div className="skeleton" style={{ width: w, height: h, ...style }} aria-hidden />;
+}
+
+export function CardSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="card card-pad col gap-12" aria-busy="true" aria-label="Loading">
+      <Skeleton w="40%" h={16} />
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} w={`${88 - i * 9}%`} />
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Modal ---------- */
+export function Modal({ open, onClose, title, sub, children, footer, wide }: {
+  open: boolean; onClose: () => void; title: string; sub?: string;
+  children: ReactNode; footer?: ReactNode; wide?: boolean;
+}) {
+  useEscape(open, onClose);
+  if (!open) return null;
+  return createPortal(
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className={`modal${wide ? " modal-lg" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
+        <div className="modal-header">
+          <div>
+            <h2 className="t-section" style={{ fontSize: 16 }}>{title}</h2>
+            {sub && <p className="t-sub mt-4">{sub}</p>}
+          </div>
+          <button className="btn-icon" onClick={onClose} aria-label="Close dialog"><Icon name="x" /></button>
+        </div>
+        <div className="modal-body">{children}</div>
+        {footer && <div className="modal-footer">{footer}</div>}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* Confirmation modal for destructive / production-impacting actions */
+export function ConfirmModal({ open, onClose, onConfirm, title, body, confirmLabel = "Confirm", danger, busy }: {
+  open: boolean; onClose: () => void; onConfirm: () => void;
+  title: string; body: ReactNode; confirmLabel?: string; danger?: boolean; busy?: boolean;
+}) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={title}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} busy={busy}>{confirmLabel}</Button>
+        </>
+      }
+    >
+      <div className="t-sub" style={{ fontSize: 13.5 }}>{body}</div>
+    </Modal>
+  );
+}
+
+/* ---------- Drawer ---------- */
+export function Drawer({ open, onClose, title, sub, children, footer, wide, headerExtra }: {
+  open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode;
+  children: ReactNode; footer?: ReactNode; wide?: boolean; headerExtra?: ReactNode;
+}) {
+  useEscape(open, onClose);
+  if (!open) return null;
+  return createPortal(
+    <div className="overlay-right" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className={`drawer${wide ? " drawer-lg" : ""}`} role="dialog" aria-modal="true">
+        <div className="drawer-header">
+          <div className="grow">
+            <div className="t-section" style={{ fontSize: 16 }}>{title}</div>
+            {sub && <div className="t-sub mt-4">{sub}</div>}
+          </div>
+          {headerExtra}
+          <button className="btn-icon" onClick={onClose} aria-label="Close panel"><Icon name="x" /></button>
+        </div>
+        <div className="drawer-body">{children}</div>
+        {footer && <div className="drawer-footer">{footer}</div>}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function useEscape(active: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!active) return;
+    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [active, onClose]);
+}
+
+/* ---------- Tabs ---------- */
+export interface TabDef {
+  id: string;
+  label: string;
+  icon?: IconName;
+  count?: number;
+}
+export function Tabs({ tabs, active, onChange }: { tabs: TabDef[]; active: string; onChange: (id: string) => void }) {
+  return (
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={active === t.id}
+          className="tab"
+          onClick={() => onChange(t.id)}
+        >
+          {t.icon && <Icon name={t.icon} size={14} />}
+          {t.label}
+          {t.count !== undefined && <span className="count t-num">{t.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Toggle ---------- */
+export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className="switch"
+      onClick={() => onChange(!checked)}
+    />
+  );
+}
+
+/* ---------- Progress ---------- */
+export function Progress({ value, tone }: { value: number; tone?: "good" | "warning" | "critical" }) {
+  return (
+    <div className="progress" role="progressbar" aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
+      <div className={`progress-fill${tone ? ` ${tone}` : ""}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
+    </div>
+  );
+}
+
+/* ---------- Timeline ---------- */
+export interface TimelineEntry {
+  icon: IconName;
+  tone?: "good" | "critical" | "warning" | "brand" | "";
+  title: ReactNode;
+  meta: string;
+  body?: ReactNode;
+}
+export function Timeline({ items }: { items: TimelineEntry[] }) {
+  return (
+    <div className="timeline">
+      {items.map((it, i) => (
+        <div className="timeline-item" key={i}>
+          <div className={`timeline-icon ${it.tone ?? ""}`}><Icon name={it.icon} size={12} /></div>
+          <div className="grow">
+            <div className="t-body" style={{ fontWeight: 550 }}>{it.title}</div>
+            <div className="t-micro mt-4">{it.meta}</div>
+            {it.body && <div className="t-sub mt-4">{it.body}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Avatar ---------- */
+const avatarHues = ["#6d55d9", "#1baf7a", "#2a78d6", "#eb6834", "#e87ba4", "#008300"];
+export function Avatar({ name, size }: { name: string; size?: "lg" }) {
+  const initials = name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  const hue = avatarHues[(name.charCodeAt(0) + name.length) % avatarHues.length];
+  return (
+    <span className={`avatar${size ? ` ${size}` : ""}`} style={{ background: hue }} aria-hidden>
+      {initials}
+    </span>
+  );
+}
+
+/* ---------- Callout ---------- */
+export function Callout({ tone, title, children }: { tone: "info" | "warning" | "critical" | "good"; title?: string; children: ReactNode }) {
+  const icons: Record<string, IconName> = { info: "info", warning: "alert", critical: "x-circle", good: "check-circle" };
+  return (
+    <div className={`callout callout-${tone}`}>
+      <Icon name={icons[tone]} size={15} />
+      <div className="grow">
+        {title && <div className="callout-title">{title}</div>}
+        <div className="callout-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Dropdown menu ---------- */
+export interface MenuAction {
+  label: string;
+  icon?: IconName;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}
+export function MenuButton({ actions, label = "More actions" }: { actions: (MenuAction | "sep")[]; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", h);
+    return () => window.removeEventListener("mousedown", h);
+  }, [open]);
+  return (
+    <div style={{ position: "relative" }} ref={ref}>
+      <button className="btn-icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+        <Icon name="more" />
+      </button>
+      {open && (
+        <div className="menu" role="menu" style={{ right: 0, top: "calc(100% + 4px)" }}>
+          {actions.map((a, i) =>
+            a === "sep" ? (
+              <div className="menu-sep" key={i} />
+            ) : (
+              <button
+                key={i}
+                role="menuitem"
+                className={`menu-item${a.danger ? " danger" : ""}`}
+                disabled={a.disabled}
+                style={a.disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (a.disabled) return;
+                  setOpen(false);
+                  a.onClick();
+                }}
+              >
+                {a.icon && <Icon name={a.icon} size={14} />}
+                {a.label}
+              </button>
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Toast region ---------- */
+export function ToastRegion() {
+  const { toasts } = useApp();
+  if (!toasts.length) return null;
+  return createPortal(
+    <div className="toast-region" role="status" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id} className={`toast ${t.kind}`}>
+          <Icon name={t.kind === "error" ? "x-circle" : t.kind === "info" ? "info" : "check-circle"} size={15} />
+          {t.message}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
+/* ---------- Form field ---------- */
+export function Field({ label, hint, error, required, children }: {
+  label: string; hint?: string; error?: string; required?: boolean; children: ReactNode;
+}) {
+  return (
+    <label className="field">
+      <span className="field-label">
+        {label} {required && <span className="req">*</span>}
+      </span>
+      {children}
+      {error ? (
+        <span className="field-error"><Icon name="alert" size={12} />{error}</span>
+      ) : hint ? (
+        <span className="field-hint">{hint}</span>
+      ) : null}
+    </label>
+  );
+}

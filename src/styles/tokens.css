@@ -1,0 +1,170 @@
+/* ============================================================
+   AUREXION EchoSphere — Design Tokens
+   Light is the primary experience; dark is a selected theme.
+   Chart palette validated with dataviz six-checks (light & dark).
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --brand-50: #f3f0fe;
+  --brand-100: #e6e0fc;
+  --brand-200: #cfc4f8;
+  --brand-300: #ab99f0;
+  --brand-400: #8a72e6;
+  --brand-500: #6d55d9;
+  --brand-600: #5a41c4;
+  --brand-700: #4a34a4;
+  --brand-800: #3a2a80;
+  --brand-900: #241a4e;
+
+  /* Surfaces & ink (light) */
+  --page: #f6f6f9;
+  --surface: #ffffff;
+  --surface-2: #fafafc;
+  --surface-3: #f1f1f6;
+  --chart-surface: #fcfcfd;
+  --sidebar-bg: #171422;
+  --sidebar-ink: #b9b3cf;
+  --sidebar-ink-strong: #ffffff;
+  --sidebar-active: rgba(138, 114, 230, 0.22);
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+
+  --ink: #17161d;
+  --ink-2: #514f5c;
+  --ink-3: #86848f;
+  --border: rgba(23, 22, 29, 0.11);
+  --border-strong: rgba(23, 22, 29, 0.2);
+  --hairline: #e7e6ee;
+  --grid-line: #e6e5ed;
+  --axis-line: #c6c4d2;
+
+  --shadow-1: 0 1px 2px rgba(23, 22, 29, 0.05);
+  --shadow-2: 0 2px 8px rgba(23, 22, 29, 0.07);
+  --shadow-3: 0 12px 32px rgba(23, 22, 29, 0.14);
+  --shadow-pop: 0 4px 16px rgba(23, 22, 29, 0.1), 0 16px 48px rgba(23, 22, 29, 0.16);
+
+  /* Status (reserved — never used as series colors) */
+  --status-good: #0f8c0f;
+  --status-good-bg: #e9f6e9;
+  --status-warning: #9a6700;
+  --status-warning-bg: #fdf3d7;
+  --status-serious: #b4501f;
+  --status-serious-bg: #fdeee5;
+  --status-critical: #c22f2f;
+  --status-critical-bg: #fce9e9;
+  --status-info: #1c5cab;
+  --status-info-bg: #e7f0fc;
+  --status-neutral: #5b5966;
+  --status-neutral-bg: #efeef4;
+
+  /* Categorical chart palette — validated light mode
+     worst adjacent CVD ΔE 13.3 (≥12 target). Fixed order, never cycled. */
+  --series-1: #6d55d9;
+  --series-2: #1baf7a;
+  --series-3: #eda100;
+  --series-4: #2a78d6;
+  --series-5: #e34948;
+  --series-6: #008300;
+  --series-7: #e87ba4;
+  --series-8: #eb6834;
+
+  /* Sequential ramp (brand purple, light→dark) */
+  --seq-100: #e6e0fc;
+  --seq-200: #cfc4f8;
+  --seq-300: #ab99f0;
+  --seq-400: #8a72e6;
+  --seq-500: #6d55d9;
+  --seq-600: #5a41c4;
+  --seq-700: #43318f;
+
+  /* Diverging poles */
+  --div-neg: #d03b3b;
+  --div-mid: #f0efec;
+  --div-pos: #2a78d6;
+
+  /* Chart status (marks on chart surfaces) */
+  --viz-good: #0ca30c;
+  --viz-warning: #fab219;
+  --viz-serious: #ec835a;
+  --viz-critical: #d03b3b;
+
+  /* Typography */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* Focus */
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-400);
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --page: #0f0e14;
+  --surface: #191721;
+  --surface-2: #1f1d29;
+  --surface-3: #262331;
+  --chart-surface: #191721;
+  --sidebar-bg: #12101a;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+
+  --ink: #f2f1f7;
+  --ink-2: #b4b1c2;
+  --ink-3: #817e90;
+  --border: rgba(242, 241, 247, 0.12);
+  --border-strong: rgba(242, 241, 247, 0.24);
+  --hairline: #2a2735;
+  --grid-line: #2a2836;
+  --axis-line: #45424f;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.6);
+
+  --status-good: #4fbf4f;
+  --status-good-bg: rgba(12, 163, 12, 0.16);
+  --status-warning: #fab219;
+  --status-warning-bg: rgba(250, 178, 25, 0.14);
+  --status-serious: #f0956f;
+  --status-serious-bg: rgba(236, 131, 90, 0.15);
+  --status-critical: #e66767;
+  --status-critical-bg: rgba(208, 59, 59, 0.17);
+  --status-info: #6da7ec;
+  --status-info-bg: rgba(42, 120, 214, 0.16);
+  --status-neutral: #a7a4b5;
+  --status-neutral-bg: rgba(167, 164, 181, 0.14);
+
+  /* Categorical palette — dark steps, validated (worst adjacent ΔE 13.4) */
+  --series-1: #8f7cf0;
+  --series-2: #199e70;
+  --series-3: #c98500;
+  --series-4: #3987e5;
+  --series-5: #e66767;
+  --series-6: #008300;
+  --series-7: #d55181;
+  --series-8: #d95926;
+
+  --seq-100: #2c2547;
+  --seq-200: #3a2f66;
+  --seq-300: #4c3d91;
+  --seq-400: #6d55d9;
+  --seq-500: #8a72e6;
+  --seq-600: #ab99f0;
+  --seq-700: #cfc4f8;
+
+  --div-neg: #e66767;
+  --div-mid: #383835;
+  --div-pos: #3987e5;
+
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-400);
+
+  color-scheme: dark;
+}
