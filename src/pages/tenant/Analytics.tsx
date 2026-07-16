@@ -11,7 +11,7 @@ export default function Analytics() {
   const [range, setRange] = useState(30);
   const a = useAsync(() => getTenantAnalytics(range), [range]);
   const navigate = useNavigate();
-  const { toast } = useApp();
+  const { user, toast } = useApp();
 
   if (a.error) return <ErrorState message={a.error} onRetry={a.reload} />;
 
@@ -20,7 +20,7 @@ export default function Analytics() {
       <div className="page-head">
         <div className="page-head-titles">
           <h1 className="page-title">Analytics</h1>
-          <p className="page-sub">All bots · Meridian Health Group</p>
+          <p className="page-sub">All bots · {user?.tenantName ?? ""}</p>
         </div>
         <div className="page-actions">
           <div className="segmented" role="group" aria-label="Date range">

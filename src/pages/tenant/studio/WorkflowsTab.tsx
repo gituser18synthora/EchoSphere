@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { NodeKind, VoiceBot, WorkflowNode } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { getWorkflow, simulateAction } from "@/services/api";
+import { getWorkflow, saveWorkflow } from "@/services/api";
 import { Button, Callout, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -50,10 +50,19 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
     return { d: `M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, lx: mx, ly: (y1 + y2) / 2 - 6 };
   };
 
-  const act = async (msg: string, fn?: () => void) => {
-    await simulateAction(msg);
+  const act = (msg: string, fn?: () => void) => {
     toast(msg);
     fn?.();
+  };
+
+  const persist = async () => {
+    try {
+      const saved = await saveWorkflow(bot.id, { nodes: wf.nodes, edges: wf.edges, issues: wf.issues });
+      toast(`Workflow saved as v${saved.version} draft`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save workflow", "error");
+    }
   };
 
   return (
@@ -70,7 +79,7 @@ export default function WorkflowsTab({ bot }: { bot: VoiceBot }) {
           <Button size="sm" icon="redo" disabled={history.redo === 0} onClick={() => setHistory((h) => ({ undo: h.undo + 1, redo: h.redo - 1 }))}>Redo</Button>
           <Button size="sm" icon="wand" onClick={() => act("Auto-layout applied — nodes arranged by flow depth")}>Auto-layout</Button>
           <Button size="sm" icon="check-circle" onClick={() => act(wf.issues.length ? `Validation found ${wf.issues.length} warnings — see panel below` : "Validation clean")}>Validate</Button>
-          <Button size="sm" variant="primary" icon="check" onClick={() => act(`Workflow saved as v${wf.version + 1} draft`)}>Save version</Button>
+          <Button size="sm" variant="primary" icon="check" onClick={persist}>Save version</Button>
         </div>
       </div>
 

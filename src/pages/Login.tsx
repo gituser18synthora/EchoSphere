@@ -1,33 +1,41 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
-import type { Role } from "@/types/domain";
-
-const personas: { role: Role; name: string; email: string; tenantName?: string; title: string; desc: string }[] = [
-  {
-    role: "tenant_admin", name: "Priya Sharma", email: "priya.sharma@meridianhealth.com",
-    tenantName: "Meridian Health Group", title: "Tenant Admin",
-    desc: "Build, test and publish your organization’s VoiceBots. Manage knowledge, workflows, channels, team and analytics.",
-  },
-  {
-    role: "super_admin", name: "Alex Rivera", email: "alex.rivera@aurexion.com",
-    title: "Super Admin",
-    desc: "Platform governance: tenants, subscriptions, AI governance, telephony, global knowledge, monitoring and security.",
-  },
-];
+import * as api from "@/services/api";
 
 export default function Login() {
   const { signIn } = useApp();
   const navigate = useNavigate();
-  const [busy, setBusy] = useState<Role | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const enter = (p: (typeof personas)[number]) => {
-    setBusy(p.role);
-    setTimeout(() => {
-      signIn({ name: p.name, email: p.email, role: p.role, tenantName: p.tenantName });
-      navigate(p.role === "super_admin" ? "/admin" : "/t");
-    }, 450);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!email || !password || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { token, user } = await api.login(email.trim(), password);
+      signIn(
+        {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          tenantName: user.tenantName ?? undefined,
+          tenantId: user.tenantId,
+          permissions: user.permissions,
+        },
+        token,
+      );
+      navigate(user.role === "super_admin" ? "/admin" : "/t");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in failed.");
+      setBusy(false);
+    }
   };
 
   return (
@@ -42,40 +50,47 @@ export default function Login() {
         </div>
         <h1 style={{ fontSize: 26, fontWeight: 750, letterSpacing: "-0.02em" }}>Welcome back</h1>
         <p className="t-sub" style={{ marginBottom: 22 }}>
-          Choose a workspace to continue. Single sign-on is enforced for production tenants.
+          Sign in with your work email. Your role determines your workspace.
         </p>
-        <div className="col gap-12">
-          {personas.map((p) => (
-            <button
-              key={p.role}
-              className="card card-pad card-clickable"
-              style={{ textAlign: "left", display: "flex", gap: 14, alignItems: "flex-start" }}
-              onClick={() => enter(p)}
-              disabled={busy !== null}
-            >
-              <div className={`icon-tile ${p.role === "super_admin" ? "brand" : "info"}`}>
-                <Icon name={p.role === "super_admin" ? "shield" : "building"} size={17} />
-              </div>
-              <div className="grow">
-                <div className="row-between">
-                  <span className="t-section">{p.title}</span>
-                  {busy === p.role ? <span className="spinner" /> : <Icon name="arrow-right" size={15} />}
-                </div>
-                <div className="t-micro mt-4">{p.name} · {p.tenantName ?? "Aurexion Platform"}</div>
-                <p className="t-sub mt-8" style={{ fontSize: 12.5 }}>{p.desc}</p>
-              </div>
-            </button>
-          ))}
-        </div>
-        <p className="t-micro mt-24">
-          Demo build — authentication is mocked. RBAC boundaries between the two roles are enforced in routing and the service layer.
-        </p>
+        <form className="col gap-12" onSubmit={submit}>
+          <label className="col gap-6">
+            <span className="t-section">Email</span>
+            <input
+              className="input"
+              type="email"
+              autoComplete="email"
+              placeholder="you@company.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoFocus
+              required
+            />
+          </label>
+          <label className="col gap-6">
+            <span className="t-section">Password</span>
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+          {error && (
+            <div className="callout callout-error" role="alert" style={{ padding: "10px 12px" }}>
+              {error}
+            </div>
+          )}
+          <button className="btn btn-primary" type="submit" disabled={busy || !email || !password}>
+            {busy ? <span className="spinner" /> : <Icon name="arrow-right" size={15} />}
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
       </div>
       <div className="auth-hero">
         <div style={{ position: "relative", maxWidth: 460 }}>
-          <div className="chip chip-brand" style={{ background: "rgba(138,114,230,0.2)", color: "#cfc4f8", marginBottom: 18 }}>
-            <span className="chip-dot live" /> 47 tenants · 128 bots live
-          </div>
           <h2 style={{ fontSize: 30, fontWeight: 750, letterSpacing: "-0.02em", lineHeight: 1.25 }}>
             Every customer call, answered with a voice you govern.
           </h2>

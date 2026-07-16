@@ -45,12 +45,12 @@ export default function ApisTab({ bot }: { bot: VoiceBot }) {
         />
       </div>
 
-      <ApiDrawer conn={open} onClose={() => setOpen(null)} />
+      <ApiDrawer conn={open} onClose={() => setOpen(null)} onTested={q.reload} />
     </div>
   );
 }
 
-function ApiDrawer({ conn, onClose }: { conn: ApiConnection | null; onClose: () => void }) {
+function ApiDrawer({ conn, onClose, onTested }: { conn: ApiConnection | null; onClose: () => void; onTested?: () => void }) {
   const { toast } = useApp();
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<Awaited<ReturnType<typeof testApiConnection>> | null>(null);
@@ -60,9 +60,15 @@ function ApiDrawer({ conn, onClose }: { conn: ApiConnection | null; onClose: () 
   const runTest = async () => {
     setTesting(true);
     setResult(null);
-    const r = await testApiConnection(conn.id);
-    setResult(r);
-    setTesting(false);
+    try {
+      const r = await testApiConnection(conn.id);
+      setResult(r);
+      onTested?.();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Connection test failed", "error");
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -79,7 +85,7 @@ function ApiDrawer({ conn, onClose }: { conn: ApiConnection | null; onClose: () 
     >
       <div className="col gap-16">
         {conn.status === "failing" && (
-          <Callout tone="critical" title="Failing since Jul 2, 10:10 PM">
+          <Callout tone="critical" title={conn.lastTestedAt ? `Failing — last tested ${new Date(conn.lastTestedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "Failing"}>
             All calls time out after {conn.timeoutMs / 1000}s. Escalations on this bot are elevated. Check the upstream service or raise the timeout.
           </Callout>
         )}

@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { KnowledgeSource, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listKnowledge, listKnowledgeGaps, simulateAction } from "@/services/api";
+import {
+  archiveKnowledge, createKnowledge, listKnowledge, listKnowledgeGaps, resyncKnowledge,
+} from "@/services/api";
 import { Button, Drawer, EmptyState, Modal, Progress, StatusChip, CardSkeleton, Field, Callout } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { Icon, type IconName } from "@/components/Icon";
@@ -11,10 +13,17 @@ import { flags } from "@/services/flags";
 
 const typeIcon: Record<string, IconName> = { document: "file", url: "link", faq: "message", connector: "plug" };
 
+function daysSince(iso: string): number | null {
+  if (!iso || iso === "—") return null;
+  const d = new Date(iso).getTime();
+  if (Number.isNaN(d)) return null;
+  return Math.max(0, Math.round((Date.now() - d) / 86400000));
+}
+
 export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
   const { toast } = useApp();
   const q = useAsync(() => listKnowledge(bot.id), [bot.id]);
-  const gapsQ = useAsync(listKnowledgeGaps, []);
+  const gapsQ = useAsync(() => listKnowledgeGaps(bot.id), [bot.id]);
   const [preview, setPreview] = useState<KnowledgeSource | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
 
@@ -23,9 +32,23 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
   const avgQuality = sources.filter((s) => s.quality > 0).reduce((a, s, _, arr) => a + s.quality / arr.length, 0);
 
   const resync = async (s: KnowledgeSource) => {
-    await simulateAction("resync");
-    toast(`Re-sync queued for “${s.name}” — indexing usually completes in a few minutes`);
-    q.reload();
+    try {
+      await resyncKnowledge(s.id);
+      toast(`Re-sync queued for “${s.name}” — indexing usually completes in a few minutes`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Re-sync failed", "error");
+    }
+  };
+
+  const remove = async (s: KnowledgeSource) => {
+    try {
+      await archiveKnowledge(s.id);
+      toast(`“${s.name}” archived — chunks removed from the index`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not archive source", "error");
+    }
   };
 
   return (
@@ -106,6 +129,7 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
         </div>
         {gapsQ.loading ? <div style={{ padding: 16 }}><CardSkeleton rows={3} /></div> : (
           <div className="col" style={{ padding: 16, gap: 8 }}>
+            {(gapsQ.data ?? []).length === 0 && <span className="t-sub">No open gaps — retrieval is covering caller questions.</span>}
             {(gapsQ.data ?? []).map((g) => (
               <div key={g.id} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
                 <span className="icon-tile warning" style={{ width: 30, height: 30 }}><Icon name="search" size={14} /></span>
@@ -132,7 +156,7 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
             {(preview.status === "stale" || preview.status === "failed") && (
               <Button icon="refresh" onClick={() => { void resync(preview); setPreview(null); }}>Re-sync now</Button>
             )}
-            <Button variant="danger-ghost" icon="trash" onClick={() => { toast(`“${preview.name}” detached from ${bot.name} — chunks removed from the index`); setPreview(null); }}>
+            <Button variant="danger-ghost" icon="trash" onClick={() => { void remove(preview); setPreview(null); }}>
               Remove from bot
             </Button>
           </>
@@ -142,37 +166,43 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
           <div className="col gap-16">
             {preview.status === "failed" && (
               <Callout tone="critical" title="Indexing failed">
-                The last sync could not parse this source (unsupported encryption on PDF). Re-upload an unlocked copy or retry.
+                The last sync could not process this source. Re-upload it or retry the sync.
               </Callout>
             )}
             {preview.status === "stale" && (
-              <Callout tone="warning" title="Content is 28 days old">
-                Retrieval still works, but answers may be outdated. 1,890 calls used this source in the last 30 days.
+              <Callout tone="warning" title={daysSince(preview.lastSync) !== null ? `Content is ${daysSince(preview.lastSync)} days old` : "Content is stale"}>
+                Retrieval still works, but answers may be outdated.
+                {preview.usage30d > 0 && <> {fmtNum(preview.usage30d)} calls used this source in the last 30 days.</>}
               </Callout>
             )}
             <div>
-              <span className="t-label">Chunk preview</span>
-              <div className="col gap-8 mt-8">
-                {["§1 — Accepted insurance networks include BlueCross BlueShield PPO/HMO, UnitedHealthcare Choice Plus…", "§2 — Medicare Advantage plans are accepted at Oakwood, Riverside and Downtown clinics only…", "§3 — For coverage verification, patients should have their member ID ready when calling…"].map((c, i) => (
-                  <div key={i} className="card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10, fontSize: 12.5, color: "var(--ink-2)", fontFamily: "var(--mono)" }}>
-                    {c}
-                  </div>
-                ))}
+              <span className="t-label">Source details</span>
+              <div className="col gap-6 mt-8">
+                <Row k="Type" v={preview.type} />
+                <Row k="Scope" v={preview.scope} />
+                <Row k="Size" v={preview.sizeKb ? `${fmtNum(preview.sizeKb)} KB` : "—"} />
+                <Row k="Indexed chunks" v={preview.chunks ? fmtNum(preview.chunks) : "—"} />
+                <Row k="Last sync" v={preview.lastSync === "—" ? "never" : new Date(preview.lastSync).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} />
               </div>
             </div>
             <div>
               <span className="t-label">Retrieval performance</span>
               <div className="col gap-6 mt-8">
                 <Row k="Hits (30 days)" v={fmtNum(preview.usage30d)} />
-                <Row k="Avg similarity score" v="0.83" />
-                <Row k="Answers rated unhelpful" v={preview.status === "stale" ? "9.2% (rising)" : "2.1%"} />
+                <Row k="Index health" v={preview.quality ? `${preview.quality}%` : "not indexed"} />
+                <Row k="Est. similarity" v={preview.quality ? (0.5 + preview.quality / 250).toFixed(2) : "—"} />
               </div>
             </div>
           </div>
         )}
       </Drawer>
 
-      <UploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} />
+      <UploadModal
+        open={uploadOpen}
+        botId={bot.id}
+        onClose={() => setUploadOpen(false)}
+        onAdded={q.reload}
+      />
     </div>
   );
 }
@@ -194,38 +224,52 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-type QueueItem = { name: string; size: string; progress: number; state: "uploading" | "indexing" | "done" | "error" };
+type QueueItem = { name: string; state: "creating" | "indexing" | "error"; error?: string };
 
-function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function UploadModal({ open, botId, onClose, onAdded }: {
+  open: boolean; botId: string; onClose: () => void; onAdded: () => void;
+}) {
   const { toast } = useApp();
   const [mode, setMode] = useState<"document" | "url" | "faq">("document");
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [docName, setDocName] = useState("");
+  const [docErr, setDocErr] = useState("");
   const [url, setUrl] = useState("");
   const [urlErr, setUrlErr] = useState("");
+  const [faqQuestion, setFaqQuestion] = useState("");
+  const [faqAnswer, setFaqAnswer] = useState("");
 
-  const simulateUpload = (names: string[]) => {
-    const items: QueueItem[] = names.map((n) => ({ name: n, size: `${(Math.random() * 3 + 0.4).toFixed(1)} MB`, progress: 0, state: "uploading" }));
-    setQueue((q) => [...q, ...items]);
-    items.forEach((it) => {
-      let p = 0;
-      const t = setInterval(() => {
-        p += 18 + Math.random() * 20;
-        setQueue((q) => q.map((x) => x.name === it.name ? { ...x, progress: Math.min(100, p), state: p >= 100 ? "indexing" : "uploading" } : x));
-        if (p >= 100) {
-          clearInterval(t);
-          setTimeout(() => {
-            setQueue((q) => q.map((x) => (x.name === it.name ? { ...x, state: "done" } : x)));
-            toast(`“${it.name}” indexed`);
-          }, 1600);
-        }
-      }, 350);
-    });
+  const add = async (name: string, type: "document" | "url" | "faq", detail: string) => {
+    setQueue((q) => [...q, { name, state: "creating" }]);
+    try {
+      await createKnowledge({ name, type, detail, scope: "bot", botId });
+      setQueue((q) => q.map((x) => (x.name === name ? { ...x, state: "indexing" } : x)));
+      toast(`“${name}” added — indexing started`);
+      onAdded();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      setQueue((q) => q.map((x) => (x.name === name ? { ...x, state: "error", error: msg } : x)));
+      toast(msg, "error");
+    }
+  };
+
+  const addDocument = () => {
+    if (!docName.trim()) { setDocErr("Enter the document name to index"); return; }
+    void add(docName.trim(), "document", docName.trim());
+    setDocName("");
   };
 
   const addUrl = () => {
     if (!/^https?:\/\/[^\s]+\.[^\s]+/.test(url)) { setUrlErr("Enter a full URL, e.g. https://example.com/help"); return; }
-    simulateUpload([url.replace(/^https?:\/\//, "")]);
+    void add(url.replace(/^https?:\/\//, ""), "url", url);
     setUrl("");
+  };
+
+  const addFaq = () => {
+    if (!faqQuestion.trim() || !faqAnswer.trim()) { toast("Enter both a question and an answer", "error"); return; }
+    void add(faqQuestion.trim(), "faq", "Curated Q&A pair");
+    setFaqQuestion("");
+    setFaqAnswer("");
   };
 
   return (
@@ -239,21 +283,18 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         </div>
 
         {mode === "document" && (
-          <button
-            className="empty-state"
-            style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, width: "100%", padding: "32px 20px" }}
-            onClick={() => simulateUpload([`policy-update-${Math.floor(Math.random() * 90 + 10)}.pdf`])}
-          >
-            <div className="empty-state-icon"><Icon name="upload" size={20} /></div>
-            <span className="t-strong">Click to add a sample document</span>
-            <span className="t-micro">PDF, DOCX, XLSX, TXT · up to 25 MB · text is chunked and embedded automatically</span>
-          </button>
+          <Field label="Document name" error={docErr} hint="PDF, DOCX, XLSX, TXT · up to 25 MB · text is chunked and embedded automatically. File upload streaming lands with the storage backend.">
+            <div className="row gap-8">
+              <input className="input" value={docName} onChange={(e) => { setDocName(e.target.value); setDocErr(""); }} placeholder="benefits-guide-2026.pdf" aria-invalid={!!docErr} />
+              <Button variant="primary" icon="upload" onClick={addDocument}>Add</Button>
+            </div>
+          </Field>
         )}
 
         {mode === "url" && (
           <Field label="Page or sitemap URL" error={urlErr} hint="The crawler follows same-domain links up to depth 2.">
             <div className="row gap-8">
-              <input className="input" value={url} onChange={(e) => { setUrl(e.target.value); setUrlErr(""); }} placeholder="https://meridianhealth.com/services" aria-invalid={!!urlErr} />
+              <input className="input" value={url} onChange={(e) => { setUrl(e.target.value); setUrlErr(""); }} placeholder="https://example.com/services" aria-invalid={!!urlErr} />
               <Button variant="primary" onClick={addUrl}>Add</Button>
             </div>
           </Field>
@@ -261,9 +302,9 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
 
         {mode === "faq" && (
           <div className="col gap-8">
-            <Field label="Question"><input className="input" placeholder="Do you validate parking?" /></Field>
-            <Field label="Answer"><textarea className="textarea" placeholder="Yes — parking is validated for up to 2 hours at all clinic locations." /></Field>
-            <Button variant="primary" style={{ alignSelf: "flex-start" }} onClick={() => simulateUpload([`faq-pair-${Math.floor(Math.random() * 90 + 10)}`])}>Add FAQ pair</Button>
+            <Field label="Question"><input className="input" value={faqQuestion} onChange={(e) => setFaqQuestion(e.target.value)} placeholder="Do you validate parking?" /></Field>
+            <Field label="Answer"><textarea className="textarea" value={faqAnswer} onChange={(e) => setFaqAnswer(e.target.value)} placeholder="Yes — parking is validated for up to 2 hours at all locations." /></Field>
+            <Button variant="primary" style={{ alignSelf: "flex-start" }} onClick={addFaq}>Add FAQ pair</Button>
           </div>
         )}
 
@@ -274,20 +315,18 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               <div key={it.name} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
                 <Icon name="file" size={15} style={{ color: "var(--ink-3)" }} />
                 <div className="grow col gap-4">
-                  <div className="row-between">
-                    <span className="t-strong truncate" style={{ fontSize: 12.5, maxWidth: 300 }}>{it.name}</span>
-                    <span className="t-micro">{it.size}</span>
-                  </div>
-                  {it.state === "uploading" && <Progress value={it.progress} />}
+                  <span className="t-strong truncate" style={{ fontSize: 12.5, maxWidth: 300 }}>{it.name}</span>
+                  {it.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{it.error}</span>}
                 </div>
+                {it.state === "creating" && <span className="spinner" />}
                 {it.state === "indexing" && <StatusChip status="indexing" />}
-                {it.state === "done" && <StatusChip status="indexed" />}
+                {it.state === "error" && <StatusChip status="failed" />}
               </div>
             ))}
           </div>
         )}
         {queue.length === 0 && mode === "document" && (
-          <EmptyState icon="upload" title="Queue is empty" body="Added files appear here with per-file progress, then move to indexing." />
+          <EmptyState icon="upload" title="Queue is empty" body="Added sources appear here, then move to indexing." />
         )}
       </div>
     </Modal>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listReleases, simulateAction } from "@/services/api";
+import { listReleases, updateReleaseStage } from "@/services/api";
 import { Button, Callout, CardSkeleton, ConfirmModal, Drawer, ErrorState, StatusChip, Timeline } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -31,11 +31,19 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
     );
   }
 
-  const act = async (msg: string) => {
+  const transition = async (releaseId: string, stage: string, msg: string) => {
     setBusy(true);
-    await simulateAction(msg);
-    setBusy(false);
-    toast(msg);
+    try {
+      await updateReleaseStage(releaseId, stage);
+      toast(msg);
+      q.reload();
+      return true;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Release update failed", "error");
+      return false;
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -60,7 +68,7 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
                 <>
                   {flags.scheduledPublish && <Button icon="calendar">Schedule</Button>}
                   <Button variant="primary" icon="rocket" busy={busy}
-                    onClick={() => act(`${current.version} publishing — traffic shifts over the next 60s`)}>
+                    onClick={() => transition(current.id, "published", `${current.version} publishing — traffic shifts over the next 60s`)}>
                     Publish now
                   </Button>
                 </>
@@ -190,10 +198,10 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
           sub="Approval allows publishing but does not publish. Your decision and note are recorded in the audit log."
           footer={
             <>
-              <Button variant="secondary" icon="x" busy={busy} onClick={async () => { await act(`${current.version} sent back to draft with your notes`); setApprovalOpen(false); }}>
+              <Button variant="secondary" icon="x" busy={busy} onClick={async () => { if (await transition(current.id, "draft", `${current.version} sent back to draft with your notes`)) setApprovalOpen(false); }}>
                 Request changes
               </Button>
-              <Button variant="primary" icon="check" busy={busy} onClick={async () => { await act(`${current.version} approved — ready to publish`); setApprovalOpen(false); }}>
+              <Button variant="primary" icon="check" busy={busy} onClick={async () => { if (await transition(current.id, "approved", `${current.version} approved — ready to publish`)) setApprovalOpen(false); }}>
                 Approve release
               </Button>
             </>
@@ -238,7 +246,11 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
             it is marked <b>rolled back</b>, and the team is notified.
           </>
         }
-        onConfirm={async () => { await act("Rollback initiated — traffic shifting to previous version"); setRollbackOpen(false); }}
+        onConfirm={async () => {
+          if (published && await transition(published.id, "rolled_back", "Rollback initiated — traffic shifting to previous version")) {
+            setRollbackOpen(false);
+          }
+        }}
       />
     </div>
   );

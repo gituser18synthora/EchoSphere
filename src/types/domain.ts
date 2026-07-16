@@ -5,7 +5,66 @@
    real backend replaces the implementation, not the types.
    ============================================================ */
 
-export type Role = "super_admin" | "tenant_admin";
+export type Role = "super_admin" | "tenant_admin" | "tenant_user";
+
+/* ---------- Session / RBAC ---------- */
+
+export interface SessionUserInfo {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  roleName: string;
+  tenantId: string | null;
+  tenantName?: string | null;
+  permissions: string[];
+  status: string;
+}
+
+export interface RoleInfo {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  scope: "platform" | "tenant";
+  permissions: string[];
+  permissionCount: number;
+  members: number;
+}
+
+export interface SipTrunk {
+  id: string;
+  name: string;
+  provider: string;
+  region: string;
+  capacityLines: number;
+  activeCalls: number;
+  failurePct: number;
+  status: string;
+}
+
+export interface VoiceSettings {
+  botId: string;
+  voiceId: string | null;
+  speed: number;
+  pauseMs: number;
+  empathy: number;
+  energy: number;
+  languageVoiceMap: Record<string, string>;
+}
+
+export interface TenantSettings {
+  tenantId: string;
+  displayName: string | null;
+  timezone: string;
+  defaultLanguages: string[];
+  branding: { assistantName?: string; accent?: string };
+  businessHours: Record<string, { open: string; close: string; closed?: boolean }>;
+  holidays: { name: string; date: string }[];
+  notifications: { id: string; label: string; enabled: boolean }[];
+  security: { sso?: boolean; mfa?: boolean };
+  retentionDays: number;
+}
 
 export type Severity = "good" | "warning" | "serious" | "critical" | "neutral";
 
@@ -372,12 +431,14 @@ export interface PlatformAlert {
 export interface AuditEvent {
   id: string;
   actor: string;
-  actorRole: Role;
+  actorRole: Role | string;
   action: string;
   target: string;
-  tenant?: string;
+  tenant?: string | null;
   time: string;
   ip: string;
+  entityType?: string | null;
+  entityId?: string | null;
 }
 
 export interface TeamMember {
@@ -385,9 +446,11 @@ export interface TeamMember {
   name: string;
   email: string;
   role: string;
+  roleCode?: string;
   status: "active" | "invited" | "deactivated";
   lastActive: string;
   botsOwned: number;
+  mfa?: boolean;
 }
 
 export interface Integration {

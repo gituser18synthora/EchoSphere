@@ -1,0 +1,497 @@
+"""ORM → API dict serializers.
+
+Shapes mirror src/types/domain.ts exactly (camelCase) so the frontend service
+layer stays a thin fetch wrapper. Sensitive fields (password hashes, raw
+secrets) are never emitted.
+"""
+
+from datetime import date, datetime
+
+from backend.models import (
+    ApiConnection,
+    ApprovedModel,
+    AuditLog,
+    ChannelConfig,
+    ConversationSession,
+    EntityDef,
+    Guardrail,
+    HealthMetric,
+    Intent,
+    Integration,
+    Invoice,
+    KnowledgeGap,
+    KnowledgeSource,
+    PhoneNumber,
+    Plan,
+    PlatformAlert,
+    Prompt,
+    Release,
+    Role,
+    SipTrunk,
+    Subscription,
+    SupportedLanguage,
+    SystemSetting,
+    TenantSetting,
+    TestScenario,
+    User,
+    VoiceBot,
+    VoiceProfile,
+    Workflow,
+)
+
+
+def iso(value: datetime | date | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat() + ("Z" if value.tzinfo is None else "")
+    return value.isoformat()
+
+
+def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
+                     calls_month: int, minutes_month: float, mrr: float,
+                     ai_cost_month: float) -> dict:
+    return {
+        "id": t.id,
+        "name": t.name,
+        "domain": t.domain,
+        "industry": t.industry or "",
+        "region": t.region or "",
+        "plan": plan or "starter",
+        "status": t.status,
+        "createdAt": iso(t.created_at),
+        "users": users,
+        "bots": bots,
+        "callsMonth": calls_month,
+        "minutesMonth": round(minutes_month),
+        "mrr": float(mrr),
+        "aiCostMonth": round(ai_cost_month),
+        "health": t.health,
+        "adminEmail": t.admin_email or "",
+    }
+
+
+def serialize_subscription(s: Subscription, *, tenant_name: str, plan_code: str,
+                           minutes_used: float) -> dict:
+    return {
+        "id": s.id,
+        "tenantId": s.tenant_id,
+        "tenant": tenant_name,
+        "plan": plan_code,
+        "seats": s.seats,
+        "botLimit": s.bot_limit,
+        "minutesIncluded": s.minutes_included,
+        "minutesUsed": round(minutes_used),
+        "renewsAt": iso(s.renews_at) or "",
+        "status": s.status,
+        "mrr": float(s.mrr),
+    }
+
+
+def serialize_invoice(i: Invoice, *, tenant_name: str) -> dict:
+    return {
+        "id": i.id,
+        "tenantId": i.tenant_id,
+        "tenant": tenant_name,
+        "period": i.period,
+        "amount": float(i.amount),
+        "status": i.status,
+        "issuedAt": iso(i.issued_at) or "",
+    }
+
+
+def serialize_plan(p: Plan) -> dict:
+    return {
+        "id": p.id,
+        "code": p.code,
+        "name": p.name,
+        "priceMonthly": float(p.price_monthly),
+        "botLimit": p.bot_limit,
+        "minutesIncluded": p.minutes_included,
+        "seatsIncluded": p.seats_included,
+        "features": p.features or [],
+        "status": p.status,
+    }
+
+
+def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
+                  calls_today: int, calls_month: int) -> dict:
+    return {
+        "id": b.id,
+        "tenantId": b.tenant_id,
+        "name": b.name,
+        "useCase": b.use_case or "",
+        "description": b.description or "",
+        "languages": [bl.language_code for bl in b.languages],
+        "status": b.status,
+        "version": b.version,
+        "liveVersion": b.live_version,
+        "owner": owner_name,
+        "health": b.health,
+        "containment": b.containment,
+        "callsToday": calls_today,
+        "callsMonth": calls_month,
+        "avgCostPerCall": float(b.avg_cost_per_call),
+        "csat": b.csat,
+        "channels": channels,
+        "voiceId": b.voice_id,
+        "updatedAt": iso(b.updated_at),
+        "publishedAt": iso(b.published_at),
+        "readiness": [
+            {"id": r.item_key, "label": r.label, "done": r.done, "studioTab": r.studio_tab}
+            for r in b.readiness_items
+        ],
+    }
+
+
+def serialize_knowledge(k: KnowledgeSource) -> dict:
+    return {
+        "id": k.id,
+        "botId": k.bot_id,
+        "scope": k.scope,
+        "type": k.type,
+        "name": k.name,
+        "detail": k.detail or "",
+        "status": k.status,
+        "chunks": k.chunks,
+        "sizeKb": k.size_kb,
+        "lastSync": iso(k.last_sync_at) or "—",
+        "quality": k.quality,
+        "usage30d": k.usage_30d,
+    }
+
+
+def serialize_knowledge_gap(g: KnowledgeGap) -> dict:
+    return {
+        "id": g.id,
+        "question": g.question,
+        "frequency": g.frequency,
+        "lastAsked": iso(g.last_asked_at) or "",
+        "suggestedSource": g.suggested_source or "",
+    }
+
+
+def serialize_prompt(p: Prompt) -> dict:
+    return {
+        "id": p.id,
+        "botId": p.bot_id,
+        "type": p.type,
+        "name": p.name,
+        "variables": p.variables or [],
+        "state": p.state,
+        "activeVersion": p.active_version,
+        "versions": [
+            {
+                "version": v.version,
+                "editedBy": v.edited_by or "",
+                "editedAt": iso(v.edited_at) or iso(v.created_at),
+                "note": v.note or "",
+                "variants": v.variants or [],
+            }
+            for v in p.versions
+        ],
+    }
+
+
+def serialize_voice(v: VoiceProfile) -> dict:
+    return {
+        "id": v.id,
+        "name": v.name,
+        "gender": v.gender,
+        "languages": v.languages or [],
+        "accent": v.accent or "",
+        "styles": v.styles or [],
+        "latencyMs": v.latency_ms,
+        "premium": v.premium,
+        "sample": v.sample_text or "",
+    }
+
+
+def serialize_language(lang: SupportedLanguage) -> dict:
+    return {
+        "id": lang.id,
+        "code": lang.code,
+        "name": lang.name,
+        "nativeName": lang.native_name,
+        "enabled": lang.enabled,
+    }
+
+
+def serialize_intent(i: Intent) -> dict:
+    return {
+        "id": i.id,
+        "botId": i.bot_id,
+        "name": i.name,
+        "description": i.description or "",
+        "samples": i.samples or [],
+        "confidenceThreshold": i.confidence_threshold,
+        "avgConfidence30d": i.avg_confidence_30d,
+        "route": i.route or "",
+        "entities": i.entities or [],
+        "status": i.status,
+        "version": i.version,
+        "testPass": i.test_pass,
+        "testTotal": i.test_total,
+    }
+
+
+def serialize_entity(e: EntityDef) -> dict:
+    return {
+        "id": e.id,
+        "name": e.name,
+        "kind": e.kind,
+        "example": e.example or "",
+        "pii": e.pii,
+        "usedBy": e.used_by or [],
+    }
+
+
+def serialize_api_connection(a: ApiConnection) -> dict:
+    return {
+        "id": a.id,
+        "botId": a.bot_id,
+        "name": a.name,
+        "method": a.method,
+        "url": a.url,
+        "authType": a.auth_type,
+        "secretRef": a.secret_ref,
+        "timeoutMs": a.timeout_ms,
+        "retries": a.retries,
+        "responseMapping": a.response_mapping or [],
+        "status": a.status,
+        "lastTestedAt": iso(a.last_tested_at),
+        "lastLatencyMs": a.last_latency_ms,
+        "version": a.version,
+    }
+
+
+def serialize_workflow(w: Workflow, *, updated_by_name: str) -> dict:
+    return {
+        "id": w.id,
+        "botId": w.bot_id,
+        "name": w.name,
+        "version": w.version,
+        "status": w.status,
+        "nodes": w.nodes or [],
+        "edges": w.edges or [],
+        "issues": w.issues or [],
+        "updatedAt": iso(w.updated_at),
+        "updatedBy": updated_by_name,
+    }
+
+
+def serialize_channel(c: ChannelConfig) -> dict:
+    return {
+        "type": c.type,
+        "botId": c.bot_id,
+        "status": c.status,
+        "detail": c.detail or "",
+        "workflow": c.workflow_name or "—",
+        "lastTest": c.last_test,
+    }
+
+
+def serialize_scenario(s: TestScenario) -> dict:
+    return {
+        "id": s.id,
+        "botId": s.bot_id,
+        "name": s.name,
+        "suite": s.suite or "",
+        "steps": s.steps,
+        "lastRun": s.last_run,
+    }
+
+
+def serialize_release(r: Release) -> dict:
+    return {
+        "id": r.id,
+        "botId": r.bot_id,
+        "version": r.version,
+        "stage": r.stage,
+        "notes": r.notes or "",
+        "requestedBy": r.requested_by or "",
+        "approvedBy": r.approved_by,
+        "scheduledFor": iso(r.scheduled_for),
+        "publishedAt": iso(r.published_at),
+        "checklist": r.checklist or [],
+        "diff": r.diff or [],
+    }
+
+
+def serialize_conversation(c: ConversationSession, *, bot_name: str,
+                           transcript: list | None = None) -> dict:
+    return {
+        "id": c.id,
+        "botId": c.bot_id,
+        "bot": bot_name,
+        "channel": c.channel,
+        "caller": c.caller_masked or "•••",
+        "startedAt": iso(c.started_at),
+        "durationSec": c.duration_sec,
+        "sentiment": c.sentiment,
+        "intents": c.intents or [],
+        "contained": c.contained,
+        "escalationReason": c.escalation_reason,
+        "csat": c.csat,
+        "costUsd": float(c.cost_usd),
+        "language": c.language or "en-US",
+        "qaScore": c.qa_score,
+        "flagged": c.flagged,
+        "transcript": transcript or [],
+    }
+
+
+def serialize_alert(a: PlatformAlert) -> dict:
+    return {
+        "id": a.id,
+        "severity": a.severity,
+        "title": a.title,
+        "source": a.source or "",
+        "time": iso(a.occurred_at) or iso(a.created_at),
+        "status": a.status,
+        "scope": a.scope,
+    }
+
+
+def serialize_audit(a: AuditLog, *, tenant_name: str | None) -> dict:
+    return {
+        "id": a.id,
+        "actor": a.actor_name or "System",
+        "actorRole": a.actor_role or "system",
+        "action": a.action,
+        "target": a.target_label or a.entity_id or "",
+        "tenant": tenant_name,
+        "time": iso(a.created_at),
+        "ip": a.ip_address or "—",
+        "entityType": a.entity_type,
+        "entityId": a.entity_id,
+    }
+
+
+def serialize_team_member(u: User, *, bots_owned: int) -> dict:
+    return {
+        "id": u.id,
+        "name": u.name,
+        "email": u.email,
+        "role": u.role.name,
+        "roleCode": u.role.code,
+        "status": u.status,
+        "lastActive": iso(u.last_active_at) or "—",
+        "botsOwned": bots_owned,
+        "mfa": u.mfa_enabled,
+    }
+
+
+def serialize_role(r: Role, *, members: int) -> dict:
+    return {
+        "id": r.id,
+        "code": r.code,
+        "name": r.name,
+        "description": r.description or "",
+        "scope": r.scope,
+        "permissions": [p.code for p in r.permissions],
+        "permissionCount": len(r.permissions),
+        "members": members,
+    }
+
+
+def serialize_integration(i: Integration, *, status: str, connected_at) -> dict:
+    return {
+        "id": i.id,
+        "name": i.name,
+        "category": i.category or "",
+        "description": i.description or "",
+        "status": status,
+        "connectedAt": iso(connected_at),
+    }
+
+
+def serialize_model(m: ApprovedModel) -> dict:
+    return {
+        "id": m.id,
+        "name": m.name,
+        "provider": m.provider or "",
+        "purpose": m.purpose,
+        "status": m.status,
+        "tenantsUsing": m.tenants_using,
+        "costPer1k": float(m.cost_per_1k),
+        "latencyP50": m.latency_p50,
+    }
+
+
+def serialize_guardrail(g: Guardrail) -> dict:
+    return {
+        "id": g.id,
+        "name": g.name,
+        "category": g.category or "",
+        "description": g.description or "",
+        "enforcement": g.enforcement,
+        "enabled": g.enabled,
+        "triggers30d": g.triggers_30d,
+    }
+
+
+def serialize_phone_number(p: PhoneNumber, *, tenant_name: str | None,
+                           bot_name: str | None) -> dict:
+    return {
+        "id": p.id,
+        "number": p.number,
+        "country": p.country or "",
+        "tenant": tenant_name,
+        "bot": bot_name,
+        "provider": p.provider or "",
+        "status": p.status,
+        "monthlyCost": float(p.monthly_cost),
+    }
+
+
+def serialize_sip_trunk(t: SipTrunk) -> dict:
+    return {
+        "id": t.id,
+        "name": t.name,
+        "provider": t.provider or "",
+        "region": t.region or "",
+        "capacityLines": t.capacity_lines,
+        "activeCalls": t.active_calls,
+        "failurePct": t.failure_pct,
+        "status": t.status,
+    }
+
+
+def serialize_health_metric(h: HealthMetric) -> dict:
+    return {
+        "name": h.name,
+        "status": h.status,
+        "value": h.value or "",
+        "target": h.target or "",
+        "spark": h.spark or [],
+    }
+
+
+def serialize_tenant_settings(s: TenantSetting) -> dict:
+    return {
+        "tenantId": s.tenant_id,
+        "displayName": s.display_name,
+        "timezone": s.timezone,
+        "defaultLanguages": s.default_languages or [],
+        "branding": s.branding or {},
+        "businessHours": s.business_hours or {},
+        "holidays": s.holidays or [],
+        "notifications": s.notifications or [],
+        "security": s.security or {},
+        "retentionDays": s.retention_days,
+    }
+
+
+def serialize_user_public(u: User) -> dict:
+    """Login/me payload — no password hash, ever."""
+    return {
+        "id": u.id,
+        "name": u.name,
+        "email": u.email,
+        "role": u.role.code,
+        "roleName": u.role.name,
+        "tenantId": u.tenant_id,
+        "permissions": [p.code for p in u.role.permissions],
+        "status": u.status,
+    }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listBots, simulateAction } from "@/services/api";
+import { createBot, listBots, listLanguages, simulateAction } from "@/services/api";
 import {
   Button, ConfirmModal, Field, Health, MenuButton, Modal, StatusChip,
   CardSkeleton, EmptyState,
@@ -161,7 +161,7 @@ export default function Bots() {
         </div>
       )}
 
-      <CreateBotModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateBotModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={q.reload} />
 
       <ConfirmModal
         open={!!archiveTarget}
@@ -207,9 +207,10 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CreateBotModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const navigate = useNavigate();
   const { toast } = useApp();
+  const langsQ = useAsync(listLanguages, []);
   const [name, setName] = useState("");
   const [useCase, setUseCase] = useState("Appointment booking");
   const [langs, setLangs] = useState<string[]>(["en-US"]);
@@ -219,11 +220,17 @@ function CreateBotModal({ open, onClose }: { open: boolean; onClose: () => void 
   const create = async () => {
     if (name.trim().length < 3) { setErr("Give the bot a name (at least 3 characters)"); return; }
     setBusy(true);
-    await simulateAction("create-bot");
-    setBusy(false);
-    toast(`“${name}” created as draft`);
-    onClose();
-    navigate("/t/bots/bot-104/overview"); // draft fixture stands in for the newly created bot
+    try {
+      const created = await createBot({ name: name.trim(), useCase, languages: langs });
+      toast("VoiceBot created");
+      onCreated();
+      onClose();
+      navigate(`/t/bots/${created.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to create bot", "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -248,12 +255,12 @@ function CreateBotModal({ open, onClose }: { open: boolean; onClose: () => void 
         </Field>
         <Field label="Languages">
           <div className="row wrap gap-6">
-            {["en-US", "es-US", "en-GB", "fr-FR", "hi-IN", "vi-VN"].map((l) => {
-              const on = langs.includes(l);
+            {(langsQ.data ?? []).filter((l) => l.enabled).map((l) => {
+              const on = langs.includes(l.code);
               return (
-                <button key={l} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on}
-                  onClick={() => setLangs(on ? langs.filter((x) => x !== l) : [...langs, l])}>
-                  {on && <Icon name="check" size={11} />}{l}
+                <button key={l.code} title={l.name} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on}
+                  onClick={() => setLangs(on ? langs.filter((x) => x !== l.code) : [...langs, l.code])}>
+                  {on && <Icon name="check" size={11} />}{l.code}
                 </button>
               );
             })}

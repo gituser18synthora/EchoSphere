@@ -29,8 +29,8 @@ export default function Billing() {
       <div className="grid grid-4">
         {tenantsQ.loading || q.loading ? Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={1} />) : (
           <>
-            <KpiCard label="MRR" value={`$${fmtNum(mrr)}`} delta={4.2} icon="dollar" />
-            <KpiCard label="Collected (Jun)" value={`$${fmtNum((q.data ?? []).filter((i) => i.status === "paid").reduce((s, i) => s + i.amount, 0))}`} icon="check-circle" />
+            <KpiCard label="MRR" value={`$${fmtNum(mrr)}`} icon="dollar" />
+            <KpiCard label="Collected" value={`$${fmtNum((q.data ?? []).filter((i) => i.status === "paid").reduce((s, i) => s + i.amount, 0))}`} icon="check-circle" />
             <KpiCard label="Outstanding" value={`$${fmtNum(open)}`} icon="clock" />
             <KpiCard label="Past due" value={`$${fmtNum(pastDue)}`} icon="alert" />
           </>

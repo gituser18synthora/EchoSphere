@@ -81,7 +81,7 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
 }
 
 const crumbNames: Record<string, string> = {
-  admin: "Super Admin", t: "Meridian Health Group", tenants: "Organizations",
+  admin: "Super Admin", t: "Workspace", tenants: "Organizations",
   onboarding: "Tenant Onboarding", subscriptions: "Subscriptions", billing: "Billing",
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
   knowledge: "Knowledge", workflows: "Workflows", monitoring: "Monitoring",
@@ -103,9 +103,10 @@ export default function AppShell() {
   const searchRef = useRef<HTMLInputElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
+  const isSuper = user?.role === "super_admin";
   const alertsQ = useAsync(listAlerts, []);
   const botsQ = useAsync(listBots, []);
-  const tenantsQ = useAsync(listTenants, []);
+  const tenantsQ = useAsync(() => (isSuper ? listTenants() : Promise.resolve([])), [isSuper]);
 
   const critical = (alertsQ.data ?? []).filter((a) => a.status === "open" && (a.severity === "critical" || a.severity === "serious")).length;
   const sections = useMemo(() => navFor(user!.role, critical), [user, critical]);
@@ -142,10 +143,14 @@ export default function AppShell() {
       path += `/${p}`;
       const bot = botsQ.data?.find((b) => b.id === p);
       const tenant = tenantsQ.data?.find((t) => t.id === p);
-      acc.push({ to: path, label: bot?.name ?? tenant?.name ?? crumbNames[p] ?? p });
+      const label =
+        p === "t"
+          ? user?.tenantName ?? "Workspace"
+          : bot?.name ?? tenant?.name ?? crumbNames[p] ?? p;
+      acc.push({ to: path, label });
     }
     return acc;
-  }, [location.pathname, botsQ.data, tenantsQ.data]);
+  }, [location.pathname, botsQ.data, tenantsQ.data, user?.tenantName]);
 
   const searchResults = useMemo(() => {
     if (search.trim().length < 2) return [];

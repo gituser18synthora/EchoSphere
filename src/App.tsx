@@ -33,10 +33,11 @@ import Team from "@/pages/tenant/Team";
 import Integrations from "@/pages/tenant/Integrations";
 import Settings from "@/pages/tenant/Settings";
 
-function Guard({ role, children }: { role: Role; children: React.ReactElement }) {
+function Guard({ roles, children }: { roles: Role[]; children: React.ReactElement }) {
   const { user } = useApp();
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== role) return <Navigate to={user.role === "super_admin" ? "/admin" : "/t"} replace />;
+  if (!roles.includes(user.role))
+    return <Navigate to={user.role === "super_admin" ? "/admin" : "/t"} replace />;
   return children;
 }
 
@@ -46,7 +47,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
 
-      <Route path="/admin" element={<Guard role="super_admin"><AppShell /></Guard>}>
+      <Route path="/admin" element={<Guard roles={["super_admin"]}><AppShell /></Guard>}>
         <Route index element={<AdminDashboard />} />
         <Route path="tenants" element={<Organizations />} />
         <Route path="tenants/:tenantId" element={<TenantDetail />} />
@@ -63,7 +64,7 @@ export default function App() {
         <Route path="reports" element={<Reports />} />
       </Route>
 
-      <Route path="/t" element={<Guard role="tenant_admin"><AppShell /></Guard>}>
+      <Route path="/t" element={<Guard roles={["tenant_admin", "tenant_user"]}><AppShell /></Guard>}>
         <Route index element={<TenantDashboard />} />
         <Route path="bots" element={<Bots />} />
         <Route path="bots/:botId" element={<Studio />} />

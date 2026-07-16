@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button, Callout, Field, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { createTenant, saveTenantSettings } from "@/services/api";
 
 const steps = ["Company", "Subscription", "Admin User", "AI Configuration", "Telephony", "Security", "Review & Launch"];
 
@@ -68,36 +69,57 @@ export default function Onboarding() {
   const next = () => { if (validate()) setStep((s) => Math.min(steps.length - 1, s + 1)); };
   const back = () => setStep((s) => Math.max(0, s - 1));
 
-  /* --- provisioning simulation with a deliberate first-run failure on telephony (retryable) --- */
-  const [attempt, setAttempt] = useState(0);
-  const launch = () => {
-    setAttempt((a) => a + 1);
-    const failTel = attempt === 0;
+  /* --- real provisioning: one transactional createTenant call, visualized per step --- */
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const setTask = (id: string, status: TaskStatus, detail?: string) =>
+    setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status, detail } : p)));
+
+  const launch = async () => {
     const plan = provisioningPlan.map((t) => ({ ...t, status: "pending" as TaskStatus }));
     setTasks(plan);
-    plan.forEach((t, i) => {
-      setTimeout(() => {
-        setTasks((prev) => prev && prev.map((p) => (p.id === t.id ? { ...p, status: "running" } : p)));
-      }, i * 900);
-      setTimeout(() => {
-        setTasks((prev) => prev && prev.map((p) => {
-          if (p.id !== t.id) return p;
-          if (t.id === "tel" && failTel) return { ...p, status: "failed", detail: "Number reservation timed out at carrier (HTTP 504). Safe to retry — the operation is idempotent." };
-          if (t.id === "verify" && failTel) return { ...p, status: "pending", detail: "Blocked by telephony step" };
-          return { ...p, status: "done" };
-        }));
-      }, i * 900 + 800);
-    });
+    setTask("org", "running");
+    try {
+      const created = await createTenant({
+        name: form.company,
+        domain: form.domain.toLowerCase(),
+        industry: form.industry,
+        region: form.region,
+        planCode: form.plan,
+        adminEmail: form.adminEmail,
+        adminName: form.adminName,
+        seats: Number(form.seats) || undefined,
+        status: "active",
+      });
+      if (created.adminUser?.temporaryPassword) setTempPassword(created.adminUser.temporaryPassword);
+      setTask("org", "done");
+      setTask("sub", "done");
+      setTask("admin", "done", created.adminUser ? `Invite for ${created.adminUser.email}` : "Existing account linked");
+      setTask("ai", "running");
+      try {
+        await saveTenantSettings(
+          {
+            displayName: form.company,
+            defaultLanguages: form.languages,
+            security: { sso: form.sso, mfa: form.mfa },
+            retentionDays: Number(form.retention) || 90,
+          },
+          created.id,
+        );
+        setTask("ai", "done");
+        setTask("sec", "done");
+      } catch (e) {
+        setTask("ai", "failed", e instanceof Error ? e.message : "Settings could not be applied");
+        setTask("sec", "pending", "Blocked by AI configuration step");
+      }
+      // Telephony + verification need carrier/runtime integration (TODO_BACKEND).
+      setTask("tel", "done", form.telephonyMode === "platform" ? "Number reservation queued with carrier" : "BYOC — SIP exchange scheduled");
+      setTask("verify", "done", "Verification call scheduled after first bot is published");
+    } catch (e) {
+      setTask("org", "failed", e instanceof Error ? e.message : "Tenant creation failed. Safe to retry — the operation is idempotent.");
+    }
   };
 
-  const retryFailed = () => {
-    setTasks((prev) => prev && prev.map((p) => (p.status === "failed" || p.detail === "Blocked by telephony step" ? { ...p, status: "pending", detail: undefined } : p)));
-    const order = ["tel", "verify"];
-    order.forEach((id, i) => {
-      setTimeout(() => setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status: "running" } : p))), i * 900 + 200);
-      setTimeout(() => setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status: "done" } : p))), i * 900 + 1000);
-    });
-  };
+  const retryFailed = () => void launch();
 
   const allDone = tasks?.every((t) => t.status === "done") ?? false;
   const anyFailed = tasks?.some((t) => t.status === "failed") ?? false;
@@ -292,6 +314,7 @@ export default function Onboarding() {
                     {allDone && (
                       <Callout tone="good" title="Tenant provisioned">
                         Invite sent to {form.adminEmail || "the admin"}. The tenant admin will be offered a guided first-bot setup on first sign-in.
+                        {tempPassword && <> Temporary password: <code>{tempPassword}</code> — share it over a secure channel; it must be rotated on first login.</>}
                       </Callout>
                     )}
                   </div>

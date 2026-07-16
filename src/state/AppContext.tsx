@@ -3,12 +3,16 @@ import {
   type ReactNode,
 } from "react";
 import type { Role } from "@/types/domain";
+import { setToken } from "@/services/http";
 
 export interface SessionUser {
+  id?: string;
   name: string;
   email: string;
   role: Role;
-  tenantName?: string;
+  tenantName?: string | null;
+  tenantId?: string | null;
+  permissions?: string[];
 }
 
 interface Toast {
@@ -19,7 +23,7 @@ interface Toast {
 
 interface AppState {
   user: SessionUser | null;
-  signIn: (user: SessionUser) => void;
+  signIn: (user: SessionUser, token: string) => void;
   signOut: () => void;
   theme: "light" | "dark";
   toggleTheme: () => void;
@@ -52,12 +56,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
-  const signIn = useCallback((u: SessionUser) => {
+  const signIn = useCallback((u: SessionUser, token: string) => {
+    setToken(token);
     setUser(u);
     localStorage.setItem(USER_KEY, JSON.stringify(u));
   }, []);
 
   const signOut = useCallback(() => {
+    setToken(null);
     setUser(null);
     localStorage.removeItem(USER_KEY);
   }, []);

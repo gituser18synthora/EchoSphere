@@ -3,8 +3,7 @@ import { useAsync } from "@/hooks/useAsync";
 import { listKnowledge } from "@/services/api";
 import { DataTable } from "@/components/DataTable";
 import { StatusChip, Tabs, Callout, KpiCard, CardSkeleton } from "@/components/ui";
-import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
-import { genSeries } from "@/services/mockData";
+import { fmtNum } from "@/components/charts";
 
 const tabs = [
   { id: "global", label: "Global Knowledge" },
@@ -33,25 +32,10 @@ export default function KnowledgeAdmin() {
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
       <div className="mt-16">
         {tab === "embeddings" ? (
-          <>
-            <Callout tone="warning" title="Backlog above target">
-              14,220 chunks queued (11.4 min). Auto-scaling added 2 workers at 07:30 UTC; ETA to drain: ~22 min.
-            </Callout>
-            <div className="grid grid-4 mt-16">
-              <KpiCard label="Chunks indexed (24h)" value="182K" delta={6.1} icon="database" />
-              <KpiCard label="Queue depth" value="14,220" delta={38.2} intent="down-good" icon="clock" />
-              <KpiCard label="Failed jobs (24h)" value="12" delta={-25} intent="down-good" icon="x-circle" />
-              <KpiCard label="Embedding cost (24h)" value="$41.80" delta={4.4} intent="down-good" icon="dollar" />
-            </div>
-            <div className="mt-16">
-              <ChartCard title="Embedding queue depth" sub="Chunks awaiting indexing, last 24h (hourly)" legend={<Legend shape="line" items={[{ label: "Queue depth", color: "var(--series-3)" }]} />}>
-                <LineChart
-                  data={Array.from({ length: 24 }, (_, i) => ({ t: `${i}:00`, depth: genSeries(77, 24, 6000, 7000, 350)[i] }))}
-                  x="t" series={[{ key: "depth", label: "Queue depth", color: "var(--series-3)", area: true }]} height={220}
-                />
-              </ChartCard>
-            </div>
-          </>
+          <EmbeddingMonitor
+            sources={q.data ?? []}
+            loading={q.loading}
+          />
         ) : (
           <div className="card">
             {q.loading ? <div style={{ padding: 16 }}><CardSkeleton rows={5} /></div> : (
@@ -71,6 +55,33 @@ export default function KnowledgeAdmin() {
             )}
           </div>
         )}
+      </div>
+    </>
+  );
+}
+
+/** Pipeline health computed from the live source inventory. */
+function EmbeddingMonitor({ sources, loading }: { sources: import("@/types/domain").KnowledgeSource[]; loading: boolean }) {
+  if (loading) return <div className="grid grid-4">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={1} />)}</div>;
+  const indexing = sources.filter((k) => k.status === "indexing");
+  const failed = sources.filter((k) => k.status === "failed");
+  const stale = sources.filter((k) => k.status === "stale");
+  const totalChunks = sources.reduce((s, k) => s + k.chunks, 0);
+  const queuedKb = indexing.reduce((s, k) => s + k.sizeKb, 0);
+  return (
+    <>
+      {(indexing.length > 0 || failed.length > 0) && (
+        <Callout tone="warning" title={failed.length ? "Failed indexing jobs need attention" : "Sources currently indexing"}>
+          {indexing.length} source{indexing.length === 1 ? "" : "s"} indexing ({fmtNum(queuedKb)} KB queued)
+          {failed.length ? ` · ${failed.length} failed job${failed.length === 1 ? "" : "s"}` : ""}
+          {stale.length ? ` · ${stale.length} stale source${stale.length === 1 ? "" : "s"} awaiting re-sync` : ""}
+        </Callout>
+      )}
+      <div className="grid grid-4 mt-16">
+        <KpiCard label="Chunks indexed" value={fmtNum(totalChunks)} icon="database" />
+        <KpiCard label="Indexing now" value={String(indexing.length)} intent="down-good" icon="clock" />
+        <KpiCard label="Failed sources" value={String(failed.length)} intent="down-good" icon="x-circle" />
+        <KpiCard label="Stale sources" value={String(stale.length)} intent="down-good" icon="alert" />
       </div>
     </>
   );

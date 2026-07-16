@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Intent, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listEntities, listIntents, simulateAction } from "@/services/api";
+import { listEntities, listIntents } from "@/services/api";
 import { Button, Callout, Drawer, Progress, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { Icon } from "@/components/Icon";
@@ -99,10 +99,23 @@ function IntentDrawer({ intent, onClose }: { intent: Intent | null; onClose: () 
   const runTest = async () => {
     if (!testInput.trim()) return;
     setBusy(true);
-    await simulateAction("intent-test");
-    const overlap = intent.samples.some((s) => s.split(" ").some((w) => w.length > 3 && testInput.toLowerCase().includes(w.toLowerCase())));
-    setTestResult({ conf: overlap ? 0.83 + Math.random() * 0.13 : 0.31 + Math.random() * 0.2, matched: overlap });
-    setBusy(false);
+    // Deterministic local heuristic: best token overlap against the samples.
+    const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2));
+    const inTok = words(testInput);
+    let best = 0;
+    for (const sample of intent.samples) {
+      const sTok = words(sample);
+      let inter = 0;
+      for (const t of inTok) if (sTok.has(t)) inter++;
+      const union = new Set([...inTok, ...sTok]).size;
+      if (union > 0) best = Math.max(best, inter / union);
+    }
+    const matched = best >= 0.15;
+    const conf = matched ? Math.min(0.97, 0.55 + best * 0.6) : 0.3 + best;
+    setTimeout(() => {
+      setTestResult({ conf: Math.round(conf * 100) / 100, matched });
+      setBusy(false);
+    }, 300);
   };
 
   return (

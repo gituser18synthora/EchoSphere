@@ -1,9 +1,10 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { listBots, listChannels } from "@/services/api";
-import { CardSkeleton, StatusChip } from "@/components/ui";
+import { CardSkeleton, EmptyState, ErrorState, StatusChip } from "@/components/ui";
 import { Icon, type IconName } from "@/components/Icon";
-import type { ChannelType } from "@/types/domain";
+import type { ChannelConfig, ChannelType } from "@/types/domain";
 
 const meta: Record<ChannelType, { icon: IconName; name: string }> = {
   voice: { icon: "phone", name: "Voice" },
@@ -14,10 +15,14 @@ const meta: Record<ChannelType, { icon: IconName; name: string }> = {
 
 export default function Channels() {
   const botsQ = useAsync(listBots, []);
-  const chQ = useAsync(() => listChannels("bot-101"), []);
+  const [botId, setBotId] = useState("");
   const navigate = useNavigate();
 
-  if (botsQ.loading || chQ.loading) {
+  const bots = (botsQ.data ?? []).filter((b) => b.status !== "archived");
+  const selectedId = botId || bots[0]?.id || "";
+  const chQ = useAsync(() => (selectedId ? listChannels(selectedId) : Promise.resolve([] as ChannelConfig[])), [selectedId]);
+
+  if (botsQ.loading) {
     return (
       <>
         <PageHead />
@@ -26,45 +31,60 @@ export default function Channels() {
     );
   }
 
-  const bots = (botsQ.data ?? []).filter((b) => b.status !== "archived");
+  if (botsQ.error) {
+    return (
+      <>
+        <PageHead />
+        <ErrorState message={botsQ.error} onRetry={botsQ.reload} />
+      </>
+    );
+  }
 
   return (
     <>
       <PageHead />
-      <div className="card">
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Bot</th>
-                {(Object.keys(meta) as ChannelType[]).map((c) => (
-                  <th key={c}><span className="row gap-4" style={{ display: "inline-flex" }}><Icon name={meta[c].icon} size={13} />{meta[c].name}</span></th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {bots.map((b) => (
-                <tr key={b.id} className="row-click" onClick={() => navigate(`/t/bots/${b.id}/channels`)}>
-                  <td><div className="t-strong">{b.name}</div><div className="t-micro">{b.status === "published" ? `live ${b.liveVersion}` : b.status.replace("_", " ")}</div></td>
-                  {(Object.keys(meta) as ChannelType[]).map((c) => {
-                    const cfg = b.id === "bot-101"
-                      ? chQ.data?.find((x) => x.type === c)
-                      : b.channels.includes(c)
-                        ? { status: "live" as const }
-                        : undefined;
-                    return (
-                      <td key={c}>
-                        {cfg ? <StatusChip status={cfg.status} /> : <span className="t-micro">—</span>}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {bots.length === 0 ? (
+        <div className="card">
+          <EmptyState icon="phone" title="No bots to deploy" body="Create a bot first — its channels appear here once configured." />
         </div>
-      </div>
-      <p className="t-micro mt-12">Click a row to configure that bot's channels in Studio. A failed channel never receives traffic — calls fall back to the voice line where configured.</p>
+      ) : (
+        <>
+          <div className="filter-bar">
+            <select className="select" value={selectedId} onChange={(e) => setBotId(e.target.value)} aria-label="Select bot">
+              {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+          {chQ.loading && <CardSkeleton rows={4} />}
+          {chQ.error && <ErrorState message={chQ.error} onRetry={chQ.reload} />}
+          {!chQ.loading && !chQ.error && ((chQ.data ?? []).length === 0 ? (
+            <div className="card">
+              <EmptyState icon="plug" title="No channels configured" body="Open this bot in Studio to configure voice, WhatsApp, web or mobile." />
+            </div>
+          ) : (
+            <div className="card">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr><th>Channel</th><th>Status</th><th>Endpoint</th><th>Workflow</th><th>Last test</th></tr>
+                  </thead>
+                  <tbody>
+                    {(chQ.data ?? []).map((c) => (
+                      <tr key={c.type} className="row-click" onClick={() => navigate(`/t/bots/${selectedId}/channels`)}>
+                        <td><span className="row gap-8"><Icon name={meta[c.type].icon} size={14} /><span className="t-strong">{meta[c.type].name}</span></span></td>
+                        <td><StatusChip status={c.status} /></td>
+                        <td className="t-sub">{c.detail || "—"}</td>
+                        <td className="t-sub">{c.workflow || "—"}</td>
+                        <td className="t-sub">{c.lastTest ? `${new Date(c.lastTest.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${c.lastTest.ok ? "passed" : "failed"}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          <p className="t-micro mt-12">Click a row to configure this bot's channels in Studio. A failed channel never receives traffic — calls fall back to the voice line where configured.</p>
+        </>
+      )}
     </>
   );
 }

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { listGuardrails, listModels, simulateAction } from "@/services/api";
+import { listGuardrails, listModels, listTemplates, updateGuardrail, updateModelStatus } from "@/services/api";
 import { DataTable } from "@/components/DataTable";
-import { Button, Callout, StatusChip, Tabs, Toggle, EmptyState } from "@/components/ui";
+import { Button, Callout, StatusChip, Tabs, Toggle, EmptyState, CardSkeleton, ErrorState } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
 import { Icon } from "@/components/Icon";
@@ -30,37 +30,24 @@ export default function Governance() {
         {tab === "models" && <ModelsTab />}
         {tab === "guardrails" && <GuardrailsTab />}
         {tab === "prompts" && (
-          <PlaceholderLibrary
+          <TemplateLibrary
+            kind="prompt_library"
             title="Platform prompt library"
             body="System prompt templates (persona scaffolds, safety preambles, language-switch handlers) that tenant prompts compose into. Tenant admins never see these — they only edit business prompts in Prompt Studio."
-            items={[
-              ["Safety preamble v9", "Injected into every conversation model call", "approved"],
-              ["Healthcare persona scaffold v4", "Applied to healthcare guardrail profile", "approved"],
-              ["Language-switch handler v2", "Mid-call language change behaviour", "approved"],
-              ["Escalation de-escalation frame v3", "Wraps handover messages on abuse triggers", "pending_approval"],
-            ]}
           />
         )}
         {tab === "versions" && (
-          <PlaceholderLibrary
+          <TemplateLibrary
+            kind="prompt_version"
             title="Prompt version registry"
             body="Every system-prompt change is versioned with a diff, approver and rollout ring. Roll back re-pins the previous version platform-wide."
-            items={[
-              ["Safety preamble v9 → v10 (draft)", "Adds jailbreak-resistance clause · ring: canary 5%", "draft"],
-              ["Healthcare scaffold v3 → v4", "Published Jun 20 · approved by A. Rivera", "published"],
-              ["Safety preamble v8 → v9", "Published Jun 2 · approved by A. Rivera", "published"],
-            ]}
           />
         )}
         {tab === "templates" && (
-          <PlaceholderLibrary
+          <TemplateLibrary
+            kind="knowledge_template"
             title="Knowledge templates"
             body="Curated starter packs tenants can clone: chunking presets, FAQ scaffolds and per-industry source checklists."
-            items={[
-              ["Healthcare clinic pack", "Locations, insurance, prep FAQs · used by 12 tenants", "approved"],
-              ["Banking servicing pack", "Balances, disputes, card services · used by 7 tenants", "approved"],
-              ["Retail order-support pack", "Orders, returns, shipping · used by 9 tenants", "approved"],
-            ]}
           />
         )}
       </div>
@@ -86,9 +73,17 @@ function ModelsTab() {
           {
             key: "act", header: "", width: 130,
             render: (m) => m.status === "testing"
-              ? <Button size="sm" variant="primary" onClick={async () => { await simulateAction("approve"); toast(`${m.name} approved for production`); q.reload(); }}>Approve</Button>
+              ? <Button size="sm" variant="primary" onClick={async () => {
+                  try {
+                    await updateModelStatus(m.id, "approved");
+                    toast(`${m.name} approved for production`);
+                    q.reload();
+                  } catch (e) {
+                    toast(e instanceof Error ? e.message : "Approval failed", "error");
+                  }
+                }}>Approve</Button>
               : m.status === "deprecated"
-                ? <Button size="sm" variant="ghost" onClick={() => toast("Migration plan required before removal — 5 tenants still attached", "info")}>Retire</Button>
+                ? <Button size="sm" variant="ghost" onClick={() => toast(m.tenantsUsing > 0 ? `Migration plan required before removal — ${m.tenantsUsing} tenants still attached` : "Model can be retired", "info")}>Retire</Button>
                 : null,
           },
         ]}
@@ -100,7 +95,6 @@ function ModelsTab() {
 function GuardrailsTab() {
   const q = useAsync(listGuardrails, []);
   const { toast } = useApp();
-  const [local, setLocal] = useState<Record<string, boolean>>({});
   return (
     <>
       <Callout tone="warning" title="Production impact">
@@ -119,12 +113,17 @@ function GuardrailsTab() {
               key: "enabled", header: "Enabled",
               render: (g) => (
                 <Toggle
-                  checked={local[g.id] ?? g.enabled}
+                  checked={g.enabled}
                   label={`Toggle ${g.name}`}
-                  onChange={(v) => {
+                  onChange={async (v) => {
                     if (!v && g.category === "Privacy") { toast("Privacy guardrails need a second approver to disable", "error"); return; }
-                    setLocal((l) => ({ ...l, [g.id]: v }));
-                    toast(`${g.name} ${v ? "enabled" : "disabled"} — audit entry created`);
+                    try {
+                      await updateGuardrail(g.id, { enabled: v });
+                      toast(`${g.name} ${v ? "enabled" : "disabled"} — audit entry created`);
+                      q.reload();
+                    } catch (e) {
+                      toast(e instanceof Error ? e.message : "Update failed", "error");
+                    }
                   }}
                 />
               ),
@@ -136,7 +135,8 @@ function GuardrailsTab() {
   );
 }
 
-function PlaceholderLibrary({ title, body, items }: { title: string; body: string; items: [string, string, string][] }) {
+function TemplateLibrary({ kind, title, body }: { kind: string; title: string; body: string }) {
+  const q = useAsync(() => listTemplates(kind), [kind]);
   return (
     <div className="card">
       <div className="card-header">
@@ -145,20 +145,24 @@ function PlaceholderLibrary({ title, body, items }: { title: string; body: strin
           <span className="t-micro">{body}</span>
         </div>
       </div>
-      {items.length === 0 ? (
+      {q.loading ? (
+        <div style={{ padding: 16 }}><CardSkeleton rows={3} /></div>
+      ) : q.error ? (
+        <ErrorState message={q.error} onRetry={q.reload} />
+      ) : !q.data || q.data.length === 0 ? (
         <EmptyState icon="file" title="Nothing here yet" />
       ) : (
         <div className="col" style={{ padding: 16, gap: 8 }}>
-          {items.map(([name, sub, status]) => (
-            <div key={name} className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+          {q.data.map((item) => (
+            <div key={String(item.id)} className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
               <div className="row gap-12">
                 <span className="icon-tile neutral" style={{ width: 30, height: 30 }}><Icon name="file" size={14} /></span>
                 <div>
-                  <div className="t-strong" style={{ fontSize: 13 }}>{name}</div>
-                  <div className="t-micro">{sub}</div>
+                  <div className="t-strong" style={{ fontSize: 13 }}>{String(item.name)}</div>
+                  <div className="t-micro">{String(item.description ?? "")}</div>
                 </div>
               </div>
-              <StatusChip status={status} />
+              <StatusChip status={String(item.status ?? "active")} />
             </div>
           ))}
         </div>

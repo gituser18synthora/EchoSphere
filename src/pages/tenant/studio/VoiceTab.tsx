@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { VoiceBot, VoiceProfile, VoiceTuning } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listVoices, simulateAction } from "@/services/api";
+import { getVoiceSettings, listVoices, saveVoiceSettings } from "@/services/api";
 import { Button, CardSkeleton, EmptyState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -9,15 +9,28 @@ import { flags } from "@/services/flags";
 
 export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const q = useAsync(listVoices, []);
+  const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
   const { toast } = useApp();
   const [selected, setSelected] = useState(bot.voiceId ?? "");
   const [query, setQuery] = useState("");
   const [langFilter, setLangFilter] = useState("all");
   const [genderFilter, setGenderFilter] = useState("all");
-  const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 65, energy: 45 });
-  const [langMap, setLangMap] = useState<Record<string, string>>(
-    () => Object.fromEntries(bot.languages.map((l, i) => [l, i === 0 ? bot.voiceId ?? "vp-01" : "vp-08"])),
-  );
+  const [saving, setSaving] = useState(false);
+  const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
+  const [langMap, setLangMap] = useState<Record<string, string>>({});
+
+  /* Initialize tuning + mapping from persisted settings once loaded */
+  useEffect(() => {
+    const s = settingsQ.data;
+    if (!s) return;
+    setTuning({ speed: s.speed, pauseMs: s.pauseMs, empathy: s.empathy, energy: s.energy });
+    if (s.voiceId) setSelected(s.voiceId);
+    setLangMap((prev) => {
+      const next: Record<string, string> = {};
+      for (const l of bot.languages) next[l] = s.languageVoiceMap[l] ?? prev[l] ?? s.voiceId ?? "";
+      return next;
+    });
+  }, [settingsQ.data, bot.languages]);
 
   const voices = useMemo(() => {
     let v = q.data ?? [];
@@ -31,8 +44,23 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   }, [q.data, query, langFilter, genderFilter]);
 
   const save = async () => {
-    await simulateAction("voice");
-    toast("Voice settings saved to draft — publish to make them live");
+    setSaving(true);
+    try {
+      await saveVoiceSettings(bot.id, {
+        voiceId: selected || null,
+        speed: tuning.speed,
+        pauseMs: tuning.pauseMs,
+        empathy: tuning.empathy,
+        energy: tuning.energy,
+        languageVoiceMap: langMap,
+      });
+      toast("Voice settings saved to draft — publish to make them live");
+      settingsQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save voice settings", "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -101,8 +129,9 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
             {bot.languages.map((l) => (
               <div key={l} className="row-between">
                 <span className="tag">{l}</span>
-                <select className="select" style={{ width: 170 }} value={langMap[l]} aria-label={`Voice for ${l}`}
+                <select className="select" style={{ width: 170 }} value={langMap[l] ?? ""} aria-label={`Voice for ${l}`}
                   onChange={(e) => setLangMap((m) => ({ ...m, [l]: e.target.value }))}>
+                  <option value="">Default voice</option>
                   {(q.data ?? []).filter((v) => v.languages.includes(l)).map((v) => <option key={v.id} value={v.id}>{v.name} — {v.accent.split("·")[0].trim()}</option>)}
                 </select>
               </div>
@@ -110,7 +139,9 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           </div>
         </div>
 
-        <Button variant="primary" icon="check" onClick={save}>Save voice settings</Button>
+        <Button variant="primary" icon="check" onClick={save} disabled={saving || settingsQ.loading}>
+          {saving ? "Saving…" : "Save voice settings"}
+        </Button>
       </div>
     </div>
   );

@@ -1,39 +1,66 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { TraceStep, VoiceBot } from "@/types/domain";
+import type { Intent, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listScenarios, simulateAction } from "@/services/api";
+import { listIntents, listPrompts, listScenarios, runSuite as runSuiteApi } from "@/services/api";
 import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 
-/* Tiny scripted engine for the simulator */
-function botReply(input: string, turn: number): TraceStep {
-  const lower = input.toLowerCase();
-  const base = { turn, speaker: "bot" as const, latencyMs: Math.round(380 + Math.random() * 400), costUsd: 0.004 + Math.random() * 0.004, promptVersion: undefined as string | undefined };
-  if (/book|appoint|see (a )?doctor|schedule/.test(lower)) {
-    return { ...base, text: "Sure — which clinic works best for you, and do you have a preferred day?", intent: "book_appointment", confidence: 0.93, apiCalls: [{ name: "EHR Slot Availability", ms: 356, ok: true }] };
+/* Local simulator: deterministic intent matching against the bot's REAL
+   intents (token overlap with their samples). Replies are clearly labelled
+   as simulator output — live testing needs the runtime engine. */
+const tokens = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2));
+
+function matchIntent(input: string, intents: Intent[]): { intent?: string; confidence: number; route?: string } {
+  const inTok = tokens(input);
+  if (inTok.size === 0) return { confidence: 0.3 };
+  let best: { intent?: string; overlap: number; route?: string } = { overlap: 0 };
+  for (const it of intents) {
+    for (const sample of [...it.samples, it.name.replace(/_/g, " ")]) {
+      const sTok = tokens(sample);
+      if (sTok.size === 0) continue;
+      let inter = 0;
+      for (const t of inTok) if (sTok.has(t)) inter++;
+      const overlap = inter / new Set([...inTok, ...sTok]).size;
+      if (overlap > best.overlap) best = { intent: it.name, overlap, route: it.route };
+    }
   }
-  if (/insurance|coverage|aetna|blue cross/.test(lower)) {
-    return { ...base, text: "We accept most major plans including BlueCross and UnitedHealthcare. For Medicare Advantage, coverage varies by clinic — would you like me to check a specific plan?", intent: "insurance_question", confidence: 0.64, chunksUsed: ["Insurance Providers Page §1 (stale)", "Top 60 Patient FAQs §12"] };
+  if (best.overlap < 0.15 || !best.intent) return { confidence: Math.round((0.3 + best.overlap) * 100) / 100 };
+  return { intent: best.intent, route: best.route, confidence: Math.min(0.97, Math.round((0.55 + best.overlap * 0.6) * 100) / 100) };
+}
+
+function botReply(input: string, turn: number, intents: Intent[]): TraceStep {
+  const m = matchIntent(input, intents);
+  const base = { turn, speaker: "bot" as const, latencyMs: 400, costUsd: 0.004 };
+  if (m.intent) {
+    return {
+      ...base,
+      text: `Simulator: matched intent “${m.intent.replace(/_/g, " ")}”${m.route ? ` → routes to ${m.route}` : ""}. Connect the runtime engine for live responses.`,
+      intent: m.intent,
+      confidence: m.confidence,
+    };
   }
-  if (/human|person|front desk|operator|someone/.test(lower)) {
-    return { ...base, text: "No problem — I'll connect you with the front desk now. Please stay on the line.", intent: "talk_to_human", confidence: 0.96, promptVersion: "escalation v5" };
-  }
-  if (/hour|open|close/.test(lower)) {
-    return { ...base, text: "The Oakwood clinic is open 8 AM to 6 PM on weekdays and 9 AM to 1 PM on Saturdays.", intent: "clinic_hours", confidence: 0.9, chunksUsed: ["Clinic Locations & Hours §2"] };
-  }
-  return { ...base, text: "Sorry, I didn’t quite catch that. You can say things like “book an appointment”, “reschedule”, or “talk to the front desk”.", intent: "fallback", confidence: 0.41, promptVersion: "fallback v2" };
+  return {
+    ...base,
+    text: "Simulator: no intent matched with enough confidence — this would trigger the fallback prompt.",
+    intent: "fallback",
+    confidence: m.confidence,
+  };
 }
 
 export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
+  const intentsQ = useAsync(() => listIntents(bot.id), [bot.id]);
+  const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
   const navigate = useNavigate();
   const { toast } = useApp();
-  const [steps, setSteps] = useState<TraceStep[]>([
-    { turn: 1, speaker: "bot", text: "Hi, thanks for calling Meridian Health. I can help you book, change or cancel an appointment. How can I help today?", promptVersion: "greeting v4", latencyMs: 480, costUsd: 0.004 },
-  ]);
+  const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
+  const greetingText =
+    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0]?.content
+    ?? `Simulator session for ${bot.name} — type a caller message to test intent detection.`;
+  const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null);
@@ -43,13 +70,13 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const send = () => {
     const text = input.trim();
     if (!text || thinking) return;
-    const userStep: TraceStep = { turn: steps.length + 1, speaker: "user", text };
+    const userStep: TraceStep = { turn: steps.length + 2, speaker: "user", text };
     setSteps((s) => [...s, userStep]);
     setInput("");
     setThinking(true);
     setTimeout(() => {
       setSteps((s) => {
-        const reply = botReply(text, s.length + 1);
+        const reply = botReply(text, s.length + 2, intentsQ.data ?? []);
         setSelectedTurn(reply.turn);
         return [...s, reply];
       });
@@ -59,15 +86,30 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
   };
 
-  const selected = steps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...steps].reverse().find((s) => s.speaker === "bot");
+  const greetingStep: TraceStep = {
+    turn: 1,
+    speaker: "bot",
+    text: greetingText,
+    promptVersion: greetingPrompt ? `greeting v${greetingPrompt.activeVersion}` : undefined,
+    latencyMs: 400,
+    costUsd: 0.004,
+  };
+  const allSteps = [greetingStep, ...steps];
+
+  const selected = allSteps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...allSteps].reverse().find((s) => s.speaker === "bot");
   const failing = (scenariosQ.data ?? []).filter((s) => s.lastRun && !s.lastRun.pass);
 
   const runSuite = async () => {
     setRunningSuite(true);
-    await simulateAction("suite");
-    setRunningSuite(false);
-    toast("Regression suite finished: 6 passed, 2 failed — details below");
-    scenariosQ.reload();
+    try {
+      const result = await runSuiteApi(bot.id);
+      toast(`Regression suite finished: ${result.passed} passed, ${result.failed} failed — details below`);
+      scenariosQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Suite run failed", "error");
+    } finally {
+      setRunningSuite(false);
+    }
   };
 
   return (
@@ -81,12 +123,12 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               <span className="tag">draft {bot.version}</span>
             </div>
             <div className="row gap-6">
-              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps(steps.slice(0, 1)); setSelectedTurn(null); }}>Reset</Button>
+              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps([]); setSelectedTurn(null); }}>Reset</Button>
               <Button size="sm" variant="ghost" icon="mic" disabled title="Voice simulation requires audio backend (TODO_BACKEND #2)">Voice mode</Button>
             </div>
           </div>
           <div ref={listRef} className="col grow" style={{ padding: 16, gap: 10, overflowY: "auto" }}>
-            {steps.map((s) => (
+            {allSteps.map((s) => (
               <button
                 key={s.turn}
                 className={`transcript-bubble ${s.speaker}`}

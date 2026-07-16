@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listBots, listKnowledge, listKnowledgeGaps, simulateAction } from "@/services/api";
+import { listBots, listKnowledge, listKnowledgeGaps, resyncKnowledge } from "@/services/api";
 import { Button, KpiCard, Progress, StatusChip, CardSkeleton } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { Icon, type IconName } from "@/components/Icon";
@@ -31,6 +31,7 @@ export default function KnowledgeHub() {
 
   const sources = q.data ?? [];
   const needsAttention = sources.filter((s) => s.status === "stale" || s.status === "failed").length;
+  const firstBotId = botsQ.data?.[0]?.id;
 
   return (
     <>
@@ -40,7 +41,7 @@ export default function KnowledgeHub() {
           <p className="page-sub">Everything your bots can answer from — across all bots and shared tenant sources</p>
         </div>
         <div className="page-actions">
-          <Button variant="primary" icon="upload" onClick={() => navigate("/t/bots/bot-101/knowledge")}>Add knowledge</Button>
+          <Button variant="primary" icon="upload" disabled={!firstBotId} onClick={() => firstBotId && navigate(`/t/bots/${firstBotId}/knowledge`)}>Add knowledge</Button>
         </div>
       </div>
 
@@ -72,7 +73,7 @@ export default function KnowledgeHub() {
       <div className="card">
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
-          onRowClick={(k) => navigate(`/t/bots/${k.botId ?? "bot-101"}/knowledge`)}
+          onRowClick={(k) => { const target = k.botId ?? firstBotId; if (target) navigate(`/t/bots/${target}/knowledge`); }}
           empty={{ icon: "book", title: "No sources match", body: "Adjust the filters or add a new source." }}
           columns={[
             {
@@ -105,7 +106,16 @@ export default function KnowledgeHub() {
             {
               key: "act", header: "", width: 110,
               render: (k) => (k.status === "stale" || k.status === "failed") ? (
-                <Button size="sm" icon="refresh" onClick={async (e) => { e.stopPropagation(); await simulateAction("resync"); toast(`Re-sync queued for “${k.name}”`); }}>Re-sync</Button>
+                <Button size="sm" icon="refresh" onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await resyncKnowledge(k.id);
+                    toast(`Re-sync queued for “${k.name}”`);
+                    q.reload();
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : "Re-sync failed", "error");
+                  }
+                }}>Re-sync</Button>
               ) : null,
             },
           ]}
@@ -128,7 +138,7 @@ export default function KnowledgeHub() {
                 <div className="t-strong" style={{ fontSize: 13 }}>“{g.question}”</div>
                 <div className="t-micro">Asked {g.frequency}× in 30 days · {g.suggestedSource}</div>
               </div>
-              <Button size="sm" onClick={() => navigate("/t/bots/bot-101/knowledge")}>Resolve</Button>
+              <Button size="sm" disabled={!firstBotId} onClick={() => firstBotId && navigate(`/t/bots/${firstBotId}/knowledge`)}>Resolve</Button>
             </div>
           ))}
         </div>

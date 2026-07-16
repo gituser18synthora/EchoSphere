@@ -1,29 +1,50 @@
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { listTeam, simulateAction } from "@/services/api";
-import { Avatar, Button, Field, MenuButton, Modal, StatusChip } from "@/components/ui";
+import { inviteUser, listRoles, listTeam } from "@/services/api";
+import { Avatar, Button, CardSkeleton, Field, MenuButton, Modal, StatusChip } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { useApp } from "@/state/AppContext";
 
-const roles = ["Tenant Admin", "Bot Manager", "Content Editor", "QA Reviewer", "Analyst (read-only)"];
+const prettyPermission = (code: string) => {
+  const [subject, ...rest] = code.split(".");
+  const action = rest.join(" ").replace(/_/g, " ");
+  const label = (action ? `${action} ${subject}` : subject).replace(/_/g, " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+};
 
 export default function Team() {
   const q = useAsync(listTeam, []);
-  const { toast } = useApp();
+  const rolesQ = useAsync(listRoles, []);
+  const { user, toast } = useApp();
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState(roles[1]);
+  const [roleCode, setRoleCode] = useState("");
+  const [nameErr, setNameErr] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const tenantRoles = (rolesQ.data ?? []).filter((r) => r.scope === "tenant");
+  const selectedRole = roleCode || tenantRoles[0]?.code || "";
+
   const invite = async () => {
+    if (!name.trim()) { setNameErr("Enter the member's name"); return; }
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { setErr("Enter a valid work email"); return; }
     setBusy(true);
-    await simulateAction("invite");
-    setBusy(false);
-    toast(`Invite sent to ${email} as ${role}`);
-    setInviteOpen(false);
-    setEmail("");
+    try {
+      const created = await inviteUser({ name: name.trim(), email, roleCode: selectedRole });
+      toast(created.temporaryPassword
+        ? `Invite created — temporary password: ${created.temporaryPassword}`
+        : `Invite sent to ${email}`);
+      q.reload();
+      setInviteOpen(false);
+      setName("");
+      setEmail("");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Invite failed", "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -67,35 +88,35 @@ export default function Team() {
 
       <div className="card card-pad mt-16">
         <span className="card-title">Role capabilities</span>
-        <div className="table-wrap mt-12">
-          <table className="table">
-            <thead>
-              <tr><th>Capability</th>{roles.map((r) => <th key={r}>{r}</th>)}</tr>
-            </thead>
-            <tbody>
-              {[
-                ["Edit bots & knowledge", [1, 1, 1, 0, 0]],
-                ["Approve prompts & releases", [1, 0, 0, 0, 0]],
-                ["Publish / roll back", [1, 1, 0, 0, 0]],
-                ["Review conversations", [1, 1, 1, 1, 1]],
-                ["QA scorecard overrides", [1, 0, 0, 1, 0]],
-                ["Manage team & settings", [1, 0, 0, 0, 0]],
-              ].map(([cap, flags]) => (
-                <tr key={cap as string}>
-                  <td className="t-sub">{cap}</td>
-                  {(flags as number[]).map((f, i) => (
-                    <td key={i}>{f ? <span style={{ color: "var(--status-good)", fontWeight: 700 }}>✓</span> : <span className="t-micro">—</span>}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {rolesQ.loading ? (
+          <div className="mt-12"><CardSkeleton rows={4} /></div>
+        ) : (
+          <div className="table-wrap mt-12">
+            <table className="table">
+              <thead>
+                <tr><th>Role</th><th className="num">Members</th><th>Capabilities</th></tr>
+              </thead>
+              <tbody>
+                {tenantRoles.map((r) => (
+                  <tr key={r.code}>
+                    <td><div className="t-strong">{r.name}</div><div className="t-micro">{r.description}</div></td>
+                    <td className="num t-num">{r.members}</td>
+                    <td>
+                      <span className="row gap-4 wrap">
+                        {r.permissions.map((p) => <span key={p} className="tag">{prettyPermission(p)}</span>)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <Modal
         open={inviteOpen} onClose={() => setInviteOpen(false)}
-        title="Invite a team member" sub="They'll receive an email to join Meridian Health Group on EchoSphere."
+        title="Invite a team member" sub={`They'll receive an email to join ${user?.tenantName ?? "your organization"} on EchoSphere.`}
         footer={
           <>
             <Button variant="ghost" onClick={() => setInviteOpen(false)}>Cancel</Button>
@@ -104,12 +125,15 @@ export default function Team() {
         }
       >
         <div className="col gap-16">
+          <Field label="Name" required error={nameErr}>
+            <input className="input" value={name} autoFocus onChange={(e) => { setName(e.target.value); setNameErr(""); }} placeholder="Full name" aria-invalid={!!nameErr} />
+          </Field>
           <Field label="Work email" required error={err}>
-            <input className="input" value={email} autoFocus onChange={(e) => { setEmail(e.target.value); setErr(""); }} placeholder="colleague@meridianhealth.com" aria-invalid={!!err} />
+            <input className="input" value={email} onChange={(e) => { setEmail(e.target.value); setErr(""); }} placeholder="colleague@company.com" aria-invalid={!!err} />
           </Field>
           <Field label="Role" hint="Roles gate publishing, approvals and settings. You can change this later.">
-            <select className="select" value={role} onChange={(e) => setRole(e.target.value)}>
-              {roles.map((r) => <option key={r}>{r}</option>)}
+            <select className="select" value={selectedRole} onChange={(e) => setRoleCode(e.target.value)}>
+              {tenantRoles.map((r) => <option key={r.code} value={r.code}>{r.name}</option>)}
             </select>
           </Field>
         </div>

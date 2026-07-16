@@ -5,7 +5,7 @@ import { CardSkeleton, EmptyState, ErrorState, KpiCard } from "@/components/ui";
 import { ChartCard, HBarList, Legend, LineChart, fmtNum } from "@/components/charts";
 
 export default function AnalyticsTab({ bot }: { bot: VoiceBot }) {
-  const a = useAsync(() => getTenantAnalytics(30), [bot.id]);
+  const a = useAsync(() => getTenantAnalytics(30, bot.id), [bot.id]);
 
   if (bot.status === "draft" || bot.status === "in_review") {
     return (
@@ -22,10 +22,16 @@ export default function AnalyticsTab({ bot }: { bot: VoiceBot }) {
   return (
     <div className="col gap-16">
       <div className="grid grid-4">
-        <KpiCard label="Calls this month" value={fmtNum(bot.callsMonth)} delta={9.1} icon="phone" />
-        <KpiCard label="Containment" value={`${bot.containment}%`} delta={2.4} icon="check-circle" />
-        <KpiCard label="CSAT" value={`${bot.csat.toFixed(1)} / 5`} delta={1.2} icon="star" />
-        <KpiCard label="Cost / call" value={`$${bot.avgCostPerCall.toFixed(2)}`} delta={-3.8} intent="down-good" icon="dollar" />
+        {a.data.kpis.slice(0, 4).map((k, i) => (
+          <KpiCard
+            key={k.label}
+            label={k.label}
+            value={k.value}
+            delta={k.delta}
+            intent={k.intent}
+            icon={["phone", "check-circle", "alert", "star"][i] ?? "activity"}
+          />
+        ))}
       </div>
       <div className="grid grid-2">
         <ChartCard

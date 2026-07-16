@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listConversations, simulateAction } from "@/services/api";
+import { flagConversation, listConversations, simulateAction } from "@/services/api";
 import type { Conversation } from "@/types/domain";
 import { Button, Drawer, MenuButton, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
@@ -105,24 +105,25 @@ export default function Conversations() {
         />
       </div>
 
-      <ConversationDrawer conv={open} onClose={() => setOpen(null)} />
+      <ConversationDrawer conv={open} onClose={() => setOpen(null)} onUpdate={(c) => { setOpen(c); q.reload(); }} />
     </>
   );
 }
 
-function ConversationDrawer({ conv, onClose }: { conv: Conversation | null; onClose: () => void }) {
+function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | null; onClose: () => void; onUpdate: (c: Conversation) => void }) {
   const { toast } = useApp();
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
 
   if (!conv) return null;
 
+  const qa = conv.qaScore ?? 0;
   const scorecard = [
-    { label: "Greeting & identity", score: conv.qaScore ? Math.min(100, conv.qaScore + 4) : 0 },
-    { label: "Intent understanding", score: conv.qaScore ?? 0 },
-    { label: "Resolution quality", score: conv.contained ? (conv.qaScore ?? 0) : Math.max(20, (conv.qaScore ?? 40) - 18) },
-    { label: "Tone & empathy", score: conv.sentiment === "negative" ? 62 : 92 },
-    { label: "Compliance (PII, disclosures)", score: 100 },
+    { label: "Greeting & identity", score: qa ? Math.min(100, qa + 4) : 0 },
+    { label: "Intent understanding", score: qa },
+    { label: "Resolution quality", score: qa ? (conv.contained ? qa : Math.max(20, qa - 18)) : 0 },
+    { label: "Tone & empathy", score: qa ? (conv.sentiment === "negative" ? Math.max(20, qa - 12) : Math.min(100, qa + 6)) : 0 },
+    { label: "Compliance (PII, disclosures)", score: qa ? Math.min(100, qa + 10) : 0 },
   ];
 
   return (
@@ -132,7 +133,18 @@ function ConversationDrawer({ conv, onClose }: { conv: Conversation | null; onCl
       sub={`${conv.bot} · ${conv.channel} · ${new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${fmtDur(conv.durationSec)} · ${conv.caller}`}
       headerExtra={
         <MenuButton actions={[
-          { label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag", onClick: () => toast(conv.flagged ? "Flag removed" : "Flagged for QA review") },
+          {
+            label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag",
+            onClick: async () => {
+              try {
+                const updated = await flagConversation(conv.id, !conv.flagged);
+                onUpdate(updated);
+                toast(updated.flagged ? "Flagged for QA review" : "Flag removed");
+              } catch (e) {
+                toast(e instanceof Error ? e.message : "Could not update flag", "error");
+              }
+            },
+          },
           { label: "Add comment", icon: "message", onClick: () => toast("Comment added to QA thread") },
           { label: "Export transcript", icon: "download", onClick: () => toast("Export queued — pending backend job API (TODO_BACKEND #6)", "info") },
         ]} />

@@ -1,6 +1,6 @@
 import type { ChannelType, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listChannels, simulateAction } from "@/services/api";
+import { listChannels, saveChannel } from "@/services/api";
 import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -24,10 +24,24 @@ export default function ChannelsTab({ bot }: { bot: VoiceBot }) {
     type: t, botId: bot.id, status: "not_configured" as const, detail: "Not configured", workflow: "—",
   });
 
-  const test = async (name: string) => {
-    await simulateAction("channel-test");
-    toast(`${name} test started — results appear here in ~30s`);
-    q.reload();
+  const test = async (type: string, name: string) => {
+    try {
+      await saveChannel(bot.id, type, { runTest: true });
+      toast(`${name} test completed — see the result below`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Channel test failed", "error");
+    }
+  };
+
+  const configure = async (type: string, name: string) => {
+    try {
+      await saveChannel(bot.id, type, { status: "configured", detail: `${name} connection pending setup` });
+      toast(`${name} channel created — finish setup in Settings`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Channel setup failed", "error");
+    }
   };
 
   return (
@@ -78,13 +92,13 @@ export default function ChannelsTab({ bot }: { bot: VoiceBot }) {
 
             <div className="row gap-6">
               {c.status === "not_configured" ? (
-                <Button variant="primary" size="sm" icon="plus" onClick={() => toast(`${meta.name} setup started — follow the connection guide`, "info")}>Configure</Button>
+                <Button variant="primary" size="sm" icon="plus" onClick={() => configure(c.type, meta.name)}>Configure</Button>
               ) : (
                 <>
-                  <Button size="sm" icon="play" onClick={() => test(meta.name)}>Run test</Button>
+                  <Button size="sm" icon="play" onClick={() => test(c.type, meta.name)}>Run test</Button>
                   <Button size="sm" variant="ghost" icon="settings" onClick={() => toast(`${meta.name} configuration opened`, "info")}>Settings</Button>
                   {c.status === "failed" || (c.lastTest && !c.lastTest.ok) ? (
-                    <Button size="sm" variant="danger-ghost" icon="refresh" onClick={() => test(meta.name)}>Retry</Button>
+                    <Button size="sm" variant="danger-ghost" icon="refresh" onClick={() => test(c.type, meta.name)}>Retry</Button>
                   ) : null}
                 </>
               )}

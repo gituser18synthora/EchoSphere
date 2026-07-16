@@ -1,10 +1,18 @@
 import { useMemo, useState } from "react";
 import type { Prompt, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listPrompts, simulateAction } from "@/services/api";
+import { addPromptVersion, listPrompts, updatePrompt } from "@/services/api";
 import { Button, Callout, CardSkeleton, Drawer, EmptyState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+
+/* Preview placeholder values only — variables resolve from live call context at runtime. */
+const PREVIEW_VARS: Record<string, string> = {
+  "{caller_name}": "Maria",
+  "{clinic_name}": "your business",
+  "{queue_wait}": "two minutes",
+  "{appointment_date}": "Thursday at 10:15 AM",
+};
 
 export default function PromptsTab({ bot }: { bot: VoiceBot }) {
   const q = useAsync(() => listPrompts(bot.id), [bot.id]);
@@ -54,17 +62,30 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
         })}
       </div>
 
-      <PromptDrawer prompt={openPrompt} onClose={() => setOpenPrompt(null)} onAction={(m) => { toast(m); setOpenPrompt(null); q.reload(); }} />
+      <PromptDrawer prompt={openPrompt} onClose={() => setOpenPrompt(null)} onAction={(m) => { toast(m); setOpenPrompt(null); q.reload(); }} onError={(m) => toast(m, "error")} />
     </div>
   );
 }
 
-function PromptDrawer({ prompt, onClose, onAction }: {
-  prompt: Prompt | null; onClose: () => void; onAction: (msg: string) => void;
+function PromptDrawer({ prompt, onClose, onAction, onError }: {
+  prompt: Prompt | null; onClose: () => void; onAction: (msg: string) => void; onError: (msg: string) => void;
 }) {
   const [lang, setLang] = useState("en-US");
   const [compareOpen, setCompareOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (fn: () => Promise<unknown>, msg: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      onAction(msg);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const latest = prompt?.versions[0];
   const active = prompt?.versions.find((v) => v.version === prompt.activeVersion) ?? latest;
@@ -89,13 +110,27 @@ function PromptDrawer({ prompt, onClose, onAction }: {
         <>
           {prompt.state === "pending_approval" && (
             <>
-              <Button variant="secondary" icon="undo" onClick={() => onAction(`v${latest.version} rejected — author notified with your note`)}>Request changes</Button>
-              <Button variant="primary" icon="check" onClick={() => onAction(`v${latest.version} approved — will go live with the next publish`)}>Approve v{latest.version}</Button>
+              <Button variant="secondary" icon="undo" busy={busy}
+                onClick={() => run(() => updatePrompt(prompt.id, { state: "draft" }), `v${latest.version} rejected — author notified with your note`)}>
+                Request changes
+              </Button>
+              <Button variant="primary" icon="check" busy={busy}
+                onClick={() => run(() => updatePrompt(prompt.id, { state: "approved", activeVersion: latest.version }), `v${latest.version} approved — will go live with the next publish`)}>
+                Approve v{latest.version}
+              </Button>
             </>
           )}
           {prompt.state !== "pending_approval" && (
-            <Button variant="primary" icon="send" disabled={!dirty} title={dirty ? undefined : "Edit the text to submit a new version"}
-              onClick={() => onAction(`Saved as v${latest.version + 1} and submitted for approval`)}>
+            <Button variant="primary" icon="send" disabled={!dirty || busy} busy={busy} title={dirty ? undefined : "Edit the text to submit a new version"}
+              onClick={() => {
+                const variants = latest.variants.map((v) =>
+                  v.language === (variant?.language ?? lang) ? { ...v, content: value } : v,
+                );
+                return run(
+                  () => addPromptVersion(prompt.id, { note: `Edited ${variant?.language ?? lang} variant`, variants }),
+                  `Saved as v${latest.version + 1} and submitted for approval`,
+                );
+              }}>
               Submit for approval
             </Button>
           )}
@@ -134,7 +169,7 @@ function PromptDrawer({ prompt, onClose, onAction }: {
         <div className="card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10 }}>
           <span className="t-label">Caller hears</span>
           <p className="t-body mt-8" style={{ fontStyle: "italic" }}>
-            “{value.replace("{caller_name}", "Maria").replace("{clinic_name}", "Meridian Oakwood").replace("{queue_wait}", "two minutes").replace("{appointment_date}", "Thursday, July 9 at 10:15 AM")}”
+            “{Object.entries(PREVIEW_VARS).reduce((s, [k, v]) => s.split(k).join(v), value)}”
           </p>
         </div>
 
@@ -174,7 +209,11 @@ function PromptDrawer({ prompt, onClose, onAction }: {
                 <div className="t-micro">{v.editedBy} · {new Date(v.editedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · {v.note}</div>
               </div>
               {v.version !== prompt.activeVersion && v.version < prompt.activeVersion && (
-                <Button size="sm" variant="ghost" icon="undo" onClick={() => simulateAction("restore").then(() => onAction(`Restored v${v.version} as a new draft (v${latest.version + 1}) — approval required`))}>
+                <Button size="sm" variant="ghost" icon="undo" busy={busy}
+                  onClick={() => run(
+                    () => addPromptVersion(prompt.id, { note: `Restored from v${v.version}`, variants: v.variants }),
+                    `Restored v${v.version} as a new draft (v${latest.version + 1}) — approval required`,
+                  )}>
                   Restore
                 </Button>
               )}

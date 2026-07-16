@@ -3,11 +3,24 @@ import type { VoiceBot } from "@/types/domain";
 import { Icon } from "@/components/Icon";
 import { KpiCard, Progress, Timeline } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
+import { useAsync } from "@/hooks/useAsync";
+import { listAudit } from "@/services/api";
+
+const tabIcons: Record<string, "play" | "edit" | "refresh" | "mic" | "target" | "workflow" | "phone"> = {
+  testing: "play", prompts: "edit", knowledge: "refresh", voice: "mic",
+  intents: "target", workflows: "workflow", channels: "phone",
+};
 
 export default function OverviewTab({ bot }: { bot: VoiceBot }) {
   const navigate = useNavigate();
   const done = bot.readiness.filter((r) => r.done).length;
   const pct = (done / bot.readiness.length) * 100;
+
+  const auditQ = useAsync(listAudit, []);
+  const activity = (auditQ.data ?? [])
+    .filter((a) => a.entityId === bot.id || a.target.includes(bot.name))
+    .slice(0, 5);
+  const nextSteps = bot.readiness.filter((r) => !r.done).slice(0, 3);
 
   return (
     <div className="grid" style={{ gridTemplateColumns: "1.5fr 1fr", gap: 20 }}>
@@ -35,14 +48,20 @@ export default function OverviewTab({ bot }: { bot: VoiceBot }) {
         <div className="card">
           <div className="card-header"><span className="card-title">Recent activity</span></div>
           <div style={{ padding: "16px 20px" }}>
-            <Timeline
-              items={[
-                { icon: "edit", tone: "brand", title: <>Escalation prompt edited — v6 <b>pending approval</b></>, meta: "Dana Okafor · Jul 2, 4:45 PM" },
-                { icon: "refresh", tone: "warning", title: <>Knowledge source “Insurance Providers Page” flagged <b>stale</b></>, meta: "System · Jul 1, 6:00 AM" },
-                { icon: "rocket", tone: "good", title: <>Version {bot.liveVersion ?? bot.version} published</>, meta: `${bot.owner} · ${bot.publishedAt ? new Date(bot.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}` },
-                { icon: "check-circle", tone: "good", title: "Regression suite passed 8/8 scenarios", meta: "Scheduled run · Jun 24, 7:00 AM" },
-              ]}
-            />
+            {activity.length === 0 ? (
+              <span className="t-sub">No recent activity recorded for this bot.</span>
+            ) : (
+              <Timeline
+                items={activity.map((a) => ({
+                  icon: a.action.toLowerCase().includes("publish") ? "rocket" as const
+                    : a.action.toLowerCase().includes("archiv") ? "undo" as const
+                    : "edit" as const,
+                  tone: a.action.toLowerCase().includes("publish") ? "good" as const : "brand" as const,
+                  title: <>{a.action} — <b>{a.target}</b></>,
+                  meta: `${a.actor} · ${new Date(a.time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+                }))}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -80,17 +99,17 @@ export default function OverviewTab({ bot }: { bot: VoiceBot }) {
 
         <div className="card card-pad col gap-10">
           <span className="card-title">Suggested next steps</span>
-          {[
-            { t: "Fix the 2 failing regression scenarios", tab: "testing", icon: "play" as const },
-            { t: "Approve the pending escalation prompt", tab: "prompts", icon: "edit" as const },
-            { t: "Re-sync the stale insurance source", tab: "knowledge", icon: "refresh" as const },
-          ].map((s) => (
-            <button key={s.t} className="row gap-10 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10, textAlign: "left" }}
-              onClick={() => navigate(`/t/bots/${bot.id}/${s.tab}`)}>
-              <Icon name={s.icon} size={14} style={{ color: "var(--brand-500)" }} />
-              <span style={{ fontSize: 12.5, fontWeight: 550 }}>{s.t}</span>
-            </button>
-          ))}
+          {nextSteps.length === 0 ? (
+            <span className="row gap-6 t-sub"><Icon name="check-circle" size={14} style={{ color: "var(--status-good)" }} /> All readiness checks complete</span>
+          ) : (
+            nextSteps.map((s) => (
+              <button key={s.id} className="row gap-10 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10, textAlign: "left" }}
+                onClick={() => navigate(`/t/bots/${bot.id}/${s.studioTab}`)}>
+                <Icon name={tabIcons[s.studioTab] ?? "edit"} size={14} style={{ color: "var(--brand-500)" }} />
+                <span style={{ fontSize: 12.5, fontWeight: 550 }}>{s.label}</span>
+              </button>
+            ))
+          )}
         </div>
       </div>
     </div>
