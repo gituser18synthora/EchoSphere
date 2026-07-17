@@ -1,6 +1,6 @@
 """Google Gemini LLM provider — lazy-imports the google-genai SDK.
 
-Migrated from VoiceBot/adapters/llm/google_adapter.py
+Migrated from the legacy voice engines google_adapter.py
 (google-genai, the successor of the deprecated google-generativeai SDK).
 Tool calling is not supported for this provider: passing a non-empty
 ``tools`` list raises ProviderError(invalid_input). Adds a stream()

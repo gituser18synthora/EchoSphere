@@ -1,6 +1,6 @@
 """AssemblyAI STT via the REST API (upload → create transcript → poll).
 
-Migrated from VoiceBot/adapters/stt/assemblyai_adapter.py. The legacy adapter
+Migrated from the legacy voice engines assemblyai_adapter.py. The legacy adapter
 mutated the SDK's global ``aai.settings.api_key``; this port uses httpx REST
 with a per-instance client, so no assemblyai SDK and no global state.
 """

@@ -1,6 +1,6 @@
 """Deepgram STT (nova-2) via the REST /v1/listen endpoint.
 
-Migrated from VoiceBot/adapters/stt/deepgram_adapter.py. The legacy adapter
+Migrated from the legacy voice engines deepgram_adapter.py. The legacy adapter
 called a non-existent SDK path (``client.listen.v1.media.transcribe_file``);
 this port talks to Deepgram's documented REST API with httpx directly, so no
 deepgram SDK is required.

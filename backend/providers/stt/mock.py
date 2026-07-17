@@ -19,6 +19,6 @@ class MockSTT(STTProvider):
         self, audio: bytes, *, sample_rate: int = 16000, language: str | None = None
     ) -> STTResult:
         if audio.startswith(MOCK_AUDIO_PREFIX):
-            text = audio[len(MOCK_AUDIO_PREFIX):].decode("utf-8", errors="ignore")
-            return STTResult(text=text, confidence=1.0)
+            payload = audio[len(MOCK_AUDIO_PREFIX):].split(b"\x00", 1)[0]
+            return STTResult(text=payload.decode("utf-8", errors="ignore"), confidence=1.0)
         return STTResult(text=next(self._cycle), confidence=0.95)

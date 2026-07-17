@@ -57,20 +57,77 @@ async def health():
     }
 
 
-@app.websocket("/ws/voice/{session_id}")
-async def voice_session(websocket: WebSocket, session_id: str):
-    """One realtime call. The session id is the trusted tenant/bot mapping."""
-    settings = get_settings()
+@app.websocket("/ws/telephony/{provider}/{session_id}")
+async def telephony_session(websocket: WebSocket, provider: str, session_id: str):
+    """Provider media stream (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH).
 
+    The session was issued by the signed inbound-call webhook, so the tenant/
+    bot mapping is already trusted. Providers that send a JSON start message
+    get a handshake read before the pipeline starts.
+    """
+    import json as _json
+
+    from backend.core.errors import ApiError
+    from backend.telephony.providers import SUPPORTED_PROVIDERS, build_media_serializer
+
+    if provider not in SUPPORTED_PROVIDERS:
+        await websocket.close(code=4404, reason="unknown provider")
+        return
     session = await load_voice_session(session_id)
     if session is None:
         await websocket.close(code=4401, reason="unknown or expired session")
         return
+    await websocket.accept()
+
+    start_message: dict | None = None
+    if provider in ("twilio", "telnyx", "plivo", "exotel"):
+        # Read messages until the provider's stream-start event arrives.
+        try:
+            for _ in range(4):
+                message = _json.loads(await websocket.receive_text())
+                event = message.get("event") or message.get("event_type")
+                if event in ("start", "streamStart", "media_start"):
+                    start_message = message
+                    break
+        except Exception:  # noqa: BLE001
+            await websocket.close(code=4400, reason="invalid stream handshake")
+            return
+        if start_message is None:
+            await websocket.close(code=4400, reason="missing stream start message")
+            return
+    try:
+        serializer = build_media_serializer(provider, start_message=start_message)
+    except ApiError as exc:
+        await websocket.close(code=4400, reason=exc.message[:100])
+        return
+    await _run_call(websocket, session_id, session, serializer=serializer,
+                    telephony_provider=provider)
+
+
+@app.websocket("/ws/voice/{session_id}")
+async def voice_session(websocket: WebSocket, session_id: str):
+    """One realtime call (browser test client). The session id is the trusted
+    tenant/bot mapping issued by the API."""
+    session = await load_voice_session(session_id)
+    if session is None:
+        await websocket.close(code=4401, reason="unknown or expired session")
+        return
+    await websocket.accept()
+    await _run_call(websocket, session_id, session)
+
+
+async def _run_call(
+    websocket: WebSocket,
+    session_id: str,
+    session: dict,
+    *,
+    serializer=None,
+    telephony_provider: str | None = None,
+):
+    settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
         await websocket.close(code=4429, reason="voice worker at capacity")
         return
-
-    await websocket.accept()
     await update_voice_session(session_id, status="connected")
 
     try:
@@ -103,7 +160,7 @@ async def voice_session(websocket: WebSocket, session_id: str):
     recorder = SessionRecorder(
         session_id,
         config,
-        channel=session.get("channel", "browser"),
+        channel=telephony_provider or session.get("channel", "browser"),
         caller=session.get("caller"),
     )
 
@@ -113,7 +170,7 @@ async def voice_session(websocket: WebSocket, session_id: str):
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
-            serializer=RawPCMSerializer(),
+            serializer=serializer or RawPCMSerializer(),
             session_timeout=settings.voice_session_timeout,
         ),
     )

@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Intent, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import { listIntents, listPrompts, listScenarios, runSuite as runSuiteApi } from "@/services/api";
+import { VoiceClient } from "@/services/voiceClient";
 import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -67,6 +68,62 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const [runningSuite, setRunningSuite] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
+  /* ---------- Live voice session ---------- */
+  const voiceRef = useRef<VoiceClient | null>(null);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceConnecting, setVoiceConnecting] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
+
+  /* Tear the session down when leaving the tab */
+  useEffect(() => () => { voiceRef.current?.stop(); voiceRef.current = null; }, []);
+
+  const scrollToEnd = () =>
+    setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
+
+  const appendVoiceStep = (speaker: "user" | "bot", text: string) => {
+    setSteps((s) => [...s, { turn: s.length + 2, speaker, text }]);
+    scrollToEnd();
+  };
+
+  const stopVoice = () => {
+    const client = voiceRef.current;
+    voiceRef.current = null;
+    client?.stop();
+    setVoiceActive(false);
+    setVoiceStatus("listening");
+  };
+
+  const startVoice = async () => {
+    if (voiceConnecting || voiceActive) return;
+    setVoiceConnecting(true);
+    const client = new VoiceClient({
+      onTranscript: (text) => appendVoiceStep("user", text),
+      onBotText: (text) => appendVoiceStep("bot", text),
+      onEvent: (name) => setVoiceStatus(name === "bot_speaking_started" ? "bot_speaking" : "listening"),
+      onClose: () => {
+        if (voiceRef.current) {
+          voiceRef.current = null;
+          setVoiceActive(false);
+          setVoiceStatus("listening");
+          toast("Voice session ended", "info");
+        }
+      },
+      onError: (message) => toast(message, "error"),
+    });
+    try {
+      await client.start(bot.id);
+      voiceRef.current = client;
+      setVoiceActive(true);
+      setVoiceStatus("listening");
+      toast("Voice session live — speak into your microphone");
+    } catch (e) {
+      client.stop();
+      toast(e instanceof Error ? e.message : "Could not start the voice session", "error");
+    } finally {
+      setVoiceConnecting(false);
+    }
+  };
+
   const send = () => {
     const text = input.trim();
     if (!text || thinking) return;
@@ -123,8 +180,18 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               <span className="tag">draft {bot.version}</span>
             </div>
             <div className="row gap-6">
+              {voiceActive && (
+                <span className={`chip ${voiceStatus === "bot_speaking" ? "chip-brand" : "chip-good"}`}>
+                  <span className="chip-dot live" />
+                  {voiceStatus === "bot_speaking" ? "Bot speaking" : "Listening"}
+                </span>
+              )}
               <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps([]); setSelectedTurn(null); }}>Reset</Button>
-              <Button size="sm" variant="ghost" icon="mic" disabled title="Voice simulation requires audio backend (TODO_BACKEND #2)">Voice mode</Button>
+              {voiceActive ? (
+                <Button size="sm" variant="danger-ghost" icon="x" onClick={stopVoice}>Stop voice session</Button>
+              ) : (
+                <Button size="sm" variant="ghost" icon="mic" busy={voiceConnecting} onClick={() => void startVoice()}>Voice mode</Button>
+              )}
             </div>
           </div>
           <div ref={listRef} className="col grow" style={{ padding: 16, gap: 10, overflowY: "auto" }}>
@@ -210,11 +277,11 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                   ) : <span className="t-micro">generated response</span>}
                 </TraceRow>
                 <TraceRow icon="clock" label="Latency">
-                  <span className="t-num t-strong">{selected.latencyMs}ms</span>
+                  <span className="t-num t-strong">{selected.latencyMs != null ? `${selected.latencyMs}ms` : "—"}</span>
                 </TraceRow>
                 {flags.tenantCostVisibility && (
                   <TraceRow icon="dollar" label="Turn cost">
-                    <span className="t-num t-strong">${selected.costUsd?.toFixed(4)}</span>
+                    <span className="t-num t-strong">{selected.costUsd != null ? `$${selected.costUsd.toFixed(4)}` : "—"}</span>
                   </TraceRow>
                 )}
               </>

@@ -1,6 +1,6 @@
 """ElevenLabs TTS via the REST text-to-speech endpoint.
 
-Migrated from VoiceBot/adapters/tts/elevenlabs_adapter.py. Uses httpx REST
+Migrated from the legacy voice engines elevenlabs_adapter.py. Uses httpx REST
 (no elevenlabs SDK) and requests pcm_16000 output directly, which removes the
 legacy 22050 Hz to 8 kHz pure-python resample step entirely.
 """

@@ -1,6 +1,6 @@
 """Azure Cognitive Services TTS — lazy-imports the azure speech SDK.
 
-Migrated from VoiceBot/adapters/tts/azure_adapter.py. Fixes the legacy
+Migrated from the legacy voice engines azure_adapter.py. Fixes the legacy
 concurrency bug: the old adapter mutated a shared SpeechConfig
 (``speech_synthesis_voice_name``) per call; this port builds a fresh
 SpeechConfig + synthesizer inside every synthesize() so concurrent calls

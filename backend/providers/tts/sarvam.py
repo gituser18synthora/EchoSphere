@@ -1,6 +1,6 @@
 """Sarvam AI TTS (Bulbul) — lazy-imports the sarvamai SDK.
 
-Migrated from VoiceBot/adapters/tts/sarvam_adapter.py. Keeps the
+Migrated from the legacy voice engines sarvam_adapter.py. Keeps the
 script-based Indic language auto-detection but honors an explicit
 ``language`` argument first. The WAV parsing and resampling now use the
 shared numpy helpers in backend.voice_runtime.audio.pcm (replacing the

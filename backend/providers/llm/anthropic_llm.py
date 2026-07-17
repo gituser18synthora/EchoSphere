@@ -1,6 +1,6 @@
 """Anthropic Messages API LLM provider — lazy-imports the anthropic SDK.
 
-Migrated from VoiceBot/adapters/llm/anthropic_adapter.py, fixing two legacy
+Migrated from the legacy voice engines anthropic_adapter.py, fixing two legacy
 gaps: (a) tool calling is now supported — OpenAI-style function tools are
 converted to Anthropic ``input_schema`` tools and response ``tool_use`` blocks
 are mapped into LLMResult.tool_calls exactly like openai_llm.py (arguments as

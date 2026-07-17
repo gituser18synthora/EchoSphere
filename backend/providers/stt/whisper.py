@@ -1,6 +1,6 @@
 """OpenAI Whisper STT (batch transcription of complete utterances).
 
-Migrated from VoiceBot/adapters/stt/whisper_adapter.py: same PCM→WAV approach,
+Migrated from the legacy voice engines whisper_adapter.py: same PCM→WAV approach,
 with a realistic timeout and latency reported on the result.
 """
 

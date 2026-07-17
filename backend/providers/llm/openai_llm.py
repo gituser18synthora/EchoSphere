@@ -1,6 +1,6 @@
 """OpenAI chat LLM provider — streaming + tool calls.
 
-Migrated from VoiceBot/adapters/llm/openai_adapter.py (the only legacy adapter
+Migrated from the legacy voice engines openai_adapter.py (the only legacy adapter
 with working tool support), reshaped to the new typed interface.
 """
 

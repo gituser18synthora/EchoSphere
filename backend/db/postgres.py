@@ -24,14 +24,24 @@ _SessionLocal: async_sessionmaker[AsyncSession] | None = None
 def get_pg_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
+        import os
+
         settings = get_settings()
-        _engine = create_async_engine(
-            settings.postgres_url,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-            pool_size=settings.postgres_pool_size,
-            max_overflow=settings.postgres_max_overflow,
-        )
+        if os.environ.get("ECHOSPHERE_TEST_NULLPOOL") not in (None, "", "0"):
+            # Tests drive the app from several event loops (pytest session loop
+            # + TestClient portals); pooled asyncpg connections are loop-bound,
+            # so tests run without a pool.
+            from sqlalchemy.pool import NullPool
+
+            _engine = create_async_engine(settings.postgres_url, poolclass=NullPool)
+        else:
+            _engine = create_async_engine(
+                settings.postgres_url,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                pool_size=settings.postgres_pool_size,
+                max_overflow=settings.postgres_max_overflow,
+            )
     return _engine
 
 

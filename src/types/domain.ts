@@ -51,6 +51,35 @@ export interface VoiceSettings {
   empathy: number;
   energy: number;
   languageVoiceMap: Record<string, string>;
+  /* Runtime engine overrides — null means "use the platform default" */
+  sttProvider: string | null;
+  sttModel: string | null;
+  ttsProvider: string | null;
+  ttsModel: string | null;
+  ttsVoice: string | null;
+  llmProvider: string | null;
+  llmModel: string | null;
+}
+
+/* ---------- Voice runtime ---------- */
+
+export interface VoiceSessionInfo {
+  sessionId: string;
+  botId: string;
+  channel: string;
+  wsPath: string;
+  workerPort: number;
+  expiresInSeconds: number;
+}
+
+export interface VoiceCatalog {
+  providers: { stt: string[]; tts: string[]; llm: string[] };
+  defaults: {
+    stt: { provider: string; model: string };
+    tts: { provider: string; model: string; voice: string };
+    llm: { provider: string; model: string };
+  };
+  telephonyProviders: string[];
 }
 
 export interface TenantSettings {
@@ -193,6 +222,59 @@ export interface KnowledgeGap {
   frequency: number;
   lastAsked: string;
   suggestedSource: string;
+}
+
+/* ---------- Knowledge documents (ingestion pipeline) ---------- */
+
+export type DocumentState = "pending" | "processing" | "ready" | "failed" | "cancelled" | "archived";
+
+export interface DocumentStatus {
+  documentId: string;
+  kbId: string;
+  fileName: string;
+  status: DocumentState;
+  stage: string;
+  progress: number; // 0-100
+  attempts: number;
+  failureReason: string | null;
+  chunkCount: number;
+  pageCount: number;
+  queuedAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface DocumentUploadResult {
+  documentId: string;
+  jobId: string;
+  kbId: string;
+  duplicate: boolean;
+  status: string;
+}
+
+export interface SearchTestSource {
+  kbId: string;
+  documentId: string;
+  chunkId: string;
+  chunkIndex: number;
+  pageNumber: number | null;
+  section: string | null;
+  score: number;
+  vectorScore: number;
+  keywordScore: number;
+  text: string;
+  documentName: string;
+}
+
+export interface SearchTestResult {
+  usedKnowledgeBase: boolean;
+  answerable: boolean;
+  confidence: number;
+  query: string;
+  kbIds: string[];
+  durationMs: number;
+  skippedReason: string | null;
+  sources: SearchTestSource[];
 }
 
 /* ---------- Prompts ---------- */

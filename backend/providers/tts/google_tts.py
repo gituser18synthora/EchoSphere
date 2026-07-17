@@ -1,6 +1,6 @@
 """Google Cloud Text-to-Speech — lazy-imports google-cloud-texttospeech.
 
-Migrated from VoiceBot/adapters/tts/google_adapter.py. Fixes the legacy bug
+Migrated from the legacy voice engines google_adapter.py. Fixes the legacy bug
 where the language_code was hardcoded to "en-US": it now derives from the
 ``language`` argument / config. Requests LINEAR16 at 16 kHz and strips the
 WAV header Google prepends to LINEAR16 output (the legacy adapter passed the

@@ -179,7 +179,10 @@ class KnowledgeService:
             tenant_id=tenant_id, kb_ids=[kb_id], searchable_only=False
         )
 
-        ext = storage.file_extension(file_name)  # raises on unsupported types
+        try:
+            ext = storage.file_extension(file_name)
+        except storage.StorageError as exc:
+            raise ApiError(str(exc), status_code=400) from exc
         if len(data) == 0:
             raise ApiError("Uploaded file is empty", status_code=400)
         if len(data) > settings.knowledge_max_file_mb * 1024 * 1024:

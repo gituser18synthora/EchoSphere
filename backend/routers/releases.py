@@ -171,4 +171,9 @@ def update_release_stage(
         previous_value=before, new_value={"stage": row.stage}, request=request,
     )
     db.commit()
+    if body.stage in ("published", "rolled_back"):
+        # Live calls pin their config at start; new calls must see this release.
+        from backend.voice_runtime.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok(serialize_release(row))

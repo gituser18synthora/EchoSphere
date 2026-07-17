@@ -41,8 +41,8 @@ class RouteDecision:
 
 _SMALLTALK = re.compile(
     r"^\s*(hi|hii+|hello|hey|good (morning|afternoon|evening)|namaste|"
-    r"thanks?( you)?|thank you|ok(ay)?|yes|yeah|no|nope|sure|great|"
-    r"bye|goodbye|see you|talk (to you )?later)\s*[.!?]*\s*$",
+    r"thanks?( you)?( so much)?|thank you|ok(ay)?|yes|yeah|no|nope|sure|great|"
+    r"bye|goodbye|see you|talk (to you )?later)( there| everyone| all)?\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
 
@@ -103,6 +103,9 @@ class TurnRouter:
             # Explicit escape hatches still win inside a workflow.
             for pattern, action in _CALL_CONTROL:
                 if pattern.search(stripped):
+                    if action == "transfer":
+                        return RouteDecision(kind=RouteKind.HANDOFF, action="transfer",
+                                             reason="transfer_in_workflow")
                     return RouteDecision(
                         kind=RouteKind.CALL_CONTROL, action=action, reason="call_control_in_workflow"
                     )

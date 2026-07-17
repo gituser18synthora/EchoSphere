@@ -1,6 +1,6 @@
 """Sarvam AI STT (Saaras) — lazy-imports the sarvamai SDK.
 
-Migrated from VoiceBot/adapters/stt/sarvam_adapter.py. Fixes the legacy Odia
+Migrated from the legacy voice engines sarvam_adapter.py. Fixes the legacy Odia
 inconsistency: the BCP-47 code is "or-IN" everywhere (the legacy STT mapping
 used the invalid "od-IN" while TTS used "or-IN").
 """

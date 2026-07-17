@@ -67,10 +67,30 @@ def _cache_key(tenant_id: str, bot_id: str) -> str:
     return f"botcfg:{tenant_id}:{bot_id}"
 
 
+def _all_keys(tenant_id: str, bot_id: str) -> list[str]:
+    return [
+        _cache_key(tenant_id, bot_id),
+        f"botcfg:by-bot:{bot_id}:True",
+        f"botcfg:by-bot:{bot_id}:False",
+    ]
+
+
 async def invalidate_bot_config(tenant_id: str, bot_id: str) -> None:
     try:
-        await get_redis().delete(_cache_key(tenant_id, bot_id))
+        await get_redis().delete(*_all_keys(tenant_id, bot_id))
     except Exception:  # noqa: BLE001 - cache invalidation is best-effort
+        logger.warning("bot config cache invalidation failed for %s/%s", tenant_id, bot_id)
+
+
+def invalidate_bot_config_sync(tenant_id: str, bot_id: str) -> None:
+    """For sync (MySQL-session) request handlers — same keys, sync client."""
+    import redis as redis_sync
+
+    try:
+        client = redis_sync.from_url(get_settings().redis_url)
+        client.delete(*_all_keys(tenant_id, bot_id))
+        client.close()
+    except Exception:  # noqa: BLE001
         logger.warning("bot config cache invalidation failed for %s/%s", tenant_id, bot_id)
 
 

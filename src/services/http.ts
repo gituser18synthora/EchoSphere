@@ -34,14 +34,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const headers: Record<string, string> = { Accept: "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  /* FormData bodies must NOT get an explicit Content-Type — the browser
+     sets multipart/form-data with the boundary itself. */
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
+  if (body !== undefined && !isForm) headers["Content-Type"] = "application/json";
 
   let resp: Response;
   try {
     resp = await fetch(`${BASE}${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isForm ? (body as FormData) : JSON.stringify(body),
     });
   } catch {
     throw new Error("Cannot reach the server. Check that the backend is running.");
@@ -74,6 +77,8 @@ export const http = {
     return { items: data, meta: meta ?? { page: 1, pageSize: data.length, total: data.length, totalPages: 1 } };
   },
   post: async <T>(path: string, body?: unknown): Promise<T> => (await request<T>("POST", path, body)).data,
+  /** Multipart POST — pass a FormData; Authorization is attached, Content-Type is left to the browser. */
+  postForm: async <T>(path: string, form: FormData): Promise<T> => (await request<T>("POST", path, form)).data,
   put: async <T>(path: string, body?: unknown): Promise<T> => (await request<T>("PUT", path, body)).data,
   patch: async <T>(path: string, body?: unknown): Promise<T> => (await request<T>("PATCH", path, body)).data,
   delete: async <T>(path: string): Promise<T> => (await request<T>("DELETE", path)).data,

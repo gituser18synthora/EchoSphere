@@ -55,6 +55,8 @@ def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
         return ""
     cleaned = text.replace("\u00a0", " ")
     cleaned = _INVISIBLE_RE.sub("", cleaned)
+    # Markdown markup is never spoken.
+    cleaned = re.sub(r"[*_`#]+", "", cleaned)
     cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
     cleaned = re.sub(r" +", " ", cleaned).strip()
     if ensure_terminal_punct and cleaned and not _has_terminal_punct(cleaned):

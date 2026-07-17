@@ -340,6 +340,13 @@ class VoiceSettingsRequest(BaseModel):
     empathy: int | None = Field(default=None, ge=0, le=100)
     energy: int | None = Field(default=None, ge=0, le=100)
     language_voice_map: dict[str, str] | None = Field(default=None, alias="languageVoiceMap")
+    stt_provider: str | None = Field(default=None, alias="sttProvider", max_length=40)
+    stt_model: str | None = Field(default=None, alias="sttModel", max_length=80)
+    tts_provider: str | None = Field(default=None, alias="ttsProvider", max_length=40)
+    tts_model: str | None = Field(default=None, alias="ttsModel", max_length=80)
+    tts_voice: str | None = Field(default=None, alias="ttsVoice", max_length=80)
+    llm_provider: str | None = Field(default=None, alias="llmProvider", max_length=40)
+    llm_model: str | None = Field(default=None, alias="llmModel", max_length=80)
 
     model_config = {"populate_by_name": True}
 
@@ -353,6 +360,13 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "empathy": s.empathy,
         "energy": s.energy,
         "languageVoiceMap": s.language_voice_map or {},
+        "sttProvider": s.stt_provider,
+        "sttModel": s.stt_model,
+        "ttsProvider": s.tts_provider,
+        "ttsModel": s.tts_model,
+        "ttsVoice": s.tts_voice,
+        "llmProvider": s.llm_provider,
+        "llmModel": s.llm_model,
     }
 
 
@@ -393,7 +407,17 @@ def update_voice_settings(
             raise ApiError("Unknown voice profile.", 422)
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
-    for field in ("speed", "pause_ms", "empathy", "energy", "language_voice_map"):
+    from backend.providers.factory import _REGISTRY as _provider_registry
+
+    for kind, value in (("stt", body.stt_provider), ("tts", body.tts_provider),
+                        ("llm", body.llm_provider)):
+        if value and (kind, value.lower()) not in _provider_registry:
+            raise ApiError(f"Unknown {kind} provider '{value}'.", 422)
+    for field in (
+        "speed", "pause_ms", "empathy", "energy", "language_voice_map",
+        "stt_provider", "stt_model", "tts_provider", "tts_model", "tts_voice",
+        "llm_provider", "llm_model",
+    ):
         val = getattr(body, field)
         if val is not None:
             setattr(s, field, val)
@@ -408,4 +432,7 @@ def update_voice_settings(
         previous_value=before, new_value=_serialize_voice_settings(s), request=request,
     )
     db.commit()
+    from backend.voice_runtime.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(_serialize_voice_settings(s))

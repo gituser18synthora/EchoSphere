@@ -1,8 +1,10 @@
-import { useState } from "react";
-import type { KnowledgeSource, VoiceBot } from "@/types/domain";
+import { useRef, useState } from "react";
+import type { DocumentState, KnowledgeSource, SearchTestResult, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  archiveKnowledge, createKnowledge, listKnowledge, listKnowledgeGaps, resyncKnowledge,
+  archiveKnowledge, createKnowledge, deleteDocument, getDocumentStatus,
+  listKnowledge, listKnowledgeDocuments, listKnowledgeGaps, reindexDocument,
+  resyncKnowledge, retryDocument, searchTest, uploadKnowledgeDocument,
 } from "@/services/api";
 import { Button, Drawer, EmptyState, Modal, Progress, StatusChip, CardSkeleton, Field, Callout } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
@@ -193,6 +195,8 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
                 <Row k="Est. similarity" v={preview.quality ? (0.5 + preview.quality / 250).toFixed(2) : "—"} />
               </div>
             </div>
+            <SourceDocuments sourceId={preview.id} onChanged={q.reload} />
+            <RetrievalTester kbId={preview.id} />
           </div>
         )}
       </Drawer>
@@ -224,7 +228,176 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-type QueueItem = { name: string; state: "creating" | "indexing" | "error"; error?: string };
+/* ---------- Document status helpers ---------- */
+
+const docChip: Record<DocumentState, { status: string; label?: string }> = {
+  pending: { status: "pending" },
+  processing: { status: "indexing", label: "processing" },
+  ready: { status: "indexed", label: "ready" },
+  failed: { status: "failed" },
+  cancelled: { status: "cancelled" },
+  archived: { status: "archived" },
+};
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 120000;
+
+/* ---------- Source documents (preview drawer) ----------
+   Same visibility as the drawer's existing archive action. */
+
+function SourceDocuments({ sourceId, onChanged }: { sourceId: string; onChanged: () => void }) {
+  const { toast } = useApp();
+  const docsQ = useAsync(() => listKnowledgeDocuments(sourceId), [sourceId]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const act = async (documentId: string, fn: (id: string) => Promise<unknown>, done: string) => {
+    setBusyId(documentId);
+    try {
+      await fn(documentId);
+      toast(done);
+      docsQ.reload();
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Action failed", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const docs = docsQ.data ?? [];
+  return (
+    <div>
+      <span className="t-label">Documents</span>
+      <div className="col gap-8 mt-8">
+        {docsQ.loading && <CardSkeleton rows={2} />}
+        {docsQ.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{docsQ.error}</span>}
+        {!docsQ.loading && !docsQ.error && docs.length === 0 && (
+          <span className="t-sub">No documents uploaded to this source yet.</span>
+        )}
+        {docs.map((d) => (
+          <div key={d.documentId} className="col gap-6 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+            <div className="row-between gap-8">
+              <span className="t-strong truncate" style={{ fontSize: 12.5 }}>{d.fileName}</span>
+              <StatusChip status={docChip[d.status].status} label={docChip[d.status].label} />
+            </div>
+            {(d.status === "pending" || d.status === "processing") && (
+              <div className="row gap-8">
+                <Progress value={d.progress} />
+                <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>{d.stage || "queued"} · {Math.round(d.progress)}%</span>
+              </div>
+            )}
+            {d.failureReason && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{d.failureReason}</span>}
+            <div className="row-between">
+              <span className="t-micro">
+                {d.chunkCount ? `${fmtNum(d.chunkCount)} chunks` : "—"}
+                {d.pageCount ? ` · ${d.pageCount} pages` : ""}
+                {d.attempts > 1 ? ` · ${d.attempts} attempts` : ""}
+              </span>
+              <span className="row gap-6">
+                {(d.status === "failed" || d.status === "cancelled") && (
+                  <Button size="sm" icon="refresh" busy={busyId === d.documentId}
+                    onClick={() => void act(d.documentId, retryDocument, `Retry queued for “${d.fileName}”`)}>
+                    Retry
+                  </Button>
+                )}
+                {d.status === "ready" && (
+                  <Button size="sm" icon="refresh" busy={busyId === d.documentId}
+                    onClick={() => void act(d.documentId, reindexDocument, `Re-index queued for “${d.fileName}”`)}>
+                    Re-index
+                  </Button>
+                )}
+                {d.status !== "archived" && (
+                  <Button size="sm" variant="danger-ghost" icon="trash" busy={busyId === d.documentId}
+                    onClick={() => void act(d.documentId, deleteDocument, `“${d.fileName}” archived — chunks removed from the index`)}>
+                    Delete
+                  </Button>
+                )}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Retrieval tester (preview drawer) ---------- */
+
+function RetrievalTester({ kbId }: { kbId: string }) {
+  const { toast } = useApp();
+  const [query, setQuery] = useState("");
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<SearchTestResult | null>(null);
+
+  const run = async () => {
+    const trimmed = query.trim();
+    if (!trimmed || running) return;
+    setRunning(true);
+    try {
+      setResult(await searchTest({ query: trimmed, kbIds: [kbId] }));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Retrieval test failed", "error");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div>
+      <span className="t-label">Test retrieval</span>
+      <div className="col gap-8 mt-8">
+        <textarea
+          className="textarea"
+          rows={2}
+          value={query}
+          placeholder="Ask a question this source should answer…"
+          aria-label="Retrieval test query"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <Button icon="search" busy={running} disabled={!query.trim()} style={{ alignSelf: "flex-start" }} onClick={() => void run()}>
+          Run retrieval test
+        </Button>
+        {result && (
+          <>
+            <div className="row gap-8 wrap">
+              <StatusChip status={result.answerable ? "good" : "warning"} label={result.answerable ? "Answerable" : "Not answerable"} />
+              <span className="t-micro t-num">confidence {result.confidence.toFixed(2)} · {result.durationMs}ms</span>
+            </div>
+            {result.skippedReason && (
+              <span className="t-micro" style={{ color: "var(--status-warning)" }}>Skipped: {result.skippedReason}</span>
+            )}
+            {result.sources.length === 0 && <span className="t-sub">No chunks retrieved for this query.</span>}
+            {result.sources.map((s) => (
+              <div key={s.chunkId} className="col gap-4 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+                <div className="row-between gap-8">
+                  <span className="t-strong truncate" style={{ fontSize: 12.5 }}>{s.documentName}</span>
+                  <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>
+                    {s.pageNumber != null ? `p.${s.pageNumber} · ` : ""}score {s.score.toFixed(2)}
+                  </span>
+                </div>
+                <p className="t-sub" style={{ fontSize: 12, margin: 0 }}>{s.text}</p>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Upload modal ---------- */
+
+type QueueItem = {
+  id: number;
+  name: string;
+  state: "creating" | "uploading" | "processing" | "indexing" | "ready" | "error";
+  stage?: string;
+  progress?: number;
+  documentId?: string;
+  error?: string;
+};
 
 function UploadModal({ open, botId, onClose, onAdded }: {
   open: boolean; botId: string; onClose: () => void; onAdded: () => void;
@@ -232,31 +405,100 @@ function UploadModal({ open, botId, onClose, onAdded }: {
   const { toast } = useApp();
   const [mode, setMode] = useState<"document" | "url" | "faq">("document");
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [docName, setDocName] = useState("");
+  const queueSeq = useRef(0);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [docErr, setDocErr] = useState("");
   const [url, setUrl] = useState("");
   const [urlErr, setUrlErr] = useState("");
   const [faqQuestion, setFaqQuestion] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
 
-  const add = async (name: string, type: "document" | "url" | "faq", detail: string) => {
-    setQueue((q) => [...q, { name, state: "creating" }]);
+  const patch = (id: number, p: Partial<QueueItem>) =>
+    setQueue((q) => q.map((x) => (x.id === id ? { ...x, ...p } : x)));
+
+  /* URL / FAQ flow — metadata source only, unchanged behaviour. */
+  const add = async (name: string, type: "url" | "faq", detail: string) => {
+    const id = ++queueSeq.current;
+    setQueue((q) => [...q, { id, name, state: "creating" }]);
     try {
       await createKnowledge({ name, type, detail, scope: "bot", botId });
-      setQueue((q) => q.map((x) => (x.name === name ? { ...x, state: "indexing" } : x)));
+      patch(id, { state: "indexing" });
       toast(`“${name}” added — indexing started`);
       onAdded();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Upload failed";
-      setQueue((q) => q.map((x) => (x.name === name ? { ...x, state: "error", error: msg } : x)));
+      patch(id, { state: "error", error: msg });
       toast(msg, "error");
     }
   };
 
+  /* Document flow — create the source, upload the file, poll ingestion. */
+  const pollDoc = async (id: number, documentId: string) => {
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      let st;
+      try {
+        st = await getDocumentStatus(documentId);
+      } catch (e) {
+        patch(id, { state: "error", error: e instanceof Error ? e.message : "Status check failed" });
+        return;
+      }
+      if (st.status === "ready") {
+        patch(id, { state: "ready", stage: st.stage, progress: 100 });
+        toast(`“${st.fileName}” indexed — ${fmtNum(st.chunkCount)} chunks ready`);
+        onAdded();
+        return;
+      }
+      if (st.status === "failed" || st.status === "cancelled") {
+        patch(id, { state: "error", stage: st.stage, error: st.failureReason || `Processing ${st.status}` });
+        onAdded();
+        return;
+      }
+      patch(id, { state: "processing", stage: st.stage, progress: st.progress });
+      await sleep(POLL_INTERVAL_MS);
+    }
+    patch(id, { state: "error", error: "Still processing after 2 minutes — track it from the source panel and retry if it fails." });
+  };
+
+  const uploadDoc = async (file: File) => {
+    const id = ++queueSeq.current;
+    setQueue((q) => [...q, { id, name: file.name, state: "creating" }]);
+    try {
+      const source = await createKnowledge({
+        name: file.name, type: "document", detail: file.name, scope: "bot", botId,
+        sizeKb: Math.max(1, Math.round(file.size / 1024)),
+      });
+      patch(id, { state: "uploading" });
+      const up = await uploadKnowledgeDocument(source.id, file);
+      if (up.duplicate) toast(`“${file.name}” was already uploaded — reusing the indexed copy`, "info");
+      patch(id, { state: "processing", documentId: up.documentId, stage: up.status, progress: 0 });
+      onAdded();
+      await pollDoc(id, up.documentId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      patch(id, { state: "error", error: msg });
+      toast(msg, "error");
+    }
+  };
+
+  const retryQueued = async (it: QueueItem) => {
+    if (!it.documentId) return;
+    patch(it.id, { state: "processing", error: undefined, progress: 0, stage: "retrying" });
+    try {
+      await retryDocument(it.documentId);
+    } catch (e) {
+      patch(it.id, { state: "error", error: e instanceof Error ? e.message : "Retry failed" });
+      toast(e instanceof Error ? e.message : "Retry failed", "error");
+      return;
+    }
+    await pollDoc(it.id, it.documentId);
+  };
+
   const addDocument = () => {
-    if (!docName.trim()) { setDocErr("Enter the document name to index"); return; }
-    void add(docName.trim(), "document", docName.trim());
-    setDocName("");
+    const file = fileRef.current?.files?.[0];
+    if (!file) { setDocErr("Choose a file to upload"); return; }
+    void uploadDoc(file);
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   const addUrl = () => {
@@ -283,10 +525,18 @@ function UploadModal({ open, botId, onClose, onAdded }: {
         </div>
 
         {mode === "document" && (
-          <Field label="Document name" error={docErr} hint="PDF, DOCX, XLSX, TXT · up to 25 MB · text is chunked and embedded automatically. File upload streaming lands with the storage backend.">
+          <Field label="Document file" error={docErr} hint="PDF, DOCX, XLSX, PPTX, TXT, MD, CSV or JSON · up to 25 MB · text is chunked and embedded automatically.">
             <div className="row gap-8">
-              <input className="input" value={docName} onChange={(e) => { setDocName(e.target.value); setDocErr(""); }} placeholder="benefits-guide-2026.pdf" aria-invalid={!!docErr} />
-              <Button variant="primary" icon="upload" onClick={addDocument}>Add</Button>
+              <input
+                ref={fileRef}
+                className="input"
+                type="file"
+                accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.pptx,.json"
+                onChange={() => setDocErr("")}
+                aria-invalid={!!docErr}
+                aria-label="Document file"
+              />
+              <Button variant="primary" icon="upload" onClick={addDocument}>Upload</Button>
             </div>
           </Field>
         )}
@@ -312,21 +562,36 @@ function UploadModal({ open, botId, onClose, onAdded }: {
           <div className="col gap-8">
             <span className="t-label">Upload queue</span>
             {queue.map((it) => (
-              <div key={it.name} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <div key={it.id} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
                 <Icon name="file" size={15} style={{ color: "var(--ink-3)" }} />
                 <div className="grow col gap-4">
                   <span className="t-strong truncate" style={{ fontSize: 12.5, maxWidth: 300 }}>{it.name}</span>
+                  {it.state === "processing" && (
+                    <div className="row gap-8">
+                      <Progress value={it.progress ?? 0} />
+                      <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>{it.stage || "queued"} · {Math.round(it.progress ?? 0)}%</span>
+                    </div>
+                  )}
                   {it.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{it.error}</span>}
                 </div>
-                {it.state === "creating" && <span className="spinner" />}
+                {(it.state === "creating" || it.state === "uploading") && <span className="spinner" />}
+                {it.state === "processing" && <StatusChip status="indexing" label="processing" />}
                 {it.state === "indexing" && <StatusChip status="indexing" />}
-                {it.state === "error" && <StatusChip status="failed" />}
+                {it.state === "ready" && <StatusChip status="indexed" label="ready" />}
+                {it.state === "error" && (
+                  <span className="row gap-6">
+                    <StatusChip status="failed" />
+                    {it.documentId && (
+                      <Button size="sm" icon="refresh" onClick={() => void retryQueued(it)}>Retry</Button>
+                    )}
+                  </span>
+                )}
               </div>
             ))}
           </div>
         )}
         {queue.length === 0 && mode === "document" && (
-          <EmptyState icon="upload" title="Queue is empty" body="Added sources appear here, then move to indexing." />
+          <EmptyState icon="upload" title="Queue is empty" body="Uploaded files appear here while they are chunked and embedded." />
         )}
       </div>
     </Modal>

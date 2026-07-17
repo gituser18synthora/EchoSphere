@@ -28,7 +28,10 @@ _MAX_CONTEXT_TOKENS = 3000
 def normalize_query(query: str) -> str:
     """Unicode-normalize, collapse whitespace, strip control characters."""
     query = unicodedata.normalize("NFKC", query)
-    query = "".join(ch for ch in query if unicodedata.category(ch)[0] != "C")
+    # Drop control characters but keep whitespace so word boundaries survive.
+    query = "".join(
+        ch for ch in query if ch.isspace() or unicodedata.category(ch)[0] != "C"
+    )
     return re.sub(r"\s+", " ", query).strip()
 
 

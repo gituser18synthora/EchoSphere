@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import type { VoiceBot, VoiceProfile, VoiceTuning } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { getVoiceSettings, listVoices, saveVoiceSettings } from "@/services/api";
+import { getVoiceCatalog, getVoiceSettings, listVoices, saveVoiceSettings } from "@/services/api";
 import { Button, CardSkeleton, EmptyState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 
+type EngineOverrides = {
+  sttProvider: string; sttModel: string;
+  ttsProvider: string; ttsModel: string; ttsVoice: string;
+  llmProvider: string; llmModel: string;
+};
+
+const emptyEngines: EngineOverrides = {
+  sttProvider: "", sttModel: "", ttsProvider: "", ttsModel: "", ttsVoice: "", llmProvider: "", llmModel: "",
+};
+
 export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const q = useAsync(listVoices, []);
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
+  const catalogQ = useAsync(getVoiceCatalog, []);
   const { toast } = useApp();
   const [selected, setSelected] = useState(bot.voiceId ?? "");
   const [query, setQuery] = useState("");
@@ -18,6 +29,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const [saving, setSaving] = useState(false);
   const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
   const [langMap, setLangMap] = useState<Record<string, string>>({});
+  const [engines, setEngines] = useState<EngineOverrides>(emptyEngines);
 
   /* Initialize tuning + mapping from persisted settings once loaded */
   useEffect(() => {
@@ -29,6 +41,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
       const next: Record<string, string> = {};
       for (const l of bot.languages) next[l] = s.languageVoiceMap[l] ?? prev[l] ?? s.voiceId ?? "";
       return next;
+    });
+    setEngines({
+      sttProvider: s.sttProvider ?? "", sttModel: s.sttModel ?? "",
+      ttsProvider: s.ttsProvider ?? "", ttsModel: s.ttsModel ?? "", ttsVoice: s.ttsVoice ?? "",
+      llmProvider: s.llmProvider ?? "", llmModel: s.llmModel ?? "",
     });
   }, [settingsQ.data, bot.languages]);
 
@@ -53,6 +70,14 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         empathy: tuning.empathy,
         energy: tuning.energy,
         languageVoiceMap: langMap,
+        /* Empty string = "Platform default" → persist as null */
+        sttProvider: engines.sttProvider || null,
+        sttModel: engines.sttModel.trim() || null,
+        ttsProvider: engines.ttsProvider || null,
+        ttsModel: engines.ttsModel.trim() || null,
+        ttsVoice: engines.ttsVoice.trim() || null,
+        llmProvider: engines.llmProvider || null,
+        llmModel: engines.llmModel.trim() || null,
       });
       toast("Voice settings saved to draft — publish to make them live");
       settingsQ.reload();
@@ -114,6 +139,44 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
             >
               Preview with current tuning
             </Button>
+          </div>
+        </div>
+
+        {/* Runtime engine providers */}
+        <div className="card">
+          <div className="card-header">
+            <div className="col gap-2">
+              <span className="card-title">Speech &amp; intelligence providers</span>
+              <span className="t-micro">Runtime engines for this bot — leave on platform default unless you need an override</span>
+            </div>
+          </div>
+          <div className="col" style={{ padding: 18, gap: 14 }}>
+            {catalogQ.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{catalogQ.error}</span>}
+            <EngineRow
+              label="Speech-to-text (STT)"
+              providers={catalogQ.data?.providers.stt ?? []}
+              defaults={catalogQ.data?.defaults.stt}
+              provider={engines.sttProvider} model={engines.sttModel}
+              onProvider={(v) => setEngines((e) => ({ ...e, sttProvider: v }))}
+              onModel={(v) => setEngines((e) => ({ ...e, sttModel: v }))}
+            />
+            <EngineRow
+              label="Text-to-speech (TTS)"
+              providers={catalogQ.data?.providers.tts ?? []}
+              defaults={catalogQ.data?.defaults.tts}
+              provider={engines.ttsProvider} model={engines.ttsModel} voice={engines.ttsVoice}
+              onProvider={(v) => setEngines((e) => ({ ...e, ttsProvider: v }))}
+              onModel={(v) => setEngines((e) => ({ ...e, ttsModel: v }))}
+              onVoice={(v) => setEngines((e) => ({ ...e, ttsVoice: v }))}
+            />
+            <EngineRow
+              label="Language model (LLM)"
+              providers={catalogQ.data?.providers.llm ?? []}
+              defaults={catalogQ.data?.defaults.llm}
+              provider={engines.llmProvider} model={engines.llmModel}
+              onProvider={(v) => setEngines((e) => ({ ...e, llmProvider: v }))}
+              onModel={(v) => setEngines((e) => ({ ...e, llmModel: v }))}
+            />
           </div>
         </div>
 
@@ -189,6 +252,40 @@ function VoiceCard({ voice, selected, onSelect }: { voice: VoiceProfile; selecte
         <span className="row gap-4 wrap">{voice.styles.map((s) => <span key={s} className="tag" style={{ height: 18, fontSize: 10.5 }}>{s}</span>)}</span>
         <span className="t-num">{voice.latencyMs}ms · {voice.languages.length} lang</span>
       </div>
+    </div>
+  );
+}
+
+function EngineRow({ label, providers, defaults, provider, model, voice, onProvider, onModel, onVoice }: {
+  label: string;
+  providers: string[];
+  defaults?: { provider: string; model: string; voice?: string };
+  provider: string;
+  model: string;
+  voice?: string;
+  onProvider: (v: string) => void;
+  onModel: (v: string) => void;
+  onVoice?: (v: string) => void;
+}) {
+  return (
+    <div className="col gap-6">
+      <span className="field-label">{label}</span>
+      <select className="select" value={provider} aria-label={`${label} provider`} onChange={(e) => onProvider(e.target.value)}>
+        <option value="">Platform default{defaults ? ` (${defaults.provider})` : ""}</option>
+        {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+      <input
+        className="input" value={model} aria-label={`${label} model`}
+        placeholder={defaults ? `Model — default ${defaults.model}` : "Model"}
+        onChange={(e) => onModel(e.target.value)}
+      />
+      {onVoice && (
+        <input
+          className="input" value={voice ?? ""} aria-label={`${label} voice`}
+          placeholder={defaults?.voice ? `Voice — default ${defaults.voice}` : "Voice"}
+          onChange={(e) => onVoice(e.target.value)}
+        />
+      )}
     </div>
   );
 }

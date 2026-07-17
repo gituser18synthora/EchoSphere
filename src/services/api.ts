@@ -7,11 +7,12 @@
 
 import type {
   AnalyticsBundle, ApiConnection, ApprovedModel, AuditEvent, ChannelConfig,
-  Conversation, EntityDef, Guardrail, HealthMetric, Intent, Integration,
-  Invoice, KnowledgeGap, KnowledgeSource, PhoneNumber, PlatformAlert, Prompt,
-  Release, RoleInfo, SessionUserInfo, SipTrunk, Subscription, TeamMember,
-  Tenant, TenantSettings, TestScenario, VoiceBot, VoiceProfile, VoiceSettings,
-  Workflow,
+  Conversation, DocumentStatus, DocumentUploadResult, EntityDef, Guardrail,
+  HealthMetric, Intent, Integration, Invoice, KnowledgeGap, KnowledgeSource,
+  PhoneNumber, PlatformAlert, Prompt, Release, RoleInfo, SearchTestResult,
+  SessionUserInfo, SipTrunk, Subscription, TeamMember, Tenant, TenantSettings,
+  TestScenario, VoiceBot, VoiceCatalog, VoiceProfile, VoiceSessionInfo,
+  VoiceSettings, Workflow,
 } from "@/types/domain";
 import { http } from "./http";
 
@@ -69,6 +70,33 @@ export const resyncKnowledge = (id: string) =>
 export const archiveKnowledge = (id: string) => http.delete<{ archived: boolean }>(`/knowledge/${id}`);
 export const listKnowledgeGaps = (botId?: string): Promise<KnowledgeGap[]> =>
   http.get(`/knowledge-gaps${botId ? `?botId=${botId}` : ""}`);
+
+/* ---------- Knowledge documents (ingestion pipeline) ---------- */
+export const uploadKnowledgeDocument = (sourceId: string, file: File): Promise<DocumentUploadResult> => {
+  const form = new FormData();
+  form.append("file", file);
+  return http.postForm(`/knowledge/${sourceId}/documents`, form);
+};
+export const listKnowledgeDocuments = (sourceId: string): Promise<DocumentStatus[]> =>
+  http.get(`/knowledge/${sourceId}/documents`);
+export const getDocumentStatus = (documentId: string): Promise<DocumentStatus> =>
+  http.get(`/knowledge/documents/${documentId}/status`);
+export const retryDocument = (documentId: string): Promise<DocumentStatus> =>
+  http.post(`/knowledge/documents/${documentId}/retry`);
+export const cancelDocument = (documentId: string): Promise<DocumentStatus> =>
+  http.post(`/knowledge/documents/${documentId}/cancel`);
+export const reindexDocument = (documentId: string): Promise<DocumentStatus> =>
+  http.post(`/knowledge/documents/${documentId}/reindex`);
+export const deleteDocument = (documentId: string): Promise<{ archived: boolean; id: string }> =>
+  http.delete(`/knowledge/documents/${documentId}`);
+export const searchTest = (body: { query: string; kbIds?: string[]; botId?: string; topK?: number }): Promise<SearchTestResult> =>
+  http.post("/knowledge/search-test", body);
+
+/* ---------- Voice runtime ---------- */
+export const createVoiceSession = (botId: string, channel = "browser"): Promise<VoiceSessionInfo> =>
+  http.post("/voice-sessions", { botId, channel });
+export const getVoiceCatalog = (): Promise<VoiceCatalog> =>
+  http.get("/providers/voice-catalog");
 
 /* ---------- Prompts / Voice ---------- */
 export const listPrompts = (botId: string): Promise<Prompt[]> => http.get(`/bots/${botId}/prompts`);

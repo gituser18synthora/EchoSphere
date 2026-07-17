@@ -19,7 +19,7 @@ class MockTTS(TTSProvider):
         self, text: str, *, voice: str | None = None, language: str | None = None,
         speed: float = 1.0,
     ) -> TTSResult:
-        header = MOCK_AUDIO_PREFIX + text.encode("utf-8")
+        header = MOCK_AUDIO_PREFIX + text.encode("utf-8") + b"\x00"
         # 100 ms of quiet tone so downstream audio handling has real PCM to chew.
         samples = int(self._rate * 0.1)
         tone = b"".join(
