@@ -21,26 +21,30 @@ from pipecat.frames.frames import (
     TextFrame,
     TranscriptionFrame,
 )
-from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializerType
+from pipecat.serializers.base_serializer import FrameSerializer
 
 
 class RawPCMSerializer(FrameSerializer):
-    """PCM-in / PCM-out + JSON side-channel for the browser test client."""
+    """PCM-in / PCM-out + JSON side-channel for the browser test client.
+
+    The transport sends binary WS messages for `bytes` results and text
+    messages for `str` results, so no type declaration is needed.
+    """
 
     def __init__(self, *, input_sample_rate: int = 16000, **kwargs) -> None:
         super().__init__(**kwargs)
         self._input_sample_rate = input_sample_rate
 
-    @property
-    def type(self) -> FrameSerializerType:
-        return FrameSerializerType.BINARY
-
     async def setup(self, frame: StartFrame):
         pass
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
+        from pipecat.frames.frames import OutputTransportMessageFrame
+
         if isinstance(frame, OutputAudioRawFrame):
             return frame.audio
+        if isinstance(frame, OutputTransportMessageFrame):
+            return json.dumps(frame.message)
         if isinstance(frame, TranscriptionFrame):
             return json.dumps({"type": "transcript", "text": frame.text})
         if isinstance(frame, TextFrame):

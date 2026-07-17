@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    OutputTransportMessageFrame,
     TextFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -92,8 +93,13 @@ class ConversationBrain(FrameProcessor):
 
     # ── turn handling ─────────────────────────────────────────────────────
 
+    async def _notify_client(self, payload: dict) -> None:
+        """Side-channel JSON to the transport (live transcripts for test UIs)."""
+        await self.push_frame(OutputTransportMessageFrame(message=payload))
+
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
+        await self._notify_client({"type": "transcript", "text": text})
         decision = self._router.decide(text, active_workflow=self._active_workflow)
         turn = TurnRecord(role="user", text=text, route=decision.kind.value)
         self._recorder.add_turn(turn)
@@ -238,6 +244,7 @@ class ConversationBrain(FrameProcessor):
 
         reply = "".join(reply_parts).strip()
         if reply:
+            await self._notify_client({"type": "bot_text", "text": reply})
             self._last_bot_reply = reply
             self._history.append({"role": "assistant", "content": reply})
             self._recorder.usage["llm_output_tokens"] += len(reply) // 4
@@ -261,6 +268,7 @@ class ConversationBrain(FrameProcessor):
         self._last_bot_reply = text
         self._history.append({"role": "assistant", "content": text})
         self._recorder.add_turn(TurnRecord(role="bot", text=text))
+        await self._notify_client({"type": "bot_text", "text": text})
         await self.push_frame(LLMFullResponseStartFrame())
         await self.push_frame(TextFrame(text))
         await self.push_frame(LLMFullResponseEndFrame())

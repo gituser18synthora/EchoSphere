@@ -22,7 +22,9 @@ class EchoSTTService(SegmentedSTTService):
     """VAD-segmented STT backed by an EchoSphere STTProvider."""
 
     def __init__(self, provider: STTProvider, *, language: str | None = None, **kwargs) -> None:
-        super().__init__(**kwargs)
+        from pipecat.services.settings import STTSettings
+
+        super().__init__(settings=STTSettings(model=None, language=language), **kwargs)
         self._provider = provider
         self._language = language
 
