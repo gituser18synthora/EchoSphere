@@ -8,9 +8,13 @@ secrets) are never emitted.
 from datetime import date, datetime
 
 from backend.models import (
+    AiConfigProfile,
     ApiConnection,
     ApprovedModel,
     AuditLog,
+    DataRegion,
+    Industry,
+    ProviderDef,
     ChannelConfig,
     ConversationSession,
     EntityDef,
@@ -54,9 +58,11 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
     return {
         "id": t.id,
         "name": t.name,
+        "code": t.code or "",
         "domain": t.domain,
         "industry": t.industry or "",
         "region": t.region or "",
+        "aiProfileCode": t.ai_profile_code or "",
         "plan": plan or "starter",
         "status": t.status,
         "createdAt": iso(t.created_at),
@@ -68,6 +74,102 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
         "aiCostMonth": round(ai_cost_month),
         "health": t.health,
         "adminEmail": t.admin_email or "",
+        "website": t.website or "",
+        "contactName": t.contact_name or "",
+        "contactPhone": t.contact_phone or "",
+        "address": t.address or "",
+        "country": t.country or "",
+    }
+
+
+# ── Master data ───────────────────────────────────────────────────────────────
+
+
+def _master_common(row, *, usage: int = 0, names: dict[str, str] | None = None) -> dict:
+    names = names or {}
+    return {
+        "id": row.id,
+        "status": row.status,
+        "usageCount": usage,
+        "createdAt": iso(row.created_at),
+        "updatedAt": iso(row.updated_at),
+        "createdBy": names.get(row.created_by) or row.created_by or "",
+        "updatedBy": names.get(row.updated_by) or row.updated_by or "",
+    }
+
+
+def serialize_industry(row: Industry, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.name,
+        "description": row.description or "",
+        "icon": row.icon or "",
+        "sortOrder": row.sort_order,
+        "defaultPromptTemplateId": row.default_prompt_template_id,
+        "defaultGuardrailProfileId": row.default_guardrail_profile_id,
+        "defaultWorkflowTemplateId": row.default_workflow_template_id,
+    }
+
+
+def serialize_data_region(row: DataRegion, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.name,
+        "description": row.description or "",
+        "country": row.country or "",
+        "region": row.region or "",
+        "cloudProvider": row.cloud_provider or "",
+        "storageRegion": row.storage_region or "",
+        "databaseRegion": row.database_region or "",
+        "recordingRegion": row.recording_region or "",
+        "transcriptRegion": row.transcript_region or "",
+        "infrastructureReady": row.infrastructure_ready,
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_ai_profile(row: AiConfigProfile, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.name,
+        "description": row.description or "",
+        "sttProvider": row.stt_provider,
+        "sttModel": row.stt_model,
+        "llmProvider": row.llm_provider,
+        "llmModel": row.llm_model,
+        "ttsProvider": row.tts_provider,
+        "ttsModel": row.tts_model,
+        "defaultVoice": row.default_voice,
+        "embeddingProvider": row.embedding_provider,
+        "embeddingModel": row.embedding_model,
+        "embeddingDimension": row.embedding_dimension,
+        "rerankingModel": row.reranking_model,
+        "retrievalTopK": row.retrieval_top_k,
+        "retrievalThreshold": row.retrieval_threshold,
+        "temperature": row.temperature,
+        "maxOutputTokens": row.max_output_tokens,
+        "responseTimeoutMs": row.response_timeout_ms,
+        "fallbackProviders": row.fallback_providers or [],
+        "costCategory": row.cost_category,
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_provider(row: ProviderDef, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "kind": row.kind,
+        "code": row.code,
+        "name": row.name,
+        "description": row.description or "",
+        "website": row.website or "",
+        "requiresApiKey": row.requires_api_key,
+        "secretRef": row.secret_ref,  # reference only, never a raw key
+        "config": row.config or {},
+        "sortOrder": row.sort_order,
     }
 
 
@@ -100,17 +202,40 @@ def serialize_invoice(i: Invoice, *, tenant_name: str) -> dict:
     }
 
 
-def serialize_plan(p: Plan) -> dict:
+def serialize_plan(p: Plan, *, usage: int = 0, names: dict | None = None) -> dict:
+    names = names or {}
     return {
         "id": p.id,
         "code": p.code,
         "name": p.name,
+        "description": p.description or "",
         "priceMonthly": float(p.price_monthly),
+        "priceAnnual": float(p.price_annual or 0),
+        "currency": p.currency,
         "botLimit": p.bot_limit,
         "minutesIncluded": p.minutes_included,
         "seatsIncluded": p.seats_included,
+        "kbLimit": p.kb_limit,
+        "storageGbIncluded": p.storage_gb_included,
+        "languagesIncluded": p.languages_included,
+        "concurrentCallLimit": p.concurrent_call_limit,
+        "monthlyCallLimit": p.monthly_call_limit,
+        "monthlyTokenLimit": p.monthly_token_limit,
+        "monthlyEmbeddingLimit": p.monthly_embedding_limit,
+        "recordingRetentionDays": p.recording_retention_days,
+        "transcriptRetentionDays": p.transcript_retention_days,
+        "analyticsRetentionDays": p.analytics_retention_days,
         "features": p.features or [],
+        "overageRates": p.overage_rates or {},
         "status": p.status,
+        "isPublic": p.is_public,
+        "isRecommended": p.is_recommended,
+        "sortOrder": p.sort_order,
+        "usageCount": usage,
+        "createdAt": iso(p.created_at),
+        "updatedAt": iso(p.updated_at),
+        "createdBy": names.get(p.created_by) or p.created_by or "",
+        "updatedBy": names.get(p.updated_by) or p.updated_by or "",
     }
 
 
@@ -171,15 +296,20 @@ def serialize_knowledge_gap(g: KnowledgeGap) -> dict:
     }
 
 
-def serialize_prompt(p: Prompt) -> dict:
+def serialize_prompt(p: Prompt, *, include_config: bool = True) -> dict:
     return {
         "id": p.id,
         "botId": p.bot_id,
         "type": p.type,
         "name": p.name,
+        "description": p.description or "",
         "variables": p.variables or [],
         "state": p.state,
         "activeVersion": p.active_version,
+        "publishedVersion": p.published_version,
+        "approvedBy": p.approved_by,
+        "approvedAt": iso(p.approved_at),
+        "publishedAt": iso(p.published_at),
         "versions": [
             {
                 "version": v.version,
@@ -187,33 +317,54 @@ def serialize_prompt(p: Prompt) -> dict:
                 "editedAt": iso(v.edited_at) or iso(v.created_at),
                 "note": v.note or "",
                 "variants": v.variants or [],
+                "structuredConfig": (v.structured_config or None) if include_config else None,
+                "compiledPrompt": (v.compiled_prompt or None) if include_config else None,
+                "modelCompatibility": v.model_compatibility or [],
             }
             for v in p.versions
         ],
     }
 
 
-def serialize_voice(v: VoiceProfile) -> dict:
+def serialize_voice(v: VoiceProfile, *, usage: int = 0) -> dict:
     return {
         "id": v.id,
         "name": v.name,
         "gender": v.gender,
         "languages": v.languages or [],
+        "locale": v.locale or "",
         "accent": v.accent or "",
         "styles": v.styles or [],
+        "description": v.description or "",
         "latencyMs": v.latency_ms,
         "premium": v.premium,
         "sample": v.sample_text or "",
+        "provider": v.provider or "",
+        "providerVoiceId": v.provider_voice_id or "",
+        "speakingRate": v.speaking_rate,
+        "pitch": v.pitch,
+        "isDefault": v.is_default,
+        "status": v.status,
+        "usageCount": usage,
+        "updatedAt": iso(v.updated_at),
     }
 
 
-def serialize_language(lang: SupportedLanguage) -> dict:
+def serialize_language(lang: SupportedLanguage, *, usage: int = 0) -> dict:
     return {
         "id": lang.id,
         "code": lang.code,
         "name": lang.name,
         "nativeName": lang.native_name,
+        "isoCode": lang.iso_code or "",
+        "script": lang.script or "",
+        "direction": lang.direction,
+        "providerSupport": lang.provider_support or {},
+        "isDefault": lang.is_default,
         "enabled": lang.enabled,
+        "sortOrder": lang.sort_order,
+        "usageCount": usage,
+        "updatedAt": iso(lang.updated_at),
     }
 
 
@@ -222,16 +373,27 @@ def serialize_intent(i: Intent) -> dict:
         "id": i.id,
         "botId": i.bot_id,
         "name": i.name,
+        "code": i.code or "",
+        "category": i.category or "",
         "description": i.description or "",
         "samples": i.samples or [],
+        "languages": i.languages or [],
         "confidenceThreshold": i.confidence_threshold,
         "avgConfidence30d": i.avg_confidence_30d,
         "route": i.route or "",
         "entities": i.entities or [],
+        "optionalEntities": i.optional_entities or [],
+        "workflowId": i.workflow_id,
+        "apiConnectionId": i.api_connection_id,
+        "kbIds": i.kb_ids or [],
+        "priority": i.priority,
+        "fallbackBehavior": i.fallback_behavior or "",
+        "handoffEnabled": i.handoff_enabled,
         "status": i.status,
         "version": i.version,
         "testPass": i.test_pass,
         "testTotal": i.test_total,
+        "updatedAt": iso(i.updated_at),
     }
 
 
@@ -239,10 +401,24 @@ def serialize_entity(e: EntityDef) -> dict:
     return {
         "id": e.id,
         "name": e.name,
+        "code": e.code or "",
+        "description": e.description or "",
         "kind": e.kind,
+        "dataType": e.data_type,
+        "languages": e.languages or [],
+        "synonyms": e.synonyms or {},
+        "allowedValues": e.allowed_values or [],
+        "regexPattern": e.regex_pattern or "",
+        "validationRules": e.validation_rules or {},
+        "normalizationRules": e.normalization_rules or {},
+        "maskingEnabled": e.masking_enabled,
+        "requireConfirmation": e.require_confirmation,
+        "retentionDays": e.retention_days,
         "example": e.example or "",
         "pii": e.pii,
+        "status": e.status,
         "usedBy": e.used_by or [],
+        "updatedAt": iso(e.updated_at),
     }
 
 
@@ -251,10 +427,26 @@ def serialize_api_connection(a: ApiConnection) -> dict:
         "id": a.id,
         "botId": a.bot_id,
         "name": a.name,
+        "description": a.description or "",
         "method": a.method,
         "url": a.url,
         "authType": a.auth_type,
         "secretRef": a.secret_ref,
+        "headers": a.headers or {},
+        "queryParams": a.query_params or {},
+        "pathParams": a.path_params or {},
+        "bodyTemplate": a.body_template,
+        "requestSchema": a.request_schema,
+        "responseSchema": a.response_schema,
+        "successCondition": a.success_condition or "",
+        "successMessage": a.success_message or "",
+        "failureMessage": a.failure_message or "",
+        "errorMapping": a.error_mapping or {},
+        "sensitiveMasks": a.sensitive_masks or [],
+        "allowedIntents": a.allowed_intents or [],
+        "allowedWorkflows": a.allowed_workflows or [],
+        "isStateChanging": a.is_state_changing,
+        "requireConfirmation": a.require_confirmation,
         "timeoutMs": a.timeout_ms,
         "retries": a.retries,
         "responseMapping": a.response_mapping or [],
@@ -262,6 +454,7 @@ def serialize_api_connection(a: ApiConnection) -> dict:
         "lastTestedAt": iso(a.last_tested_at),
         "lastLatencyMs": a.last_latency_ms,
         "version": a.version,
+        "updatedAt": iso(a.updated_at),
     }
 
 
@@ -488,10 +681,18 @@ def serialize_user_public(u: User) -> dict:
     return {
         "id": u.id,
         "name": u.name,
+        "firstName": u.first_name or (u.name.split(" ")[0] if u.name else ""),
+        "lastName": u.last_name or (" ".join(u.name.split(" ")[1:]) if u.name and " " in u.name else ""),
         "email": u.email,
+        "phone": u.phone or "",
+        "avatarUrl": u.avatar_url or "",
+        "locale": u.locale or "",
+        "timezone": u.timezone or "",
         "role": u.role.code,
         "roleName": u.role.name,
         "tenantId": u.tenant_id,
         "permissions": [p.code for p in u.role.permissions],
         "status": u.status,
+        "lastLoginAt": iso(u.last_login_at),
+        "passwordChangedAt": iso(u.password_changed_at),
     }

@@ -19,6 +19,8 @@ import WorkflowsAdmin from "@/pages/admin/WorkflowsAdmin";
 import Monitoring from "@/pages/admin/Monitoring";
 import Security from "@/pages/admin/Security";
 import Reports from "@/pages/admin/Reports";
+import PlatformConfig from "@/pages/admin/PlatformConfig";
+import Profile from "@/pages/Profile";
 
 /* Tenant Admin */
 import TenantDashboard from "@/pages/tenant/Dashboard";
@@ -62,6 +64,8 @@ export default function App() {
         <Route path="monitoring" element={<Monitoring />} />
         <Route path="security" element={<Security />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="platform-config" element={<PlatformConfig />} />
+        <Route path="profile" element={<Profile />} />
       </Route>
 
       <Route path="/t" element={<Guard roles={["tenant_admin", "tenant_user"]}><AppShell /></Guard>}>
@@ -77,6 +81,7 @@ export default function App() {
         <Route path="team" element={<Team />} />
         <Route path="integrations" element={<Integrations />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="profile" element={<Profile />} />
       </Route>
 
       <Route

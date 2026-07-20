@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { getTenantSettings, listLanguages, saveTenantSettings } from "@/services/api";
-import type { TenantSettings } from "@/types/domain";
-import { Button, Callout, CardSkeleton, ErrorState, Field, Toggle } from "@/components/ui";
+import { getTenantProfile, getTenantSettings, listLanguages, saveTenantProfile, saveTenantSettings } from "@/services/api";
+import type { TenantProfile, TenantSettings } from "@/types/domain";
+import { Button, Callout, CardSkeleton, ErrorState, Field, Tabs, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 
@@ -20,6 +20,7 @@ const fmtHolidayDate = (d: string) => {
 
 export default function Settings() {
   const { toast } = useApp();
+  const [tab, setTab] = useState("profile");
   const q = useAsync(getTenantSettings, []);
   const langsQ = useAsync(listLanguages, []);
   const [form, setForm] = useState<TenantSettings | null>(null);
@@ -54,8 +55,6 @@ export default function Settings() {
     }
   };
 
-  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
-
   return (
     <>
       <div className="page-head">
@@ -63,14 +62,24 @@ export default function Settings() {
           <h1 className="page-title">Settings</h1>
           <p className="page-sub">Organization-wide defaults that every bot inherits</p>
         </div>
-        <div className="page-actions">
-          <Button variant="primary" icon="check" busy={busy} disabled={!dirty} onClick={save}>
-            {dirty ? "Save changes" : "Saved"}
-          </Button>
-        </div>
+        {tab === "workspace" && (
+          <div className="page-actions">
+            <Button variant="primary" icon="check" busy={busy} disabled={!dirty} onClick={save}>
+              {dirty ? "Save changes" : "Saved"}
+            </Button>
+          </div>
+        )}
       </div>
 
-      {q.loading || !form ? (
+      <Tabs
+        tabs={[{ id: "profile", label: "Organization profile" }, { id: "workspace", label: "Workspace settings" }]}
+        active={tab}
+        onChange={setTab}
+      />
+
+      <div className="mt-16">
+        {tab === "profile" && <OrganizationProfileTab />}
+        {tab === "workspace" && (q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : q.loading || !form ? (
         <div className="grid grid-2">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={5} />)}</div>
       ) : (
         <div className="grid grid-2">
@@ -187,7 +196,147 @@ export default function Settings() {
             </section>
           </div>
         </div>
-      )}
+      ))}
+      </div>
     </>
+  );
+}
+
+/* ---------- Organization profile (tenant-facing subset of the platform tenant record) ---------- */
+
+const PROFILE_FIELDS = [
+  "displayName", "website", "contactName", "contactEmail", "contactPhone",
+  "address", "country", "timezone", "supportEmail", "supportPhone",
+] as const;
+type ProfileForm = Pick<TenantProfile, (typeof PROFILE_FIELDS)[number]>;
+
+const pickProfileForm = (p: TenantProfile): ProfileForm =>
+  PROFILE_FIELDS.reduce((acc, k) => ({ ...acc, [k]: p[k] ?? "" }), {} as ProfileForm);
+
+function OrganizationProfileTab() {
+  const { toast, hasPermission } = useApp();
+  const canEdit = hasPermission("edit_tenant_profile");
+  const q = useAsync(() => getTenantProfile(), []);
+  const [form, setForm] = useState<ProfileForm | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (q.data) {
+      setForm(pickProfileForm(q.data));
+      setDirty(false);
+    }
+  }, [q.data]);
+
+  /* Warn on unsaved changes when leaving the page. */
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const patch = (p: Partial<ProfileForm>) => {
+    if (!canEdit) return;
+    setForm((f) => (f ? { ...f, ...p } : f));
+    setDirty(true);
+  };
+
+  const save = async () => {
+    if (!form || !canEdit) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const saved = await saveTenantProfile(form);
+      setForm(pickProfileForm(saved));
+      setDirty(false);
+      toast("Organization profile saved");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to save organization profile");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
+  if (q.loading || !form || !q.data) {
+    return <div className="grid grid-2"><CardSkeleton rows={7} /><CardSkeleton rows={5} /></div>;
+  }
+  const p = q.data;
+
+  const managed: [string, ReactNode][] = [
+    ["Plan", p.planName],
+    ["Subscription status", p.subscriptionStatus],
+    ["Data region", (
+      <span>
+        {p.dataRegionName}
+        {!p.dataRegionInfrastructureReady && (
+          <span className="t-micro" style={{ display: "block" }}>Configured operational region — not an infrastructure guarantee</span>
+        )}
+      </span>
+    )],
+    ["Tenant code", p.code],
+    ["Tenant status", p.status],
+  ];
+
+  return (
+    <div className="grid grid-2">
+      <section className="card card-pad col gap-14">
+        <span className="card-title">Organization profile</span>
+        {!canEdit && <Callout tone="info">You need the edit permission to change the organization profile.</Callout>}
+        {err && <Callout tone="critical" title="Save failed">{err}</Callout>}
+        <Field label="Display name">
+          <input className="input" value={form.displayName} disabled={!canEdit} onChange={(e) => patch({ displayName: e.target.value })} />
+        </Field>
+        <Field label="Website">
+          <input className="input" value={form.website} disabled={!canEdit} placeholder="https://example.com" onChange={(e) => patch({ website: e.target.value })} />
+        </Field>
+        <Field label="Primary contact name">
+          <input className="input" value={form.contactName} disabled={!canEdit} onChange={(e) => patch({ contactName: e.target.value })} />
+        </Field>
+        <Field label="Primary contact email">
+          <input className="input" type="email" value={form.contactEmail} disabled={!canEdit} onChange={(e) => patch({ contactEmail: e.target.value })} />
+        </Field>
+        <Field label="Primary contact phone">
+          <input className="input" value={form.contactPhone} disabled={!canEdit} onChange={(e) => patch({ contactPhone: e.target.value })} />
+        </Field>
+        <Field label="Business address">
+          <textarea className="textarea" rows={3} value={form.address} disabled={!canEdit} onChange={(e) => patch({ address: e.target.value })} />
+        </Field>
+        <Field label="Country">
+          <input className="input" value={form.country} disabled={!canEdit} onChange={(e) => patch({ country: e.target.value })} />
+        </Field>
+        <Field label="Time zone">
+          <select className="select" value={form.timezone} disabled={!canEdit} onChange={(e) => patch({ timezone: e.target.value })}>
+            {withOption(TIMEZONES, form.timezone).map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Support email">
+          <input className="input" type="email" value={form.supportEmail} disabled={!canEdit} onChange={(e) => patch({ supportEmail: e.target.value })} />
+        </Field>
+        <Field label="Support phone">
+          <input className="input" value={form.supportPhone} disabled={!canEdit} onChange={(e) => patch({ supportPhone: e.target.value })} />
+        </Field>
+        {canEdit && (
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <Button variant="primary" icon="check" busy={busy} disabled={!dirty} onClick={save}>
+              {dirty ? "Save profile" : "Saved"}
+            </Button>
+          </div>
+        )}
+      </section>
+
+      <section className="card card-pad col gap-12" style={{ alignSelf: "start" }}>
+        <span className="card-title">Managed by platform administrator</span>
+        <p className="t-micro">These values are controlled by the platform team and are read-only here.</p>
+        {managed.map(([k, v], i) => (
+          <div className="row-between" key={k} style={{ alignItems: "flex-start", borderBottom: i < managed.length - 1 ? "1px solid var(--hairline)" : "none", paddingBottom: i < managed.length - 1 ? 10 : 0 }}>
+            <span className="t-sub">{k}</span>
+            <span className="t-strong" style={{ fontSize: 13, textAlign: "right", maxWidth: "60%" }}>{v}</span>
+          </div>
+        ))}
+      </section>
+    </div>
   );
 }

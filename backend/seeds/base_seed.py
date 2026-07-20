@@ -16,13 +16,17 @@ from backend.core.ids import new_id
 from backend.core.security import hash_password
 from backend.db.mysql import get_sessionmaker
 from backend.models import (
+    AiConfigProfile,
     ApprovedModel,
+    DataRegion,
     Guardrail,
     HealthMetric,
+    Industry,
     Integration,
     Permission,
     Plan,
     PlatformTemplate,
+    ProviderDef,
     Role,
     RolePermission,
     SupportedLanguage,
@@ -58,6 +62,33 @@ PERMISSIONS = [
     ("team.manage", "Manage team members", "tenant"),
     ("integrations.manage", "Manage integrations", "tenant"),
     ("settings.manage", "Manage tenant settings", "tenant"),
+    # Master data (platform)
+    ("manage_master_data", "Manage platform master data", "platform"),
+    ("manage_industries", "Manage industries", "platform"),
+    ("manage_data_regions", "Manage data regions", "platform"),
+    ("manage_plans", "Manage plans", "platform"),
+    ("manage_ai_profiles", "Manage AI configuration profiles", "platform"),
+    ("manage_languages", "Manage supported languages", "platform"),
+    # Tenant profile
+    ("view_tenant_profile", "View tenant profile", "tenant"),
+    ("edit_tenant_profile", "Edit tenant profile", "tenant"),
+    # Account security
+    ("change_own_password", "Change own password", "account"),
+    ("reset_user_password", "Reset another user's password", "account"),
+    # Knowledge
+    ("manage_knowledge", "Manage knowledge bases", "tenant"),
+    ("upload_knowledge_documents", "Upload knowledge documents", "tenant"),
+    ("retry_knowledge_ingestion", "Retry knowledge ingestion", "tenant"),
+    # Prompts
+    ("manage_prompts", "Create & edit prompts", "tenant"),
+    ("approve_prompts", "Approve prompts", "tenant"),
+    ("publish_prompts", "Publish prompts", "tenant"),
+    # Voice / NLU / API
+    ("manage_voices", "Manage voice configuration", "tenant"),
+    ("manage_intents", "Manage intents", "tenant"),
+    ("manage_entities", "Manage entities", "tenant"),
+    ("manage_api_connections", "Manage API connections", "tenant"),
+    ("test_api_connections", "Test API connections", "tenant"),
 ]
 
 ROLE_PERMISSIONS = {
@@ -66,25 +97,161 @@ ROLE_PERMISSIONS = {
         "bots.view", "bots.manage", "bots.publish", "knowledge.view", "knowledge.manage",
         "prompts.manage", "conversations.view", "analytics.view", "team.manage",
         "integrations.manage", "settings.manage",
+        "view_tenant_profile", "edit_tenant_profile",
+        "change_own_password", "reset_user_password",
+        "manage_knowledge", "upload_knowledge_documents", "retry_knowledge_ingestion",
+        "manage_prompts", "approve_prompts", "publish_prompts",
+        "manage_voices", "manage_intents", "manage_entities",
+        "manage_api_connections", "test_api_connections",
     ],
-    "tenant_user": ["bots.view", "knowledge.view", "conversations.view", "analytics.view"],
+    "tenant_user": [
+        "bots.view", "knowledge.view", "conversations.view", "analytics.view",
+        "view_tenant_profile", "change_own_password",
+    ],
 }
 
-PLANS = [
-    ("starter", "Starter", 490, 2, 10000, 5),
-    ("growth", "Growth", 2400, 8, 80000, 15),
-    ("enterprise", "Enterprise", 9800, 20, 200000, 50),
+INDUSTRIES = [
+    # (code, name, icon, description)
+    ("banking", "Banking", "bank", "Retail and corporate banking voice journeys."),
+    ("insurance", "Insurance", "shield", "Policy servicing, claims intake and renewals."),
+    ("healthcare", "Healthcare", "heart", "Appointments, triage routing and patient support."),
+    ("call_center", "Call Center", "phone", "General inbound/outbound contact-center automation."),
+    ("customer_support", "Customer Support", "help", "Product and account support desks."),
+    ("sales", "Sales", "trend", "Lead qualification, follow-ups and campaign calls."),
+    ("ecommerce", "E-commerce", "cart", "Orders, returns, delivery status and catalog queries."),
+    ("education", "Education", "book", "Admissions, fee reminders and student services."),
+    ("travel_hospitality", "Travel and Hospitality", "plane", "Bookings, itinerary changes and concierge."),
+    ("real_estate", "Real Estate", "home", "Site-visit scheduling and listing enquiries."),
+    ("automotive", "Automotive", "car", "Service booking, test drives and roadside assist."),
+    ("telecom", "Telecom", "signal", "Plan changes, billing and outage support."),
+    ("logistics", "Logistics", "truck", "Shipment tracking, pickups and delivery windows."),
+    ("government", "Government Services", "landmark", "Citizen services and scheme helplines."),
+    ("financial_services", "Financial Services", "coins", "Lending, cards, collections and advisory desks."),
+    ("utilities", "Utilities", "zap", "Billing, outage reporting and new connections."),
+    ("other", "Other", "grid", "Anything that does not fit the categories above."),
 ]
 
+DATA_REGIONS = [
+    # (code, name, country, region, description)
+    ("in", "India", "India", "South Asia", "Configured operational region covering India."),
+    ("in-mumbai", "India – Mumbai", "India", "South Asia", "Mumbai metro region."),
+    ("in-hyderabad", "India – Hyderabad", "India", "South Asia", "Hyderabad metro region."),
+    ("apac", "Asia Pacific", None, "APAC", "Asia-Pacific multi-country region."),
+    ("eu", "Europe", None, "EU", "European Union data boundary."),
+    ("us", "United States", "United States", "North America", "United States region."),
+    ("me", "Middle East", None, "MEA", "Middle East region."),
+    ("global", "Global", None, "Global", "No regional pinning — global routing."),
+]
+
+AI_PROFILES = [
+    # (code, name, cost_category, description, overrides)
+    ("low_cost", "Low Cost", "low",
+     "Cheapest viable stack for high-volume simple flows.",
+     {"llm_model": "gpt-4o-mini", "tts_model": "tts-1", "retrieval_top_k": 4,
+      "max_output_tokens": 300, "temperature": 0.3}),
+    ("balanced", "Balanced", "medium",
+     "Balanced latency, quality and cost — the default starting point.",
+     {"llm_model": "gpt-4o-mini", "tts_model": "tts-1", "retrieval_top_k": 6}),
+    ("high_accuracy", "High Accuracy", "high",
+     "Best answer quality; larger models and deeper retrieval.",
+     {"llm_model": "gpt-4o", "tts_model": "tts-1-hd", "retrieval_top_k": 10,
+      "max_output_tokens": 900, "temperature": 0.2}),
+    ("low_latency", "Low Latency", "medium",
+     "Tuned for fastest turn-taking on voice calls.",
+     {"llm_model": "gpt-4o-mini", "retrieval_top_k": 3, "max_output_tokens": 250,
+      "response_timeout_ms": 4000}),
+    ("enterprise", "Enterprise", "high",
+     "Enterprise defaults with fallback providers and generous limits.",
+     {"llm_model": "gpt-4o", "retrieval_top_k": 8, "max_output_tokens": 800,
+      "fallback_providers": [{"llm_provider": "anthropic", "llm_model": "claude-sonnet-5"}]}),
+    ("custom", "Custom", "medium",
+     "Start empty and configure every provider and model manually.", {}),
+]
+
+PROVIDERS = [
+    # (kind, code, name, requires_api_key, description)
+    ("stt", "openai", "OpenAI Whisper", True, "Whisper speech-to-text via the OpenAI API."),
+    ("stt", "deepgram", "Deepgram", True, "Low-latency streaming STT."),
+    ("stt", "assemblyai", "AssemblyAI", True, "Batch and realtime STT."),
+    ("stt", "sarvam", "Sarvam AI", True, "Indic-language STT (saarika)."),
+    ("stt", "azure", "Azure Speech", True, "Microsoft Azure speech-to-text."),
+    ("stt", "google", "Google Cloud STT", True, "Google Cloud speech-to-text."),
+    ("stt", "mock", "Mock STT (dev)", False, "Deterministic development STT — no external calls."),
+    ("tts", "openai", "OpenAI TTS", True, "OpenAI text-to-speech voices."),
+    ("tts", "elevenlabs", "ElevenLabs", True, "High-fidelity neural voices."),
+    ("tts", "sarvam", "Sarvam AI", True, "Indic-language TTS (bulbul)."),
+    ("tts", "azure", "Azure Speech", True, "Microsoft Azure neural voices."),
+    ("tts", "google", "Google Cloud TTS", True, "Google Cloud neural voices."),
+    ("tts", "mock", "Mock TTS (dev)", False, "Deterministic development TTS — no external calls."),
+    ("llm", "openai", "OpenAI", True, "GPT model family."),
+    ("llm", "anthropic", "Anthropic", True, "Claude model family."),
+    ("llm", "azure", "Azure OpenAI", True, "GPT models on Azure."),
+    ("llm", "google", "Google Gemini", True, "Gemini model family."),
+    ("llm", "mock", "Mock LLM (dev)", False, "Deterministic development LLM — no external calls."),
+    ("embedding", "openai", "OpenAI Embeddings", True, "text-embedding-3 family."),
+    ("embedding", "mock", "Mock Embeddings (dev)", False, "Hash-based development embedder."),
+    ("voice", "platform", "Platform Voices", False, "Built-in platform voice catalog."),
+    ("voice", "elevenlabs", "ElevenLabs Voices", True, "ElevenLabs voice catalog."),
+    ("voice", "azure", "Azure Voice Catalog", True, "Azure neural voice catalog."),
+    ("voice", "google", "Google Voice Catalog", True, "Google Cloud voice catalog."),
+]
+
+# (code, name, monthly, bots, minutes, seats, recommended, description)
+PLANS = [
+    ("starter", "Starter", 490, 2, 10000, 5, False,
+     "2 bots, 10k minutes, community support."),
+    ("growth", "Growth", 2400, 8, 80000, 15, True,
+     "8 bots, 80k minutes, standard SLA."),
+    ("enterprise", "Enterprise", 9800, 20, 200000, 50, False,
+     "20 bots, 200k minutes, 99.9% SLA, SSO."),
+]
+
+# (code, name, native_name, iso, script, direction, provider_support)
+# provider_support lists which *configured provider adapters* claim the
+# language — platform listing alone never implies STT/TTS availability.
+_MAJOR_INDIC = {"stt": ["sarvam", "google", "azure", "openai"], "tts": ["sarvam", "google", "azure"],
+                "llm": ["openai", "anthropic", "google"]}
+_MINOR_INDIC = {"stt": [], "tts": [], "llm": ["openai", "anthropic", "google"]}
+_GLOBAL = {"stt": ["openai", "deepgram", "assemblyai", "azure", "google"],
+           "tts": ["openai", "elevenlabs", "azure", "google"],
+           "llm": ["openai", "anthropic", "google"]}
+
 LANGUAGES = [
-    ("en-US", "English (US)", "English"),
-    ("es-US", "Spanish (US)", "Español"),
-    ("es-MX", "Spanish (MX)", "Español"),
-    ("en-GB", "English (UK)", "English"),
-    ("fr-FR", "French", "Français"),
-    ("de-DE", "German", "Deutsch"),
-    ("hi-IN", "Hindi", "हिन्दी"),
-    ("vi-VN", "Vietnamese", "Tiếng Việt"),
+    ("en-US", "English (US)", "English", "en", "Latin", "ltr", _GLOBAL),
+    ("es-US", "Spanish (US)", "Español", "es", "Latin", "ltr", _GLOBAL),
+    ("es-MX", "Spanish (MX)", "Español", "es", "Latin", "ltr", _GLOBAL),
+    ("en-GB", "English (UK)", "English", "en", "Latin", "ltr", _GLOBAL),
+    ("fr-FR", "French", "Français", "fr", "Latin", "ltr", _GLOBAL),
+    ("de-DE", "German", "Deutsch", "de", "Latin", "ltr", _GLOBAL),
+    ("vi-VN", "Vietnamese", "Tiếng Việt", "vi", "Latin", "ltr",
+     {"stt": ["openai", "google"], "tts": ["google"], "llm": ["openai", "anthropic", "google"]}),
+    # ── India ────────────────────────────────────────────────────────────
+    ("en-IN", "English (India)", "English", "en", "Latin", "ltr", _MAJOR_INDIC),
+    ("hi-IN", "Hindi", "हिन्दी", "hi", "Devanagari", "ltr", _MAJOR_INDIC),
+    ("bn-IN", "Bengali", "বাংলা", "bn", "Bengali", "ltr", _MAJOR_INDIC),
+    ("mr-IN", "Marathi", "मराठी", "mr", "Devanagari", "ltr", _MAJOR_INDIC),
+    ("te-IN", "Telugu", "తెలుగు", "te", "Telugu", "ltr", _MAJOR_INDIC),
+    ("ta-IN", "Tamil", "தமிழ்", "ta", "Tamil", "ltr", _MAJOR_INDIC),
+    ("gu-IN", "Gujarati", "ગુજરાતી", "gu", "Gujarati", "ltr", _MAJOR_INDIC),
+    ("ur-IN", "Urdu", "اردو", "ur", "Perso-Arabic", "rtl",
+     {"stt": ["openai", "google", "azure"], "tts": ["google", "azure"], "llm": ["openai", "anthropic", "google"]}),
+    ("kn-IN", "Kannada", "ಕನ್ನಡ", "kn", "Kannada", "ltr", _MAJOR_INDIC),
+    ("or-IN", "Odia", "ଓଡ଼ିଆ", "or", "Odia", "ltr", _MAJOR_INDIC),
+    ("ml-IN", "Malayalam", "മലയാളം", "ml", "Malayalam", "ltr", _MAJOR_INDIC),
+    ("pa-IN", "Punjabi", "ਪੰਜਾਬੀ", "pa", "Gurmukhi", "ltr", _MAJOR_INDIC),
+    ("as-IN", "Assamese", "অসমীয়া", "as", "Bengali", "ltr",
+     {"stt": ["google"], "tts": ["google"], "llm": ["openai", "anthropic", "google"]}),
+    ("mai-IN", "Maithili", "मैथिली", "mai", "Devanagari", "ltr", _MINOR_INDIC),
+    ("sa-IN", "Sanskrit", "संस्कृतम्", "sa", "Devanagari", "ltr", _MINOR_INDIC),
+    ("kok-IN", "Konkani", "कोंकणी", "kok", "Devanagari", "ltr", _MINOR_INDIC),
+    ("ks-IN", "Kashmiri", "كٲشُر", "ks", "Perso-Arabic", "rtl", _MINOR_INDIC),
+    ("doi-IN", "Dogri", "डोगरी", "doi", "Devanagari", "ltr", _MINOR_INDIC),
+    ("mni-IN", "Manipuri", "ꯃꯤꯇꯩꯂꯣꯟ", "mni", "Meitei Mayek", "ltr", _MINOR_INDIC),
+    ("brx-IN", "Bodo", "बड़ो", "brx", "Devanagari", "ltr", _MINOR_INDIC),
+    ("sat-IN", "Santali", "ᱥᱟᱱᱛᱟᱲᱤ", "sat", "Ol Chiki", "ltr", _MINOR_INDIC),
+    ("ne-IN", "Nepali", "नेपाली", "ne", "Devanagari", "ltr",
+     {"stt": ["google"], "tts": ["google"], "llm": ["openai", "anthropic", "google"]}),
+    ("sd-IN", "Sindhi", "سنڌي", "sd", "Perso-Arabic", "rtl", _MINOR_INDIC),
 ]
 
 VOICES = [
@@ -176,7 +343,8 @@ def run_base_seed(db: Session | None = None) -> dict:
         db = get_sessionmaker()()
     created = {"roles": 0, "permissions": 0, "plans": 0, "languages": 0, "voices": 0,
                "guardrails": 0, "models": 0, "integrations": 0, "health_metrics": 0,
-               "settings": 0, "templates": 0, "users": 0}
+               "settings": 0, "templates": 0, "users": 0,
+               "industries": 0, "data_regions": 0, "ai_profiles": 0, "providers": 0}
     try:
         role_map: dict[str, Role] = {}
         for code, name, scope, desc in ROLES:
@@ -211,20 +379,93 @@ def run_base_seed(db: Session | None = None) -> dict:
                 if exists is None:
                     db.add(RolePermission(role_id=role.id, permission_id=perm.id))
 
-        for code, name, price, bots, minutes, seats in PLANS:
-            if db.scalar(select(Plan).where(Plan.code == code)) is None:
+        for i, (code, name, price, bots, minutes, seats, recommended, desc) in enumerate(PLANS):
+            row = db.scalar(select(Plan).where(Plan.code == code))
+            if row is None:
                 db.add(Plan(
                     id=new_id("pl"), code=code, name=name, price_monthly=price,
-                    bot_limit=bots, minutes_included=minutes, seats_included=seats,
+                    price_annual=price * 10, bot_limit=bots, minutes_included=minutes,
+                    seats_included=seats, description=desc, is_recommended=recommended,
+                    sort_order=i,
                 ))
                 created["plans"] += 1
+            elif row.description is None:
+                # Backfill the new metadata columns once on pre-existing rows.
+                row.description = desc
+                row.is_recommended = recommended
+                row.sort_order = i
 
-        for i, (code, name, native) in enumerate(LANGUAGES):
-            if db.scalar(select(SupportedLanguage).where(SupportedLanguage.code == code)) is None:
+        for i, (code, name, native, iso, script, direction, support) in enumerate(LANGUAGES):
+            row = db.scalar(select(SupportedLanguage).where(SupportedLanguage.code == code))
+            if row is None:
                 db.add(SupportedLanguage(
-                    id=new_id("lang"), code=code, name=name, native_name=native, sort_order=i,
+                    id=new_id("lang"), code=code, name=name, native_name=native,
+                    iso_code=iso, script=script, direction=direction,
+                    provider_support=support, sort_order=i,
                 ))
                 created["languages"] += 1
+            else:
+                # Backfill new metadata columns on pre-existing rows — NULL
+                # fields only, user edits are never overwritten.
+                if row.iso_code is None:
+                    row.iso_code = iso
+                if row.script is None:
+                    row.script = script
+                if row.provider_support is None:
+                    row.provider_support = support
+                if row.direction == "ltr" and direction == "rtl":
+                    row.direction = direction
+
+        for i, (code, name, icon, desc) in enumerate(INDUSTRIES):
+            if db.scalar(select(Industry).where(Industry.code == code)) is None:
+                db.add(Industry(
+                    id=new_id("ind"), code=code, name=name, icon=icon,
+                    description=desc, sort_order=i,
+                ))
+                created["industries"] += 1
+
+        for i, (code, name, country, region, desc) in enumerate(DATA_REGIONS):
+            if db.scalar(select(DataRegion).where(DataRegion.code == code)) is None:
+                db.add(DataRegion(
+                    id=new_id("dr"), code=code, name=name, country=country,
+                    region=region, description=desc, sort_order=i,
+                    infrastructure_ready=False,
+                ))
+                created["data_regions"] += 1
+
+        for i, (code, name, cost, desc, overrides) in enumerate(AI_PROFILES):
+            if db.scalar(select(AiConfigProfile).where(AiConfigProfile.code == code)) is None:
+                profile = AiConfigProfile(
+                    id=new_id("aip"), code=code, name=name, description=desc,
+                    cost_category=cost, sort_order=i,
+                    stt_provider="openai", stt_model="whisper-1",
+                    llm_provider="openai", llm_model="gpt-4o-mini",
+                    tts_provider="openai", tts_model="tts-1", default_voice="alloy",
+                    embedding_provider="openai", embedding_model="text-embedding-3-small",
+                    embedding_dimension=1536,
+                )
+                for key, value in overrides.items():
+                    setattr(profile, key, value)
+                if code == "custom":
+                    for key in ("stt_provider", "stt_model", "llm_provider", "llm_model",
+                                "tts_provider", "tts_model", "default_voice",
+                                "embedding_provider", "embedding_model"):
+                        setattr(profile, key, None)
+                    profile.embedding_dimension = None
+                db.add(profile)
+                created["ai_profiles"] += 1
+
+        for i, (kind, code, name, needs_key, desc) in enumerate(PROVIDERS):
+            exists = db.scalar(
+                select(ProviderDef).where(ProviderDef.kind == kind, ProviderDef.code == code)
+            )
+            if exists is None:
+                db.add(ProviderDef(
+                    id=new_id("prov"), kind=kind, code=code, name=name,
+                    description=desc, requires_api_key=needs_key, sort_order=i,
+                    secret_ref=f"env:{code.upper()}_API_KEY" if needs_key else None,
+                ))
+                created["providers"] += 1
 
         for vid, name, gender, langs, accent, styles, latency, premium, sample in VOICES:
             if db.get(VoiceProfile, vid) is None:

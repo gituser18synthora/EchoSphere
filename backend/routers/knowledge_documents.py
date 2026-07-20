@@ -12,6 +12,7 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     get_current_user,
     is_super_admin,
+    require_permission,
     require_tenant_admin,
     require_tenant_member,
 )
@@ -23,6 +24,21 @@ from backend.knowledge.service import get_knowledge_service
 from backend.models import KnowledgeSource, User
 
 router = APIRouter(tags=["Knowledge Documents"])
+
+
+@router.get("/knowledge/upload-config")
+def upload_config(user: User = Depends(get_current_user)):
+    """Upload constraints for the frontend — single source of truth, so the UI
+    never hardcodes its own list of types or size limits."""
+    from backend.config import get_settings
+    from backend.knowledge.ingestion.storage import ALLOWED_EXTENSIONS
+
+    settings = get_settings()
+    return ok({
+        "allowedExtensions": sorted(ALLOWED_EXTENSIONS),
+        "maxFileMb": settings.knowledge_max_file_mb,
+        "accept": ",".join(f".{e}" for e in sorted(ALLOWED_EXTENSIONS)),
+    })
 
 
 def _resolve_source(db: Session, user: User, source_id: str) -> KnowledgeSource:
@@ -43,7 +59,7 @@ async def upload_document(
     source_id: str,
     request: Request,
     file: UploadFile = File(...),
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("upload_knowledge_documents", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     source = _resolve_source(db, user, source_id)
@@ -125,7 +141,7 @@ async def document_status(
 async def retry_document(
     document_id: str,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("retry_knowledge_ingestion", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     status = await get_knowledge_service().retry_ingestion(
@@ -201,6 +217,8 @@ class RetrievalTestRequest(BaseModel):
     kb_ids: list[str] | str | None = Field(default=None, alias="kbIds")
     bot_id: str | None = Field(default=None, alias="botId")
     top_k: int = Field(default=6, ge=1, le=20, alias="topK")
+    # Test-console override of the answerability threshold (runtime unchanged).
+    min_score: float | None = Field(default=None, alias="minScore", ge=0, le=1)
 
     model_config = {"populate_by_name": True}
 
@@ -218,6 +236,7 @@ async def search_test(
             bot_id=body.bot_id,
             query=body.query,
             top_k=body.top_k,
+            min_score=body.min_score,
         )
     )
     return ok(

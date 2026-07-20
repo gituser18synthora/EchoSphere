@@ -33,6 +33,9 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+    import os
+
     settings = get_settings()
     if settings.auto_run_migrations:
         logger.info("AUTO_RUN_MIGRATIONS=true — applying migrations")
@@ -44,7 +47,25 @@ async def lifespan(app: FastAPI):
         from backend.seeds.base_seed import run_base_seed
 
         run_base_seed()
+
+    # Knowledge ingestion is a Postgres poll queue — without a running worker
+    # every upload stays "queued" forever. Embed the worker here unless a
+    # dedicated worker process is used (INGESTION_WORKER_EMBEDDED=false).
+    worker_task: asyncio.Task | None = None
+    worker_stop: asyncio.Event | None = None
+    if settings.ingestion_worker_embedded and not os.environ.get("ECHOSPHERE_TEST_NULLPOOL"):
+        from backend.workers.ingestion import run_worker
+
+        worker_stop = asyncio.Event()
+        worker_task = asyncio.create_task(run_worker(worker_stop))
+        logger.info("Embedded ingestion worker started")
     yield
+    if worker_task and worker_stop:
+        worker_stop.set()
+        try:
+            await asyncio.wait_for(worker_task, timeout=30)
+        except (TimeoutError, asyncio.CancelledError):
+            worker_task.cancel()
     await Mongo.disconnect()
 
 
@@ -80,6 +101,7 @@ def create_app() -> FastAPI:
         intents,
         knowledge,
         knowledge_documents,
+        master_data,
         platform,
         prompts,
         releases,
@@ -95,7 +117,7 @@ def create_app() -> FastAPI:
     for module in (
         auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
         prompts, intents, apis, workflows, channels, testing, releases, conversations,
-        platform, integrations, audit, analytics, voice_sessions, telephony,
+        platform, integrations, audit, analytics, voice_sessions, telephony, master_data,
     ):
         app.include_router(module.router, prefix=prefix)
 

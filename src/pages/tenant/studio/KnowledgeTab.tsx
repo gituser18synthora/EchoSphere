@@ -1,12 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DocumentState, KnowledgeSource, SearchTestResult, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  archiveKnowledge, createKnowledge, deleteDocument, getDocumentStatus,
+  archiveKnowledge, createKnowledge, deleteDocument, getDocumentStatus, getUploadConfig,
   listKnowledge, listKnowledgeDocuments, listKnowledgeGaps, reindexDocument,
   resyncKnowledge, retryDocument, searchTest, uploadKnowledgeDocument,
 } from "@/services/api";
-import { Button, Drawer, EmptyState, Modal, Progress, StatusChip, CardSkeleton, Field, Callout } from "@/components/ui";
+import { Button, Drawer, Modal, Progress, StatusChip, CardSkeleton, Field, Callout } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { Icon, type IconName } from "@/components/Icon";
 import { fmtNum } from "@/components/charts";
@@ -22,8 +22,11 @@ function daysSince(iso: string): number | null {
   return Math.max(0, Math.round((Date.now() - d) / 86400000));
 }
 
+const NO_UPLOAD_PERMISSION = "You don't have permission to upload documents";
+
 export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const canUpload = hasPermission("upload_knowledge_documents") || hasPermission("knowledge.manage");
   const q = useAsync(() => listKnowledge(bot.id), [bot.id]);
   const gapsQ = useAsync(() => listKnowledgeGaps(bot.id), [bot.id]);
   const [preview, setPreview] = useState<KnowledgeSource | null>(null);
@@ -71,7 +74,14 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
           >
             Connect source
           </Button>
-          <Button variant="primary" icon="upload" onClick={() => setUploadOpen(true)}>Add knowledge</Button>
+          <Button
+            variant="primary" icon="upload"
+            disabled={!canUpload}
+            title={canUpload ? undefined : NO_UPLOAD_PERMISSION}
+            onClick={() => setUploadOpen(true)}
+          >
+            Add knowledge
+          </Button>
         </div>
       </div>
 
@@ -82,7 +92,16 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
           empty={{
             icon: "book", title: "No knowledge yet",
             body: "Upload documents, add URLs or curate FAQs. The bot answers only from indexed sources.",
-            action: <Button variant="primary" icon="upload" onClick={() => setUploadOpen(true)}>Add knowledge</Button>,
+            action: (
+              <Button
+                variant="primary" icon="upload"
+                disabled={!canUpload}
+                title={canUpload ? undefined : NO_UPLOAD_PERMISSION}
+                onClick={() => setUploadOpen(true)}
+              >
+                Add knowledge
+              </Button>
+            ),
           }}
           columns={[
             {
@@ -139,7 +158,7 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
                   <div className="t-strong" style={{ fontSize: 13 }}>“{g.question}”</div>
                   <div className="t-micro">Asked {g.frequency}× in 30 days · suggestion: {g.suggestedSource}</div>
                 </div>
-                <Button size="sm" onClick={() => { setUploadOpen(true); }}>Add answer</Button>
+                <Button size="sm" disabled={!canUpload} title={canUpload ? undefined : NO_UPLOAD_PERMISSION} onClick={() => { setUploadOpen(true); }}>Add answer</Button>
               </div>
             ))}
           </div>
@@ -242,7 +261,7 @@ const docChip: Record<DocumentState, { status: string; label?: string }> = {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 120000;
+const POLL_TIMEOUT_MS = 180000;
 
 /* ---------- Source documents (preview drawer) ----------
    Same visibility as the drawer's existing archive action. */
@@ -387,136 +406,258 @@ function RetrievalTester({ kbId }: { kbId: string }) {
   );
 }
 
-/* ---------- Upload modal ---------- */
+/* ---------- Add knowledge modal ---------- */
 
-type QueueItem = {
+type FileRowStatus = "selected" | "invalid" | "uploading" | "queued" | "processing" | "ready" | "failed";
+
+type FileRow = {
   id: number;
-  name: string;
-  state: "creating" | "uploading" | "processing" | "indexing" | "ready" | "error";
+  file: File;
+  ext: string;
+  status: FileRowStatus;
+  duplicate?: boolean;
   stage?: string;
   progress?: number;
   documentId?: string;
   error?: string;
 };
 
+const fileRowChip: Record<FileRowStatus, { status: string; label: string }> = {
+  selected: { status: "pending", label: "selected" },
+  invalid: { status: "critical", label: "invalid" },
+  uploading: { status: "indexing", label: "uploading" },
+  queued: { status: "pending", label: "queued" },
+  processing: { status: "indexing", label: "processing" },
+  ready: { status: "indexed", label: "ready" },
+  failed: { status: "failed", label: "failed" },
+};
+
+const extIcon = (ext: string): IconName => {
+  if (ext === "csv" || ext === "xlsx") return "chart";
+  if (ext === "json") return "database";
+  if (ext === "pptx") return "layers";
+  return "file";
+};
+
+const fmtFileSize = (bytes: number) =>
+  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
 function UploadModal({ open, botId, onClose, onAdded }: {
   open: boolean; botId: string; onClose: () => void; onAdded: () => void;
 }) {
   const { toast } = useApp();
+  const configQ = useAsync(getUploadConfig, []);
+  const config = configQ.data;
+
   const [mode, setMode] = useState<"document" | "url" | "faq">("document");
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const queueSeq = useRef(0);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [docErr, setDocErr] = useState("");
+  const [name, setName] = useState("");
+  const [nameErr, setNameErr] = useState("");
+  const [description, setDescription] = useState("");
+  const [files, setFiles] = useState<FileRow[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [createdSourceId, setCreatedSourceId] = useState<string | null>(null);
+  const [metaBusy, setMetaBusy] = useState(false);
   const [url, setUrl] = useState("");
   const [urlErr, setUrlErr] = useState("");
   const [faqQuestion, setFaqQuestion] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
+  const rowSeq = useRef(0);
+  const sessionRef = useRef(0);
+  const submitGuard = useRef(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const patch = (id: number, p: Partial<QueueItem>) =>
-    setQueue((q) => q.map((x) => (x.id === id ? { ...x, ...p } : x)));
+  /* Reset on open; bumping the session abandons in-flight polls once the modal closes. */
+  useEffect(() => {
+    sessionRef.current += 1;
+    if (!open) return;
+    setMode("document");
+    setName(""); setNameErr(""); setDescription("");
+    setFiles([]); setDragActive(false);
+    setSubmitting(false); setCreatedSourceId(null); setMetaBusy(false);
+    setUrl(""); setUrlErr(""); setFaqQuestion(""); setFaqAnswer("");
+    submitGuard.current = false;
+  }, [open]);
 
-  /* URL / FAQ flow — metadata source only, unchanged behaviour. */
-  const add = async (name: string, type: "url" | "faq", detail: string) => {
-    const id = ++queueSeq.current;
-    setQueue((q) => [...q, { id, name, state: "creating" }]);
-    try {
-      await createKnowledge({ name, type, detail, scope: "bot", botId });
-      patch(id, { state: "indexing" });
-      toast(`“${name}” added — indexing started`);
-      onAdded();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Upload failed";
-      patch(id, { state: "error", error: msg });
-      toast(msg, "error");
-    }
+  const patchRow = (id: number, p: Partial<FileRow>) =>
+    setFiles((rows) => rows.map((r) => (r.id === id ? { ...r, ...p } : r)));
+
+  /* ----- File selection + client-side validation ----- */
+
+  const addFiles = (list: FileList | File[]) => {
+    if (!config) return;
+    const allowed = config.allowedExtensions.map((e) => e.replace(/^\./, "").toLowerCase());
+    const next = Array.from(list).map((file): FileRow => {
+      const ext = (/\.([^.]+)$/.exec(file.name)?.[1] ?? "").toLowerCase();
+      let error = "";
+      if (!allowed.includes(ext)) {
+        error = `Unsupported file type${ext ? ` (.${ext})` : ""} — allowed: ${allowed.map((a) => `.${a}`).join(", ")}`;
+      } else if (file.size > config.maxFileMb * 1024 * 1024) {
+        error = `File is larger than the ${config.maxFileMb} MB limit`;
+      }
+      return { id: ++rowSeq.current, file, ext, status: error ? "invalid" : "selected", error: error || undefined };
+    });
+    if (next.length) setFiles((rows) => [...rows, ...next]);
   };
 
-  /* Document flow — create the source, upload the file, poll ingestion. */
-  const pollDoc = async (id: number, documentId: string) => {
+  /* ----- Ingestion polling ----- */
+
+  const pollDoc = async (rowId: number, documentId: string, session: number): Promise<"ready" | "failed"> => {
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      let st;
+      if (sessionRef.current !== session) return "failed";
       try {
-        st = await getDocumentStatus(documentId);
+        const st = await getDocumentStatus(documentId);
+        if (sessionRef.current !== session) return "failed";
+        if (st.status === "ready") {
+          patchRow(rowId, { status: "ready", stage: st.stage, progress: 100 });
+          return "ready";
+        }
+        if (st.status === "failed" || st.status === "cancelled") {
+          patchRow(rowId, { status: "failed", stage: st.stage, error: st.failureReason || `Processing ${st.status}` });
+          return "failed";
+        }
+        patchRow(rowId, { status: st.status === "pending" ? "queued" : "processing", stage: st.stage, progress: st.progress });
       } catch (e) {
-        patch(id, { state: "error", error: e instanceof Error ? e.message : "Status check failed" });
-        return;
+        patchRow(rowId, { status: "failed", error: e instanceof Error ? e.message : "Status check failed" });
+        return "failed";
       }
-      if (st.status === "ready") {
-        patch(id, { state: "ready", stage: st.stage, progress: 100 });
-        toast(`“${st.fileName}” indexed — ${fmtNum(st.chunkCount)} chunks ready`);
-        onAdded();
-        return;
-      }
-      if (st.status === "failed" || st.status === "cancelled") {
-        patch(id, { state: "error", stage: st.stage, error: st.failureReason || `Processing ${st.status}` });
-        onAdded();
-        return;
-      }
-      patch(id, { state: "processing", stage: st.stage, progress: st.progress });
       await sleep(POLL_INTERVAL_MS);
     }
-    patch(id, { state: "error", error: "Still processing after 2 minutes — track it from the source panel and retry if it fails." });
+    patchRow(rowId, { status: "failed", error: "Still processing after 3 minutes — retry, or track it from the source panel." });
+    return "failed";
   };
 
-  const uploadDoc = async (file: File) => {
-    const id = ++queueSeq.current;
-    setQueue((q) => [...q, { id, name: file.name, state: "creating" }]);
+  /* ----- Document submission: one KB, then sequential uploads ----- */
+
+  const submit = async () => {
+    if (submitGuard.current) return;
+    const kbName = name.trim();
+    if (!kbName) { setNameErr("Knowledge base name is required"); return; }
+    const pending = files.filter((f) => f.status === "selected");
+    if (pending.length === 0) return;
+    submitGuard.current = true;
+    setSubmitting(true);
+    setNameErr("");
+    const session = sessionRef.current;
     try {
-      const source = await createKnowledge({
-        name: file.name, type: "document", detail: file.name, scope: "bot", botId,
-        sizeKb: Math.max(1, Math.round(file.size / 1024)),
-      });
-      patch(id, { state: "uploading" });
-      const up = await uploadKnowledgeDocument(source.id, file);
-      if (up.duplicate) toast(`“${file.name}” was already uploaded — reusing the indexed copy`, "info");
-      patch(id, { state: "processing", documentId: up.documentId, stage: up.status, progress: 0 });
-      onAdded();
-      await pollDoc(id, up.documentId);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Upload failed";
-      patch(id, { state: "error", error: msg });
-      toast(msg, "error");
+      let sourceId = createdSourceId;
+      if (!sourceId) {
+        try {
+          const source = await createKnowledge({
+            name: kbName, type: "document", detail: description.trim() || undefined, scope: "bot", botId,
+            sizeKb: Math.max(1, Math.round(pending.reduce((a, f) => a + f.file.size, 0) / 1024)),
+          });
+          sourceId = source.id;
+          if (sessionRef.current !== session) return;
+          setCreatedSourceId(sourceId);
+          onAdded();
+        } catch (e) {
+          if (sessionRef.current === session) {
+            setNameErr(e instanceof Error ? e.message : "Could not create the knowledge base");
+          }
+          return;
+        }
+      }
+      const polls: Promise<"ready" | "failed">[] = [];
+      for (const row of pending) {
+        if (sessionRef.current !== session) return;
+        patchRow(row.id, { status: "uploading", progress: 0, error: undefined });
+        try {
+          const up = await uploadKnowledgeDocument(sourceId, row.file);
+          if (sessionRef.current !== session) return;
+          if (up.duplicate) {
+            patchRow(row.id, { status: "ready", duplicate: true, documentId: up.documentId, progress: 100 });
+            polls.push(Promise.resolve<"ready" | "failed">("ready"));
+          } else {
+            patchRow(row.id, { status: "queued", documentId: up.documentId, stage: up.status || "queued", progress: 0 });
+            polls.push(pollDoc(row.id, up.documentId, session));
+          }
+        } catch (e) {
+          patchRow(row.id, { status: "failed", error: e instanceof Error ? e.message : "Upload failed" });
+          polls.push(Promise.resolve<"ready" | "failed">("failed"));
+        }
+      }
+      await Promise.all(polls);
+      if (sessionRef.current === session) onAdded();
+    } finally {
+      submitGuard.current = false;
+      if (sessionRef.current === session) setSubmitting(false);
     }
   };
 
-  const retryQueued = async (it: QueueItem) => {
-    if (!it.documentId) return;
-    patch(it.id, { state: "processing", error: undefined, progress: 0, stage: "retrying" });
+  const retryRow = async (row: FileRow) => {
+    if (!row.documentId) return;
+    const session = sessionRef.current;
+    patchRow(row.id, { status: "queued", error: undefined, progress: 0, stage: "retrying" });
     try {
-      await retryDocument(it.documentId);
+      await retryDocument(row.documentId);
     } catch (e) {
-      patch(it.id, { state: "error", error: e instanceof Error ? e.message : "Retry failed" });
-      toast(e instanceof Error ? e.message : "Retry failed", "error");
+      if (sessionRef.current === session) {
+        patchRow(row.id, { status: "failed", error: e instanceof Error ? e.message : "Retry failed" });
+      }
       return;
     }
-    await pollDoc(it.id, it.documentId);
+    const result = await pollDoc(row.id, row.documentId, session);
+    if (sessionRef.current === session && result === "ready") onAdded();
   };
 
-  const addDocument = () => {
-    const file = fileRef.current?.files?.[0];
-    if (!file) { setDocErr("Choose a file to upload"); return; }
-    void uploadDoc(file);
-    if (fileRef.current) fileRef.current.value = "";
+  /* ----- URL / FAQ flow — createKnowledge as before, now with the explicit KB name ----- */
+
+  const addMetaSource = async (type: "url" | "faq", detail: string, clear: () => void) => {
+    if (metaBusy) return;
+    const kbName = name.trim();
+    if (!kbName) { setNameErr("Knowledge base name is required"); return; }
+    setMetaBusy(true);
+    setNameErr("");
+    try {
+      await createKnowledge({ name: kbName, type, detail, scope: "bot", botId });
+      toast(`“${kbName}” added — indexing started`);
+      onAdded();
+      clear();
+      setName("");
+      setDescription("");
+    } catch (e) {
+      setNameErr(e instanceof Error ? e.message : "Could not create the knowledge base");
+    } finally {
+      setMetaBusy(false);
+    }
   };
 
   const addUrl = () => {
     if (!/^https?:\/\/[^\s]+\.[^\s]+/.test(url)) { setUrlErr("Enter a full URL, e.g. https://example.com/help"); return; }
-    void add(url.replace(/^https?:\/\//, ""), "url", url);
-    setUrl("");
+    void addMetaSource("url", url, () => setUrl(""));
   };
 
   const addFaq = () => {
     if (!faqQuestion.trim() || !faqAnswer.trim()) { toast("Enter both a question and an answer", "error"); return; }
-    void add(faqQuestion.trim(), "faq", "Curated Q&A pair");
-    setFaqQuestion("");
-    setFaqAnswer("");
+    void addMetaSource("faq", "Curated Q&A pair", () => { setFaqQuestion(""); setFaqAnswer(""); });
   };
+
+  /* ----- Derived submission summary ----- */
+
+  const validSelected = files.filter((f) => f.status === "selected");
+  const startedRows = files.filter((f) => f.status !== "selected" && f.status !== "invalid");
+  const readyRows = startedRows.filter((f) => f.status === "ready");
+  const allDone = !submitting && startedRows.length > 0 && validSelected.length === 0 &&
+    startedRows.every((f) => f.status === "ready" || f.status === "failed");
 
   return (
     <Modal open={open} onClose={onClose} title="Add knowledge" sub="New sources index into the draft version; publishing makes them live." wide
-      footer={<Button variant="primary" onClick={onClose}>Done</Button>}>
+      footer={
+        <>
+          <Button onClick={onClose}>Close</Button>
+          {mode === "document" && (
+            <Button
+              variant="primary" icon="upload" busy={submitting}
+              disabled={submitting || !name.trim() || validSelected.length === 0}
+              onClick={() => void submit()}
+            >
+              Create knowledge base
+            </Button>
+          )}
+        </>
+      }>
       <div className="col gap-16">
         <div className="segmented" role="group" aria-label="Source type">
           {(["document", "url", "faq"] as const).map((m) => (
@@ -524,28 +665,140 @@ function UploadModal({ open, botId, onClose, onAdded }: {
           ))}
         </div>
 
-        {mode === "document" && (
-          <Field label="Document file" error={docErr} hint="PDF, DOCX, XLSX, PPTX, TXT, MD, CSV or JSON · up to 25 MB · text is chunked and embedded automatically.">
-            <div className="row gap-8">
-              <input
-                ref={fileRef}
-                className="input"
-                type="file"
-                accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.pptx,.json"
-                onChange={() => setDocErr("")}
-                aria-invalid={!!docErr}
-                aria-label="Document file"
-              />
-              <Button variant="primary" icon="upload" onClick={addDocument}>Upload</Button>
-            </div>
+        {/* Knowledge base */}
+        <div className="col gap-8">
+          <span className="t-label">Knowledge base</span>
+          <Field label="Knowledge base name" required error={nameErr}>
+            <input
+              className="input" value={name} maxLength={255}
+              placeholder="e.g. Product manuals"
+              disabled={mode === "document" && !!createdSourceId}
+              aria-invalid={!!nameErr}
+              onChange={(e) => { setName(e.target.value); setNameErr(""); }}
+            />
           </Field>
+          <Field label="Description" hint="Optional — shown under the source name in the list.">
+            <input
+              className="input" value={description} maxLength={255}
+              placeholder="What this knowledge covers"
+              disabled={mode === "document" && !!createdSourceId}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Field>
+        </div>
+
+        {/* Files (document mode only) */}
+        {mode === "document" && (
+          <div className="col gap-8">
+            <span className="t-label">Files</span>
+            {configQ.error ? (
+              <Callout tone="critical" title="Could not load upload settings">
+                <div className="col gap-8" style={{ alignItems: "flex-start" }}>
+                  <span>{configQ.error}</span>
+                  <Button size="sm" icon="refresh" onClick={configQ.reload}>Retry</Button>
+                </div>
+              </Callout>
+            ) : (
+              <>
+                <div
+                  className={`dropzone${dragActive ? " dropzone-active" : ""}`}
+                  onDragEnter={(e) => { e.preventDefault(); if (config) setDragActive(true); }}
+                  onDragOver={(e) => { e.preventDefault(); if (config) setDragActive(true); }}
+                  onDragLeave={(e) => {
+                    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+                    setDragActive(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragActive(false);
+                    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+                  }}
+                >
+                  <span className="dropzone-icon"><Icon name="upload" size={20} /></span>
+                  <span className="t-strong" style={{ fontSize: 13 }}>Drag and drop files here</span>
+                  <span className="t-micro">or</span>
+                  <Button icon="file" disabled={!config} onClick={() => fileRef.current?.click()}>Choose files</Button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    multiple
+                    accept={config?.accept}
+                    style={{ display: "none" }}
+                    aria-label="Choose files"
+                    onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); e.target.value = ""; }}
+                  />
+                </div>
+                <span className="t-micro">
+                  {config
+                    ? `Supported: ${config.allowedExtensions.join(", ")} · up to ${config.maxFileMb} MB per file`
+                    : "Loading upload settings…"}
+                </span>
+              </>
+            )}
+
+            {files.length > 0 && (
+              <div className="col gap-8">
+                {files.map((f) => (
+                  <div key={f.id} className="file-row">
+                    <span className="icon-tile neutral" style={{ width: 30, height: 30, flexShrink: 0 }}>
+                      <Icon name={extIcon(f.ext)} size={14} />
+                    </span>
+                    <div className="file-row-main">
+                      <div className="row gap-8" style={{ minWidth: 0 }}>
+                        <span className="file-row-name" title={f.file.name}>{f.file.name}</span>
+                        <span className="tag" style={{ flexShrink: 0 }}>{(f.ext || "?").toUpperCase()}</span>
+                        <span className="t-micro t-num" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>{fmtFileSize(f.file.size)}</span>
+                      </div>
+                      {(f.status === "uploading" || f.status === "queued" || f.status === "processing") && (
+                        <div className="row gap-8">
+                          <Progress value={f.progress ?? 0} />
+                          <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>
+                            {f.status === "uploading" ? "uploading" : f.stage || "queued"} · {Math.round(f.progress ?? 0)}%
+                          </span>
+                        </div>
+                      )}
+                      {f.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{f.error}</span>}
+                    </div>
+                    <span className="row gap-6" style={{ flexShrink: 0 }}>
+                      <StatusChip
+                        status={fileRowChip[f.status].status}
+                        label={f.status === "ready" && f.duplicate ? "ready · duplicate" : fileRowChip[f.status].label}
+                      />
+                      {(f.status === "selected" || f.status === "invalid") && (
+                        <Button
+                          size="sm" variant="ghost" icon="x"
+                          aria-label={`Remove ${f.file.name}`} title="Remove"
+                          onClick={() => setFiles((rows) => rows.filter((r) => r.id !== f.id))}
+                        />
+                      )}
+                      {f.status === "failed" && f.documentId && (
+                        <Button size="sm" icon="refresh" onClick={() => void retryRow(f)}>Retry</Button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {allDone && (
+              readyRows.length === startedRows.length ? (
+                <Callout tone="good" title="Knowledge base ready">
+                  All {startedRows.length} document{startedRows.length === 1 ? "" : "s"} indexed — “{name.trim()}” is ready for retrieval.
+                </Callout>
+              ) : (
+                <Callout tone="warning" title="Partially indexed">
+                  {readyRows.length} of {startedRows.length} documents ready — retry the failed files above, or close and retry later from the source panel.
+                </Callout>
+              )
+            )}
+          </div>
         )}
 
         {mode === "url" && (
           <Field label="Page or sitemap URL" error={urlErr} hint="The crawler follows same-domain links up to depth 2.">
             <div className="row gap-8">
               <input className="input" value={url} onChange={(e) => { setUrl(e.target.value); setUrlErr(""); }} placeholder="https://example.com/services" aria-invalid={!!urlErr} />
-              <Button variant="primary" onClick={addUrl}>Add</Button>
+              <Button variant="primary" busy={metaBusy} onClick={addUrl}>Add</Button>
             </div>
           </Field>
         )}
@@ -554,44 +807,8 @@ function UploadModal({ open, botId, onClose, onAdded }: {
           <div className="col gap-8">
             <Field label="Question"><input className="input" value={faqQuestion} onChange={(e) => setFaqQuestion(e.target.value)} placeholder="Do you validate parking?" /></Field>
             <Field label="Answer"><textarea className="textarea" value={faqAnswer} onChange={(e) => setFaqAnswer(e.target.value)} placeholder="Yes — parking is validated for up to 2 hours at all locations." /></Field>
-            <Button variant="primary" style={{ alignSelf: "flex-start" }} onClick={addFaq}>Add FAQ pair</Button>
+            <Button variant="primary" busy={metaBusy} style={{ alignSelf: "flex-start" }} onClick={addFaq}>Add FAQ pair</Button>
           </div>
-        )}
-
-        {queue.length > 0 && (
-          <div className="col gap-8">
-            <span className="t-label">Upload queue</span>
-            {queue.map((it) => (
-              <div key={it.id} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
-                <Icon name="file" size={15} style={{ color: "var(--ink-3)" }} />
-                <div className="grow col gap-4">
-                  <span className="t-strong truncate" style={{ fontSize: 12.5, maxWidth: 300 }}>{it.name}</span>
-                  {it.state === "processing" && (
-                    <div className="row gap-8">
-                      <Progress value={it.progress ?? 0} />
-                      <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>{it.stage || "queued"} · {Math.round(it.progress ?? 0)}%</span>
-                    </div>
-                  )}
-                  {it.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{it.error}</span>}
-                </div>
-                {(it.state === "creating" || it.state === "uploading") && <span className="spinner" />}
-                {it.state === "processing" && <StatusChip status="indexing" label="processing" />}
-                {it.state === "indexing" && <StatusChip status="indexing" />}
-                {it.state === "ready" && <StatusChip status="indexed" label="ready" />}
-                {it.state === "error" && (
-                  <span className="row gap-6">
-                    <StatusChip status="failed" />
-                    {it.documentId && (
-                      <Button size="sm" icon="refresh" onClick={() => void retryQueued(it)}>Retry</Button>
-                    )}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {queue.length === 0 && mode === "document" && (
-          <EmptyState icon="upload" title="Queue is empty" body="Uploaded files appear here while they are chunked and embedded." />
         )}
       </div>
     </Modal>

@@ -11,6 +11,7 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     get_current_user,
     is_super_admin,
+    require_permission,
     require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
@@ -23,6 +24,9 @@ from backend.core.security import hash_password
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from backend.db.mysql import get_db
 from backend.models import (
+    AiConfigProfile,
+    DataRegion,
+    Industry,
     Plan,
     Role,
     Subscription,
@@ -33,6 +37,22 @@ from backend.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_tenant, serialize_tenant_settings
+
+
+def _validate_master_code(db: Session, model, value: str | None, label: str) -> str | None:
+    """Resolve a master-data reference by code or name. Only ACTIVE records are
+    valid for new assignments; existing tenants keep historical values."""
+    if not value:
+        return value
+    row = db.scalar(
+        select(model).where(
+            or_(model.code == value, model.name == value),
+            model.is_deleted.is_(False),
+        )
+    )
+    if row is None or row.status != "active":
+        raise ApiError(f"Unknown or inactive {label}: '{value}'.", 422)
+    return row.code
 
 router = APIRouter(tags=["Tenants"])
 
@@ -150,9 +170,11 @@ def get_tenant(
 
 class CreateTenantRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    code: str | None = Field(default=None, max_length=50)
     domain: str = Field(min_length=3, max_length=255)
     industry: str | None = None
     region: str | None = None
+    ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
     plan_code: str = Field(default="starter", alias="planCode")
     admin_email: EmailStr = Field(alias="adminEmail")
     admin_name: str = Field(default="Tenant Admin", alias="adminName")
@@ -172,17 +194,29 @@ def create_tenant(
 ):
     if db.scalar(select(Tenant).where(Tenant.domain == body.domain.lower())):
         raise ApiError("A tenant with this domain already exists.", 409)
-    plan = db.scalar(select(Plan).where(Plan.code == body.plan_code))
-    if plan is None:
-        raise ApiError("Unknown plan.", 422)
+    plan = db.scalar(select(Plan).where(Plan.code == body.plan_code, Plan.is_deleted.is_(False)))
+    if plan is None or plan.status != "active":
+        raise ApiError("Unknown or inactive plan.", 422)
+
+    # Master-data references must be active for NEW tenants (existing tenants
+    # keep displaying their historical value even after deactivation).
+    industry = _validate_master_code(db, Industry, body.industry, "industry")
+    region = _validate_master_code(db, DataRegion, body.region, "data region")
+    ai_profile = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+
+    code = (body.code or "").strip().lower() or None
+    if code and db.scalar(select(Tenant).where(Tenant.code == code)):
+        raise ApiError("A tenant with this code already exists.", 409)
 
     # Multi-table create — one transaction.
     tenant = Tenant(
         id=new_id("tn"),
         name=body.name,
+        code=code,
         domain=body.domain.lower(),
-        industry=body.industry,
-        region=body.region,
+        industry=industry,
+        region=region,
+        ai_profile_code=ai_profile,
         status=body.status,
         health="neutral",
         admin_email=body.admin_email.lower(),
@@ -253,8 +287,11 @@ def create_tenant(
 
 class UpdateTenantRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
+    code: str | None = Field(default=None, max_length=50)
     industry: str | None = None
     region: str | None = None
+    ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
+    plan_code: str | None = Field(default=None, alias="planCode")
     status: str | None = Field(default=None, pattern="^(active|trial|suspended|provisioning)$")
     health: str | None = Field(default=None, pattern="^(good|warning|serious|critical|neutral)$")
     admin_email: EmailStr | None = Field(default=None, alias="adminEmail")
@@ -273,11 +310,44 @@ def update_tenant(
     t = db.get(Tenant, tenant_id)
     if t is None or t.is_deleted:
         raise NotFoundError("Tenant")
-    before = {"name": t.name, "status": t.status, "health": t.health}
-    for field in ("name", "industry", "region", "status", "health"):
+    before = {"name": t.name, "status": t.status, "health": t.health,
+              "region": t.region, "code": t.code}
+    for field in ("name", "status", "health"):
         val = getattr(body, field)
         if val is not None:
             setattr(t, field, val)
+    if body.industry is not None:
+        t.industry = _validate_master_code(db, Industry, body.industry, "industry")
+    if body.region is not None:
+        t.region = _validate_master_code(db, DataRegion, body.region, "data region")
+    if body.ai_profile_code is not None:
+        t.ai_profile_code = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    if body.code is not None:
+        code = body.code.strip().lower() or None
+        if code and code != t.code and db.scalar(select(Tenant).where(Tenant.code == code)):
+            raise ApiError("A tenant with this code already exists.", 409)
+        t.code = code
+    if body.plan_code is not None:
+        plan = db.scalar(select(Plan).where(Plan.code == body.plan_code, Plan.is_deleted.is_(False)))
+        if plan is None or plan.status != "active":
+            raise ApiError("Unknown or inactive plan.", 422)
+        sub = db.scalar(
+            select(Subscription).where(
+                Subscription.tenant_id == t.id, Subscription.is_deleted.is_(False)
+            )
+        )
+        if sub is not None and sub.plan_id != plan.id:
+            # Snapshot the new plan's limits onto the subscription explicitly —
+            # editing the plan definition later never silently changes them.
+            sub.plan_id = plan.id
+            sub.bot_limit = plan.bot_limit
+            sub.minutes_included = plan.minutes_included
+            sub.mrr = plan.price_monthly if sub.status == "active" else sub.mrr
+            record_audit(
+                db, user=user, action="Changed tenant plan", entity_type="tenant",
+                entity_id=t.id, target_label=t.name, tenant_id=t.id,
+                new_value={"plan": plan.code}, request=request,
+            )
     if body.admin_email:
         t.admin_email = body.admin_email.lower()
     t.updated_by = user.id
@@ -352,6 +422,140 @@ def get_tenant_settings(
     s = _get_or_create_settings(db, tid, user)
     db.commit()
     return ok(serialize_tenant_settings(s))
+
+
+# ── Tenant profile ────────────────────────────────────────────────────────────
+#
+# Field-level permissions:
+#   Tenant Admin edits: display name, logo/branding, website, contact details,
+#     address, timezone, default language, support contact, working hours.
+#   Super Admin controls (via PATCH /tenants/{id}): tenant code, plan,
+#     subscription status, data region, activation status, hard limits.
+
+
+@router.get("/tenant/profile")
+def get_tenant_profile(
+    tenant_id: str | None = Query(None, alias="tenantId"),
+    user: User = Depends(require_permission("view_tenant_profile", "tenants.manage")),
+    db: Session = Depends(get_db),
+):
+    tid = resolve_tenant_id(user, tenant_id)
+    t = db.get(Tenant, tid)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    s = _get_or_create_settings(db, tid, user)
+    sub = db.scalar(
+        select(Subscription).where(
+            Subscription.tenant_id == tid, Subscription.is_deleted.is_(False)
+        )
+    )
+    plan = db.get(Plan, sub.plan_id) if sub else None
+    region = db.scalar(select(DataRegion).where(
+        or_(DataRegion.code == t.region, DataRegion.name == t.region))) if t.region else None
+    db.commit()
+    branding = s.branding or {}
+    return ok({
+        "tenantId": t.id,
+        "name": t.name,
+        "displayName": s.display_name or t.name,
+        "code": t.code or "",
+        "domain": t.domain,
+        "industry": t.industry or "",
+        "website": t.website or "",
+        "contactName": t.contact_name or "",
+        "contactEmail": t.contact_email or "",
+        "contactPhone": t.contact_phone or "",
+        "address": t.address or "",
+        "country": t.country or "",
+        "timezone": s.timezone,
+        "defaultLanguages": s.default_languages or [],
+        "branding": branding,
+        "supportEmail": branding.get("supportEmail", ""),
+        "supportPhone": branding.get("supportPhone", ""),
+        "workingHours": s.business_hours or {},
+        # Read-only (Super Admin controlled)
+        "dataRegion": t.region or "",
+        "dataRegionName": region.name if region else (t.region or ""),
+        "dataRegionInfrastructureReady": region.infrastructure_ready if region else False,
+        "plan": plan.code if plan else "",
+        "planName": plan.name if plan else "",
+        "subscriptionStatus": sub.status if sub else "",
+        "status": t.status,
+        "aiProfileCode": t.ai_profile_code or "",
+    })
+
+
+class TenantProfileRequest(BaseModel):
+    """Tenant-admin editable fields ONLY. extra='forbid' means a crafted
+    payload containing plan/code/region/status fields is rejected outright."""
+
+    display_name: str | None = Field(default=None, alias="displayName", max_length=200)
+    website: str | None = Field(default=None, max_length=300)
+    contact_name: str | None = Field(default=None, alias="contactName", max_length=150)
+    contact_email: EmailStr | None = Field(default=None, alias="contactEmail")
+    contact_phone: str | None = Field(default=None, alias="contactPhone", max_length=30)
+    address: str | None = Field(default=None, max_length=500)
+    country: str | None = Field(default=None, max_length=100)
+    timezone: str | None = Field(default=None, max_length=64)
+    default_languages: list[str] | None = Field(default=None, alias="defaultLanguages")
+    branding: dict | None = None
+    support_email: EmailStr | None = Field(default=None, alias="supportEmail")
+    support_phone: str | None = Field(default=None, alias="supportPhone", max_length=30)
+    working_hours: dict | None = Field(default=None, alias="workingHours")
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+@router.put("/tenant/profile")
+def update_tenant_profile(
+    body: TenantProfileRequest,
+    request: Request,
+    tenant_id: str | None = Query(None, alias="tenantId"),
+    user: User = Depends(require_permission("edit_tenant_profile", "tenants.manage")),
+    db: Session = Depends(get_db),
+):
+    tid = resolve_tenant_id(user, tenant_id)
+    t = db.get(Tenant, tid)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    s = _get_or_create_settings(db, tid, user)
+
+    before = {"website": t.website, "contactEmail": t.contact_email,
+              "displayName": s.display_name, "timezone": s.timezone}
+    for field in ("website", "contact_name", "contact_phone", "address", "country"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(t, field, val)
+    if body.contact_email is not None:
+        t.contact_email = body.contact_email.lower()
+    if body.display_name is not None:
+        s.display_name = body.display_name.strip() or s.display_name
+    if body.timezone is not None:
+        s.timezone = body.timezone
+    if body.default_languages is not None:
+        s.default_languages = body.default_languages
+    branding = dict(s.branding or {})
+    if body.branding is not None:
+        branding.update(body.branding)
+    if body.support_email is not None:
+        branding["supportEmail"] = body.support_email.lower()
+    if body.support_phone is not None:
+        branding["supportPhone"] = body.support_phone
+    s.branding = branding
+    if body.working_hours is not None:
+        s.business_hours = body.working_hours
+    t.updated_by = user.id
+    s.updated_by = user.id
+    record_audit(
+        db, user=user, action="Updated tenant profile", entity_type="tenant",
+        entity_id=t.id, target_label=t.name, tenant_id=tid,
+        previous_value=before,
+        new_value={"website": t.website, "contactEmail": t.contact_email,
+                   "displayName": s.display_name, "timezone": s.timezone},
+        request=request,
+    )
+    db.commit()
+    return get_tenant_profile(tenant_id=tenant_id, user=user, db=db)
 
 
 @router.put("/tenant/settings")

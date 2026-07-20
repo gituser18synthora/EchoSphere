@@ -2,12 +2,12 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  getTenant, getTenantAnalytics, listAudit, listBots, listKnowledge,
-  listReleases, listSubscriptions, listTeam,
+  getOnboardingOptions, getTenant, getTenantAnalytics, listAudit, listBots,
+  listKnowledge, listReleases, listSubscriptions, listTeam, updateTenant,
 } from "@/services/api";
 import {
-  Button, CardSkeleton, EmptyState, ErrorState, Health, KpiCard, StatusChip,
-  Tabs, Timeline, Avatar,
+  Button, Callout, CardSkeleton, EmptyState, ErrorState, Field, Health,
+  KpiCard, Modal, StatusChip, Tabs, Timeline, Avatar,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
@@ -31,6 +31,7 @@ export default function TenantDetail() {
   const navigate = useNavigate();
   const { toast } = useApp();
   const [tab, setTab] = useState("overview");
+  const [editOpen, setEditOpen] = useState(false);
   const tenantQ = useAsync(() => getTenant(tenantId!), [tenantId]);
 
   if (tenantQ.error) return <ErrorState message={tenantQ.error} onRetry={tenantQ.reload} />;
@@ -54,12 +55,21 @@ export default function TenantDetail() {
           </div>
         </div>
         <div className="page-actions">
+          <Button icon="edit" onClick={() => setEditOpen(true)}>Edit tenant</Button>
           <Button icon="mail" onClick={() => toast(`Invite sent to ${t.adminEmail}`, "info")}>Contact admin</Button>
           <Button variant="primary" icon="external" onClick={() => toast("Impersonation requires a second approver (four-eyes policy).", "info")}>
             Impersonate
           </Button>
         </div>
       </div>
+
+      {editOpen && (
+        <EditTenantModal
+          tenant={t}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); tenantQ.reload(); }}
+        />
+      )}
 
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
@@ -74,6 +84,116 @@ export default function TenantDetail() {
         {tab === "audit" && <AuditTab tenantName={t.name} />}
       </div>
     </>
+  );
+}
+
+function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useApp();
+  const optionsQ = useAsync(getOnboardingOptions, []);
+  const opts = optionsQ.data;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    name: tenant.name,
+    code: tenant.code ?? "",
+    status: tenant.status as string,
+    plan: tenant.plan as string,
+    region: tenant.region,
+    industry: tenant.industry,
+    aiProfile: tenant.aiProfileCode ?? "",
+    adminEmail: tenant.adminEmail,
+  });
+  const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  /* Keep the tenant's current value selectable even if it's missing from the option catalog. */
+  const withCurrent = (options: { code: string; name: string }[], current: string) =>
+    current && !options.some((o) => o.code === current) ? [{ code: current, name: current }, ...options] : options;
+
+  const save = async () => {
+    const diff: Parameters<typeof updateTenant>[1] = {};
+    if (form.name.trim() !== tenant.name) diff.name = form.name.trim();
+    if (form.code.trim() !== (tenant.code ?? "")) diff.code = form.code.trim();
+    if (form.status !== tenant.status) diff.status = form.status as Tenant["status"];
+    if (form.plan !== tenant.plan) diff.planCode = form.plan;
+    if (form.region !== tenant.region) diff.region = form.region;
+    if (form.industry !== tenant.industry) diff.industry = form.industry;
+    if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
+    if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
+    if (Object.keys(diff).length === 0) { onClose(); return; }
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateTenant(tenant.id, diff);
+      toast("Tenant updated");
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to update tenant");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Edit tenant"
+      sub="Platform-level tenant record. Changes take effect immediately."
+      wide
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="primary" icon="check" busy={busy} disabled={busy || !opts} onClick={save}>Save changes</Button>
+        </>
+      }
+    >
+      {optionsQ.loading ? (
+        <CardSkeleton rows={6} />
+      ) : optionsQ.error || !opts ? (
+        <ErrorState message={optionsQ.error ?? "Options could not be loaded"} onRetry={optionsQ.reload} />
+      ) : (
+        <div className="col gap-14">
+          {err && <Callout tone="critical" title="Update failed">{err}</Callout>}
+          <div className="grid grid-2">
+            <Field label="Tenant name">
+              <input className="input" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            </Field>
+            <Field label="Tenant code">
+              <input className="input" value={form.code} onChange={(e) => set("code", e.target.value)} />
+            </Field>
+            <Field label="Status">
+              <select className="select" value={form.status} onChange={(e) => set("status", e.target.value)}>
+                {["active", "trial", "suspended", "provisioning"].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Plan">
+              <select className="select" value={form.plan} onChange={(e) => set("plan", e.target.value)}>
+                {withCurrent(opts.plans, form.plan).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Data region">
+              <select className="select" value={form.region} onChange={(e) => set("region", e.target.value)}>
+                {withCurrent(opts.dataRegions, form.region).map((r) => <option key={r.code} value={r.code}>{r.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Industry">
+              <select className="select" value={form.industry} onChange={(e) => set("industry", e.target.value)}>
+                {withCurrent(opts.industries, form.industry).map((i) => <option key={i.code} value={i.code}>{i.name}</option>)}
+              </select>
+            </Field>
+            <Field label="AI profile">
+              <select className="select" value={form.aiProfile} onChange={(e) => set("aiProfile", e.target.value)}>
+                {form.aiProfile === "" && <option value="">— Not set —</option>}
+                {withCurrent(opts.aiProfiles, form.aiProfile).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Admin email">
+              <input className="input" type="email" value={form.adminEmail} onChange={(e) => set("adminEmail", e.target.value)} />
+            </Field>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

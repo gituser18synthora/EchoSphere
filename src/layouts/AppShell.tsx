@@ -35,6 +35,7 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
       {
         title: "Platform",
         items: [
+          { to: "/admin/platform-config", label: "Platform Configuration", icon: "settings" },
           { to: "/admin/governance", label: "AI Governance", icon: "brain" },
           { to: "/admin/voice", label: "Voice Platform", icon: "phone" },
           { to: "/admin/knowledge", label: "Knowledge", icon: "book" },
@@ -82,6 +83,7 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
 
 const crumbNames: Record<string, string> = {
   admin: "Super Admin", t: "Workspace", tenants: "Organizations",
+  "platform-config": "Platform Configuration", profile: "My Profile",
   onboarding: "Tenant Onboarding", subscriptions: "Subscriptions", billing: "Billing",
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
   knowledge: "Knowledge", workflows: "Workflows", monitoring: "Monitoring",
@@ -93,7 +95,7 @@ const crumbNames: Record<string, string> = {
 };
 
 export default function AppShell() {
-  const { user, signOut, theme, toggleTheme, toast } = useApp();
+  const { user, signOut, theme, toggleTheme } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -303,14 +305,18 @@ export default function AppShell() {
                   <div style={{ padding: "8px 10px" }}>
                     <div className="t-strong" style={{ fontSize: 13 }}>{user!.name}</div>
                     <div className="t-micro">{user!.email}</div>
-                    <div className="mt-8"><StatusChip status="active" label={user!.role === "super_admin" ? "Super Admin" : "Tenant Admin"} /></div>
+                    <div className="mt-8"><StatusChip status="active" label={user!.role === "super_admin" ? "Super Admin" : user!.role === "tenant_admin" ? "Tenant Admin" : "Tenant User"} /></div>
+                    {user!.tenantName && <div className="t-micro mt-8">{user!.tenantName}</div>}
                   </div>
                   <div className="menu-sep" />
+                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile"); }}>
+                    <Icon name="user" size={14} /> My profile
+                  </button>
+                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile", { state: { tab: "security" } }); }}>
+                    <Icon name="shield" size={14} /> Change password
+                  </button>
                   <button className="menu-item" onClick={() => { setProfileOpen(false); navigate("/login"); }}>
                     <Icon name="refresh" size={14} /> Switch role
-                  </button>
-                  <button className="menu-item" onClick={() => { setProfileOpen(false); toast("Profile settings coming with SSO integration", "info"); }}>
-                    <Icon name="user" size={14} /> Profile settings
                   </button>
                   <div className="menu-sep" />
                   <button className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>

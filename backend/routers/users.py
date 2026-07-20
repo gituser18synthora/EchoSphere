@@ -11,6 +11,7 @@ from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
     is_super_admin,
+    require_permission,
     require_tenant_admin,
     resolve_tenant_id,
 )
@@ -127,6 +128,179 @@ def create_user(
     if body.password is None:
         data["temporaryPassword"] = password
     return ok(data)
+
+
+# ── Own profile & password (declared before /users/{user_id} so "me" wins) ────
+
+
+class UpdateMyProfileRequest(BaseModel):
+    first_name: str | None = Field(default=None, alias="firstName", max_length=80)
+    last_name: str | None = Field(default=None, alias="lastName", max_length=80)
+    phone: str | None = Field(default=None, max_length=30)
+    avatar_url: str | None = Field(default=None, alias="avatarUrl", max_length=500)
+    locale: str | None = Field(default=None, max_length=15)
+    timezone: str | None = Field(default=None, max_length=64)
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+@router.patch("/users/me")
+def update_my_profile(
+    body: UpdateMyProfileRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from backend.serializers import serialize_user_public
+
+    before = {"name": user.name, "phone": user.phone, "locale": user.locale,
+              "timezone": user.timezone}
+    for field in ("phone", "avatar_url", "locale", "timezone"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(user, field, val)
+    if body.first_name is not None or body.last_name is not None:
+        first = (body.first_name if body.first_name is not None else
+                 user.first_name or user.name.split(" ")[0]).strip()
+        last = (body.last_name if body.last_name is not None else
+                user.last_name or " ".join(user.name.split(" ")[1:])).strip()
+        if not first:
+            raise ApiError("First name cannot be empty.", 422,
+                           errors=[{"field": "firstName", "message": "First name is required."}])
+        user.first_name = first
+        user.last_name = last
+        user.name = f"{first} {last}".strip()
+    user.updated_by = user.id
+    record_audit(
+        db, user=user, action="Updated own profile", entity_type="user",
+        entity_id=user.id, target_label=user.email, tenant_id=user.tenant_id,
+        previous_value=before,
+        new_value={"name": user.name, "phone": user.phone, "locale": user.locale,
+                   "timezone": user.timezone},
+        request=request,
+    )
+    db.commit()
+    return ok(serialize_user_public(user))
+
+
+# A small deny-list on top of composition rules — full breach-corpus checks
+# need external infrastructure that does not exist here.
+_WEAK_PASSWORDS = {
+    "password", "password1", "password123", "12345678", "123456789", "1234567890",
+    "qwerty123", "letmein123", "admin123", "welcome123", "abc12345", "iloveyou1",
+}
+
+
+def _validate_password_policy(password: str) -> None:
+    problems = []
+    if len(password) < 10:
+        problems.append("at least 10 characters")
+    if not any(c.islower() for c in password):
+        problems.append("a lowercase letter")
+    if not any(c.isupper() for c in password):
+        problems.append("an uppercase letter")
+    if not any(c.isdigit() for c in password):
+        problems.append("a digit")
+    if problems:
+        raise ApiError(
+            "Password must contain " + ", ".join(problems) + ".", 422,
+            errors=[{"field": "newPassword", "message": "Password policy not met."}],
+        )
+    if password.lower() in _WEAK_PASSWORDS:
+        raise ApiError(
+            "This password is too common — choose something less guessable.", 422,
+            errors=[{"field": "newPassword", "message": "Password is too common."}],
+        )
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(alias="currentPassword", min_length=1, max_length=200)
+    new_password: str = Field(alias="newPassword", min_length=1, max_length=128)
+    confirm_password: str = Field(alias="confirmPassword", min_length=1, max_length=128)
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/users/me/password")
+def change_my_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change own password. Invalidates every other session (tokens issued
+    before the change are rejected) and returns a fresh token so the current
+    session continues."""
+    from datetime import datetime, timezone as tz
+
+    from backend.core.security import create_access_token, hash_password, verify_password
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise ApiError("The current password is incorrect.", 400,
+                       errors=[{"field": "currentPassword", "message": "Incorrect password."}])
+    if body.new_password != body.confirm_password:
+        raise ApiError("The new password and confirmation do not match.", 422,
+                       errors=[{"field": "confirmPassword", "message": "Passwords do not match."}])
+    if body.new_password == body.current_password:
+        raise ApiError("The new password must be different from the current password.", 422,
+                       errors=[{"field": "newPassword", "message": "Must differ from current password."}])
+    _validate_password_policy(body.new_password)
+
+    user.password_hash = hash_password(body.new_password)
+    user.password_changed_at = datetime.now(tz.utc)
+    user.updated_by = user.id
+    # Never log the password — only the fact that it changed.
+    record_audit(
+        db, user=user, action="Changed own password", entity_type="user",
+        entity_id=user.id, target_label=user.email, tenant_id=user.tenant_id,
+        request=request,
+    )
+    db.commit()
+    token = create_access_token(user_id=user.id, role=user.role.code, tenant_id=user.tenant_id)
+    return ok({"changed": True, "token": token,
+               "message": "Password changed. Other sessions have been signed out."})
+
+
+@router.post("/users/{user_id}/reset-password")
+def admin_reset_password(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_permission("reset_user_password")),
+    db: Session = Depends(get_db),
+):
+    """Admin password reset: issues a one-time temporary password (returned
+    once, never stored in plain text, never emailed silently). The target's
+    existing sessions are invalidated."""
+    from datetime import datetime, timezone as tz
+
+    from backend.core.security import hash_password
+
+    row = db.get(User, user_id)
+    if row is None or row.is_deleted:
+        raise NotFoundError("User")
+    if row.tenant_id is not None:
+        assert_tenant_access(user, row.tenant_id)
+    elif not is_super_admin(user):
+        raise NotFoundError("User")
+    if row.role.code == SUPER_ADMIN and not is_super_admin(user):
+        raise ApiError("Only platform administrators can reset platform accounts.", 403)
+    if row.id == user.id:
+        raise ApiError("Use the change-password form for your own account.", 400)
+
+    import secrets
+
+    temp_password = secrets.token_urlsafe(12)
+    row.password_hash = hash_password(temp_password)
+    row.password_changed_at = datetime.now(tz.utc)
+    row.status = "invited"  # must rotate at next sign-in
+    row.updated_by = user.id
+    record_audit(
+        db, user=user, action="Reset user password", entity_type="user",
+        entity_id=row.id, target_label=row.email, tenant_id=row.tenant_id,
+        request=request,
+    )
+    db.commit()
+    return ok({"reset": True, "temporaryPassword": temp_password})
 
 
 class UpdateUserRequest(BaseModel):

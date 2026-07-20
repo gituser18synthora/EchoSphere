@@ -706,3 +706,62 @@
 .menu-item.danger { color: var(--status-critical); }
 .menu-item.danger:hover { background: var(--status-critical-bg); }
 .menu-sep { height: 1px; background: var(--hairline); margin: 5px 4px; }
+
+/* Add-knowledge dropzone & file rows (KnowledgeTab) */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 16px;
+  border: 1.5px dashed var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  text-align: center;
+  min-width: 0;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.dropzone-active {
+  border-color: var(--brand-500);
+  background: color-mix(in srgb, var(--brand-500) 9%, var(--surface-2));
+}
+.dropzone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.dropzone-active .dropzone-icon {
+  background: color-mix(in srgb, var(--brand-500) 18%, var(--surface-2));
+  color: var(--brand-400);
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  min-width: 0;
+}
+.file-row-main {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+}

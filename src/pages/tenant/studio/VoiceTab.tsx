@@ -3,9 +3,21 @@ import type { VoiceBot, VoiceProfile, VoiceTuning } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import { getVoiceCatalog, getVoiceSettings, listVoices, saveVoiceSettings } from "@/services/api";
 import { Button, CardSkeleton, EmptyState, StatusChip } from "@/components/ui";
+import { DataTable } from "@/components/DataTable";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+
+const VIEW_STORAGE_KEY = "echosphere.voiceView";
+type CatalogView = "cards" | "table";
+
+function initialView(): CatalogView {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+  } catch {
+    return "cards";
+  }
+}
 
 type EngineOverrides = {
   sttProvider: string; sttModel: string;
@@ -18,14 +30,17 @@ const emptyEngines: EngineOverrides = {
 };
 
 export default function VoiceTab({ bot }: { bot: VoiceBot }) {
-  const q = useAsync(listVoices, []);
+  const q = useAsync(() => listVoices(), []);
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
   const catalogQ = useAsync(getVoiceCatalog, []);
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const canManageVoices = hasPermission("manage_voices") || hasPermission("bots.manage");
   const [selected, setSelected] = useState(bot.voiceId ?? "");
   const [query, setQuery] = useState("");
   const [langFilter, setLangFilter] = useState("all");
+  const [providerFilter, setProviderFilter] = useState("all");
   const [genderFilter, setGenderFilter] = useState("all");
+  const [view, setView] = useState<CatalogView>(initialView);
   const [saving, setSaving] = useState(false);
   const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
   const [langMap, setLangMap] = useState<Record<string, string>>({});
@@ -56,9 +71,29 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
       v = v.filter((x) => x.name.toLowerCase().includes(s) || x.accent.toLowerCase().includes(s) || x.styles.some((st) => st.toLowerCase().includes(s)));
     }
     if (langFilter !== "all") v = v.filter((x) => x.languages.includes(langFilter));
+    if (providerFilter !== "all") v = v.filter((x) => (x.provider ?? "") === providerFilter);
     if (genderFilter !== "all") v = v.filter((x) => x.gender === genderFilter);
     return v;
-  }, [q.data, query, langFilter, genderFilter]);
+  }, [q.data, query, langFilter, providerFilter, genderFilter]);
+
+  /* Filter options come from the loaded catalog, not a hardcoded list */
+  const languageOptions = useMemo(
+    () => Array.from(new Set((q.data ?? []).flatMap((v) => v.languages))).sort(),
+    [q.data],
+  );
+  const providerOptions = useMemo(
+    () => Array.from(new Set((q.data ?? []).map((v) => v.provider).filter((p): p is string => Boolean(p)))).sort(),
+    [q.data],
+  );
+
+  const changeView = (next: CatalogView) => {
+    setView(next);
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      /* persistence is best-effort */
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -98,7 +133,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           </div>
           <select className="select" value={langFilter} onChange={(e) => setLangFilter(e.target.value)} aria-label="Filter by language">
             <option value="all">All languages</option>
-            {["en-US", "es-US", "en-GB", "fr-FR", "hi-IN", "vi-VN"].map((l) => <option key={l}>{l}</option>)}
+            {languageOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+          <select className="select" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)} aria-label="Filter by provider">
+            <option value="all">All providers</option>
+            {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
           <select className="select" value={genderFilter} onChange={(e) => setGenderFilter(e.target.value)} aria-label="Filter by gender">
             <option value="all">Any gender</option>
@@ -106,17 +145,59 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
             <option value="male">Male</option>
             <option value="neutral">Neutral</option>
           </select>
+          <div className="segmented" role="group" aria-label="Catalog view">
+            <button type="button" aria-pressed={view === "cards"} onClick={() => changeView("cards")}>
+              <Icon name="dashboard" size={13} /> Cards
+            </button>
+            <button type="button" aria-pressed={view === "table"} onClick={() => changeView("table")}>
+              <Icon name="menu" size={13} /> Table
+            </button>
+          </div>
         </div>
 
-        {q.loading && <div className="grid grid-2">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={3} />)}</div>}
-        {q.error && <EmptyState icon="alert" title="Couldn’t load voices" body={q.error} action={<Button icon="refresh" onClick={q.reload}>Retry</Button>} />}
-        {!q.loading && voices.length === 0 && <EmptyState icon="volume" title="No voices match" body="Loosen the language or gender filters." />}
+        {view === "table" ? (
+          <div className="card">
+            <DataTable
+              loading={q.loading} error={q.error} onRetry={q.reload} rows={voices}
+              empty={{ icon: "volume", title: "No voices match", body: "Loosen the search, language, provider or gender filters." }}
+              columns={[
+                {
+                  key: "name", header: "Voice name", sortValue: (v) => v.name,
+                  render: (v) => <div><span className="t-strong">{v.name}</span><div className="t-micro">{v.accent}</div></div>,
+                },
+                { key: "provider", header: "Provider", sortValue: (v) => v.provider ?? "", render: (v) => v.provider ? <span className="tag">{v.provider}</span> : <span className="t-micro">—</span> },
+                { key: "languages", header: "Languages", render: (v) => <span className="t-sub" style={{ fontSize: 12 }}>{v.languages.join(", ")}</span> },
+                { key: "locale", header: "Locale", sortValue: (v) => v.locale ?? "", render: (v) => v.locale ? <code style={{ fontSize: 12 }}>{v.locale}</code> : <span className="t-micro">—</span> },
+                { key: "gender", header: "Gender", sortValue: (v) => v.gender, render: (v) => <span style={{ textTransform: "capitalize" }}>{v.gender}</span> },
+                { key: "status", header: "Status", sortValue: (v) => v.status ?? "active", render: (v) => <StatusChip status={v.status ?? "active"} /> },
+                {
+                  key: "default", header: "Default", sortValue: (v) => (v.isDefault ? 1 : 0),
+                  render: (v) => v.isDefault ? <span className="chip chip-brand"><Icon name="star" size={11} />Default</span> : <span className="t-micro">—</span>,
+                },
+                { key: "rate", header: "Speaking rate", align: "right", sortValue: (v) => v.speakingRate ?? 1, render: (v) => <span className="t-num">{(v.speakingRate ?? 1).toFixed(2)}×</span> },
+                { key: "latency", header: "Latency", align: "right", sortValue: (v) => v.latencyMs, render: (v) => <span className="t-num">{v.latencyMs}ms</span> },
+                {
+                  key: "actions", header: "", width: 110,
+                  render: (v) => selected === v.id
+                    ? <StatusChip status="approved" label="Selected" />
+                    : <Button size="sm" onClick={(e) => { e.stopPropagation(); setSelected(v.id); }} aria-label={`Select ${v.name}`}>Select</Button>,
+                },
+              ]}
+            />
+          </div>
+        ) : (
+          <>
+            {q.loading && <div className="grid grid-2">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={3} />)}</div>}
+            {q.error && <EmptyState icon="alert" title="Couldn’t load voices" body={q.error} action={<Button icon="refresh" onClick={q.reload}>Retry</Button>} />}
+            {!q.loading && !q.error && voices.length === 0 && <EmptyState icon="volume" title="No voices match" body="Loosen the search, language, provider or gender filters." />}
 
-        <div className="grid grid-2">
-          {voices.map((v) => (
-            <VoiceCard key={v.id} voice={v} selected={selected === v.id} onSelect={() => setSelected(v.id)} />
-          ))}
-        </div>
+            <div className="grid grid-2">
+              {voices.map((v) => (
+                <VoiceCard key={v.id} voice={v} selected={selected === v.id} onSelect={() => setSelected(v.id)} />
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       <div className="col gap-16">
@@ -202,7 +283,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           </div>
         </div>
 
-        <Button variant="primary" icon="check" onClick={save} disabled={saving || settingsQ.loading}>
+        <Button
+          variant="primary" icon="check" onClick={save}
+          disabled={saving || settingsQ.loading || !canManageVoices}
+          title={canManageVoices ? undefined : "Requires the manage_voices permission"}
+        >
           {saving ? "Saving…" : "Save voice settings"}
         </Button>
       </div>
@@ -242,10 +327,14 @@ function VoiceCard({ voice, selected, onSelect }: { voice: VoiceProfile; selecte
           </button>
           <div>
             <span className="t-strong" style={{ fontSize: 14 }}>{voice.name}</span>
-            <div className="t-micro">{voice.accent} · {voice.gender}</div>
+            <div className="t-micro">{voice.provider ? `${voice.provider} · ` : ""}{voice.accent} · {voice.gender}</div>
           </div>
         </div>
-        {selected ? <StatusChip status="approved" label="Selected" /> : voice.premium ? <span className="chip chip-brand"><Icon name="sparkles" size={11} />Premium</span> : null}
+        <span className="row gap-4 wrap" style={{ justifyContent: "flex-end" }}>
+          {voice.isDefault && <span className="chip chip-brand"><Icon name="star" size={11} />Default</span>}
+          {voice.status && voice.status !== "active" && <StatusChip status={voice.status} />}
+          {selected ? <StatusChip status="approved" label="Selected" /> : voice.premium ? <span className="chip chip-brand"><Icon name="sparkles" size={11} />Premium</span> : null}
+        </span>
       </div>
       <p className="t-sub" style={{ fontSize: 12.5, fontStyle: "italic" }}>“{voice.sample}”</p>
       <div className="row-between t-micro">

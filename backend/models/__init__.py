@@ -34,6 +34,12 @@ from backend.models.content_models import (
     TestScenario,
     Workflow,
 )
+from backend.models.master_models import (
+    AiConfigProfile,
+    DataRegion,
+    Industry,
+    ProviderDef,
+)
 from backend.models.ops_models import (
     ApprovedModel,
     AuditLog,
@@ -56,4 +62,5 @@ __all__ = [
     "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
+    "Industry", "DataRegion", "AiConfigProfile", "ProviderDef",
 ]

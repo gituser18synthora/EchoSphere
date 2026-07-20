@@ -44,6 +44,14 @@ def get_current_user(
     if user is None or user.is_deleted or user.status == "deactivated":
         raise ApiError("Account is not active.", 401)
 
+    # Tokens issued before the last password change are no longer valid —
+    # this is how "sign out other sessions" works with stateless JWTs.
+    issued_at = payload.get("iat")
+    if user.password_changed_at is not None and issued_at is not None:
+        changed_ts = user.password_changed_at.replace(tzinfo=timezone.utc).timestamp()
+        if float(issued_at) < changed_ts - 1:  # 1s clock-skew grace
+            raise ApiError("Session expired — please sign in again.", 401)
+
     user.last_active_at = datetime.now(timezone.utc)
     db.commit()
     request.state.current_user = user
@@ -64,6 +72,26 @@ def require_roles(*role_codes: str):
 require_super_admin = require_roles(SUPER_ADMIN)
 require_tenant_member = require_roles(SUPER_ADMIN, TENANT_ADMIN, TENANT_USER)
 require_tenant_admin = require_roles(SUPER_ADMIN, TENANT_ADMIN)
+
+
+def has_permission(user: User, code: str) -> bool:
+    """True when the user's role carries the permission code (seeded via
+    role_permissions). Super admins are granted every permission in the seed,
+    so no implicit bypass is needed here."""
+    return any(p.code == code for p in user.role.permissions)
+
+
+def require_permission(*codes: str):
+    """Dependency factory: the user's role must hold at least one of the given
+    permission codes. This is the server-side enforcement — hidden frontend
+    buttons are never the security boundary."""
+
+    def _guard(user: User = Depends(get_current_user)) -> User:
+        if not any(has_permission(user, c) for c in codes):
+            raise ForbiddenError()
+        return user
+
+    return _guard
 
 
 def is_super_admin(user: User) -> bool:

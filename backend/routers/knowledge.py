@@ -12,6 +12,7 @@ from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
     is_super_admin,
+    require_permission,
     require_tenant_admin,
     resolve_tenant_id,
 )
@@ -80,7 +81,7 @@ class CreateKnowledgeRequest(BaseModel):
 def create_knowledge(
     body: CreateKnowledgeRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     if body.scope == "global":
@@ -100,6 +101,26 @@ def create_knowledge(
         assert_tenant_access(user, bot.tenant_id)
         tid = bot.tenant_id
 
+    # KB name: trimmed, non-empty, unique within the tenant (case-insensitive).
+    name = body.name.strip()
+    if not name:
+        raise ApiError("Knowledge base name is required.", 422,
+                       errors=[{"field": "name", "message": "Name is required."}])
+    duplicate = db.scalar(
+        select(KnowledgeSource).where(
+            KnowledgeSource.tenant_id == tid,
+            func.lower(KnowledgeSource.name) == name.lower(),
+            KnowledgeSource.is_deleted.is_(False),
+        )
+    )
+    if duplicate is not None:
+        raise ApiError(
+            f"A knowledge base named '{name}' already exists in this workspace. "
+            "Choose a different name.",
+            409, errors=[{"field": "name", "message": "Duplicate name."}],
+        )
+    body.name = name
+
     row = KnowledgeSource(
         id=new_id("ks"),
         tenant_id=tid,
@@ -108,7 +129,9 @@ def create_knowledge(
         type=body.type,
         name=body.name,
         detail=body.detail,
-        status="indexing",
+        # "pending" until the first document upload flips it to "indexing" —
+        # an empty KB is not "indexing" anything.
+        status="pending",
         size_kb=body.size_kb,
         created_by=user.id,
     )

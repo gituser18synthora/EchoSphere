@@ -25,6 +25,10 @@ interface AppState {
   user: SessionUser | null;
   signIn: (user: SessionUser, token: string) => void;
   signOut: () => void;
+  /** Merge fields into the stored session user (e.g. after a profile update). */
+  updateSessionUser: (patch: Partial<SessionUser>) => void;
+  /** Server-enforced permission code check — UI affordance only, never security. */
+  hasPermission: (code: string) => boolean;
   theme: "light" | "dark";
   toggleTheme: () => void;
   toasts: Toast[];
@@ -68,6 +72,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(USER_KEY);
   }, []);
 
+  const updateSessionUser = useCallback((patch: Partial<SessionUser>) => {
+    setUser((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      localStorage.setItem(USER_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const hasPermission = useCallback(
+    (code: string) => Boolean(user?.permissions?.includes(code)),
+    [user],
+  );
+
   const toggleTheme = useCallback(() => setTheme((t) => (t === "light" ? "dark" : "light")), []);
 
   const toast = useCallback((message: string, kind: Toast["kind"] = "good") => {
@@ -77,8 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, signIn, signOut, theme, toggleTheme, toasts, toast }),
-    [user, signIn, signOut, theme, toggleTheme, toasts, toast],
+    () => ({ user, signIn, signOut, updateSessionUser, hasPermission, theme, toggleTheme, toasts, toast }),
+    [user, signIn, signOut, updateSessionUser, hasPermission, theme, toggleTheme, toasts, toast],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

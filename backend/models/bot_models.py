@@ -82,22 +82,36 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     gender: Mapped[str] = mapped_column(String(10), default="neutral", nullable=False)
     languages: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    locale: Mapped[str | None] = mapped_column(String(15), nullable=True)
     accent: Mapped[str | None] = mapped_column(String(100), nullable=True)
     styles: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     premium: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sample_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    speaking_rate: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    pitch: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
 
 
-class SupportedLanguage(Base, TimestampMixin):
+class SupportedLanguage(Base, TimestampMixin, AuditByMixin):
     __tablename__ = "supported_languages"
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
     code: Mapped[str] = mapped_column(String(15), unique=True, nullable=False)  # e.g. en-US
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     native_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    iso_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # ISO 639-1/2, e.g. hi
+    script: Mapped[str | None] = mapped_column(String(50), nullable=True)  # e.g. Devanagari
+    direction: Mapped[str] = mapped_column(String(3), default="ltr", nullable=False)  # ltr | rtl
+    # Per-capability provider support: {"stt": ["deepgram", ...], "tts": [...], "llm": [...]}
+    # Platform listing does NOT imply every provider supports the language.
+    provider_support: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 

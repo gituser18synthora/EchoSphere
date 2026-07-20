@@ -12,13 +12,21 @@ export type Role = "super_admin" | "tenant_admin" | "tenant_user";
 export interface SessionUserInfo {
   id: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
   email: string;
+  phone?: string;
+  avatarUrl?: string;
+  locale?: string;
+  timezone?: string;
   role: Role;
   roleName: string;
   tenantId: string | null;
   tenantName?: string | null;
   permissions: string[];
   status: string;
+  lastLoginAt?: string | null;
+  passwordChangedAt?: string | null;
 }
 
 export interface RoleInfo {
@@ -124,9 +132,11 @@ export type PlanTier = "starter" | "growth" | "enterprise";
 export interface Tenant {
   id: string;
   name: string;
+  code?: string;
   domain: string;
   industry: string;
   region: string;
+  aiProfileCode?: string;
   plan: PlanTier;
   status: TenantStatus;
   createdAt: string;
@@ -138,6 +148,43 @@ export interface Tenant {
   aiCostMonth: number;
   health: Severity;
   adminEmail: string;
+  website?: string;
+  contactName?: string;
+  contactPhone?: string;
+  address?: string;
+  country?: string;
+}
+
+/* ---------- Tenant profile (field-level permissions) ---------- */
+
+export interface TenantProfile {
+  tenantId: string;
+  name: string;
+  displayName: string;
+  code: string;
+  domain: string;
+  industry: string;
+  website: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  address: string;
+  country: string;
+  timezone: string;
+  defaultLanguages: string[];
+  branding: Record<string, string>;
+  supportEmail: string;
+  supportPhone: string;
+  workingHours: Record<string, { open: string; close: string; closed?: boolean }>;
+  /* Read-only for Tenant Admin (Super Admin controlled) */
+  dataRegion: string;
+  dataRegionName: string;
+  dataRegionInfrastructureReady: boolean;
+  plan: string;
+  planName: string;
+  subscriptionStatus: string;
+  status: string;
+  aiProfileCode: string;
 }
 
 export interface Subscription {
@@ -279,12 +326,27 @@ export interface SearchTestResult {
 
 /* ---------- Prompts ---------- */
 
-export type PromptType = "greeting" | "fallback" | "escalation" | "closing" | "reprompt" | "hold";
-export type ApprovalState = "draft" | "pending_approval" | "approved";
+export type PromptType = "system" | "greeting" | "fallback" | "escalation" | "closing" | "reprompt" | "hold";
+export type ApprovalState = "draft" | "pending_approval" | "approved" | "rejected" | "published" | "archived";
 
 export interface PromptVariant {
   language: string;
   content: string;
+}
+
+/* Structured prompt configuration — compiled deterministically on the backend. */
+export interface StructuredPromptConfig {
+  identity?: { botName?: string; organizationName?: string; role?: string; sector?: string; responsibility?: string; allowedScope?: string };
+  conversationStart?: { initialGreeting?: string; inboundGreeting?: string; outboundGreeting?: string; afterHoursGreeting?: string; recordingConsent?: string; languageSelection?: string; identityVerification?: string; reasonForCall?: boolean };
+  behavior?: { tone?: string; formality?: string; style?: string; responseLength?: string; empathy?: string; confirmBeforeActions?: boolean; useCustomerName?: boolean; pronunciation?: string; numberReading?: string; dateReading?: string; currencyReading?: string };
+  knowledge?: { useKb?: boolean; whenToUse?: string; noAnswerBehavior?: string; citeSources?: boolean; confidenceThreshold?: number; askClarification?: boolean; transferOnNoAnswer?: boolean };
+  tools?: { allowedTools?: string[]; rules?: { tool: string; when?: string; requiredInfo?: string; confirmBefore?: boolean; onSuccess?: string; onFailure?: string; stateChanging?: boolean }[] };
+  recovery?: { firstClarification?: string; secondClarification?: string; maxClarificationAttempts?: number; repeatRequest?: string; rephraseStrategy?: string; fallbackMessage?: string; handoffThreshold?: number; silenceRetryCount?: number; lowSttConfidenceBehavior?: string };
+  safety?: { disallowed?: string[]; piiMasking?: boolean; authenticationRules?: string; financialAdvice?: boolean; medicalAdvice?: boolean; legalAdvice?: boolean; neverReveal?: string; escalationConditions?: string };
+  handoff?: { onExplicitRequest?: boolean; onRepeatedConfusion?: boolean; onNegativeSentiment?: boolean; onHighRisk?: boolean; onFailedVerification?: boolean; onFailedApi?: boolean; onNoKbAnswer?: boolean; onComplaint?: boolean; workingHoursBehavior?: string; queueUnavailableBehavior?: string };
+  closing?: { confirmResolution?: boolean; summarizeActions?: boolean; mentionReference?: boolean; askAnythingElse?: boolean; closingMessage?: string; surveyInvitation?: string; hangupDelaySeconds?: number; unresolvedClosing?: string; transferredClosing?: string };
+  special?: Record<string, string>;
+  advanced?: { instructions?: string };
 }
 
 export interface PromptVersion {
@@ -293,6 +355,9 @@ export interface PromptVersion {
   editedAt: string;
   note: string;
   variants: PromptVariant[];
+  structuredConfig?: StructuredPromptConfig | null;
+  compiledPrompt?: string | null;
+  modelCompatibility?: string[];
 }
 
 export interface Prompt {
@@ -300,10 +365,38 @@ export interface Prompt {
   botId: string;
   type: PromptType;
   name: string;
+  description?: string;
   variables: string[];
   state: ApprovalState;
   activeVersion: number;
+  publishedVersion?: number | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  publishedAt?: string | null;
   versions: PromptVersion[];
+}
+
+export interface PromptCompileResult {
+  compiled: string;
+  valid: boolean;
+  errors: { field: string; message: string }[];
+  characterCount: number;
+  tokenEstimate: number;
+}
+
+export interface PromptTestResult {
+  promptVersion: number;
+  language: string;
+  route: string;
+  matchedIntent: string | null;
+  intentConfidence: number;
+  usedKnowledgeBase: boolean;
+  sources: { documentName: string; score: number; text: string }[];
+  response: string;
+  latencyMs: number;
+  tokens: { input: number; output: number };
+  provider: string;
+  error: string | null;
 }
 
 /* ---------- Voice ---------- */
@@ -313,11 +406,21 @@ export interface VoiceProfile {
   name: string;
   gender: "female" | "male" | "neutral";
   languages: string[];
+  locale?: string;
   accent: string;
   styles: string[];
+  description?: string;
   latencyMs: number;
   premium: boolean;
   sample: string; // sample sentence
+  provider?: string;
+  providerVoiceId?: string;
+  speakingRate?: number;
+  pitch?: number;
+  isDefault?: boolean;
+  status?: string;
+  usageCount?: number;
+  updatedAt?: string;
 }
 
 export interface VoiceTuning {
@@ -333,25 +436,74 @@ export interface Intent {
   id: string;
   botId: string;
   name: string;
+  code?: string;
+  category?: string;
   description: string;
   samples: string[];
+  languages?: string[];
   confidenceThreshold: number;
   avgConfidence30d: number;
   route: string; // workflow / handover target
   entities: string[];
-  status: "active" | "needs_samples" | "disabled";
+  optionalEntities?: string[];
+  workflowId?: string | null;
+  apiConnectionId?: string | null;
+  kbIds?: string[];
+  priority?: number;
+  fallbackBehavior?: string;
+  handoffEnabled?: boolean;
+  status: "active" | "needs_samples" | "disabled" | "archived";
   version: number;
   testPass: number;
   testTotal: number;
+  updatedAt?: string;
+}
+
+export interface IntentTestResult {
+  utterance: string;
+  language: string;
+  route: string;
+  action: string | null;
+  matchedIntent: string | null;
+  confidence: number;
+  reason: string;
+  consideredKb: boolean;
+  workflowId: string | null;
+  apiConnectionId: string | null;
+  fallbackBehavior: string;
+  entities: EntityExtraction[];
+}
+
+export interface EntityExtraction {
+  name: string;
+  matched: boolean;
+  value: string | null;
+  maskedValue: string | null;
+  sensitive: boolean;
+  method: string;
 }
 
 export interface EntityDef {
   id: string;
   name: string;
-  kind: "system" | "custom" | "regex";
+  code?: string;
+  description?: string;
+  kind: "system" | "custom" | "regex" | "api";
+  dataType?: string;
+  languages?: string[];
+  synonyms?: Record<string, string[]>;
+  allowedValues?: string[];
+  regexPattern?: string;
+  validationRules?: Record<string, unknown>;
+  normalizationRules?: Record<string, unknown>;
+  maskingEnabled?: boolean;
+  requireConfirmation?: boolean;
+  retentionDays?: number | null;
   example: string;
   pii: boolean;
+  status?: string;
   usedBy: string[];
+  updatedAt?: string;
 }
 
 /* ---------- APIs ---------- */
@@ -360,17 +512,176 @@ export interface ApiConnection {
   id: string;
   botId?: string;
   name: string;
+  description?: string;
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
-  authType: "none" | "api_key" | "oauth2" | "bearer";
+  authType: "none" | "api_key" | "oauth2" | "bearer" | "basic";
   secretRef?: string; // masked reference, never a raw secret
+  headers?: Record<string, string>;
+  queryParams?: Record<string, string>;
+  pathParams?: Record<string, string>;
+  bodyTemplate?: Record<string, unknown> | null;
+  requestSchema?: Record<string, unknown> | null;
+  responseSchema?: Record<string, unknown> | null;
+  successCondition?: string;
+  successMessage?: string;
+  failureMessage?: string;
+  errorMapping?: Record<string, string>;
+  sensitiveMasks?: string[];
+  allowedIntents?: string[];
+  allowedWorkflows?: string[];
+  isStateChanging?: boolean;
+  requireConfirmation?: boolean;
   timeoutMs: number;
   retries: number;
   responseMapping: { from: string; to: string }[];
-  status: "healthy" | "degraded" | "failing" | "untested";
+  status: "healthy" | "degraded" | "failing" | "untested" | "disabled";
   lastTestedAt?: string;
   lastLatencyMs?: number;
   version: number;
+  updatedAt?: string;
+}
+
+export interface ApiTestResult {
+  ok: boolean;
+  latencyMs: number;
+  status: number;
+  contentType?: string;
+  body: string;
+  truncated?: boolean;
+  error?: string | null;
+  redirectedTo?: string | null;
+  headersSent?: Record<string, string>;
+  userMessage?: string | null;
+}
+
+/* ---------- Master data (Platform Configuration) ---------- */
+
+export interface MasterCommon {
+  id: string;
+  status: string;
+  usageCount: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+export interface IndustryMaster extends MasterCommon {
+  code: string;
+  name: string;
+  description: string;
+  icon: string;
+  sortOrder: number;
+}
+
+export interface DataRegionMaster extends MasterCommon {
+  code: string;
+  name: string;
+  description: string;
+  country: string;
+  region: string;
+  cloudProvider: string;
+  storageRegion: string;
+  databaseRegion: string;
+  recordingRegion: string;
+  transcriptRegion: string;
+  infrastructureReady: boolean;
+  sortOrder: number;
+}
+
+export interface PlanMaster extends MasterCommon {
+  code: string;
+  name: string;
+  description: string;
+  priceMonthly: number;
+  priceAnnual: number;
+  currency: string;
+  botLimit: number;
+  minutesIncluded: number;
+  seatsIncluded: number;
+  kbLimit: number;
+  storageGbIncluded: number;
+  languagesIncluded: number;
+  concurrentCallLimit: number;
+  monthlyCallLimit: number;
+  monthlyTokenLimit: number;
+  monthlyEmbeddingLimit: number;
+  recordingRetentionDays: number;
+  transcriptRetentionDays: number;
+  analyticsRetentionDays: number;
+  features: unknown;
+  overageRates: Record<string, number>;
+  isPublic: boolean;
+  isRecommended: boolean;
+  sortOrder: number;
+}
+
+export interface AiProfileMaster extends MasterCommon {
+  code: string;
+  name: string;
+  description: string;
+  sttProvider: string | null;
+  sttModel: string | null;
+  llmProvider: string | null;
+  llmModel: string | null;
+  ttsProvider: string | null;
+  ttsModel: string | null;
+  defaultVoice: string | null;
+  embeddingProvider: string | null;
+  embeddingModel: string | null;
+  embeddingDimension: number | null;
+  rerankingModel: string | null;
+  retrievalTopK: number;
+  retrievalThreshold: number;
+  temperature: number;
+  maxOutputTokens: number;
+  responseTimeoutMs: number;
+  fallbackProviders: unknown[];
+  costCategory: string;
+  sortOrder: number;
+}
+
+export interface ProviderMaster extends MasterCommon {
+  kind: "voice" | "stt" | "tts" | "llm" | "embedding";
+  code: string;
+  name: string;
+  description: string;
+  website: string;
+  requiresApiKey: boolean;
+  secretRef: string | null;
+  config: Record<string, unknown>;
+  sortOrder: number;
+}
+
+export interface LanguageMaster {
+  id: string;
+  code: string;
+  name: string;
+  nativeName: string | null;
+  isoCode: string;
+  script: string;
+  direction: "ltr" | "rtl";
+  providerSupport: { stt?: string[]; tts?: string[]; llm?: string[] };
+  isDefault: boolean;
+  enabled: boolean;
+  sortOrder: number;
+  usageCount: number;
+  updatedAt: string;
+}
+
+export interface OnboardingOptions {
+  industries: { code: string; name: string; icon: string }[];
+  dataRegions: { code: string; name: string; infrastructureReady: boolean }[];
+  plans: { code: string; name: string; description: string; priceMonthly: number; minutesIncluded: number; botLimit: number; seatsIncluded: number; isRecommended: boolean }[];
+  aiProfiles: { code: string; name: string; description: string; costCategory: string }[];
+  languages: { code: string; name: string; nativeName: string; direction: string }[];
+}
+
+export interface UploadConfig {
+  allowedExtensions: string[];
+  maxFileMb: number;
+  accept: string;
 }
 
 /* ---------- Workflows ---------- */

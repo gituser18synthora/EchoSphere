@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     ocr_min_page_chars: int = 120
     ingestion_worker_poll_seconds: float = 2.0
     ingestion_max_attempts: int = 3
+    # Run the ingestion worker inside the API process (dev/single-node default).
+    # Disable when running dedicated `python -m backend.workers.ingestion` workers.
+    ingestion_worker_embedded: bool = True
 
     # ── Providers (platform defaults; tenant/bot overrides in DB) ─
     stt_provider: str = "openai"
@@ -92,6 +95,13 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     llm_api_key_reference: str = "env:OPENAI_API_KEY"
     llm_model: str = "gpt-4o-mini"
+
+    # ── Outbound API connections (SSRF guard) ───────────────────
+    # Private/loopback targets are blocked unless explicitly allowed (dev/test).
+    api_connect_allow_private: bool = False
+    # Comma-separated host allowlist; empty = any public host.
+    api_connect_allowed_hosts: str = ""
+    api_connect_max_response_kb: int = 64
 
     # ── MCP server ───────────────────────────────────────────────
     mcp_enabled: bool = True
