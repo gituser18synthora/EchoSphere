@@ -727,15 +727,45 @@ export interface Workflow {
 
 /* ---------- Channels ---------- */
 
-export type ChannelType = "voice" | "whatsapp" | "web" | "mobile";
+export type ChannelType = "voice" | "whatsapp" | "web" | "mobile" | "sms";
+
+export interface ChannelTestCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+}
+
+/** What the channel routes to (resolved server-side from the bot). */
+export interface ChannelBinding {
+  tenantId: string;
+  botId: string;
+  botName: string;
+  botStatus: string;
+  publishedVersion: string | null;
+  systemPromptPublished: boolean;
+  knowledgeBases: number;
+  language: string;
+  voiceId: string | null;
+  sttProvider: string;
+  ttsProvider: string;
+  llmProvider: string;
+}
+
+/** Provider-specific fields; secret fields hold env: references, never raw secrets. */
+export type ChannelProviderConfig = Record<string, string | string[] | undefined>;
 
 export interface ChannelConfig {
+  id: string | null; // null until the slot is configured
   type: ChannelType;
   botId: string;
   status: "live" | "configured" | "testing" | "failed" | "not_configured";
-  detail: string; // number, url, sdk key ref
+  enabled: boolean;
+  detail: string; // server-derived summary (number, origin, sender id…)
   workflow: string;
-  lastTest?: { at: string; ok: boolean; message: string };
+  lastTest?: { at: string; ok: boolean; message: string; checks?: ChannelTestCheck[] } | null;
+  config: ChannelProviderConfig | null;
+  updatedAt?: string | null;
+  binding?: ChannelBinding | null;
 }
 
 /* ---------- Testing ---------- */

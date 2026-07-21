@@ -15,7 +15,7 @@ EchoSphere is multi-tenant at every layer. The invariants:
 | Entry point | Resolution |
 |---|---|
 | REST API | JWT claim `tenant_id` (`backend/core/deps.py`); client-supplied tenant ids are honored only for super admins (`resolve_tenant_id`) |
-| Voice worker WS | Redis `voice:session:{id}` mapping written by the authenticated API / signed webhook (`backend/voice_runtime/session.py`); the worker additionally verifies the session tenant matches the bot's tenant and closes 4403 on mismatch |
+| Voice worker WS | Redis `voice:session:{id}` mapping written by the authenticated API / signed webhook (`shared/voice_sessions.py`); the worker additionally verifies the session tenant matches the bot's tenant and closes 4403 on mismatch |
 | Telephony webhook | Signed payload → dialed number → MySQL `phone_numbers` (`status='assigned'`) → bot → tenant (`resolve_bot_for_phone_number`) |
 | MCP server | JWT bearer token only; middleware stashes `tenant_id` in a contextvar (`backend/mcp_server/server.py`) — tool arguments cannot override it |
 
@@ -34,7 +34,7 @@ MySQL `knowledge_sources.scope`:
 
 `resolve_bot_config` collects a bot's usable KBs as: its own bot-scoped sources +
 tenant-scoped sources of its tenant + global sources, restricted to status
-`indexed`/`stale` (`backend/voice_runtime/bot_config.py`).
+`indexed`/`stale` (`shared/bot_config.py`).
 
 ## The authorization choke point
 
@@ -48,7 +48,7 @@ flowchart TD
     S -->|"SQL: kb_id IN authorized + tenant clause + active + not deleted"| PG[("PostgreSQL")]
 ```
 
-`KnowledgeService.authorize_kb_ids` (`backend/knowledge/service.py`) resolves the
+`KnowledgeService.authorize_kb_ids` (`shared/knowledge/service.py`) resolves the
 three retrieval modes (single id / list / `None` = all authorized):
 
 - ownership: `tenant_id == caller's tenant` **or** `scope='global'`
@@ -70,7 +70,7 @@ cannot leak cross-tenant chunks.
   tenant (or is global / caller is super admin); upload requires KB ownership first.
 - **Storage**: originals live under `storage/knowledge/{tenant|_global}/{kb}/{doc}` —
   ids are server-generated and each path segment is validated
-  (`backend/knowledge/ingestion/storage.py`).
+  (`shared/knowledge/ingestion/storage.py`).
 - **Voice sessions**: `POST /api/v1/voice-sessions` asserts bot ownership
   (`assert_tenant_access`) before issuing the session.
 - **Bot config cache**: Redis keys are tenant-scoped (`botcfg:{tenant}:{bot}`); the
@@ -84,11 +84,11 @@ cannot leak cross-tenant chunks.
 
 ## Test coverage
 
-- `backend/tests/integration/test_api_security.py` (13): cross-tenant KB/document
+- `tests/integration/test_api_security.py` (13): cross-tenant KB/document
   access via REST returns 404, upload authorization, role enforcement.
-- `backend/tests/integration/test_knowledge_service.py` (12): authorize_kb_ids modes,
+- `tests/integration/test_knowledge_service.py` (12): authorize_kb_ids modes,
   foreign/deleted id sanitization, global scope behavior.
-- `backend/tests/integration/test_mcp_isolation.py` (5): tenant isolation through the
+- `tests/integration/test_mcp_isolation.py` (5): tenant isolation through the
   MCP tool layer.
-- `backend/tests/integration/test_pgvector_store.py` (7): the store-level tenant
+- `tests/integration/test_pgvector_store.py` (7): the store-level tenant
   filter (defense in depth) on reads and writes.

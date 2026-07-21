@@ -11,11 +11,11 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.config import get_settings
-from backend.core.ids import new_id
+from shared.config import get_settings
+from shared.ids import new_id
 from backend.core.security import hash_password
-from backend.db.mysql import get_sessionmaker
-from backend.models import (
+from shared.db.mysql import get_sessionmaker
+from shared.models import (
     AiConfigProfile,
     ApprovedModel,
     DataRegion,
@@ -89,6 +89,8 @@ PERMISSIONS = [
     ("manage_entities", "Manage entities", "tenant"),
     ("manage_api_connections", "Manage API connections", "tenant"),
     ("test_api_connections", "Test API connections", "tenant"),
+    # Channels
+    ("manage_channels", "Manage deployment channels", "tenant"),
 ]
 
 ROLE_PERMISSIONS = {
@@ -103,6 +105,7 @@ ROLE_PERMISSIONS = {
         "manage_prompts", "approve_prompts", "publish_prompts",
         "manage_voices", "manage_intents", "manage_entities",
         "manage_api_connections", "test_api_connections",
+        "manage_channels",
     ],
     "tenant_user": [
         "bots.view", "knowledge.view", "conversations.view", "analytics.view",

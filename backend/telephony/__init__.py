@@ -1,8 +1,7 @@
-"""Telephony integration: webhook verification, inbound call routing and the
-provider media-stream bridges (FreeSWITCH, Twilio, Telnyx, Plivo, Exotel).
+"""Control-plane telephony: webhook signature verification and replay
+protection for inbound-call routing (number → tenant → bot → session).
 
-Media serializers come from Pipecat; this package adds EchoSphere's routing
-(number → tenant → bot → published config), signature verification and
-session issuance. Providers that need external accounts are structurally
-complete and covered by provider-mocked tests.
+The provider catalog/connect-instruction contract lives in
+``shared/telephony.py``; media-stream serializers are runtime-only and live
+in ``voice_runtime/telephony.py``.
 """

@@ -2,9 +2,9 @@
 
 ```bash
 env/bin/python -m pytest -m "not perf"         # main suite (122 tests: unit + integration)
-env/bin/python -m pytest backend/tests/unit    # unit only (no services needed)
+env/bin/python -m pytest tests/unit    # unit only (no services needed)
 env/bin/python -m pytest -m integration        # integration only
-env/bin/python -m pytest backend/tests/perf -m perf -s   # perf measurements (5, slow)
+env/bin/python -m pytest tests/perf -m perf -s   # perf measurements (5, slow)
 npm run typecheck                              # frontend types
 npm run build                                  # typecheck + production bundle
 ```
@@ -12,7 +12,7 @@ npm run build                                  # typecheck + production bundle
 A bare `env/bin/python -m pytest` collects all 127 (main + perf); deselect perf as
 above for a fast run.
 
-Configuration is in `pytest.ini`: `testpaths = backend/tests`, `asyncio_mode = auto`,
+Configuration is in `pytest.ini`: `testpaths = tests`, `asyncio_mode = auto`,
 session-scoped default event loop, markers `integration` and `perf`.
 
 ## Philosophy
@@ -20,17 +20,17 @@ session-scoped default event loop, markers `integration` and `perf`.
 - **Integration tests run against the real local services** (MySQL, PostgreSQL,
   Redis, MongoDB) but only ever create and delete their **own uniquely-prefixed
   rows** (`tn_test_*`, `ks_test_*`, …) — no truncation, no resets, safe to run
-  against a dev database (`backend/tests/conftest.py`, `ControlPlaneFactory`).
+  against a dev database (`tests/conftest.py`, `ControlPlaneFactory`).
 - **No external keys needed**: embeddings use the deterministic mock provider
   (`EMBEDDING_PROVIDER=mock` semantics via `MockEmbeddingProvider(dimension=1536)`),
   and voice tests use mock STT/TTS/LLM providers.
 - `conftest.py` sets `ECHOSPHERE_TEST_NULLPOOL=1` so asyncpg connections are not
   pooled across the multiple event loops pytest + TestClient create
-  (see `backend/db/postgres.py`).
+  (see `shared/db/postgres.py`).
 
 ## Suite layout (122 tests)
 
-### Unit (`backend/tests/unit/`, 81)
+### Unit (`tests/unit/`, 81)
 
 | File | Tests | Covers |
 |---|---|---|
@@ -43,7 +43,7 @@ session-scoped default event loop, markers `integration` and `perf`.
 | `test_webhook_verification.py` | 7 | Twilio + generic HMAC schemes, skew, replay |
 | `test_workflow_engine.py` | 4 | booking flow, re-ask/handoff, checkpoint resume, session isolation |
 
-### Integration (`backend/tests/integration/`, 41)
+### Integration (`tests/integration/`, 41)
 
 | File | Tests | Covers |
 |---|---|---|
@@ -56,7 +56,7 @@ session-scoped default event loop, markers `integration` and `perf`.
 
 ## Performance suite
 
-`backend/tests/perf/test_performance.py` (5 tests) seeds a 5,000-chunk KB once and
+`tests/perf/test_performance.py` (5 tests) seeds a 5,000-chunk KB once and
 prints real latencies; assertions are only generous sanity ceilings so CI noise does
 not flap. Measured 2026-07-17 on local dev (WSL2):
 

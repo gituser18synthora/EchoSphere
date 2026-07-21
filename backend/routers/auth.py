@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import get_current_user
-from backend.core.errors import ApiError
+from shared.errors import ApiError
 from backend.core.responses import ok
 from backend.core.security import create_access_token, verify_password
-from backend.db.mysql import get_db
-from backend.models import Tenant, User
+from shared.db.mysql import get_db
+from shared.models import Tenant, User
 from backend.serializers import serialize_user_public
 
 router = APIRouter(prefix="/auth", tags=["Auth"])

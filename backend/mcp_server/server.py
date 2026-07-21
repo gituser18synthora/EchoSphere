@@ -26,10 +26,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from backend.config import get_settings
-from backend.core.errors import ApiError, NotFoundError
+from shared.config import get_settings
+from shared.errors import ApiError, NotFoundError
 from backend.core.security import decode_access_token
-from backend.knowledge.schemas import RetrievalRequest
+from shared.knowledge.schemas import RetrievalRequest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger("backend.mcp")
@@ -66,7 +66,7 @@ def _tenant_id() -> str | None:
 
 
 async def _rate_limit(tenant_id: str | None) -> None:
-    from backend.db.redis import get_redis
+    from shared.db.redis import get_redis
 
     key = f"mcp:rate:{tenant_id or '_platform'}:{int(time.time() // 60)}"
     try:
@@ -83,9 +83,9 @@ async def _rate_limit(tenant_id: str | None) -> None:
 
 
 def _audit_sync(tenant_id: str | None, user_id: str | None, tool: str, detail: dict) -> None:
-    from backend.core.ids import new_id
-    from backend.db.mysql import get_sessionmaker
-    from backend.models import AuditLog
+    from shared.ids import new_id
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import AuditLog
 
     session = get_sessionmaker()()
     try:
@@ -137,7 +137,7 @@ async def list_authorized_knowledge_bases() -> dict:
     """List the knowledge bases the authenticated tenant may search."""
     try:
         tenant_id, _ = await _guard("list_authorized_knowledge_bases")
-        from backend.knowledge.service import KnowledgeService
+        from shared.knowledge.service import KnowledgeService
 
         rows = await asyncio.to_thread(
             KnowledgeService._query_authorized_kbs, tenant_id, None, None, True
@@ -173,7 +173,7 @@ async def search_knowledge(
         if not 1 <= int(top_k) <= 20:
             raise ApiError("top_k must be between 1 and 20", status_code=422)
         tenant_id, _ = await _guard("search_knowledge", kb_id=str(kb_id))
-        from backend.knowledge.service import get_knowledge_service
+        from shared.knowledge.service import get_knowledge_service
 
         request = RetrievalRequest(
             tenant_id=tenant_id,
@@ -196,7 +196,7 @@ async def get_knowledge_source(kb_id: str) -> dict:
     """Get one knowledge base's metadata and its document ingestion statuses."""
     try:
         tenant_id, _ = await _guard("get_knowledge_source", kb_id=kb_id)
-        from backend.knowledge.service import get_knowledge_service
+        from shared.knowledge.service import get_knowledge_service
 
         service = get_knowledge_service()
         await service.authorize_kb_ids(
@@ -223,9 +223,9 @@ async def get_document_context(document_id: str, chunk_id: str, window: int = 1)
         tenant_id, _ = await _guard("get_document_context", document_id=document_id)
         from sqlalchemy import select
 
-        from backend.db.postgres import get_pg_sessionmaker
-        from backend.knowledge.models import KnowledgeChunk
-        from backend.knowledge.service import get_knowledge_service
+        from shared.db.postgres import get_pg_sessionmaker
+        from shared.knowledge.models import KnowledgeChunk
+        from shared.knowledge.service import get_knowledge_service
 
         # Ownership check through the document's KB.
         doc = await get_knowledge_service().get_document(
@@ -304,7 +304,7 @@ def build_app():
     app.add_middleware(JWTAuthMiddleware)
 
     async def health(request):
-        from backend.db.postgres import pg_health_check
+        from shared.db.postgres import pg_health_check
 
         return JSONResponse({"status": "up", "postgres": await pg_health_check()})
 

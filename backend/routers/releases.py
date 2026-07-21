@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import assert_tenant_access, get_current_user, require_tenant_admin
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import Release, TestScenario, User, VoiceBot
+from shared.db.mysql import get_db
+from shared.models import Release, TestScenario, User, VoiceBot
 from backend.serializers import serialize_release
 
 router = APIRouter(tags=["Releases"])
@@ -173,7 +173,7 @@ def update_release_stage(
     db.commit()
     if body.stage in ("published", "rolled_back"):
         # Live calls pin their config at start; new calls must see this release.
-        from backend.voice_runtime.bot_config import invalidate_bot_config_sync
+        from shared.bot_config import invalidate_bot_config_sync
 
         invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok(serialize_release(row))

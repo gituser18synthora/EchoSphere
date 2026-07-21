@@ -11,8 +11,8 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from backend.config import get_settings
-from backend.knowledge.models import PGBase
+from shared.config import get_settings
+from shared.knowledge.models import PGBase
 
 config = context.config
 

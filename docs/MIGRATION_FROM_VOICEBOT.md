@@ -26,13 +26,13 @@ provider adapters read the same `*_API_KEY` env vars.
 
 ## What was migrated (with bug fixes)
 
-### STT/TTS/LLM adapters → `backend/providers/`
+### STT/TTS/LLM adapters → `shared/providers/`
 
 Each adapter was rewritten against the typed provider interface
-(`backend/providers/base.py`) and registered in `backend/providers/factory.py`.
+(`shared/providers/base.py`) and registered in `shared/providers/factory.py`.
 Bugs fixed during the port:
 
-| Provider | Legacy defect | Fix in `backend/providers/` |
+| Provider | Legacy defect | Fix in `shared/providers/` |
 |---|---|---|
 | Deepgram STT | invalid SDK call (method didn't exist in the pinned SDK) | direct httpx REST implementation (`stt/deepgram.py`) |
 | Google TTS | language hardcoded to `en-US` regardless of bot config | uses the configured language (`tts/google_tts.py`) |
@@ -40,11 +40,11 @@ Bugs fixed during the port:
 | Azure TTS | shared mutable speech config raced across concurrent calls | per-call configuration (`tts/azure_tts.py`) |
 | AssemblyAI STT | API key set on a global module singleton | per-instance key (`stt/assemblyai.py`) |
 | Sarvam | Odia language code `od-IN` (invalid) | corrected to `or-IN` |
-| Audio utils | three duplicate pure-Python resamplers | one numpy implementation, `backend/voice_runtime/audio/pcm.py` |
+| Audio utils | three duplicate pure-Python resamplers | one numpy implementation, `shared/audio/pcm.py` |
 
 ### Text processing
 
-`tts_text.py` + `sentence_splitter.py` → `backend/voice_runtime/audio/text.py`
+`tts_text.py` + `sentence_splitter.py` → `shared/audio/text.py`
 (pure functions, stdlib only, Indic-script aware: Devanagari danda handling,
 abbreviation-safe sentence splitting, lead-in merging).
 
@@ -53,7 +53,7 @@ abbreviation-safe sentence splitting, lead-in merging).
 The `orchestrator` / `rag_router` / `intent_engine` trio was not ported line-by-line;
 its **design** (domain-word gating, smalltalk skip-lists, intent sample voting,
 call-control precedence) was carried into a stateless rewrite:
-`backend/orchestration/router.py` (`TurnRouter`) + `backend/voice_runtime/brain.py`
+`shared/orchestration/router.py` (`TurnRouter`) + `voice_runtime/brain.py`
 (`ConversationBrain`). See [VOICE_RUNTIME.md](VOICE_RUNTIME.md).
 
 ## What was dropped, and why
@@ -63,7 +63,7 @@ call-control precedence) was carried into a stateless rewrite:
 | `config_layer/` + `api/` tab1–tab7 Mongo config APIs | superseded by the backend's MySQL bot configuration (`voice_bots`, `voice_bot_settings`, prompts, intents) and `resolve_bot_config` |
 | sounddevice microphone harnesses | superseded by Pipecat transports (browser WS + telephony serializers) |
 | `mcp/mcp_client.py` | duplicate MCP client; the platform now ships an MCP **server** (`backend/mcp_server/`), and the voice runtime calls `KnowledgeService` in-process |
-| `adapters/rag/pgvector_rag.py` | orphaned (nothing imported it); superseded by the knowledge plane (`backend/knowledge/`) |
+| `adapters/rag/pgvector_rag.py` | orphaned (nothing imported it); superseded by the knowledge plane (`shared/knowledge/`) |
 | usage publisher | coupled to a `messaging` package that does not exist in the repo |
 | RabbitMQ-era code | broken/unreferenced; background work now uses the Postgres job queue |
 
@@ -71,13 +71,13 @@ call-control precedence) was carried into a stateless rewrite:
 
 | Legacy (`VoiceBot/`) | Current |
 |---|---|
-| `adapters/stt/*`, `adapters/tts/*`, `adapters/llm/*` | `backend/providers/{stt,tts,llm}/` |
-| `adapters/audio_utils.py`, `audio/pcm_utils.py` | `backend/voice_runtime/audio/pcm.py` |
-| `audio/tts_text.py`, `audio/sentence_splitter.py` | `backend/voice_runtime/audio/text.py` |
-| orchestrator / rag_router / intent_engine | `backend/orchestration/router.py` + `backend/voice_runtime/brain.py` |
-| FreeSWITCH integration | `backend/telephony/freeswitch.py` (ESL) + `RawPCMSerializer` media path |
+| `adapters/stt/*`, `adapters/tts/*`, `adapters/llm/*` | `shared/providers/{stt,tts,llm}/` |
+| `adapters/audio_utils.py`, `audio/pcm_utils.py` | `shared/audio/pcm.py` |
+| `audio/tts_text.py`, `audio/sentence_splitter.py` | `shared/audio/text.py` |
+| orchestrator / rag_router / intent_engine | `shared/orchestration/router.py` + `voice_runtime/brain.py` |
+| FreeSWITCH integration | `voice_runtime/freeswitch.py` (ESL) + `RawPCMSerializer` media path |
 | Mongo `voicebot_configs` | MySQL bot config + Redis `botcfg:*` snapshot cache |
-| `VoiceBot/tests` (failed collection) | `backend/tests/` — 122 passing tests, see [TESTING.md](TESTING.md) |
+| `VoiceBot/tests` (failed collection) | `tests/` — 122 passing tests, see [TESTING.md](TESTING.md) |
 
 ## Behavioral differences to be aware of
 

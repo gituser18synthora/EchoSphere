@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from backend.core.deps import require_super_admin
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.db.mysql import get_db
-from backend.models import Invoice, Plan, Subscription, Tenant, UsageRecord, User
+from shared.db.mysql import get_db
+from shared.models import Invoice, Plan, Subscription, Tenant, UsageRecord, User
 from backend.serializers import serialize_invoice, serialize_plan, serialize_subscription
 
 router = APIRouter(tags=["Billing"])

@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from backend.core.deps import get_current_user, require_super_admin, resolve_tenant_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import (
+from shared.db.mysql import get_db
+from shared.models import (
     ApiConnection,
     ChannelConfig,
     ConversationSession,

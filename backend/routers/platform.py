@@ -12,11 +12,11 @@ from backend.core.deps import (
     is_super_admin,
     require_super_admin,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import (
+from shared.db.mysql import get_db
+from shared.models import (
     ApprovedModel,
     Guardrail,
     HealthMetric,

@@ -103,5 +103,5 @@ long-lived clients must refresh the header.
 ## Tests
 
 Tenant-isolation behavior is covered by
-`backend/tests/integration/test_mcp_isolation.py` (5 tests): tenants only list/search
+`tests/integration/test_mcp_isolation.py` (5 tests): tenants only list/search
 their own KBs, explicit foreign kb_ids return `not_found`, errors stay sanitized.

@@ -10,14 +10,14 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.config import get_settings
+from shared.config import get_settings
 from backend.core.audit import record_audit
 from backend.core.deps import assert_tenant_access, get_current_user
-from backend.core.errors import ApiError, NotFoundError
+from shared.errors import ApiError, NotFoundError
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import User, VoiceBot
-from backend.voice_runtime.session import create_voice_session
+from shared.db.mysql import get_db
+from shared.models import User, VoiceBot
+from shared.voice_sessions import create_voice_session
 
 router = APIRouter(tags=["Voice Sessions"])
 

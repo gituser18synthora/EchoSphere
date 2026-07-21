@@ -1,17 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listBots, listChannels } from "@/services/api";
-import { CardSkeleton, EmptyState, ErrorState, StatusChip } from "@/components/ui";
-import { Icon, type IconName } from "@/components/Icon";
-import type { ChannelConfig, ChannelType } from "@/types/domain";
-
-const meta: Record<ChannelType, { icon: IconName; name: string }> = {
-  voice: { icon: "phone", name: "Voice" },
-  whatsapp: { icon: "whatsapp", name: "WhatsApp" },
-  web: { icon: "monitor", name: "Web widget" },
-  mobile: { icon: "smartphone", name: "Mobile SDK" },
-};
+import { listBots } from "@/services/api";
+import { Button, CardSkeleton, EmptyState, ErrorState } from "@/components/ui";
+import ChannelsTab from "@/pages/tenant/studio/ChannelsTab";
 
 export default function Channels() {
   const botsQ = useAsync(listBots, []);
@@ -20,7 +12,7 @@ export default function Channels() {
 
   const bots = (botsQ.data ?? []).filter((b) => b.status !== "archived");
   const selectedId = botId || bots[0]?.id || "";
-  const chQ = useAsync(() => (selectedId ? listChannels(selectedId) : Promise.resolve([] as ChannelConfig[])), [selectedId]);
+  const bot = bots.find((b) => b.id === selectedId);
 
   if (botsQ.loading) {
     return (
@@ -49,40 +41,21 @@ export default function Channels() {
         </div>
       ) : (
         <>
-          <div className="filter-bar">
+          <div className="filter-bar row-between">
             <select className="select" value={selectedId} onChange={(e) => setBotId(e.target.value)} aria-label="Select bot">
               {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
+            {bot && (
+              <Button variant="ghost" icon="external" onClick={() => navigate(`/t/bots/${bot.id}/channels`)}>
+                Open in Studio
+              </Button>
+            )}
           </div>
-          {chQ.loading && <CardSkeleton rows={4} />}
-          {chQ.error && <ErrorState message={chQ.error} onRetry={chQ.reload} />}
-          {!chQ.loading && !chQ.error && ((chQ.data ?? []).length === 0 ? (
-            <div className="card">
-              <EmptyState icon="plug" title="No channels configured" body="Open this bot in Studio to configure voice, WhatsApp, web or mobile." />
-            </div>
-          ) : (
-            <div className="card">
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr><th>Channel</th><th>Status</th><th>Endpoint</th><th>Workflow</th><th>Last test</th></tr>
-                  </thead>
-                  <tbody>
-                    {(chQ.data ?? []).map((c) => (
-                      <tr key={c.type} className="row-click" onClick={() => navigate(`/t/bots/${selectedId}/channels`)}>
-                        <td><span className="row gap-8"><Icon name={meta[c.type].icon} size={14} /><span className="t-strong">{meta[c.type].name}</span></span></td>
-                        <td><StatusChip status={c.status} /></td>
-                        <td className="t-sub">{c.detail || "—"}</td>
-                        <td className="t-sub">{c.workflow || "—"}</td>
-                        <td className="t-sub">{c.lastTest ? `${new Date(c.lastTest.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${c.lastTest.ok ? "passed" : "failed"}` : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-          <p className="t-micro mt-12">Click a row to configure this bot's channels in Studio. A failed channel never receives traffic — calls fall back to the voice line where configured.</p>
+          {bot && <ChannelsTab bot={bot} />}
+          <p className="t-micro mt-12">
+            Configure each channel's provider, credentials (as environment references) and routing here,
+            then run a connection test. A deactivated or failed channel never receives live traffic.
+          </p>
         </>
       )}
     </>
@@ -94,7 +67,7 @@ function PageHead() {
     <div className="page-head">
       <div className="page-head-titles">
         <h1 className="page-title">Channels</h1>
-        <p className="page-sub">Deployment status of every bot across voice, WhatsApp, web and mobile</p>
+        <p className="page-sub">Configure and deploy every bot across voice, WhatsApp, web, mobile and SMS</p>
       </div>
     </div>
   );

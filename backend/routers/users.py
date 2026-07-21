@@ -15,14 +15,14 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.security import hash_password
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import Permission, Role, User, VoiceBot
+from shared.db.mysql import get_db
+from shared.models import Permission, Role, User, VoiceBot
 from backend.serializers import serialize_role, serialize_team_member
 
 router = APIRouter(tags=["Users & Roles"])
@@ -261,16 +261,33 @@ def change_my_password(
                "message": "Password changed. Other sessions have been signed out."})
 
 
+class AdminResetPasswordRequest(BaseModel):
+    """Optional body: when a new password is supplied the admin chooses it
+    directly; when omitted a one-time temporary password is issued."""
+
+    new_password: str | None = Field(default=None, alias="newPassword", max_length=128)
+    confirm_password: str | None = Field(default=None, alias="confirmPassword", max_length=128)
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
 @router.post("/users/{user_id}/reset-password")
 def admin_reset_password(
     user_id: str,
     request: Request,
+    body: AdminResetPasswordRequest | None = None,
     user: User = Depends(require_permission("reset_user_password")),
     db: Session = Depends(get_db),
 ):
-    """Admin password reset: issues a one-time temporary password (returned
-    once, never stored in plain text, never emailed silently). The target's
-    existing sessions are invalidated."""
+    """Admin password reset. Two modes, one security path:
+
+    - With ``newPassword``/``confirmPassword``: sets the chosen password after
+      match + policy validation (used by Edit Tenant → reset tenant admin).
+    - Without a body: issues a one-time temporary password (returned once).
+
+    Either way the plain text is never stored or logged, and the target's
+    existing sessions are invalidated (tokens issued before the change are
+    rejected via ``password_changed_at``)."""
     from datetime import datetime, timezone as tz
 
     from backend.core.security import hash_password
@@ -287,20 +304,42 @@ def admin_reset_password(
     if row.id == user.id:
         raise ApiError("Use the change-password form for your own account.", 400)
 
-    import secrets
+    chosen = body is not None and (
+        body.new_password is not None or body.confirm_password is not None
+    )
+    if chosen:
+        if not body.new_password or body.new_password != body.confirm_password:
+            raise ApiError(
+                "The new password and confirmation do not match.", 422,
+                errors=[{"field": "confirmPassword", "message": "Passwords do not match."}],
+            )
+        _validate_password_policy(body.new_password)
+        row.password_hash = hash_password(body.new_password)
+        # An explicitly chosen password is a real credential — no forced
+        # rotation; invited accounts become active, deactivated stay locked.
+        if row.status == "invited":
+            row.status = "active"
+        response: dict = {"reset": True, "sessionsInvalidated": True}
+    else:
+        import secrets
 
-    temp_password = secrets.token_urlsafe(12)
-    row.password_hash = hash_password(temp_password)
+        temp_password = secrets.token_urlsafe(12)
+        row.password_hash = hash_password(temp_password)
+        row.status = "invited"  # must rotate at next sign-in
+        response = {"reset": True, "sessionsInvalidated": True,
+                    "temporaryPassword": temp_password}
+
     row.password_changed_at = datetime.now(tz.utc)
-    row.status = "invited"  # must rotate at next sign-in
     row.updated_by = user.id
     record_audit(
         db, user=user, action="Reset user password", entity_type="user",
         entity_id=row.id, target_label=row.email, tenant_id=row.tenant_id,
+        new_value={"method": "admin-set" if chosen else "temporary",
+                   "sessionsInvalidated": True},
         request=request,
     )
     db.commit()
-    return ok({"reset": True, "temporaryPassword": temp_password})
+    return ok(response)
 
 
 class UpdateUserRequest(BaseModel):

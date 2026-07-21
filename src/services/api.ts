@@ -7,7 +7,7 @@
 
 import type {
   AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent,
-  ChannelConfig, Conversation, DocumentStatus, DocumentUploadResult, EntityDef,
+  ChannelConfig, ChannelProviderConfig, Conversation, DocumentStatus, DocumentUploadResult, EntityDef,
   EntityExtraction, Guardrail, HealthMetric, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeGap, KnowledgeSource, OnboardingOptions,
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptTestResult,
@@ -136,8 +136,20 @@ export const saveWorkflow = (botId: string, body: Partial<Pick<Workflow, "name" 
 
 /* ---------- Channels / Testing / Releases ---------- */
 export const listChannels = (botId: string): Promise<ChannelConfig[]> => http.get(`/bots/${botId}/channels`);
-export const saveChannel = (botId: string, type: string, body: { status?: string; detail?: string; workflowName?: string; runTest?: boolean }) =>
+export const getChannel = (botId: string, type: string): Promise<ChannelConfig> =>
+  http.get(`/bots/${botId}/channels/${type}`);
+/** Create or update a channel's provider configuration. Status is server-derived. */
+export const saveChannel = (botId: string, type: string, body: { config: ChannelProviderConfig; workflowName?: string }) =>
   http.put<ChannelConfig>(`/bots/${botId}/channels/${type}`, body);
+/** Real connection test — returns the channel with lastTest.checks populated. */
+export const testChannel = (botId: string, type: string): Promise<ChannelConfig> =>
+  http.post(`/bots/${botId}/channels/${type}/test`);
+export const activateChannel = (botId: string, type: string): Promise<ChannelConfig> =>
+  http.post(`/bots/${botId}/channels/${type}/activate`);
+export const deactivateChannel = (botId: string, type: string): Promise<ChannelConfig> =>
+  http.post(`/bots/${botId}/channels/${type}/deactivate`);
+export const archiveChannel = (botId: string, type: string): Promise<{ archived: boolean }> =>
+  http.delete(`/bots/${botId}/channels/${type}`);
 export const listChannelsSummary = (): Promise<{ type: string; live: number; testing: number; failed: number; configured: number }[]> =>
   http.get("/channels/summary");
 export const listScenarios = (botId: string): Promise<TestScenario[]> => http.get(`/bots/${botId}/scenarios`);
@@ -273,8 +285,14 @@ export const updateMyProfile = (body: Partial<{ firstName: string; lastName: str
   http.patch("/users/me", body);
 export const changeMyPassword = (body: { currentPassword: string; newPassword: string; confirmPassword: string }): Promise<{ changed: boolean; token: string; message: string }> =>
   http.post("/users/me/password", body);
-export const resetUserPassword = (userId: string): Promise<{ reset: boolean; temporaryPassword: string }> =>
-  http.post(`/users/${userId}/reset-password`);
+/** Admin password reset. Without a body the API issues a one-time temporary
+    password; with newPassword/confirmPassword the admin sets it directly.
+    Either way the target's existing sessions are invalidated. */
+export const resetUserPassword = (
+  userId: string,
+  body?: { newPassword: string; confirmPassword: string },
+): Promise<{ reset: boolean; sessionsInvalidated: boolean; temporaryPassword?: string }> =>
+  http.post(`/users/${userId}/reset-password`, body);
 
 /* ---------- Knowledge upload config ---------- */
 export const getUploadConfig = (): Promise<UploadConfig> => http.get("/knowledge/upload-config");

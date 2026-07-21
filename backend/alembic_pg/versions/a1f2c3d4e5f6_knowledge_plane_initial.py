@@ -18,8 +18,8 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB
 
-from backend.config import get_settings
-from backend.knowledge.models import EMBEDDING_DIM
+from shared.config import get_settings
+from shared.knowledge.models import EMBEDDING_DIM
 
 revision: str = "a1f2c3d4e5f6"
 down_revision: Union[str, None] = None

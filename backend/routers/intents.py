@@ -15,13 +15,13 @@ from backend.core.deps import (
     require_permission,
     resolve_tenant_id,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import ApiConnection, EntityDef, Intent, User, VoiceBot, Workflow
-from backend.orchestration.entity_extractor import extract_entities, extract_entity
+from shared.db.mysql import get_db
+from shared.models import ApiConnection, EntityDef, Intent, User, VoiceBot, Workflow
+from shared.orchestration.entity_extractor import extract_entities, extract_entity
 from backend.serializers import serialize_entity, serialize_intent
 
 router = APIRouter(tags=["Intents & Entities"])
@@ -94,7 +94,7 @@ def _validate_intent_refs(db: Session, tenant_id: str, bot_id: str, *,
         if conn is None or conn.is_deleted or conn.tenant_id != tenant_id:
             raise ApiError("The referenced API connection does not exist in this workspace.", 422)
     if kb_ids:
-        from backend.models import KnowledgeSource
+        from shared.models import KnowledgeSource
 
         for kb_id in kb_ids:
             kb = db.get(KnowledgeSource, kb_id)
@@ -352,8 +352,8 @@ def test_intents(
 ):
     """Run one utterance through the real runtime router: matched intent,
     confidence, extracted entities, routing decision. Read-only."""
-    from backend.models import KnowledgeSource
-    from backend.orchestration.router import TurnRouter
+    from shared.models import KnowledgeSource
+    from shared.orchestration.router import TurnRouter
 
     bot = _bot_checked(db, bot_id, user)
     intents = db.scalars(

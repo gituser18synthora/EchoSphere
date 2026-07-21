@@ -36,7 +36,7 @@ the last command matters only when the app role is not superuser (the usual case
 cp .env.example .env
 ```
 
-Minimum to fill in (`backend/config.py` documents every knob):
+Minimum to fill in (`shared/config.py` documents every knob):
 
 | Key | Notes |
 |---|---|
@@ -52,6 +52,17 @@ Minimum to fill in (`backend/config.py` documents every knob):
 Secrets are referenced as `env:VAR_NAME` (e.g. `STT_API_KEY_REFERENCE=env:OPENAI_API_KEY`)
 and resolved at runtime — raw keys never go into DB rows.
 
+**One `.env`, every process.** The API, voice worker, ingestion worker and MCP
+server all read the same root `.env` (loaded by `shared/config.py`). Both
+services validate configuration at startup (`validate_settings()` in
+`shared/config.py`): missing mandatory variables (MySQL/MongoDB/Redis
+credentials; `JWT_SECRET` and `SUPERADMIN_PASSWORD` for the API; PostgreSQL
+credentials for the API/ingestion worker) abort startup with a message naming
+each missing key. Optional provider API keys never block startup in
+development — a warning is logged if the selected default provider has no
+key — but in production (`APP_ENV=production`) a selected provider without a
+resolvable key is a startup error.
+
 ### 1.5 Migrate and seed
 
 ```bash
@@ -64,16 +75,47 @@ env/bin/python -m backend.cli seed --demo   # optional demo dataset + logins
 ### 1.6 Run the services
 
 ```bash
-env/bin/uvicorn backend.main:app --port 8000            # Platform API
-env/bin/uvicorn backend.voice_worker:app --port 8015    # Voice worker (WS)
-env/bin/python -m backend.workers.ingestion             # Ingestion worker
+env/bin/uvicorn backend.main:app --port 8000               # Platform API
+env/bin/uvicorn voice_runtime.app:app --port 8015          # Voice runtime (WS)
+env/bin/python -m backend.workers.ingestion                # Ingestion worker (optional; embedded in API by default)
 env/bin/uvicorn backend.mcp_server.server:app --port 8020  # MCP server (optional)
-npm run dev                                              # Frontend → http://localhost:5199
+npm run dev                                                # Frontend → http://localhost:5199
 ```
 
 Verify: `curl -s localhost:8000/api/health/ready` — all four checks (`mysql`,
 `postgres`, `redis`, `mongodb`) must report `ok: true`. Voice worker:
 `curl -s localhost:8015/health`; MCP: `curl -s localhost:8020/health`.
+
+### 1.7 Scaling voice workers
+
+The voice runtime is stateless between calls — all trusted state lives in
+Redis (`voice:session:{id}`, `botcfg:*`), MongoDB and MySQL — so capacity is
+added by running more worker processes:
+
+```bash
+env/bin/uvicorn voice_runtime.app:app --port 8015
+env/bin/uvicorn voice_runtime.app:app --port 8016
+env/bin/uvicorn voice_runtime.app:app --port 8017
+```
+
+- Each process serves up to `VOICE_WORKER_CONCURRENCY` simultaneous calls
+  (default 20) and closes new sockets with code 4429 above that.
+- Put workers behind a WebSocket-capable load balancer (nginx `proxy_pass`
+  with `Upgrade`/`Connection` headers, HAProxy, or a cloud LB) and point
+  clients at it. Any worker can serve any session — the session id is looked
+  up in shared Redis, so no sticky routing is required *for connection
+  establishment*; a single call stays on the worker that accepted it for its
+  lifetime.
+- For browser test calls the API returns `VOICE_WORKER_PORT` to the client,
+  so in a load-balanced setup set `VOICE_WORKER_PORT` to the balancer's port.
+  For telephony, `public_ws_base` in the webhook connect instructions must
+  point at the balancer.
+- In-progress LangGraph workflows checkpoint to PostgreSQL, so a worker
+  restart loses the audio socket but not workflow state; the caller can
+  reconnect (new session) and resume the flow.
+- Run one uvicorn per process (`--workers 1`, the default) — call state such
+  as the active-session registry is per-process, and capacity accounting
+  assumes it.
 
 ## 2. Smoke tests
 
@@ -190,7 +232,7 @@ services:
 
   voice-worker:
     build: .
-    command: uvicorn backend.voice_worker:app --host 0.0.0.0 --port 8015
+    command: uvicorn voice_runtime.app:app --host 0.0.0.0 --port 8015
     env_file: .env
     environment: *svc_env
     ports: ["8015:8015"]
@@ -241,14 +283,14 @@ backend.cli migrate` (then `pg-migrate` and `seed` the same way).
   `FREESWITCH_PASSWORD` (via `FREESWITCH_PASSWORD_REFERENCE=env:FREESWITCH_PASSWORD`).
 - On separate hosts, change the event socket `listen-ip` from loopback and firewall
   port 8021 — ESL is plaintext. All ESL operations fail loudly when unconfigured
-  (`backend/telephony/freeswitch.py`).
+  (`voice_runtime/freeswitch.py`).
 
 ## 5. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | Port already in use / stale uvicorn | Kill by port, not by pattern: `fuser -k 8000/tcp` (a `pkill -f uvicorn` can match your own shell and kill it). Kill and restart in separate shell invocations. |
-| Tests fail with cross-event-loop asyncpg errors | Export `ECHOSPHERE_TEST_NULLPOOL=1` (the test suite sets it in `backend/tests/conftest.py`; needed when driving app code from ad-hoc scripts under multiple loops). |
+| Tests fail with cross-event-loop asyncpg errors | Export `ECHOSPHERE_TEST_NULLPOOL=1` (the test suite sets it in `tests/conftest.py`; needed when driving app code from ad-hoc scripts under multiple loops). |
 | Alembic `ConfigParser` interpolation error | A `%` in a DB password must be escaped as `%%` in ini-style URLs. `backend/alembic_pg/env.py` already escapes the injected URL; do the same if you hand-edit `sqlalchemy.url`. |
 | `/api/health/ready` shows `postgres.ok=false, error: pgvector extension not installed` | Run the `CREATE EXTENSION vector` command from 1.3 as superuser, then re-run `pg-migrate`. |
 | Uploads accepted but never `ready` | The ingestion worker isn't running — start `python -m backend.workers.ingestion` and check the job `stage`/`error` via the status endpoint. |

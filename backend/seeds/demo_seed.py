@@ -13,11 +13,11 @@ from pymongo import MongoClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.config import get_settings
-from backend.core.ids import new_id
+from shared.config import get_settings
+from shared.ids import new_id
 from backend.core.security import hash_password
-from backend.db.mysql import get_sessionmaker
-from backend.models import (
+from shared.db.mysql import get_sessionmaker
+from shared.models import (
     ApiConnection,
     BotLanguage,
     ChannelConfig,

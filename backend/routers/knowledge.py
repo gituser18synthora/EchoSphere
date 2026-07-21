@@ -16,13 +16,13 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import KnowledgeGap, KnowledgeSource, User, VoiceBot
+from shared.db.mysql import get_db
+from shared.models import KnowledgeGap, KnowledgeSource, User, VoiceBot
 from backend.serializers import serialize_knowledge, serialize_knowledge_gap
 
 router = APIRouter(tags=["Knowledge"])

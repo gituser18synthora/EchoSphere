@@ -12,11 +12,11 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from backend.core.errors import NotFoundError
-from backend.core.ids import new_id
+from shared.errors import NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import User, VoiceBot, Workflow
+from shared.db.mysql import get_db
+from shared.models import User, VoiceBot, Workflow
 from backend.serializers import serialize_workflow
 
 router = APIRouter(tags=["Workflows"])

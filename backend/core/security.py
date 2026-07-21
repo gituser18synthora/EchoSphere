@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
-from backend.config import get_settings
+from shared.config import get_settings
 
 
 def hash_password(plain: str) -> str:

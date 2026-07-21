@@ -1,18 +1,21 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { VoiceBot } from "@/types/domain";
 import { Icon } from "@/components/Icon";
-import { KpiCard, Progress, Timeline } from "@/components/ui";
+import { Button, Field, KpiCard, Modal, MultiSelect, Progress, Timeline } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
 import { useAsync } from "@/hooks/useAsync";
-import { listAudit } from "@/services/api";
+import { listAudit, listLanguages, updateBot } from "@/services/api";
+import { useApp } from "@/state/AppContext";
 
 const tabIcons: Record<string, "play" | "edit" | "refresh" | "mic" | "target" | "workflow" | "phone"> = {
   testing: "play", prompts: "edit", knowledge: "refresh", voice: "mic",
   intents: "target", workflows: "workflow", channels: "phone",
 };
 
-export default function OverviewTab({ bot }: { bot: VoiceBot }) {
+export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdated?: () => void }) {
   const navigate = useNavigate();
+  const [editLangs, setEditLangs] = useState(false);
   const done = bot.readiness.filter((r) => r.done).length;
   const pct = (done / bot.readiness.length) * 100;
 
@@ -30,7 +33,7 @@ export default function OverviewTab({ bot }: { bot: VoiceBot }) {
           <p className="t-body" style={{ fontSize: 14 }}>{bot.description}</p>
           <div className="row gap-16 mt-8 wrap">
             <Meta icon="user" label="Owner" value={bot.owner} />
-            <Meta icon="globe" label="Languages" value={bot.languages.join(", ")} />
+            <Meta icon="globe" label="Languages" value={bot.languages.join(", ")} onEdit={() => setEditLangs(true)} />
             <Meta icon="target" label="Use case" value={bot.useCase} />
             <Meta icon="clock" label="Updated" value={new Date(bot.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })} />
           </div>
@@ -112,15 +115,82 @@ export default function OverviewTab({ bot }: { bot: VoiceBot }) {
           )}
         </div>
       </div>
+
+      {editLangs && (
+        <EditLanguagesModal
+          bot={bot}
+          onClose={() => setEditLangs(false)}
+          onSaved={() => { setEditLangs(false); onUpdated?.(); }}
+        />
+      )}
     </div>
   );
 }
 
-function Meta({ icon, label, value }: { icon: Parameters<typeof Icon>[0]["name"]; label: string; value: string }) {
+function EditLanguagesModal({ bot, onClose, onSaved }: { bot: VoiceBot; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useApp();
+  const langsQ = useAsync(() => listLanguages(), []);
+  const [langs, setLangs] = useState<string[]>(bot.languages);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (langs.length === 0) { setErr("Select at least one language"); return; }
+    setBusy(true);
+    try {
+      await updateBot(bot.id, { languages: langs });
+      toast("Languages updated");
+      onSaved();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to update languages", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open onClose={onClose} title="Edit languages"
+      sub="Callers can speak to this bot in any of the selected languages."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" busy={busy} onClick={save}>Save languages</Button>
+        </>
+      }
+    >
+      <Field label="Languages" required plain error={err}>
+        <MultiSelect
+          options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
+            value: l.code,
+            label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
+            sub: l.code,
+          }))}
+          selected={langs}
+          onChange={(next) => { setLangs(next); setErr(""); }}
+          placeholder="Select supported languages"
+          searchPlaceholder="Search languages…"
+          invalid={!!err}
+        />
+      </Field>
+    </Modal>
+  );
+}
+
+function Meta({ icon, label, value, onEdit }: {
+  icon: Parameters<typeof Icon>[0]["name"]; label: string; value: string; onEdit?: () => void;
+}) {
   return (
     <span className="col" style={{ gap: 2 }}>
       <span className="t-micro row gap-4"><Icon name={icon} size={12} />{label}</span>
-      <span className="t-strong" style={{ fontSize: 13 }}>{value}</span>
+      <span className="t-strong row gap-6" style={{ fontSize: 13 }}>
+        {value}
+        {onEdit && (
+          <button className="btn-icon" style={{ width: 22, height: 22 }} aria-label={`Edit ${label.toLowerCase()}`} onClick={onEdit}>
+            <Icon name="edit" size={12} />
+          </button>
+        )}
+      </span>
     </span>
   );
 }

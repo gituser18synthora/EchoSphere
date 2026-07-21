@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import get_current_user, require_tenant_admin, resolve_tenant_id
-from backend.core.errors import NotFoundError
-from backend.core.ids import new_id
+from shared.errors import NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import Integration, TenantIntegration, User
+from shared.db.mysql import get_db
+from shared.models import Integration, TenantIntegration, User
 from backend.serializers import serialize_integration
 
 router = APIRouter(tags=["Integrations"])

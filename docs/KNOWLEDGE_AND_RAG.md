@@ -3,7 +3,7 @@
 The knowledge plane turns uploaded documents into tenant-scoped, retrievable chunks in
 PostgreSQL + pgvector, and serves hybrid retrieval to the REST API, the voice runtime
 and the MCP server through **one implementation**: `KnowledgeService`
-(`backend/knowledge/service.py`).
+(`shared/knowledge/service.py`).
 
 Control-plane metadata (`knowledge_sources`: name, scope, status, chunk count) stays
 in MySQL; document/chunk/job rows live in PostgreSQL (see [PGVECTOR.md](PGVECTOR.md)).
@@ -36,7 +36,7 @@ flowchart TD
   `backend/workers/ingestion.py`): polls every `INGESTION_WORKER_POLL_SECONDS` (2 s),
   claims jobs with `FOR UPDATE SKIP LOCKED` — multiple instances are safe. In-process
   concurrency 2; SIGINT/SIGTERM drain in-flight jobs.
-- **Pipeline** (`backend/knowledge/ingestion/pipeline.py`): stage/progress are written
+- **Pipeline** (`shared/knowledge/ingestion/pipeline.py`): stage/progress are written
   to the job row (`parsing` 1% → `chunking` 30% → `embedding` 45% → `storing` 75% →
   `verifying` 90% → `done` 100%); each stage checks for cancellation. Retries up to
   `max_attempts` (default `INGESTION_MAX_ATTEMPTS=3`), then the document and the MySQL
@@ -49,7 +49,7 @@ Lifecycle endpoints (`backend/routers/knowledge_documents.py`): status, retry, c
 
 ## Parsing and chunking
 
-`backend/knowledge/parsing/loader.py` (ported from KMRAG, blocking — always run via
+`shared/knowledge/parsing/loader.py` (ported from KMRAG, blocking — always run via
 `asyncio.to_thread`):
 
 - **PDF/PPTX**: PyMuPDF layout-aware extraction with table detection, heading
@@ -57,23 +57,23 @@ Lifecycle endpoints (`backend/routers/knowledge_documents.py`): status, retry, c
   `page_number` on every chunk.
 - **OCR fallback**: pages under `OCR_MIN_PAGE_CHARS` go through pytesseract when
   `ENABLE_OCR_FALLBACK=true`, with optional GPT-vision escalation
-  (`backend/knowledge/parsing/ocr.py`).
+  (`shared/knowledge/parsing/ocr.py`).
 - **Other loaders**: docx, xlsx, csv, json, txt, md (markdown keeps raw headings so
   chunking can split on them).
 
-Chunking (`backend/knowledge/chunking/`): document-aware — markdown header-aware
+Chunking (`shared/knowledge/chunking/`): document-aware — markdown header-aware
 splitting, tables converted to natural-language statements and kept atomic (large
 tables split row-batch-wise), token-aware sizing via tiktoken (~512 tokens with
 overlap), heading + body kept together, undersized fragments merged into neighbors
 (`structured_chunker.py`).
 
 **Prompt-injection flags** are computed per chunk at ingest
-(`detect_prompt_injection`, `backend/knowledge/security.py`) and stored in chunk
+(`detect_prompt_injection`, `shared/knowledge/security.py`) and stored in chunk
 meta; retrieval sanitizes content before it enters a prompt (`sanitize_for_context`).
 
 ## Retrieval
 
-`HybridRetriever` (`backend/knowledge/retrieval/retriever.py`):
+`HybridRetriever` (`shared/knowledge/retrieval/retriever.py`):
 
 ```mermaid
 flowchart LR
@@ -96,13 +96,13 @@ flowchart LR
   `answerable` requires the top set to clear the threshold.
 - Reranking (`RETRIEVAL_USE_RERANKER=true`) uses a lazily-loaded sentence-transformers
   cross-encoder and fails open to the fused order
-  (`backend/knowledge/retrieval/reranker.py`).
-- Result shape (`backend/knowledge/schemas.py`): `RetrievalResult{
+  (`shared/knowledge/retrieval/reranker.py`).
+- Result shape (`shared/knowledge/schemas.py`): `RetrievalResult{
   used_knowledge_base, answerable, confidence, query, kb_ids,
   sources[kb_id, document_id, chunk_id, page, section, score, text], duration_ms,
   skipped_reason}`. Raw embeddings never leave the store.
 
-Tuning knobs (env, `backend/config.py`): `RETRIEVAL_TOP_K=6`,
+Tuning knobs (env, `shared/config.py`): `RETRIEVAL_TOP_K=6`,
 `RETRIEVAL_CANDIDATE_K=24`, `RETRIEVAL_RERANK_K=12`, `RETRIEVAL_MIN_SCORE=0.35`,
 `RETRIEVAL_HYBRID_VECTOR_WEIGHT=0.6`, `RETRIEVAL_HYBRID_KEYWORD_WEIGHT=0.4`,
 `RETRIEVAL_TS_CONFIG=english`.
@@ -125,7 +125,7 @@ statement (defense in depth). Details in [MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Embeddings
 
-`backend/knowledge/embeddings/` — provider chosen by `EMBEDDING_PROVIDER`:
+`shared/knowledge/embeddings/` — provider chosen by `EMBEDDING_PROVIDER`:
 
 - `openai`: `text-embedding-3-small` (dimension 1536), batched at
   `EMBEDDING_BATCH_SIZE=64`, dimension enforced at write time.

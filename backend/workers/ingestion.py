@@ -9,8 +9,8 @@ import asyncio
 import logging
 import signal
 
-from backend.config import get_settings
-from backend.knowledge.ingestion.pipeline import IngestionPipeline
+from shared.config import get_settings
+from shared.knowledge.ingestion.pipeline import IngestionPipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +58,9 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
 
 
 def main() -> None:
+    from shared.config import validate_settings
+
+    validate_settings("ingestion-worker")
     stop = asyncio.Event()
 
     async def _run() -> None:

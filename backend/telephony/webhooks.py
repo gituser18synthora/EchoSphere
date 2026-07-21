@@ -15,8 +15,8 @@ import hmac
 import logging
 import time
 
-from backend.config import get_settings
-from backend.core.errors import ApiError
+from shared.config import get_settings
+from shared.errors import ApiError
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def verify_twilio_signature(
 
 async def check_replay(signature: str, window_seconds: int = MAX_SKEW_SECONDS * 2) -> None:
     """Reject a signature that was already accepted (single-use)."""
-    from backend.db.redis import get_redis
+    from shared.db.redis import get_redis
 
     key = f"webhook:seen:{hashlib.sha256(signature.encode()).hexdigest()}"
     try:

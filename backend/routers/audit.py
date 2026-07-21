@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 from backend.core.deps import is_super_admin, require_tenant_admin
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import paginated
-from backend.db.mysql import get_db
-from backend.models import AuditLog, Tenant, User
+from shared.db.mysql import get_db
+from shared.models import AuditLog, Tenant, User
 from backend.serializers import serialize_audit
 
 router = APIRouter(tags=["Audit"])

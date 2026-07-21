@@ -13,9 +13,9 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from backend.core.errors import ApiError, ForbiddenError
-from backend.db.mysql import get_db
-from backend.models import User
+from shared.errors import ApiError, ForbiddenError
+from shared.db.mysql import get_db
+from shared.models import User
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -118,6 +118,6 @@ def assert_tenant_access(user: User, row_tenant_id: str | None) -> None:
         return
     if row_tenant_id is None or row_tenant_id != user.tenant_id:
         # 404, not 403 — do not leak the existence of other tenants' records.
-        from backend.core.errors import NotFoundError
+        from shared.errors import NotFoundError
 
         raise NotFoundError()

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.config import get_settings
+from shared.config import get_settings
 from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
@@ -21,13 +21,13 @@ from backend.core.deps import (
     require_permission,
     resolve_tenant_id,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.safe_http import safe_request
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import ApiConnection, Intent, User, VoiceBot, Workflow
+from shared.db.mysql import get_db
+from shared.models import ApiConnection, Intent, User, VoiceBot, Workflow
 from backend.serializers import serialize_api_connection
 
 router = APIRouter(tags=["API Connections"])

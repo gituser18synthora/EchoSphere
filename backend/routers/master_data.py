@@ -13,12 +13,12 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import get_current_user, require_permission
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.db.mysql import get_db
-from backend.models import (
+from shared.db.mysql import get_db
+from shared.models import (
     AiConfigProfile,
     AuditLog,
     BotLanguage,
@@ -225,7 +225,7 @@ def _guard(mtype: str, user: User) -> None:
 
     spec = _spec(mtype)
     if not (has_permission(user, spec["perm"]) or has_permission(user, "manage_master_data")):
-        from backend.core.errors import ForbiddenError
+        from shared.errors import ForbiddenError
 
         raise ForbiddenError()
 

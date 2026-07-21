@@ -126,11 +126,12 @@ function Sip() {
   );
 }
 
-const channelMeta: Record<string, { name: string; icon: "phone" | "whatsapp" | "monitor" | "smartphone" }> = {
+const channelMeta: Record<string, { name: string; icon: "phone" | "whatsapp" | "monitor" | "smartphone" | "message" }> = {
   voice: { name: "Voice (PSTN/SIP)", icon: "phone" },
   whatsapp: { name: "WhatsApp Business", icon: "whatsapp" },
   web: { name: "Web widget", icon: "monitor" },
   mobile: { name: "Mobile SDK", icon: "smartphone" },
+  sms: { name: "SMS", icon: "message" },
 };
 
 function ChannelsSummary() {

@@ -1,13 +1,13 @@
 # Telephony Integration
 
 EchoSphere answers inbound calls from five providers — **Twilio, Telnyx, Plivo,
-Exotel and FreeSWITCH** (`SUPPORTED_PROVIDERS`, `backend/telephony/providers.py`).
+Exotel and FreeSWITCH** (`SUPPORTED_PROVIDERS`, `shared/telephony.py`).
 The control flow is: signed webhook → number-to-bot routing → voice session →
 provider-specific connect payload → media WebSocket into the voice worker.
 
 External provider accounts are still required for live carrier traffic; the adapters
 validate configuration and produce real connect payloads, and provider-mocked tests
-cover signatures and routing (`backend/tests/unit/test_webhook_verification.py`).
+cover signatures and routing (`tests/unit/test_webhook_verification.py`).
 
 ## Inbound call flow
 
@@ -30,8 +30,9 @@ sequenceDiagram
 ```
 
 Implementation: `backend/routers/telephony.py` (webhook),
-`backend/voice_worker.py` (`telephony_session`), `backend/telephony/providers.py`
-(payloads + serializers).
+`voice_runtime/app.py` (`telephony_session`), `shared/telephony.py`
+(provider catalog + connect payloads), `voice_runtime/telephony.py`
+(media-stream serializers).
 
 ## Webhook signature verification
 
@@ -53,7 +54,7 @@ auth token used in the signature.
 
 The dialed number (`To`/`to`/`CallTo`/`called_number` in the payload) is looked up in
 MySQL `phone_numbers` with `status='assigned'`
-(`resolve_bot_for_phone_number`, `backend/voice_runtime/bot_config.py`). The bot must
+(`resolve_bot_for_phone_number`, `shared/bot_config.py`). The bot must
 have a **published release** (`require_published=True`) — draft bots never answer
 carrier traffic. The session created for the call is channel `phone` and records the
 caller number (masked before it reaches MySQL).
@@ -77,7 +78,7 @@ publicly reachable `wss://` host in production.
 
 ## Media WebSocket handshake
 
-`/ws/telephony/{provider}/{session_id}` (`backend/voice_worker.py`):
+`/ws/telephony/{provider}/{session_id}` (`voice_runtime/app.py`):
 
 1. The session id is validated against Redis (unknown/expired → close 4401).
 2. For twilio/telnyx/plivo/exotel the worker reads up to 4 JSON messages until the
@@ -93,7 +94,7 @@ publicly reachable `wss://` host in production.
 
 ## FreeSWITCH
 
-Two integration surfaces (`backend/telephony/freeswitch.py`):
+Two integration surfaces (`voice_runtime/freeswitch.py`):
 
 - **Media**: the dialplan attaches `mod_audio_fork` to the worker's
   `/ws/telephony/freeswitch/{session_id}` endpoint — raw L16 @ 8 kHz both ways, no

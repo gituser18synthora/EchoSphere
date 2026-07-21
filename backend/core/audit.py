@@ -5,8 +5,8 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from backend.core.ids import new_id
-from backend.models import AuditLog, User
+from shared.ids import new_id
+from shared.models import AuditLog, User
 
 _SENSITIVE_KEYS = {
     "password", "password_hash", "secret", "api_key", "apikey", "token",

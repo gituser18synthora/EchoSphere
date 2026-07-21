@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from backend.config import get_settings
+from shared.config import get_settings
 
 
 class UnsafeUrlError(Exception):

@@ -18,8 +18,16 @@ certification (SOC 2, ISO 27001, HIPAA, …) is claimed.
 - The voice worker accepts only opaque session ids previously issued by the
   authenticated API or a verified telephony webhook, and re-checks that the session
   tenant matches the bot tenant (close 4403 on mismatch).
+- **Passwords** are stored as bcrypt hashes and are never returned or logged.
+  Self-service change (`POST /users/me/password`) and admin reset
+  (`POST /users/{id}/reset-password`, permission `reset_user_password`, also
+  surfaced in Edit Tenant for the tenant admin) share one policy
+  (≥10 chars, upper/lower/digit, common-password denylist). Every change stamps
+  `password_changed_at`, which invalidates all previously issued JWTs
+  (`iat` check in `backend/core/deps.py`), and writes an audit entry that
+  records only the method — never the password.
 
-## Upload safety (`backend/knowledge/`)
+## Upload safety (`shared/knowledge/`)
 
 - Extension whitelist (`ingestion/storage.py: ALLOWED_EXTENSIONS`).
 - Magic-byte MIME sniffing (`service.py: sniff_mime`) — a `.pdf` that is not a PDF
@@ -33,19 +41,19 @@ certification (SOC 2, ISO 27001, HIPAA, …) is claimed.
 
 ## Prompt-injection defenses (layered)
 
-1. **At ingest**: `detect_prompt_injection` (`backend/knowledge/security.py`) flags
+1. **At ingest**: `detect_prompt_injection` (`shared/knowledge/security.py`) flags
    suspicious patterns ("ignore previous instructions", role tags, DAN, …) per chunk;
    flags are stored in chunk meta.
 2. **At retrieval**: `sanitize_for_context` strips role/tool markup and neutralizes
    code fences before chunks enter a prompt.
 3. **At generation**: the grounded system prompt (built in
-   `backend/voice_runtime/brain.py` and `bot_config.py`) instructs the model to
+   `voice_runtime/brain.py` and `bot_config.py`) instructs the model to
    answer only from the quoted context and to treat context as reference data,
    never as instructions.
 
 ## PII handling
 
-`mask_pii` (`backend/knowledge/security.py`) supports card numbers, Aadhaar, PAN,
+`mask_pii` (`shared/knowledge/security.py`) supports card numbers, Aadhaar, PAN,
 email, phone. Applied policy:
 
 - Transcript turns are masked for card/aadhaar/PAN before hitting MongoDB
@@ -65,7 +73,7 @@ and Redis single-use replay protection (`backend/telephony/webhooks.py`). See
 ## Secret management
 
 Secrets are configured **only as `env:` references** (`Settings.resolve_secret`,
-`backend/config.py`): DB rows and configs store strings like `env:OPENAI_API_KEY`,
+`shared/config.py`): DB rows and configs store strings like `env:OPENAI_API_KEY`,
 never raw values. Raw keys exist only in `.env`/process environment. Audit-log
 writes mask secret values before storage; logs never print resolved secrets.
 
@@ -82,7 +90,7 @@ specifically:
 
 ## Error and information hygiene
 
-- API errors use a uniform envelope (`backend/core/errors.py`); MCP errors are
+- API errors use a uniform envelope (`shared/errors.py`); MCP errors are
   reduced to `{error: not_found | request_error | timeout | internal}` with no SQL,
   paths or stack traces.
 - Missing vs. forbidden is indistinguishable to callers (404 either way).

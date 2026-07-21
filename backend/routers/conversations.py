@@ -21,13 +21,13 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from backend.core.errors import NotFoundError
-from backend.core.ids import new_id
+from shared.errors import NotFoundError
+from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.db.mongo import Mongo
-from backend.db.mysql import get_db
-from backend.models import ConversationSession, User, VoiceBot
+from shared.db.mongo import Mongo
+from shared.db.mysql import get_db
+from shared.models import ConversationSession, User, VoiceBot
 from backend.serializers import serialize_conversation
 
 router = APIRouter(tags=["Conversations"])

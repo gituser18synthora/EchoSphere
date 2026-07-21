@@ -80,7 +80,7 @@ export default function Studio() {
       <div className="studio-tabs-wrap">
         <Tabs tabs={tabs} active={tab} onChange={(t) => navigate(`/t/bots/${bot.id}/${t}`)} />
         <div className="studio-panel">
-          {tab === "overview" && <OverviewTab bot={bot} />}
+          {tab === "overview" && <OverviewTab bot={bot} onUpdated={botQ.reload} />}
           {tab === "knowledge" && <KnowledgeTab bot={bot} />}
           {tab === "prompts" && <PromptsTab bot={bot} />}
           {tab === "voice" && <VoiceTab bot={bot} />}

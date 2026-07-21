@@ -3,13 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { createBot, listBots, listLanguages, simulateAction } from "@/services/api";
 import {
-  Button, ConfirmModal, Field, Health, MenuButton, Modal, StatusChip,
+  Button, ConfirmModal, Field, Health, MenuButton, Modal, MultiSelect, StatusChip,
   CardSkeleton, EmptyState,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
 import type { VoiceBot } from "@/types/domain";
+
+const langSummary = (codes: string[], max = 3) =>
+  codes.length <= max ? codes.join(", ") : `${codes.slice(0, max).join(", ")} +${codes.length - max} more`;
 
 export default function Bots() {
   const navigate = useNavigate();
@@ -123,7 +126,7 @@ export default function Bots() {
               </div>
               <div className="row-between t-micro">
                 <span className="row gap-4"><Icon name="user" size={12} />{b.owner}</span>
-                <span>{b.languages.join(" · ")}</span>
+                <span title={b.languages.join(", ")}>{langSummary(b.languages)}</span>
               </div>
             </div>
           ))}
@@ -148,7 +151,7 @@ export default function Bots() {
                     <td><Health level={b.health} /></td>
                     <td><code>{b.liveVersion ?? b.version}</code></td>
                     <td className="t-sub">{b.owner}</td>
-                    <td className="t-sub">{b.languages.join(", ")}</td>
+                    <td className="t-sub" title={b.languages.join(", ")}>{langSummary(b.languages)}</td>
                     <td className="num t-num">{b.callsMonth ? fmtNum(b.callsMonth) : "—"}</td>
                     <td className="num t-num">{b.containment ? `${b.containment}%` : "—"}</td>
                     <td className="num t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"}</td>
@@ -215,10 +218,12 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const [useCase, setUseCase] = useState("Appointment booking");
   const [langs, setLangs] = useState<string[]>(["en-US"]);
   const [err, setErr] = useState("");
+  const [langErr, setLangErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
     if (name.trim().length < 3) { setErr("Give the bot a name (at least 3 characters)"); return; }
+    if (langs.length === 0) { setLangErr("Select at least one language"); return; }
     setBusy(true);
     try {
       const created = await createBot({ name: name.trim(), useCase, languages: langs });
@@ -253,18 +258,19 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
             {["Appointment booking", "Billing support", "Order status", "FAQ & information", "Triage & routing", "Surveys & feedback", "Custom"].map((u) => <option key={u}>{u}</option>)}
           </select>
         </Field>
-        <Field label="Languages">
-          <div className="row wrap gap-6">
-            {(langsQ.data ?? []).filter((l) => l.enabled).map((l) => {
-              const on = langs.includes(l.code);
-              return (
-                <button key={l.code} title={l.name} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on}
-                  onClick={() => setLangs(on ? langs.filter((x) => x !== l.code) : [...langs, l.code])}>
-                  {on && <Icon name="check" size={11} />}{l.code}
-                </button>
-              );
-            })}
-          </div>
+        <Field label="Languages" required plain error={langErr} hint="Callers can speak to the bot in any of these.">
+          <MultiSelect
+            options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
+              value: l.code,
+              label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
+              sub: l.code,
+            }))}
+            selected={langs}
+            onChange={(next) => { setLangs(next); setLangErr(""); }}
+            placeholder="Select supported languages"
+            searchPlaceholder="Search languages…"
+            invalid={!!langErr}
+          />
         </Field>
       </div>
     </Modal>

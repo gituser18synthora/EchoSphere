@@ -2,7 +2,7 @@
 
 The knowledge plane runs in its own PostgreSQL database, `echosphere_knowledge`
 (local dev is tested on PostgreSQL 18 with the pgvector extension), accessed with
-async SQLAlchemy 2.0 + asyncpg (`backend/db/postgres.py`). The MySQL control plane is
+async SQLAlchemy 2.0 + asyncpg (`shared/db/postgres.py`). The MySQL control plane is
 untouched; `knowledge_chunks.kb_id` references MySQL `knowledge_sources.id` logically
 only (cross-database — no FK constraint).
 
@@ -38,7 +38,7 @@ objects).
 
 ## Schema
 
-Defined in `backend/knowledge/models.py` (own `DeclarativeBase`, so each Alembic
+Defined in `shared/knowledge/models.py` (own `DeclarativeBase`, so each Alembic
 environment migrates exactly one database):
 
 ### knowledge_documents
@@ -85,7 +85,7 @@ Plus composite b-trees: `ix_kchunk_tenant_kb (tenant_id, kb_id)`,
 `ix_kchunk_kb_status_deleted (kb_id, status, is_deleted)`, `ix_kchunk_document`,
 and the document/job indexes listed in the migration.
 
-## Query behavior (`backend/knowledge/vector_store/pgvector_store.py`)
+## Query behavior (`shared/knowledge/vector_store/pgvector_store.py`)
 
 - **Dense**: `ORDER BY embedding <=> :query` (cosine distance) with
   `SET LOCAL hnsw.ef_search = PGVECTOR_HNSW_EF_SEARCH` (default 100) executed in the
@@ -111,7 +111,7 @@ the pgvector extension version and a real vector operation
 
 ## Measured performance
 
-From the perf suite (`backend/tests/perf/test_performance.py`,
+From the perf suite (`tests/perf/test_performance.py`,
 run 2026-07-17 on local dev under WSL2 — see [TESTING.md](TESTING.md)):
 
 | Scenario | Result |
@@ -122,4 +122,4 @@ run 2026-07-17 on local dev under WSL2 — see [TESTING.md](TESTING.md)):
 | 5-page PDF upload → ready | ≈ 3.0 s |
 
 Numbers are local-dev measurements, not production benchmarks; re-run with
-`env/bin/python -m pytest backend/tests/perf -m perf -s`.
+`env/bin/python -m pytest tests/perf -m perf -s`.

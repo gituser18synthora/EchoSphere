@@ -3,37 +3,60 @@
 Multi-tenant VoiceBot platform: React 18 + TypeScript frontend, FastAPI backend,
 **MySQL** (control plane via SQLAlchemy + Alembic), **PostgreSQL + pgvector**
 (knowledge plane: documents, chunks, embeddings), **MongoDB** (conversation
-transcripts via Motor) and **Redis** (sessions, caches). The realtime voice engine
-is built on Pipecat and lives in `backend/voice_runtime/`; the legacy `VoiceBot/`
-folder has been removed — its adapters and design were ported into `backend/`
-(see [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md)).
+transcripts via Motor) and **Redis** (sessions, caches). The realtime voice
+engine is built on Pipecat and is a **separate service** (`voice_runtime/`,
+its own uvicorn process on port 8015); the legacy `VoiceBot/` folder has been
+removed (see [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md)).
 
 ## Architecture
 
+Two independently-run services plus a shared library package. Both services
+load the same root `.env` and share one virtualenv (`env/`); import direction
+is strictly `backend → shared ← voice_runtime` — the services never import
+each other.
+
 ```
-backend/                 FastAPI platform API (port 8000)
-  config.py              Env-driven settings (.env); secrets as env: references
-  db/                    mysql.py, postgres.py (asyncpg+pgvector), mongo.py, redis.py
-  models/                39+ MySQL tables: users, roles, permissions, tenants, plans,
-                         subscriptions, invoices, voice_bots, voice_bot_settings
-                         (incl. per-bot STT/TTS/LLM providers), voice_profiles,
-                         languages, knowledge, prompts(+versions), intents,
-                         entities, api_connections, workflows, channels,
-                         scenarios, releases, conversation_sessions, alerts,
-                         audit_logs, integrations, guardrails, phone_numbers,
-                         sip_trunks, settings, usage_records…
-  routers/               REST API (/api/v1/…) — auth, RBAC, tenant isolation
-  knowledge/             Knowledge plane: ingestion, chunking, hybrid RAG retrieval
-  voice_runtime/         Pipecat pipeline, ConversationBrain, session recording
-  orchestration/         TurnRouter + LangGraph workflow engine
-  providers/             Pluggable STT/TTS/LLM registry
-  telephony/             Signed webhooks, provider media streams, FreeSWITCH ESL
+backend/                 Control-plane platform API (port 8000)
+  main.py                FastAPI app — run: uvicorn backend.main:app
+  routers/               REST API (/api/v1/…) — auth, RBAC, tenants, bots,
+                         knowledge mgmt, prompts, intents, admin, voice-session
+                         issuance, telephony webhooks
+  core/                  API plumbing: deps (JWT/RBAC), security, audit,
+                         responses, pagination, safe_http (SSRF guard), softdelete
+  serializers.py         API response shaping
+  telephony/             Inbound-webhook signature verification + replay guard
   mcp_server/            Tenant-scoped MCP knowledge tools (port 8020)
-  workers/ingestion.py   Background document-ingestion worker
+  workers/ingestion.py   Document-ingestion worker (embedded in API by default)
   seeds/                 base_seed (mandatory, idempotent) + demo_seed (opt-in)
   alembic/ alembic_pg/   MySQL and PostgreSQL migrations
+  cli.py                 migrate / pg-migrate / seed
+
+voice_runtime/           Realtime voice worker (port 8015)
+  app.py                 FastAPI app — run: uvicorn voice_runtime.app:app
+                         WS endpoints /ws/voice/{session} + /ws/telephony/…
+  pipeline.py            Pipecat pipeline: VAD → turn control → STT → brain → TTS
+  brain.py               ConversationBrain: routing, RAG, streaming, barge-in
+  services.py            Pipecat STT/TTS adapters over shared providers
+  serializer.py          Browser wire protocol (PCM + JSON side-channel)
+  telephony.py           Provider media-stream serializers (Twilio/Telnyx/…)
+  recording.py           Per-call transcript/event/usage persistence
+  freeswitch.py          FreeSWITCH ESL call control (transfer/hangup)
+
+shared/                  Code both services import — never the reverse
+  config.py              Env-driven settings (.env) + startup validation
+  db/                    mysql.py, postgres.py (asyncpg+pgvector), mongo.py, redis.py
+  models/                39+ MySQL tables (users, tenants, bots, prompts, intents…)
+  knowledge/             Knowledge plane: ingestion, chunking, hybrid RAG retrieval
+  providers/             Pluggable STT/TTS/LLM registry
+  orchestration/         TurnRouter + LangGraph workflow engine
+  audio/                 PCM utilities + TTS text preparation
+  voice_sessions.py      Redis session store — the API→worker security handoff
+  bot_config.py          Trusted bot-config resolution + Redis cache
+  telephony.py           Provider catalog + connect-instruction contract
+  errors.py ids.py       Exceptions/handlers, opaque ID generation
+
+tests/                   Pytest suite spanning all three packages
 src/                     Frontend; src/services/api.ts is the typed API client
-                         (no mock data — everything is database-driven)
 docs/                    Architecture & operations documentation (see below)
 ```
 
@@ -50,12 +73,18 @@ docs/                    Architecture & operations documentation (see below)
 
 ## Voice runtime & knowledge plane
 
-- **Realtime calls** run in a dedicated worker (port 8015) on a Pipecat pipeline:
-  Silero VAD → turn control → STT → ConversationBrain → TTS, with barge-in
-  cancellation, per-bot provider selection and pinned published-config snapshots.
-  Browser test calls use `ws://…:8015/ws/voice/{session_id}`; telephony media
-  streams (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH) use
-  `/ws/telephony/{provider}/{session_id}`.
+- **Realtime calls** run in a dedicated service (`voice_runtime/`, port 8015)
+  on a Pipecat pipeline: Silero VAD → turn control → STT → ConversationBrain →
+  TTS, with barge-in cancellation, per-bot provider selection and pinned
+  published-config snapshots. Browser test calls use
+  `ws://…:8015/ws/voice/{session_id}`; telephony media streams
+  (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH) use
+  `/ws/telephony/{provider}/{session_id}`. Sessions are issued **only** by the
+  API (`POST /api/v1/voice-sessions` or a signed telephony webhook), which
+  writes the trusted tenant/bot mapping into Redis; the worker rejects unknown
+  or expired session ids and never decides tenancy itself. Scale out by
+  running more workers behind a WS-capable load balancer — workers are
+  stateless between calls (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 - **Knowledge/RAG**: documents upload through `/api/v1/knowledge/{id}/documents`,
   are ingested in the background (parse → chunk → embed → store → verify) into
   PostgreSQL + pgvector, and are retrieved with hybrid search (HNSW cosine +
@@ -72,7 +101,7 @@ docs/                    Architecture & operations documentation (see below)
 | Service | Port | Command |
 |---|---|---|
 | Platform API | 8000 | `env/bin/uvicorn backend.main:app --port 8000` |
-| Voice worker | 8015 | `env/bin/uvicorn backend.voice_worker:app --port 8015` |
+| Voice worker | 8015 | `env/bin/uvicorn voice_runtime.app:app --port 8015` |
 | Ingestion worker | — | `env/bin/python -m backend.workers.ingestion` |
 | MCP server | 8020 | `env/bin/uvicorn backend.mcp_server.server:app --port 8020` |
 | Frontend (dev) | 5199 | `npm run dev` (proxies `/api` → 8000) |
@@ -113,7 +142,7 @@ env/bin/python -m backend.cli seed --demo    # optional: dev demo dataset
 
 # 7. Run (each in its own shell — see the Services table above)
 env/bin/uvicorn backend.main:app --port 8000 --reload
-env/bin/uvicorn backend.voice_worker:app --port 8015
+env/bin/uvicorn voice_runtime.app:app --port 8015
 env/bin/python -m backend.workers.ingestion
 env/bin/uvicorn backend.mcp_server.server:app --port 8020   # optional
 npm install && npm run dev                   # frontend → http://localhost:5199
@@ -134,8 +163,8 @@ troubleshooting): [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 ## Tests
 
 ```bash
-env/bin/python -m pytest -m "not perf" # backend suite (122 tests: unit + integration)
-env/bin/python -m pytest backend/tests/perf -m perf -s   # perf measurements
+env/bin/python -m pytest -m "not perf" # full suite (unit + integration)
+env/bin/python -m pytest tests/perf -m perf -s   # perf measurements
 npm run typecheck                      # frontend types
 npm run build                          # typecheck + production bundle
 ```

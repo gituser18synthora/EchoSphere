@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from backend.core.deps import get_current_user
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import SupportedLanguage, User, VoiceProfile
+from shared.db.mysql import get_db
+from shared.models import SupportedLanguage, User, VoiceProfile
 from backend.serializers import serialize_language, serialize_voice
 
 router = APIRouter(tags=["Catalog"])

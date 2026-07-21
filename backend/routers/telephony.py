@@ -11,12 +11,12 @@ import logging
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
-from backend.config import get_settings
+from shared.config import get_settings
 from backend.core.deps import require_tenant_member
-from backend.core.errors import ApiError
+from shared.errors import ApiError
 from backend.core.responses import ok
-from backend.models import User
-from backend.telephony.providers import (
+from shared.models import User
+from shared.telephony import (
     SUPPORTED_PROVIDERS,
     TelephonyProviderConfig,
     connect_instructions,
@@ -26,12 +26,38 @@ from backend.telephony.webhooks import (
     verify_generic_signature,
     verify_twilio_signature,
 )
-from backend.voice_runtime.bot_config import resolve_bot_for_phone_number
-from backend.voice_runtime.session import create_voice_session
+from shared.bot_config import resolve_bot_for_phone_number
+from shared.voice_sessions import create_voice_session
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Telephony"])
+
+
+def _assert_voice_channel_enabled(bot_id: str) -> None:
+    """Reject inbound calls for bots whose voice channel is deactivated.
+
+    A bot without any voice ChannelConfig row is treated as implicitly enabled
+    (legacy numbers provisioned before channel management existed)."""
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import ChannelConfig
+
+    session = get_sessionmaker()()
+    try:
+        row = session.scalar(
+            select(ChannelConfig).where(
+                ChannelConfig.bot_id == bot_id,
+                ChannelConfig.type == "voice",
+                ChannelConfig.is_deleted.is_(False),
+            )
+        )
+        if row is not None and not row.enabled:
+            # Sanitized: reveal nothing about tenant/bot/channel internals.
+            raise ApiError("This number is not accepting calls.", status_code=403)
+    finally:
+        session.close()
 
 
 async def _extract_called_number(provider: str, request: Request) -> tuple[str, str | None]:
@@ -84,6 +110,9 @@ async def inbound_call_webhook(provider: str, request: Request):
         raise ApiError("Webhook payload missing the dialed number", status_code=422)
     config = await resolve_bot_for_phone_number(called)
 
+    # A deactivated voice channel must not receive calls (sanitized error).
+    _assert_voice_channel_enabled(config.bot_id)
+
     session = await create_voice_session(
         tenant_id=config.tenant_id,
         bot_id=config.bot_id,
@@ -108,7 +137,7 @@ async def inbound_call_webhook(provider: str, request: Request):
 @router.get("/providers/voice-catalog")
 def provider_catalog(user: User = Depends(require_tenant_member)):
     """Available STT/TTS/LLM providers for the studio configuration UI."""
-    from backend.providers.factory import _REGISTRY
+    from shared.providers.factory import _REGISTRY
 
     catalog: dict[str, list[str]] = {"stt": [], "tts": [], "llm": []}
     for (kind, name) in _REGISTRY:

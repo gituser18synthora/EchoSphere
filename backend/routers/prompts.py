@@ -23,13 +23,13 @@ from backend.core.deps import (
     has_permission,
     require_permission,
 )
-from backend.core.errors import ApiError, ForbiddenError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, ForbiddenError, NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import KnowledgeSource, Prompt, PromptVersion, User, VoiceBot
-from backend.orchestration.prompt_compiler import (
+from shared.db.mysql import get_db
+from shared.models import KnowledgeSource, Prompt, PromptVersion, User, VoiceBot
+from shared.orchestration.prompt_compiler import (
     compile_prompt,
     estimate_tokens,
     validate_config,
@@ -391,11 +391,11 @@ async def test_prompt(
     """Run a sample caller message against a prompt version: routing decision,
     optional KB retrieval, and an LLM response using the bot's configured
     provider. Text-only — no tools are executed, nothing is state-changing."""
-    from backend.config import get_settings
-    from backend.models import Intent, VoiceBotSetting
-    from backend.orchestration.router import RouteKind, TurnRouter
-    from backend.providers.base import ProviderConfig
-    from backend.providers.factory import get_llm_provider
+    from shared.config import get_settings
+    from shared.models import Intent, VoiceBotSetting
+    from shared.orchestration.router import RouteKind, TurnRouter
+    from shared.providers.base import ProviderConfig
+    from shared.providers.factory import get_llm_provider
 
     prompt = _prompt_checked(db, prompt_id, user)
     bot = _bot_checked(db, prompt.bot_id, user)
@@ -437,8 +437,8 @@ async def test_prompt(
     # 2. Optional retrieval (same service the voice bot uses).
     sources, used_kb = [], False
     if body.use_knowledge and kb_ids and decision.kind in (RouteKind.KNOWLEDGE, RouteKind.CHAT):
-        from backend.knowledge.schemas import RetrievalRequest
-        from backend.knowledge.service import get_knowledge_service
+        from shared.knowledge.schemas import RetrievalRequest
+        from shared.knowledge.service import get_knowledge_service
 
         result = await get_knowledge_service().search(
             RetrievalRequest(

@@ -3,11 +3,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
   getOnboardingOptions, getTenant, getTenantAnalytics, listAudit, listBots,
-  listKnowledge, listReleases, listSubscriptions, listTeam, updateTenant,
+  listKnowledge, listReleases, listSubscriptions, listTeam, resetUserPassword,
+  updateTenant,
 } from "@/services/api";
 import {
-  Button, Callout, CardSkeleton, EmptyState, ErrorState, Field, Health,
-  KpiCard, Modal, StatusChip, Tabs, Timeline, Avatar,
+  Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
+  Health, KpiCard, Modal, StatusChip, Tabs, Timeline, Avatar,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
@@ -87,8 +88,51 @@ export default function TenantDetail() {
   );
 }
 
+/* Mirrors the backend password policy (backend/routers/users.py) so the Super
+   Admin gets instant feedback; the API remains the enforcement boundary. */
+function passwordPolicyError(password: string): string | null {
+  const missing: string[] = [];
+  if (password.length < 10) missing.push("at least 10 characters");
+  if (!/[a-z]/.test(password)) missing.push("a lowercase letter");
+  if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
+  if (!/\d/.test(password)) missing.push("a digit");
+  return missing.length ? `Password must contain ${missing.join(", ")}.` : null;
+}
+
+function PasswordInput({ value, onChange, show, onToggleShow, invalid }: {
+  value: string; onChange: (v: string) => void; show: boolean; onToggleShow: () => void; invalid?: boolean;
+}) {
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        className="input"
+        style={{ paddingRight: 38, width: "100%" }}
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="new-password"
+        aria-invalid={invalid || undefined}
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        aria-label={show ? "Hide password" : "Show password"}
+        title={show ? "Hide password" : "Show password"}
+        style={{
+          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+          display: "flex", padding: 6, background: "none", border: "none",
+          cursor: "pointer", color: "var(--ink-3)",
+        }}
+      >
+        <Icon name={show ? "eye-off" : "eye"} size={16} />
+      </button>
+    </div>
+  );
+}
+
 function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const canResetPassword = hasPermission("reset_user_password");
   const optionsQ = useAsync(getOnboardingOptions, []);
   const opts = optionsQ.data;
   const [busy, setBusy] = useState(false);
@@ -104,12 +148,17 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     adminEmail: tenant.adminEmail,
   });
   const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const [pw, setPw] = useState({ next: "", confirm: "" });
+  const [showPw, setShowPw] = useState({ next: false, confirm: false });
+  const [pwErr, setPwErr] = useState<{ next?: string; confirm?: string }>({});
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const wantsPasswordReset = pw.next !== "" || pw.confirm !== "";
 
   /* Keep the tenant's current value selectable even if it's missing from the option catalog. */
   const withCurrent = (options: { code: string; name: string }[], current: string) =>
     current && !options.some((o) => o.code === current) ? [{ code: current, name: current }, ...options] : options;
 
-  const save = async () => {
+  const buildDiff = () => {
     const diff: Parameters<typeof updateTenant>[1] = {};
     if (form.name.trim() !== tenant.name) diff.name = form.name.trim();
     if (form.code.trim() !== (tenant.code ?? "")) diff.code = form.code.trim();
@@ -119,12 +168,47 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     if (form.industry !== tenant.industry) diff.industry = form.industry;
     if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
     if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
-    if (Object.keys(diff).length === 0) { onClose(); return; }
+    return diff;
+  };
+
+  const save = async () => {
+    /* Password reset happens ONLY when the Super Admin explicitly typed and
+       confirmed a new password; empty fields leave the password untouched. */
+    if (wantsPasswordReset) {
+      const errs: { next?: string; confirm?: string } = {};
+      const policy = passwordPolicyError(pw.next);
+      if (policy) errs.next = policy;
+      if (pw.next !== pw.confirm) errs.confirm = "Passwords do not match.";
+      setPwErr(errs);
+      if (errs.next || errs.confirm) return;
+      setConfirmResetOpen(true);
+      return;
+    }
+    await doSave(false);
+  };
+
+  const doSave = async (resetPassword: boolean) => {
+    const diff = buildDiff();
+    if (!resetPassword && Object.keys(diff).length === 0) { onClose(); return; }
     setBusy(true);
     setErr(null);
     try {
-      await updateTenant(tenant.id, diff);
-      toast("Tenant updated");
+      if (resetPassword) {
+        /* The reset targets the CURRENT admin account (tenant.adminEmail as
+           saved), never the not-yet-saved value typed in the email field. */
+        const team = await listTeam(tenant.id);
+        const admin =
+          team.find((m) => m.email.toLowerCase() === tenant.adminEmail.toLowerCase()) ??
+          team.find((m) => m.roleCode === "tenant_admin");
+        if (!admin) {
+          throw new Error(`No tenant admin account was found for ${tenant.adminEmail || "this tenant"}.`);
+        }
+        await resetUserPassword(admin.id, { newPassword: pw.next, confirmPassword: pw.confirm });
+      }
+      if (Object.keys(diff).length > 0) await updateTenant(tenant.id, diff);
+      toast(resetPassword
+        ? "Tenant admin password reset — their existing sessions have been signed out."
+        : "Tenant updated");
       onSaved();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to update tenant");
@@ -191,8 +275,56 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
               <input className="input" type="email" value={form.adminEmail} onChange={(e) => set("adminEmail", e.target.value)} />
             </Field>
           </div>
+
+          {canResetPassword && (
+            <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>
+              <div>
+                <div className="t-strong">Reset tenant admin password</div>
+                <p className="t-sub" style={{ marginTop: 4 }}>
+                  Optional — leave both fields blank to keep the current password. The current
+                  password is stored as a hash and is never shown. Resetting signs the tenant
+                  admin out of all existing sessions.
+                </p>
+              </div>
+              <div className="grid grid-2">
+                <Field
+                  label="New password"
+                  error={pwErr.next}
+                  hint="Minimum 10 characters with an uppercase letter, a lowercase letter and a digit."
+                >
+                  <PasswordInput
+                    value={pw.next}
+                    onChange={(v) => { setPw((p) => ({ ...p, next: v })); setPwErr({}); }}
+                    show={showPw.next}
+                    onToggleShow={() => setShowPw((s) => ({ ...s, next: !s.next }))}
+                    invalid={Boolean(pwErr.next)}
+                  />
+                </Field>
+                <Field label="Confirm password" error={pwErr.confirm}>
+                  <PasswordInput
+                    value={pw.confirm}
+                    onChange={(v) => { setPw((p) => ({ ...p, confirm: v })); setPwErr({}); }}
+                    show={showPw.confirm}
+                    onToggleShow={() => setShowPw((s) => ({ ...s, confirm: !s.confirm }))}
+                    invalid={Boolean(pwErr.confirm)}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmResetOpen}
+        onClose={() => setConfirmResetOpen(false)}
+        onConfirm={() => { setConfirmResetOpen(false); void doSave(true); }}
+        title="Reset tenant admin password?"
+        body="Are you sure you want to reset this Tenant Admin's password? Their existing sessions will be signed out."
+        confirmLabel="Reset password"
+        danger
+        busy={busy}
+      />
     </Modal>
   );
 }

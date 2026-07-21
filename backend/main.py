@@ -9,10 +9,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.config import get_settings
-from backend.core.errors import install_error_handlers
+from shared.config import get_settings
+from shared.errors import install_error_handlers
 from backend.core.responses import ok
-from backend.db.mongo import Mongo, create_indexes
+from shared.db.mongo import Mongo, create_indexes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +70,9 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from shared.config import validate_settings
+
+    validate_settings("api")
     settings = get_settings()
     app = FastAPI(
         title="EchoSphere Platform API",
@@ -130,9 +133,9 @@ def create_app() -> FastAPI:
         """Readiness: checks every backing service the API depends on."""
         from sqlalchemy import text as sa_text
 
-        from backend.db.mysql import get_engine
-        from backend.db.postgres import pg_health_check
-        from backend.db.redis import redis_health_check
+        from shared.db.mysql import get_engine
+        from shared.db.postgres import pg_health_check
+        from shared.db.redis import redis_health_check
 
         checks: dict[str, dict] = {}
         try:

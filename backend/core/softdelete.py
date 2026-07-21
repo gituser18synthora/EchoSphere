@@ -2,9 +2,9 @@
 
 from datetime import datetime, timezone
 
-from backend.config import get_settings
-from backend.core.errors import HardDeleteBlockedError
-from backend.models import User
+from shared.config import get_settings
+from shared.errors import HardDeleteBlockedError
+from shared.models import User
 
 
 def guard_hard_delete() -> None:

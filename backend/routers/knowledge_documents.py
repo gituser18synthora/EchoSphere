@@ -16,12 +16,12 @@ from backend.core.deps import (
     require_tenant_admin,
     require_tenant_member,
 )
-from backend.core.errors import ApiError, NotFoundError
+from shared.errors import ApiError, NotFoundError
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.knowledge.schemas import RetrievalRequest
-from backend.knowledge.service import get_knowledge_service
-from backend.models import KnowledgeSource, User
+from shared.db.mysql import get_db
+from shared.knowledge.schemas import RetrievalRequest
+from shared.knowledge.service import get_knowledge_service
+from shared.models import KnowledgeSource, User
 
 router = APIRouter(tags=["Knowledge Documents"])
 
@@ -30,8 +30,8 @@ router = APIRouter(tags=["Knowledge Documents"])
 def upload_config(user: User = Depends(get_current_user)):
     """Upload constraints for the frontend — single source of truth, so the UI
     never hardcodes its own list of types or size limits."""
-    from backend.config import get_settings
-    from backend.knowledge.ingestion.storage import ALLOWED_EXTENSIONS
+    from shared.config import get_settings
+    from shared.knowledge.ingestion.storage import ALLOWED_EXTENSIONS
 
     settings = get_settings()
     return ok({

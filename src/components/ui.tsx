@@ -398,11 +398,16 @@ export function ToastRegion() {
 }
 
 /* ---------- Form field ---------- */
-export function Field({ label, hint, error, required, children }: {
-  label: string; hint?: string; error?: string; required?: boolean; children: ReactNode;
+export function Field({ label, hint, error, required, plain, children }: {
+  label: string; hint?: string; error?: string; required?: boolean;
+  /** Render as <div> instead of <label> — needed when the child has interactive
+      elements (e.g. MultiSelect chips) that a label click would activate. */
+  plain?: boolean;
+  children: ReactNode;
 }) {
+  const Tag = plain ? "div" : "label";
   return (
-    <label className="field">
+    <Tag className="field">
       <span className="field-label">
         {label} {required && <span className="req">*</span>}
       </span>
@@ -412,6 +417,160 @@ export function Field({ label, hint, error, required, children }: {
       ) : hint ? (
         <span className="field-hint">{hint}</span>
       ) : null}
-    </label>
+    </Tag>
+  );
+}
+
+/* ---------- MultiSelect (searchable, chips, "+N more" overflow) ---------- */
+export interface MultiSelectOption {
+  value: string;
+  label: string;
+  /** Secondary text shown under the label and on selected chips (e.g. a locale code). */
+  sub?: string;
+}
+
+export function MultiSelect({
+  options, selected, onChange, placeholder = "Select…",
+  searchPlaceholder = "Search…", maxChips = 4, invalid, disabled,
+}: {
+  options: MultiSelectOption[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  /** Chips shown before collapsing the rest into “+N more”. */
+  maxChips?: number;
+  invalid?: boolean;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // Inside scroll containers (e.g. modal bodies) the popover extends the scroll
+    // height instead of floating — bring it into view.
+    popRef.current?.scrollIntoView({ block: "nearest" });
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); setQuery(""); }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const byValue = new Map(options.map((o) => [o.value, o]));
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter((o) =>
+        o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q) || (o.sub ?? "").toLowerCase().includes(q))
+    : options;
+
+  const toggle = (value: string) =>
+    onChange(selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value]);
+
+  const visible = expanded ? selected : selected.slice(0, maxChips);
+  const overflow = selected.length - visible.length;
+
+  return (
+    <div className="mselect" ref={ref}>
+      <div
+        className={`mselect-control${open ? " open" : ""}`}
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-invalid={invalid || undefined}
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : 0}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); }
+        }}
+      >
+        {selected.length === 0 ? (
+          <span className="mselect-placeholder">{placeholder}</span>
+        ) : (
+          <span className="mselect-chips">
+            {visible.map((v) => (
+              <span key={v} className="chip chip-brand mselect-chip" title={byValue.get(v)?.label ?? v}>
+                {byValue.get(v)?.sub ?? v}
+                {!disabled && (
+                  <button
+                    type="button"
+                    className="mselect-chip-x"
+                    aria-label={`Remove ${byValue.get(v)?.label ?? v}`}
+                    onClick={(e) => { e.stopPropagation(); toggle(v); }}
+                  >
+                    <Icon name="x" size={11} />
+                  </button>
+                )}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <button type="button" className="chip chip-neutral mselect-more"
+                onClick={(e) => { e.stopPropagation(); setExpanded(true); }}>
+                +{overflow} more
+              </button>
+            )}
+            {expanded && selected.length > maxChips && (
+              <button type="button" className="chip chip-neutral mselect-more"
+                onClick={(e) => { e.stopPropagation(); setExpanded(false); }}>
+                show less
+              </button>
+            )}
+          </span>
+        )}
+        <Icon name="chevron-down" size={14} className="mselect-caret" />
+      </div>
+
+      {open && (
+        <div className="mselect-pop" ref={popRef}>
+          <div className="mselect-search">
+            <Icon name="search" size={13} />
+            <input
+              className="input"
+              autoFocus
+              value={query}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); if (filtered.length > 0) toggle(filtered[0].value); }
+                if (e.key === "Backspace" && !query && selected.length > 0) onChange(selected.slice(0, -1));
+              }}
+            />
+          </div>
+          <div className="mselect-list" role="listbox" aria-multiselectable>
+            {filtered.length === 0 && <span className="mselect-empty">No matches{query ? ` for “${query}”` : ""}</span>}
+            {filtered.map((o) => {
+              const on = selected.includes(o.value);
+              return (
+                <button key={o.value} type="button" role="option" aria-selected={on}
+                  className={`mselect-option${on ? " on" : ""}`} onClick={() => toggle(o.value)}>
+                  <span className={`mselect-box${on ? " on" : ""}`}>{on && <Icon name="check" size={11} />}</span>
+                  <span className="mselect-opt-text">
+                    <span className="mselect-opt-label">{o.label}</span>
+                    {o.sub && <span className="mselect-opt-sub">{o.sub}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {selected.length > 0 && (
+            <div className="mselect-foot">
+              <span className="t-micro">{selected.length} selected</span>
+              <button type="button" className="mselect-clear" onClick={() => onChange([])}>Clear all</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

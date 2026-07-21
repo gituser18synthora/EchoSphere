@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import assert_tenant_access, get_current_user, require_tenant_admin
-from backend.core.errors import NotFoundError
-from backend.core.ids import new_id
+from shared.errors import NotFoundError
+from shared.ids import new_id
 from backend.core.responses import ok
-from backend.db.mysql import get_db
-from backend.models import TestScenario, User, VoiceBot
+from shared.db.mysql import get_db
+from shared.models import TestScenario, User, VoiceBot
 from backend.serializers import serialize_scenario
 
 router = APIRouter(tags=["Testing"])

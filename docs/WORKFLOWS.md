@@ -1,6 +1,6 @@
 # Workflows (LangGraph)
 
-`backend/orchestration/workflow_engine.py` runs **stateful multi-step business
+`shared/orchestration/workflow_engine.py` runs **stateful multi-step business
 flows** — slot-filling forms, bookings, escalations — on LangGraph. The scope is
 deliberately narrow:
 
@@ -13,7 +13,7 @@ deliberately narrow:
 
 ## How a call enters a workflow
 
-`TurnRouter` (`backend/orchestration/router.py`) starts a workflow when a configured
+`TurnRouter` (`shared/orchestration/router.py`) starts a workflow when a configured
 intent's route is `workflow:<name>` (e.g. the demo intent "book appointment" →
 `workflow:appointment`). While a workflow is active it consumes every subsequent
 turn, with two escape hatches that still win: explicit call-control commands and
@@ -92,8 +92,8 @@ the workflow active for the next turn.
 
 ## Tests
 
-`backend/tests/unit/test_workflow_engine.py` (4 tests) covers the full booking
+`tests/unit/test_workflow_engine.py` (4 tests) covers the full booking
 happy path, re-ask/handoff after repeated invalid input, state survival across graph
 instances (checkpoint resume), and session isolation (no cross-session state
 confusion). Router-side workflow entry/escape rules are covered in
-`backend/tests/unit/test_turn_router.py`.
+`tests/unit/test_turn_router.py`.

@@ -14,13 +14,13 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from backend.core.errors import ApiError, NotFoundError
-from backend.core.ids import new_id
+from shared.errors import ApiError, NotFoundError
+from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.softdelete import guard_hard_delete, soft_delete
-from backend.db.mysql import get_db
-from backend.models import (
+from shared.db.mysql import get_db
+from shared.models import (
     BotLanguage,
     ChannelConfig,
     SupportedLanguage,
@@ -164,6 +164,22 @@ class CreateBotRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def _validated_languages(db: Session, codes: list[str]) -> list[str]:
+    """Dedupe (order-preserving) and require every code to be an enabled platform language."""
+    deduped = list(dict.fromkeys(c.strip() for c in codes if c and c.strip()))
+    if not deduped:
+        raise ApiError("At least one supported language is required.", 422)
+    enabled = set(
+        db.scalars(
+            select(SupportedLanguage.code).where(SupportedLanguage.enabled.is_(True))
+        ).all()
+    )
+    rejected = [c for c in deduped if c not in enabled]
+    if rejected:
+        raise ApiError(f"Unknown or disabled language(s): {', '.join(rejected)}", 422)
+    return deduped
+
+
 @router.post("/bots", status_code=201)
 def create_bot(
     body: CreateBotRequest,
@@ -175,10 +191,7 @@ def create_bot(
     if db.get(Tenant, tid) is None:
         raise NotFoundError("Tenant")
 
-    valid_langs = set(
-        db.scalars(select(SupportedLanguage.code).where(SupportedLanguage.enabled.is_(True))).all()
-    )
-    langs = [l for l in body.languages if l in valid_langs] or ["en-US"]
+    langs = _validated_languages(db, body.languages)
 
     bot = VoiceBot(
         id=new_id("bot"),
@@ -277,14 +290,7 @@ def update_bot(
             raise ApiError("Owner must be a member of the same tenant.", 422)
         bot.owner_user_id = body.owner_user_id
     if body.languages is not None:
-        valid = set(
-            db.scalars(
-                select(SupportedLanguage.code).where(SupportedLanguage.enabled.is_(True))
-            ).all()
-        )
-        langs = [l for l in body.languages if l in valid]
-        if not langs:
-            raise ApiError("At least one supported language is required.", 422)
+        langs = _validated_languages(db, body.languages)
         existing = db.scalars(select(BotLanguage).where(BotLanguage.bot_id == bot.id)).all()
         for row in existing:
             if row.language_code not in langs:
@@ -407,7 +413,7 @@ def update_voice_settings(
             raise ApiError("Unknown voice profile.", 422)
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
-    from backend.providers.factory import _REGISTRY as _provider_registry
+    from shared.providers.factory import _REGISTRY as _provider_registry
 
     for kind, value in (("stt", body.stt_provider), ("tts", body.tts_provider),
                         ("llm", body.llm_provider)):
@@ -432,7 +438,7 @@ def update_voice_settings(
         previous_value=before, new_value=_serialize_voice_settings(s), request=request,
     )
     db.commit()
-    from backend.voice_runtime.bot_config import invalidate_bot_config_sync
+    from shared.bot_config import invalidate_bot_config_sync
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(_serialize_voice_settings(s))

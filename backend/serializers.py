@@ -5,9 +5,10 @@ layer stays a thin fetch wrapper. Sensitive fields (password hashes, raw
 secrets) are never emitted.
 """
 
+import re
 from datetime import date, datetime
 
-from backend.models import (
+from shared.models import (
     AiConfigProfile,
     ApiConnection,
     ApprovedModel,
@@ -473,14 +474,39 @@ def serialize_workflow(w: Workflow, *, updated_by_name: str) -> dict:
     }
 
 
-def serialize_channel(c: ChannelConfig) -> dict:
+_SECRETISH_KEY = re.compile(r"(key|secret|token|password|credential)", re.IGNORECASE)
+
+
+def mask_channel_config(config: dict | None) -> dict | None:
+    """Never return secret material. `env:VAR` references are not secrets (they
+    name an environment variable) and pass through; any secret-looking value
+    that is NOT a reference is masked defensively — validation rejects raw
+    secrets on write, so this only guards legacy/hand-edited rows."""
+    if config is None:
+        return None
+    masked = {}
+    for key, value in config.items():
+        if (_SECRETISH_KEY.search(key) and isinstance(value, str) and value
+                and not value.startswith("env:")):
+            masked[key] = "••••••••"
+        else:
+            masked[key] = value
+    return masked
+
+
+def serialize_channel(c: ChannelConfig, *, binding: dict | None = None) -> dict:
     return {
+        "id": c.id,
         "type": c.type,
         "botId": c.bot_id,
         "status": c.status,
+        "enabled": bool(c.enabled),
         "detail": c.detail or "",
         "workflow": c.workflow_name or "—",
         "lastTest": c.last_test,
+        "config": mask_channel_config(c.config),
+        "updatedAt": iso(c.updated_at),
+        "binding": binding,
     }
 
 
