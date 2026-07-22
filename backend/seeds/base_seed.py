@@ -56,6 +56,7 @@ PERMISSIONS = [
     ("bots.publish", "Publish & rollback releases", "tenant"),
     ("knowledge.view", "View knowledge", "tenant"),
     ("knowledge.manage", "Manage knowledge sources", "tenant"),
+    ("review_knowledge_chunks", "Review knowledge documents & chunks", "platform"),
     ("prompts.manage", "Edit & approve prompts", "tenant"),
     ("conversations.view", "Review conversations", "tenant"),
     ("analytics.view", "View analytics", "tenant"),
@@ -478,6 +479,11 @@ def run_base_seed(db: Session | None = None) -> dict:
                     provider="platform",
                 ))
                 created["voices"] += 1
+
+        # Provider model catalog + provider voices (Sarvam speakers, ElevenLabs voices).
+        from backend.seeds.provider_catalog_seed import seed_provider_catalog
+
+        created.update(seed_provider_catalog(db))
 
         for name, category, desc, enforcement, enabled in GUARDRAILS:
             if db.scalar(select(Guardrail).where(Guardrail.name == name)) is None:

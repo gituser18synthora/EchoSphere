@@ -88,11 +88,11 @@ export default function TenantDetail() {
   );
 }
 
-/* Mirrors the backend password policy (backend/routers/users.py) so the Super
+/* Mirrors the backend password policy (backend/core/security.py) so the Super
    Admin gets instant feedback; the API remains the enforcement boundary. */
 function passwordPolicyError(password: string): string | null {
   const missing: string[] = [];
-  if (password.length < 10) missing.push("at least 10 characters");
+  if (password.length < 8) missing.push("at least 8 characters");
   if (!/[a-z]/.test(password)) missing.push("a lowercase letter");
   if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
   if (!/\d/.test(password)) missing.push("a digit");
@@ -290,7 +290,7 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
                 <Field
                   label="New password"
                   error={pwErr.next}
-                  hint="Minimum 10 characters with an uppercase letter, a lowercase letter and a digit."
+                  hint="Minimum 8 characters with an uppercase letter, a lowercase letter and a digit."
                 >
                   <PasswordInput
                     value={pw.next}

@@ -95,6 +95,9 @@ class KnowledgeDocument(PGBase, PGTimestampMixin, PGSoftDeleteMixin):
         Index("ix_kdoc_kb_status", "kb_id", "status"),
         Index("ix_kdoc_status", "status"),
         Index("ix_kdoc_is_deleted", "is_deleted"),
+        # Chunk-review document list ordering + file-type filtering.
+        Index("ix_kdoc_created_at", "created_at"),
+        Index("ix_kdoc_file_ext", "file_ext"),
     )
 
 
@@ -125,6 +128,10 @@ class KnowledgeChunk(PGBase, PGTimestampMixin, PGSoftDeleteMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Token count (tiktoken cl100k_base at ingestion; approximate for rows
+    # backfilled by the chunk-review migration). Stored so the review console can
+    # filter/sort on token count server-side instead of computing per request.
+    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -142,6 +149,12 @@ class KnowledgeChunk(PGBase, PGTimestampMixin, PGSoftDeleteMixin):
         Index("ix_kchunk_tenant_kb", "tenant_id", "kb_id"),
         Index("ix_kchunk_kb_status_deleted", "kb_id", "status", "is_deleted"),
         Index("ix_kchunk_document", "document_id"),
+        # Chunk-review filter/sort columns (added in migration b2c4e6f8a0d1).
+        Index("ix_kchunk_doc_status", "document_id", "status", "is_deleted"),
+        Index("ix_kchunk_language", "language"),
+        Index("ix_kchunk_page_number", "page_number"),
+        Index("ix_kchunk_created_at", "created_at"),
+        Index("ix_kchunk_token_count", "token_count"),
         # HNSW + tsvector GIN indexes are created in the Alembic migration
         # (expression indexes; kept out of the ORM definition).
     )

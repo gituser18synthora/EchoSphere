@@ -1,210 +1,572 @@
-import { useEffect, useMemo, useState } from "react";
-import type { VoiceBot, VoiceProfile, VoiceTuning } from "@/types/domain";
+/* Voice settings tab — provider-specific, database-driven configuration.
+   Every provider / model / language / voice option shown here comes from the
+   backend catalog APIs (/providers/*) — nothing is hardcoded. The backend
+   re-validates the whole configuration on save; this UI mirrors those rules
+   so problems surface before the PUT. */
+
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type {
+  AudioSettings, LanguageVoiceOverride, ModelLanguagesInfo, ParamSpec, ProviderInfo,
+  ProviderModelInfo, ProviderSettingValue, ProviderSettings, ProviderTestResult,
+  TtsPreviewResult, VoiceBot, VoiceCapability, VoiceOption, VoiceSettings, VoiceTuning,
+} from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { getVoiceCatalog, getVoiceSettings, listVoices, saveVoiceSettings } from "@/services/api";
-import { Button, CardSkeleton, EmptyState, StatusChip } from "@/components/ui";
-import { DataTable } from "@/components/DataTable";
+import {
+  generateTtsPreview, getModelLanguages, getProviderCatalog, getVoiceSettings,
+  listProviderModels, listProviderVoices, saveVoiceSettings, testProviderConnection,
+  validateVoiceConfig,
+} from "@/services/api";
+import type { ApiRequestError } from "@/services/http";
+import {
+  Button, Callout, CardSkeleton, ErrorState, Field, Modal, SearchableSelect, Toggle,
+  type SearchableSelectOption,
+} from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
-import { flags } from "@/services/flags";
 
-const VIEW_STORAGE_KEY = "echosphere.voiceView";
-type CatalogView = "cards" | "table";
+/* ---------- helpers ---------- */
 
-function initialView(): CatalogView {
-  try {
-    return localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
-  } catch {
-    return "cards";
+const DEFAULT_SAMPLE_TEXT = "Hello! I'm your voice assistant. How can I help you today?";
+
+function schemaDefaults(schema: Record<string, ParamSpec> | undefined): ProviderSettings {
+  const out: ProviderSettings = {};
+  for (const [key, spec] of Object.entries(schema ?? {})) {
+    if (spec.fixed) continue;
+    if (spec.default !== undefined) out[key] = spec.default;
   }
+  return out;
 }
 
-type EngineOverrides = {
-  sttProvider: string; sttModel: string;
-  ttsProvider: string; ttsModel: string; ttsVoice: string;
-  llmProvider: string; llmModel: string;
-};
+/** Keep values still present in the new schema, fill the rest with defaults. */
+function reconcileSettings(schema: Record<string, ParamSpec> | undefined, prev: ProviderSettings): ProviderSettings {
+  if (!schema) return {};
+  const out = schemaDefaults(schema);
+  for (const [key, value] of Object.entries(prev)) {
+    const spec = schema[key];
+    if (spec && !spec.fixed) out[key] = value;
+  }
+  return out;
+}
 
-const emptyEngines: EngineOverrides = {
-  sttProvider: "", sttModel: "", ttsProvider: "", ttsModel: "", ttsVoice: "", llmProvider: "", llmModel: "",
-};
+function voiceSupportsModel(v: VoiceOption, model: string): boolean {
+  return !model || v.modelCodes.length === 0 || v.modelCodes.includes(model);
+}
+
+function voiceSupportsLanguage(v: VoiceOption, locale: string): boolean {
+  return !locale || v.languages.length === 0 || v.languages.includes(locale);
+}
+
+function findVoice(voices: VoiceOption[] | undefined, id: string): VoiceOption | undefined {
+  return voices?.find((v) => v.id === id || v.providerVoiceId === id);
+}
+
+/** Ensure the current value is always rendered, even when it fell out of the catalog. */
+function withCurrent(options: SearchableSelectOption[], value: string): SearchableSelectOption[] {
+  if (!value || options.some((o) => o.value === value)) return options;
+  return [{ value, label: value, sub: "not in catalog for this selection" }, ...options];
+}
+
+/* ---------- engine state ---------- */
+
+interface SttState { provider: string; model: string; language: string; settings: ProviderSettings }
+interface LlmState { provider: string; model: string; settings: ProviderSettings }
+interface TtsState { provider: string; model: string; voice: string; settings: ProviderSettings }
+interface FallbackState { provider: string; model: string; voice: string }
+
+interface PreviewContext {
+  provider: string; model: string; voice: string; language: string; params?: ProviderSettings;
+}
+
+type TestState = Record<string, { busy: boolean; result: ProviderTestResult | null }>;
+
+/* ============================================================ */
 
 export default function VoiceTab({ bot }: { bot: VoiceBot }) {
-  const q = useAsync(() => listVoices(), []);
-  const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
-  const catalogQ = useAsync(getVoiceCatalog, []);
   const { toast, hasPermission } = useApp();
-  const canManageVoices = hasPermission("manage_voices") || hasPermission("bots.manage");
-  const [selected, setSelected] = useState(bot.voiceId ?? "");
-  const [query, setQuery] = useState("");
-  const [langFilter, setLangFilter] = useState("all");
-  const [providerFilter, setProviderFilter] = useState("all");
-  const [genderFilter, setGenderFilter] = useState("all");
-  const [view, setView] = useState<CatalogView>(initialView);
-  const [saving, setSaving] = useState(false);
-  const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
-  const [langMap, setLangMap] = useState<Record<string, string>>({});
-  const [engines, setEngines] = useState<EngineOverrides>(emptyEngines);
+  const canManage = hasPermission("manage_voices") || hasPermission("bots.manage");
+  const noPermTitle = canManage ? undefined : "Requires the manage_voices permission";
 
-  /* Initialize tuning + mapping from persisted settings once loaded */
+  const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
+  const catalogQ = useAsync(() => getProviderCatalog(), []);
+
+  const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
+  const [stt, setStt] = useState<SttState>({ provider: "", model: "", language: "", settings: {} });
+  const [llm, setLlm] = useState<LlmState>({ provider: "", model: "", settings: {} });
+  const [tts, setTts] = useState<TtsState>({ provider: "", model: "", voice: "", settings: {} });
+  const [fallback, setFallback] = useState<FallbackState>({ provider: "", model: "", voice: "" });
+  const [langMap, setLangMap] = useState<Record<string, string | LanguageVoiceOverride>>({});
+  const [audio, setAudio] = useState<AudioSettings>({
+    browser: { codec: "linear16", sampleRate: 16000 },
+    telephony: { codec: "mulaw", sampleRate: 8000 },
+  });
+  const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+  const [warningsFromSave, setWarningsFromSave] = useState(false);
+  const [tests, setTests] = useState<TestState>({});
+  const [preview, setPreview] = useState<PreviewContext | null>(null);
+
+  /* Model / voice caches, keyed by "<capability>:<provider>" and "<provider>".
+     cacheTick bumps on every cache fill so memos over the refs recompute. */
+  const modelsRef = useRef<Record<string, ProviderModelInfo[]>>({});
+  const voicesRef = useRef<Record<string, VoiceOption[]>>({});
+  const [cacheTick, setCacheTick] = useState(0);
+
+  const ensureModels = useCallback(async (cap: VoiceCapability, provider: string): Promise<ProviderModelInfo[]> => {
+    const key = `${cap}:${provider}`;
+    const hit = modelsRef.current[key];
+    if (hit) return hit;
+    try {
+      const models = await listProviderModels(cap, provider);
+      modelsRef.current[key] = models;
+      setCacheTick((t) => t + 1);
+      return models;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : `Could not load ${provider} models`, "error");
+      return [];
+    }
+  }, [toast]);
+
+  const ensureVoices = useCallback(async (provider: string): Promise<VoiceOption[]> => {
+    const hit = voicesRef.current[provider];
+    if (hit) return hit;
+    try {
+      const voices = await listProviderVoices(provider);
+      voicesRef.current[provider] = voices;
+      setCacheTick((t) => t + 1);
+      return voices;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : `Could not load ${provider} voices`, "error");
+      return [];
+    }
+  }, [toast]);
+
+  const modelsFor = (cap: VoiceCapability, provider: string): ProviderModelInfo[] =>
+    modelsRef.current[`${cap}:${provider}`] ?? [];
+  const modelInfo = (cap: VoiceCapability, provider: string, model: string): ProviderModelInfo | undefined =>
+    modelsFor(cap, provider).find((m) => m.code === model);
+
+  /* ---- initialize from persisted settings ---- */
   useEffect(() => {
     const s = settingsQ.data;
     if (!s) return;
     setTuning({ speed: s.speed, pauseMs: s.pauseMs, empathy: s.empathy, energy: s.energy });
-    if (s.voiceId) setSelected(s.voiceId);
-    setLangMap((prev) => {
-      const next: Record<string, string> = {};
-      for (const l of bot.languages) next[l] = s.languageVoiceMap[l] ?? prev[l] ?? s.voiceId ?? "";
+    setStt({ provider: s.sttProvider ?? "", model: s.sttModel ?? "", language: s.sttLanguage ?? "", settings: s.sttSettings ?? {} });
+    setLlm({ provider: s.llmProvider ?? "", model: s.llmModel ?? "", settings: s.llmSettings ?? {} });
+    setTts({ provider: s.ttsProvider ?? "", model: s.ttsModel ?? "", voice: s.ttsVoice ?? "", settings: s.ttsSettings ?? {} });
+    setFallback({ provider: s.fallbackProvider ?? "", model: s.fallbackModel ?? "", voice: s.fallbackVoice ?? "" });
+    setLangMap(() => {
+      /* Keep only entries for the bot's current languages plus the "default" locale key. */
+      const map = s.languageVoiceMap ?? {};
+      const next: Record<string, string | LanguageVoiceOverride> = {};
+      for (const l of bot.languages) {
+        const entry = map[l];
+        if (entry !== undefined && entry !== "") next[l] = entry;
+      }
+      const def = map["default"];
+      if (typeof def === "string" && def) next["default"] = def;
       return next;
     });
-    setEngines({
-      sttProvider: s.sttProvider ?? "", sttModel: s.sttModel ?? "",
-      ttsProvider: s.ttsProvider ?? "", ttsModel: s.ttsModel ?? "", ttsVoice: s.ttsVoice ?? "",
-      llmProvider: s.llmProvider ?? "", llmModel: s.llmModel ?? "",
+    setAudio({
+      browser: { codec: "linear16", sampleRate: s.audioSettings?.browser?.sampleRate ?? 16000 },
+      telephony: { codec: s.audioSettings?.telephony?.codec ?? "mulaw", sampleRate: 8000 },
     });
   }, [settingsQ.data, bot.languages]);
 
-  const voices = useMemo(() => {
-    let v = q.data ?? [];
-    if (query) {
-      const s = query.toLowerCase();
-      v = v.filter((x) => x.name.toLowerCase().includes(s) || x.accent.toLowerCase().includes(s) || x.styles.some((st) => st.toLowerCase().includes(s)));
+  /* ---- prefetch models/voices for everything currently selected ---- */
+  useEffect(() => { if (stt.provider) void ensureModels("stt", stt.provider); }, [stt.provider, ensureModels]);
+  useEffect(() => { if (llm.provider) void ensureModels("llm", llm.provider); }, [llm.provider, ensureModels]);
+  useEffect(() => {
+    if (tts.provider) { void ensureModels("tts", tts.provider); void ensureVoices(tts.provider); }
+  }, [tts.provider, ensureModels, ensureVoices]);
+  useEffect(() => {
+    if (fallback.provider) { void ensureModels("tts", fallback.provider); void ensureVoices(fallback.provider); }
+  }, [fallback.provider, ensureModels, ensureVoices]);
+  useEffect(() => {
+    for (const entry of Object.values(langMap)) {
+      if (entry && typeof entry === "object" && entry.provider) {
+        void ensureModels("tts", entry.provider);
+        void ensureVoices(entry.provider);
+      }
     }
-    if (langFilter !== "all") v = v.filter((x) => x.languages.includes(langFilter));
-    if (providerFilter !== "all") v = v.filter((x) => (x.provider ?? "") === providerFilter);
-    if (genderFilter !== "all") v = v.filter((x) => x.gender === genderFilter);
-    return v;
-  }, [q.data, query, langFilter, providerFilter, genderFilter]);
+  }, [langMap, ensureModels, ensureVoices]);
 
-  /* Filter options come from the loaded catalog, not a hardcoded list */
-  const languageOptions = useMemo(
-    () => Array.from(new Set((q.data ?? []).flatMap((v) => v.languages))).sort(),
-    [q.data],
-  );
-  const providerOptions = useMemo(
-    () => Array.from(new Set((q.data ?? []).map((v) => v.provider).filter((p): p is string => Boolean(p)))).sort(),
-    [q.data],
+  /* Platform languages supported by the selected STT model. */
+  const sttLangQ = useAsync<ModelLanguagesInfo | null>(
+    () => (stt.provider && stt.model ? getModelLanguages("stt", stt.provider, stt.model) : Promise.resolve(null)),
+    [stt.provider, stt.model],
   );
 
-  const changeView = (next: CatalogView) => {
-    setView(next);
+  const sttProviders = catalogQ.data?.stt ?? [];
+  const ttsProviders = catalogQ.data?.tts ?? [];
+  const llmProviders = catalogQ.data?.llm ?? [];
+  const defaultLocale = typeof langMap["default"] === "string" ? (langMap["default"] as string) : "";
+
+  /* ---- revalidation: invalid selections are only removed on "Apply changes" ---- */
+
+  const sttIssues = useMemo(() => {
+    const d = sttLangQ.data;
+    if (!d || !stt.language || d.languageAgnostic) return [];
+    return d.languages.some((l) => l.code === stt.language)
+      ? []
+      : [`Language "${stt.language}" is not supported by ${stt.provider}/${stt.model} — it will be reset to auto/unset.`];
+  }, [sttLangQ.data, stt.language, stt.provider, stt.model]);
+
+  const ttsIssues = useMemo(() => {
+    if (!tts.provider || !tts.voice) return [];
+    const voices = voicesRef.current[tts.provider];
+    if (!voices) return [];
+    const v = findVoice(voices, tts.voice);
+    if (!v) return [`Voice "${tts.voice}" is not in the ${tts.provider} catalog — it will be removed.`];
+    const issues: string[] = [];
+    if (!voiceSupportsModel(v, tts.model)) issues.push(`Voice "${v.name}" does not support model "${tts.model}" — it will be removed.`);
+    else if (defaultLocale && !voiceSupportsLanguage(v, defaultLocale)) issues.push(`Voice "${v.name}" does not support the default language "${defaultLocale}" — it will be removed.`);
+    return issues;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tts.provider, tts.model, tts.voice, defaultLocale, cacheTick]);
+
+  const fallbackIssues = useMemo(() => {
+    if (!fallback.provider || !fallback.voice) return [];
+    const voices = voicesRef.current[fallback.provider];
+    if (!voices) return [];
+    const v = findVoice(voices, fallback.voice);
+    if (!v) return [`Voice "${fallback.voice}" is not in the ${fallback.provider} catalog — it will be removed.`];
+    if (!voiceSupportsModel(v, fallback.model)) return [`Voice "${v.name}" does not support model "${fallback.model}" — it will be removed.`];
+    return [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fallback, cacheTick]);
+
+  const mappingIssues = useMemo(() => {
+    const issues: { locale: string; message: string }[] = [];
+    for (const locale of bot.languages) {
+      const entry = langMap[locale];
+      if (!entry || typeof entry === "string" || !entry.provider || !entry.voice) continue;
+      const voices = voicesRef.current[entry.provider];
+      if (!voices) continue;
+      const v = findVoice(voices, entry.voice);
+      if (!v) issues.push({ locale, message: `${locale}: voice "${entry.voice}" is not in the ${entry.provider} catalog — it will be removed.` });
+      else if (!voiceSupportsModel(v, entry.model)) issues.push({ locale, message: `${locale}: voice "${v.name}" does not support model "${entry.model}" — it will be removed.` });
+      else if (!voiceSupportsLanguage(v, locale)) issues.push({ locale, message: `${locale}: voice "${v.name}" does not support this language — it will be removed.` });
+    }
+    return issues;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [langMap, bot.languages, cacheTick]);
+
+  if (settingsQ.error) return <ErrorState message={settingsQ.error} onRetry={settingsQ.reload} />;
+  if (catalogQ.error) return <ErrorState message={catalogQ.error} onRetry={catalogQ.reload} />;
+  if (settingsQ.loading || catalogQ.loading) {
+    return <div className="grid grid-2">{Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} rows={4} />)}</div>;
+  }
+
+  /* ---- change handlers (provider change resets model-dependent fields) ---- */
+
+  const defaultModelOf = async (cap: VoiceCapability, provider: string) => {
+    const models = await ensureModels(cap, provider);
+    return models.find((m) => m.isDefault) ?? models[0];
+  };
+
+  const changeSttProvider = async (provider: string) => {
+    setStt({ provider, model: "", language: "", settings: {} });
+    if (!provider) return;
+    const def = await defaultModelOf("stt", provider);
+    setStt((s) => (s.provider === provider && !s.model
+      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      : s));
+  };
+  const changeSttModel = (model: string) => {
+    const schema = modelInfo("stt", stt.provider, model)?.paramsSchema;
+    setStt((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+  };
+
+  const changeLlmProvider = async (provider: string) => {
+    setLlm({ provider, model: "", settings: {} });
+    if (!provider) return;
+    const def = await defaultModelOf("llm", provider);
+    setLlm((s) => (s.provider === provider && !s.model
+      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      : s));
+  };
+  const changeLlmModel = (model: string) => {
+    const schema = modelInfo("llm", llm.provider, model)?.paramsSchema;
+    setLlm((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+  };
+
+  const changeTtsProvider = async (provider: string) => {
+    setTts({ provider, model: "", voice: "", settings: {} });
+    if (!provider) return;
+    void ensureVoices(provider);
+    const def = await defaultModelOf("tts", provider);
+    setTts((s) => (s.provider === provider && !s.model
+      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      : s));
+  };
+  const changeTtsModel = (model: string) => {
+    const schema = modelInfo("tts", tts.provider, model)?.paramsSchema;
+    setTts((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+  };
+
+  const changeFallbackProvider = async (provider: string) => {
+    setFallback({ provider, model: "", voice: "" });
+    if (!provider) return;
+    void ensureVoices(provider);
+    const def = await defaultModelOf("tts", provider);
+    setFallback((f) => (f.provider === provider && !f.model ? { ...f, model: def?.code ?? "" } : f));
+  };
+
+  const setRowProvider = async (locale: string, provider: string) => {
+    if (!provider) {
+      setLangMap((m) => { const next = { ...m }; delete next[locale]; return next; });
+      return;
+    }
+    setLangMap((m) => ({ ...m, [locale]: { provider, model: "", voice: "" } }));
+    void ensureVoices(provider);
+    const def = await defaultModelOf("tts", provider);
+    setLangMap((m) => {
+      const cur = m[locale];
+      if (!cur || typeof cur === "string" || cur.provider !== provider || cur.model) return m;
+      return { ...m, [locale]: { ...cur, model: def?.code ?? "" } };
+    });
+  };
+  const setRowField = (locale: string, patch: Partial<LanguageVoiceOverride>) =>
+    setLangMap((m) => {
+      const cur = m[locale];
+      if (!cur || typeof cur === "string") return m;
+      return { ...m, [locale]: { ...cur, ...patch } };
+    });
+
+  /* ---- voice option builders ---- */
+
+  const voiceSelectOptions = (provider: string, model: string, locale?: string): SearchableSelectOption[] =>
+    (voicesRef.current[provider] ?? [])
+      .filter((v) => voiceSupportsModel(v, model) && (!locale || voiceSupportsLanguage(v, locale)))
+      .map((v) => ({
+        value: v.id,
+        label: `${v.name}${v.isDefault ? " · default" : ""}${v.premium ? " · premium" : ""}`,
+        sub: [v.gender, v.locale, v.status && v.status !== "active" ? v.status : null].filter(Boolean).join(" · "),
+        disabled: v.status === "unavailable",
+      }));
+
+  /* ---- connection tests ---- */
+
+  const runTest = async (key: string, body: { capability: VoiceCapability; provider: string; model?: string; voice?: string; language?: string }) => {
+    setTests((t) => ({ ...t, [key]: { busy: true, result: null } }));
     try {
-      localStorage.setItem(VIEW_STORAGE_KEY, next);
-    } catch {
-      /* persistence is best-effort */
+      const result = await testProviderConnection(body);
+      setTests((t) => ({ ...t, [key]: { busy: false, result } }));
+      if (result.ok) {
+        toast(`${body.provider} ${body.capability.toUpperCase()} connection OK${result.latencyMs !== undefined ? ` — ${Math.round(result.latencyMs)} ms` : ""}`);
+      } else {
+        toast(result.message || "Connection test failed", "error");
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Connection test failed";
+      setTests((t) => ({ ...t, [key]: { busy: false, result: { ok: false, error: "error", message } } }));
+      toast(message, "error");
+    }
+  };
+
+  /* ---- validate / save ---- */
+
+  const assembleConfig = () => ({
+    sttProvider: stt.provider, sttModel: stt.model, sttLanguage: stt.language, sttSettings: stt.settings,
+    llmProvider: llm.provider, llmModel: llm.model, llmSettings: llm.settings,
+    ttsProvider: tts.provider, ttsModel: tts.model, ttsVoice: tts.voice, ttsSettings: tts.settings,
+    languageVoiceMap: langMap,
+    fallbackProvider: fallback.provider, fallbackModel: fallback.model, fallbackVoice: fallback.voice,
+    audioSettings: audio,
+  });
+
+  const validate = async () => {
+    setValidating(true); setSaveErrors([]); setSaveWarnings([]); setWarningsFromSave(false);
+    try {
+      const r = await validateVoiceConfig(bot.id, assembleConfig());
+      setSaveErrors(r.errors);
+      setSaveWarnings(r.warnings);
+      if (r.valid) toast(r.warnings.length ? "Configuration is valid — with warnings" : "Configuration is valid");
+      else toast("The catalog rejected this configuration", "error");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Validation failed", "error");
+    } finally {
+      setValidating(false);
     }
   };
 
   const save = async () => {
-    setSaving(true);
+    setSaving(true); setSaveErrors([]); setSaveWarnings([]); setWarningsFromSave(false);
+    /* Empty strings (not nulls) clear overrides server-side; settings objects are sent whole. */
+    const payload: Partial<VoiceSettings> = {
+      voiceId: tts.voice || null,
+      speed: tuning.speed, pauseMs: tuning.pauseMs, empathy: tuning.empathy, energy: tuning.energy,
+      ...assembleConfig(),
+    };
     try {
-      await saveVoiceSettings(bot.id, {
-        voiceId: selected || null,
-        speed: tuning.speed,
-        pauseMs: tuning.pauseMs,
-        empathy: tuning.empathy,
-        energy: tuning.energy,
-        languageVoiceMap: langMap,
-        /* Empty string = "Platform default" → persist as null */
-        sttProvider: engines.sttProvider || null,
-        sttModel: engines.sttModel.trim() || null,
-        ttsProvider: engines.ttsProvider || null,
-        ttsModel: engines.ttsModel.trim() || null,
-        ttsVoice: engines.ttsVoice.trim() || null,
-        llmProvider: engines.llmProvider || null,
-        llmModel: engines.llmModel.trim() || null,
-      });
-      toast("Voice settings saved to draft — publish to make them live");
+      const { warnings } = await saveVoiceSettings(bot.id, payload);
+      if (warnings.length) {
+        setSaveWarnings(warnings);
+        setWarningsFromSave(true);
+        toast(`Saved with warnings: ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`, "info");
+      } else {
+        toast("Voice settings saved to draft — publish to make them live");
+      }
       settingsQ.reload();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not save voice settings", "error");
+      const err = e as ApiRequestError;
+      setSaveErrors(err.errors?.length ? err.errors : [err.message || "Could not save voice settings"]);
+      toast("Could not save voice settings", "error");
     } finally {
       setSaving(false);
     }
   };
 
+  /* ---- STT language options ---- */
+  const sttLangOptions: SearchableSelectOption[] = [];
+  if (sttLangQ.data?.supportsAutoDetect) {
+    sttLangOptions.push({ value: "", label: "Auto-detect", sub: "the model detects the spoken language" });
+  }
+  for (const l of sttLangQ.data?.languages ?? []) {
+    sttLangOptions.push({ value: l.code, label: l.nativeName ? `${l.name} · ${l.nativeName}` : l.name, sub: l.code });
+  }
+
+  const sttModels = modelsFor("stt", stt.provider);
+  const llmModels = modelsFor("llm", llm.provider);
+  const ttsModels = modelsFor("tts", tts.provider);
+  const fallbackModels = modelsFor("tts", fallback.provider);
+  const sttSchema = modelInfo("stt", stt.provider, stt.model)?.paramsSchema;
+  const llmSchema = modelInfo("llm", llm.provider, llm.model)?.paramsSchema;
+  const ttsSchema = modelInfo("tts", tts.provider, tts.model)?.paramsSchema;
+
   return (
-    <div className="grid" style={{ gridTemplateColumns: "1.7fr 1fr", gap: 20 }}>
-      <div className="col gap-16">
-        <div className="filter-bar" style={{ marginBottom: 0 }}>
-          <div className="search-box">
-            <Icon name="search" size={14} />
-            <input className="input" placeholder="Search voices, accents, styles…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search voices" />
-          </div>
-          <select className="select" value={langFilter} onChange={(e) => setLangFilter(e.target.value)} aria-label="Filter by language">
-            <option value="all">All languages</option>
-            {languageOptions.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-          <select className="select" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)} aria-label="Filter by provider">
-            <option value="all">All providers</option>
-            {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <select className="select" value={genderFilter} onChange={(e) => setGenderFilter(e.target.value)} aria-label="Filter by gender">
-            <option value="all">Any gender</option>
-            <option value="female">Female</option>
-            <option value="male">Male</option>
-            <option value="neutral">Neutral</option>
-          </select>
-          <div className="segmented" role="group" aria-label="Catalog view">
-            <button type="button" aria-pressed={view === "cards"} onClick={() => changeView("cards")}>
-              <Icon name="dashboard" size={13} /> Cards
-            </button>
-            <button type="button" aria-pressed={view === "table"} onClick={() => changeView("table")}>
-              <Icon name="menu" size={13} /> Table
-            </button>
-          </div>
+    <div className="col gap-16">
+      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
+        {/* ── left column: engines ── */}
+        <div className="col gap-16">
+          {/* 1 — Speech-to-Text */}
+          <SectionCard
+            title="Speech-to-Text" sub="Transcribes what the caller says"
+            actions={
+              <TestControl
+                state={tests.stt} disabled={!stt.provider || !canManage} title={noPermTitle}
+                onTest={() => void runTest("stt", { capability: "stt", provider: stt.provider, model: stt.model || undefined, language: stt.language || undefined })}
+              />
+            }
+          >
+            <ProviderSelect
+              label="Provider" capability="stt" providers={sttProviders}
+              value={stt.provider} onChange={(v) => void changeSttProvider(v)}
+            />
+            <ModelSelect
+              label="Model" models={sttModels} value={stt.model}
+              disabled={!stt.provider} onChange={changeSttModel}
+            />
+            {stt.provider && stt.model && (
+              <Field
+                label="Language" plain
+                hint={sttLangQ.data?.languageAgnostic ? "This model is language-agnostic — a language hint is optional." : undefined}
+              >
+                <SearchableSelect
+                  options={withCurrent(sttLangOptions, stt.language)}
+                  value={stt.language}
+                  onChange={(v) => setStt((s) => ({ ...s, language: v }))}
+                  placeholder={sttLangQ.loading ? "Loading languages…" : "Auto / not set"}
+                  searchPlaceholder="Search languages…"
+                  ariaLabel="STT language"
+                />
+              </Field>
+            )}
+            <ParamFields
+              key={`stt:${stt.provider}:${stt.model}`}
+              schema={sttSchema} values={stt.settings}
+              onChange={(next) => setStt((s) => ({ ...s, settings: next }))}
+            />
+            <CleanupCallout
+              items={sttIssues}
+              onApply={() => setStt((s) => ({ ...s, language: "" }))}
+            />
+          </SectionCard>
+
+          {/* 2 — Language Model */}
+          <SectionCard
+            title="Language Model" sub="Generates the assistant's replies"
+            actions={
+              <TestControl
+                state={tests.llm} disabled={!llm.provider || !canManage} title={noPermTitle}
+                onTest={() => void runTest("llm", { capability: "llm", provider: llm.provider, model: llm.model || undefined })}
+              />
+            }
+          >
+            <ProviderSelect
+              label="Provider" capability="llm" providers={llmProviders}
+              value={llm.provider} onChange={(v) => void changeLlmProvider(v)}
+            />
+            <ModelSelect
+              label="Model" models={llmModels} value={llm.model}
+              disabled={!llm.provider} onChange={changeLlmModel}
+            />
+            <ParamFields
+              key={`llm:${llm.provider}:${llm.model}`}
+              schema={llmSchema} values={llm.settings}
+              onChange={(next) => setLlm((s) => ({ ...s, settings: next }))}
+            />
+          </SectionCard>
+
+          {/* 3 — Text-to-Speech */}
+          <SectionCard
+            title="Text-to-Speech" sub="Speaks the assistant's replies"
+            actions={
+              <TestControl
+                state={tests.tts} disabled={!tts.provider || !canManage} title={noPermTitle}
+                onTest={() => void runTest("tts", { capability: "tts", provider: tts.provider, model: tts.model || undefined, voice: tts.voice || undefined })}
+              />
+            }
+          >
+            <ProviderSelect
+              label="Provider" capability="tts" providers={ttsProviders}
+              value={tts.provider} onChange={(v) => void changeTtsProvider(v)}
+            />
+            <ModelSelect
+              label="Model" models={ttsModels} value={tts.model}
+              disabled={!tts.provider} onChange={changeTtsModel}
+            />
+            {tts.provider && (
+              <Field label="Voice" plain>
+                <SearchableSelect
+                  options={withCurrent(voiceSelectOptions(tts.provider, tts.model), tts.voice)}
+                  value={tts.voice}
+                  onChange={(v) => setTts((s) => ({ ...s, voice: v }))}
+                  placeholder={voicesRef.current[tts.provider] ? "Select voice…" : "Loading voices…"}
+                  searchPlaceholder="Search voices…"
+                  ariaLabel="TTS voice"
+                />
+              </Field>
+            )}
+            {/* Only the selected provider's schema is rendered — never both providers' settings. */}
+            <ParamFields
+              key={`tts:${tts.provider}:${tts.model}`}
+              schema={ttsSchema} values={tts.settings}
+              onChange={(next) => setTts((s) => ({ ...s, settings: next }))}
+            />
+            <CleanupCallout items={ttsIssues} onApply={() => setTts((s) => ({ ...s, voice: "" }))} />
+            <div>
+              <Button
+                icon="play"
+                disabled={!canManage || !tts.provider || !tts.model || !tts.voice}
+                title={noPermTitle ?? (!tts.voice ? "Pick a provider, model and voice first" : undefined)}
+                onClick={() => setPreview({
+                  provider: tts.provider, model: tts.model, voice: tts.voice,
+                  language: defaultLocale || bot.languages[0] || "", params: tts.settings,
+                })}
+              >
+                Preview voice
+              </Button>
+            </div>
+          </SectionCard>
         </div>
 
-        {view === "table" ? (
-          <div className="card">
-            <DataTable
-              loading={q.loading} error={q.error} onRetry={q.reload} rows={voices}
-              empty={{ icon: "volume", title: "No voices match", body: "Loosen the search, language, provider or gender filters." }}
-              columns={[
-                {
-                  key: "name", header: "Voice name", sortValue: (v) => v.name,
-                  render: (v) => <div><span className="t-strong">{v.name}</span><div className="t-micro">{v.accent}</div></div>,
-                },
-                { key: "provider", header: "Provider", sortValue: (v) => v.provider ?? "", render: (v) => v.provider ? <span className="tag">{v.provider}</span> : <span className="t-micro">—</span> },
-                { key: "languages", header: "Languages", render: (v) => <span className="t-sub" style={{ fontSize: 12 }}>{v.languages.join(", ")}</span> },
-                { key: "locale", header: "Locale", sortValue: (v) => v.locale ?? "", render: (v) => v.locale ? <code style={{ fontSize: 12 }}>{v.locale}</code> : <span className="t-micro">—</span> },
-                { key: "gender", header: "Gender", sortValue: (v) => v.gender, render: (v) => <span style={{ textTransform: "capitalize" }}>{v.gender}</span> },
-                { key: "status", header: "Status", sortValue: (v) => v.status ?? "active", render: (v) => <StatusChip status={v.status ?? "active"} /> },
-                {
-                  key: "default", header: "Default", sortValue: (v) => (v.isDefault ? 1 : 0),
-                  render: (v) => v.isDefault ? <span className="chip chip-brand"><Icon name="star" size={11} />Default</span> : <span className="t-micro">—</span>,
-                },
-                { key: "rate", header: "Speaking rate", align: "right", sortValue: (v) => v.speakingRate ?? 1, render: (v) => <span className="t-num">{(v.speakingRate ?? 1).toFixed(2)}×</span> },
-                { key: "latency", header: "Latency", align: "right", sortValue: (v) => v.latencyMs, render: (v) => <span className="t-num">{v.latencyMs}ms</span> },
-                {
-                  key: "actions", header: "", width: 110,
-                  render: (v) => selected === v.id
-                    ? <StatusChip status="approved" label="Selected" />
-                    : <Button size="sm" onClick={(e) => { e.stopPropagation(); setSelected(v.id); }} aria-label={`Select ${v.name}`}>Select</Button>,
-                },
-              ]}
-            />
-          </div>
-        ) : (
-          <>
-            {q.loading && <div className="grid grid-2">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={3} />)}</div>}
-            {q.error && <EmptyState icon="alert" title="Couldn’t load voices" body={q.error} action={<Button icon="refresh" onClick={q.reload}>Retry</Button>} />}
-            {!q.loading && !q.error && voices.length === 0 && <EmptyState icon="volume" title="No voices match" body="Loosen the search, language, provider or gender filters." />}
-
-            <div className="grid grid-2">
-              {voices.map((v) => (
-                <VoiceCard key={v.id} voice={v} selected={selected === v.id} onSelect={() => setSelected(v.id)} />
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="col gap-16">
-        {/* Tuning */}
-        <div className="card">
-          <div className="card-header"><span className="card-title">Delivery tuning</span></div>
-          <div className="col" style={{ padding: 18, gap: 16 }}>
+        {/* ── right column: delivery, mapping, transport, fallback ── */}
+        <div className="col gap-16">
+          {/* Delivery tuning (compact) */}
+          <SectionCard title="Delivery tuning" sub="How the assistant sounds, independent of engine">
             <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={1.4} step={0.05} fmt={(v) => `${v.toFixed(2)}×`}
               onChange={(v) => setTuning((t) => ({ ...t, speed: v }))} />
             <Slider label="Pause between sentences" value={tuning.pauseMs} min={100} max={900} step={50} fmt={(v) => `${v}ms`}
@@ -213,171 +575,518 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               onChange={(v) => setTuning((t) => ({ ...t, empathy: v }))} />
             <Slider label="Energy" value={tuning.energy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
               onChange={(v) => setTuning((t) => ({ ...t, energy: v }))} />
-            <Button
-              icon="play"
-              disabled={!flags.voiceSamplePlayback}
-              title={flags.voiceSamplePlayback ? undefined : "Sample synthesis pending backend (TODO_BACKEND #2)"}
-            >
-              Preview with current tuning
-            </Button>
-          </div>
-        </div>
+          </SectionCard>
 
-        {/* Runtime engine providers */}
-        <div className="card">
-          <div className="card-header">
-            <div className="col gap-2">
-              <span className="card-title">Speech &amp; intelligence providers</span>
-              <span className="t-micro">Runtime engines for this bot — leave on platform default unless you need an override</span>
-            </div>
-          </div>
-          <div className="col" style={{ padding: 18, gap: 14 }}>
-            {catalogQ.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{catalogQ.error}</span>}
-            <EngineRow
-              label="Speech-to-text (STT)"
-              providers={catalogQ.data?.providers.stt ?? []}
-              defaults={catalogQ.data?.defaults.stt}
-              provider={engines.sttProvider} model={engines.sttModel}
-              onProvider={(v) => setEngines((e) => ({ ...e, sttProvider: v }))}
-              onModel={(v) => setEngines((e) => ({ ...e, sttModel: v }))}
-            />
-            <EngineRow
-              label="Text-to-speech (TTS)"
-              providers={catalogQ.data?.providers.tts ?? []}
-              defaults={catalogQ.data?.defaults.tts}
-              provider={engines.ttsProvider} model={engines.ttsModel} voice={engines.ttsVoice}
-              onProvider={(v) => setEngines((e) => ({ ...e, ttsProvider: v }))}
-              onModel={(v) => setEngines((e) => ({ ...e, ttsModel: v }))}
-              onVoice={(v) => setEngines((e) => ({ ...e, ttsVoice: v }))}
-            />
-            <EngineRow
-              label="Language model (LLM)"
-              providers={catalogQ.data?.providers.llm ?? []}
-              defaults={catalogQ.data?.defaults.llm}
-              provider={engines.llmProvider} model={engines.llmModel}
-              onProvider={(v) => setEngines((e) => ({ ...e, llmProvider: v }))}
-              onModel={(v) => setEngines((e) => ({ ...e, llmModel: v }))}
-            />
-          </div>
-        </div>
+          {/* 4 — Per-language voices */}
+          <SectionCard title="Per-language voices" sub="Override which engine answers in each language">
+            <Field label="Default language" plain hint='Stored as languageVoiceMap["default"] — used when the caller language is unknown'>
+              <select
+                className="select" value={defaultLocale} aria-label="Default language"
+                onChange={(e) => setLangMap((m) => {
+                  const next = { ...m };
+                  if (e.target.value) next["default"] = e.target.value;
+                  else delete next["default"];
+                  return next;
+                })}
+              >
+                <option value="">Not set</option>
+                {bot.languages.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </Field>
 
-        {/* Language → voice mapping */}
-        <div className="card">
-          <div className="card-header">
-            <div className="col gap-2">
-              <span className="card-title">Language mapping</span>
-              <span className="t-micro">Which voice answers in each language</span>
+            <div className="col gap-12">
+              {bot.languages.map((locale) => {
+                const entry = langMap[locale];
+                const override = entry && typeof entry === "object" ? entry : null;
+                const legacy = typeof entry === "string" && entry ? entry : null;
+                const rowModels = override ? modelsFor("tts", override.provider) : [];
+                return (
+                  <div key={locale} className="col gap-4">
+                    <div
+                      className="grid"
+                      style={{ gridTemplateColumns: "72px 1fr 1fr 1.3fr auto", gap: 8, alignItems: "center" }}
+                    >
+                      <span className="tag" title={locale}>{locale}</span>
+                      <select
+                        className="select" value={override?.provider ?? ""}
+                        aria-label={`Voice provider for ${locale}`}
+                        onChange={(e) => void setRowProvider(locale, e.target.value)}
+                      >
+                        <option value="">Inherit default</option>
+                        {ttsProviders.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+                      </select>
+                      <select
+                        className="select" value={override?.model ?? ""}
+                        aria-label={`Voice model for ${locale}`}
+                        disabled={!override}
+                        onChange={(e) => setRowField(locale, { model: e.target.value, voice: override?.voice ?? "" })}
+                      >
+                        <option value="">{override ? "Select model" : "—"}</option>
+                        {override?.model && !rowModels.some((m) => m.code === override.model) && (
+                          <option value={override.model}>{override.model}</option>
+                        )}
+                        {rowModels.map((m) => (
+                          <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
+                        ))}
+                      </select>
+                      <SearchableSelect
+                        options={override ? withCurrent(voiceSelectOptions(override.provider, override.model, locale), override.voice) : []}
+                        value={override?.voice ?? ""}
+                        onChange={(v) => setRowField(locale, { voice: v })}
+                        placeholder={override ? "Select voice…" : "Inherited"}
+                        searchPlaceholder="Search voices…"
+                        disabled={!override}
+                        ariaLabel={`Voice for ${locale}`}
+                      />
+                      <button
+                        className="btn-icon" type="button"
+                        aria-label={`Preview voice for ${locale}`}
+                        disabled={!canManage || !override?.provider || !override.model || !override.voice}
+                        title={noPermTitle ?? (override?.voice ? "Preview this voice" : "Pick a voice to preview")}
+                        onClick={() => override && setPreview({
+                          provider: override.provider, model: override.model, voice: override.voice,
+                          language: locale, params: override.params,
+                        })}
+                      >
+                        <Icon name="play" size={13} />
+                      </button>
+                    </div>
+                    {legacy && (
+                      <span className="t-micro">
+                        Legacy voice reference <code>{legacy}</code> — pick a provider to convert this override, or leave as-is.
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-          <div className="col" style={{ padding: 18, gap: 12 }}>
-            {bot.languages.map((l) => (
-              <div key={l} className="row-between">
-                <span className="tag">{l}</span>
-                <select className="select" style={{ width: 170 }} value={langMap[l] ?? ""} aria-label={`Voice for ${l}`}
-                  onChange={(e) => setLangMap((m) => ({ ...m, [l]: e.target.value }))}>
-                  <option value="">Default voice</option>
-                  {(q.data ?? []).filter((v) => v.languages.includes(l)).map((v) => <option key={v.id} value={v.id}>{v.name} — {v.accent.split("·")[0].trim()}</option>)}
+            <CleanupCallout
+              items={mappingIssues.map((i) => i.message)}
+              onApply={() => setLangMap((m) => {
+                const next = { ...m };
+                for (const issue of mappingIssues) {
+                  const entry = next[issue.locale];
+                  if (entry && typeof entry === "object") next[issue.locale] = { ...entry, voice: "" };
+                }
+                return next;
+              })}
+            />
+          </SectionCard>
+
+          {/* 5 — Audio & Telephony */}
+          <SectionCard title="Audio & Telephony" sub="Transport codecs and sample rates">
+            <div className="grid grid-2" style={{ gap: 12 }}>
+              <Field label="Browser codec" plain hint="Fixed — browser sessions stream linear PCM">
+                <input className="input" value="linear16" readOnly disabled aria-label="Browser codec" />
+              </Field>
+              <Field label="Browser sample rate" plain>
+                <select
+                  className="select" value={audio.browser?.sampleRate ?? 16000} aria-label="Browser sample rate"
+                  onChange={(e) => setAudio((a) => ({ ...a, browser: { codec: "linear16", sampleRate: Number(e.target.value) } }))}
+                >
+                  <option value={16000}>16,000 Hz</option>
+                  <option value={24000}>24,000 Hz</option>
                 </select>
-              </div>
-            ))}
-          </div>
-        </div>
+              </Field>
+              <Field label="Telephony codec" plain>
+                <select
+                  className="select" value={audio.telephony?.codec ?? "mulaw"} aria-label="Telephony codec"
+                  onChange={(e) => setAudio((a) => ({ ...a, telephony: { codec: e.target.value, sampleRate: 8000 } }))}
+                >
+                  <option value="mulaw">μ-law (mulaw)</option>
+                  <option value="alaw">A-law (alaw)</option>
+                  <option value="linear16">linear16</option>
+                </select>
+              </Field>
+              <Field label="Telephony sample rate" plain hint="Fixed — PSTN carriers stream 8 kHz">
+                <input className="input" value="8,000 Hz" readOnly disabled aria-label="Telephony sample rate" />
+              </Field>
+            </div>
+          </SectionCard>
 
+          {/* 6 — Fallback & Reliability */}
+          <SectionCard title="Fallback & Reliability" sub="Secondary TTS engine used when the primary fails">
+            <Field label="Fallback provider" plain hint="Must differ from the primary TTS provider">
+              <select
+                className="select" value={fallback.provider} aria-label="Fallback TTS provider"
+                onChange={(e) => void changeFallbackProvider(e.target.value)}
+              >
+                <option value="">None</option>
+                {ttsProviders.filter((p) => p.code !== tts.provider).map((p) => (
+                  <option key={p.code} value={p.code}>
+                    {p.name}{p.requiresApiKey && !p.hasCredentials ? " — key missing" : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {fallback.provider && (
+              <>
+                <ModelSelect
+                  label="Fallback model" models={fallbackModels} value={fallback.model}
+                  onChange={(v) => setFallback((f) => ({ ...f, model: v }))}
+                />
+                <Field label="Fallback voice" plain>
+                  <SearchableSelect
+                    options={withCurrent(voiceSelectOptions(fallback.provider, fallback.model), fallback.voice)}
+                    value={fallback.voice}
+                    onChange={(v) => setFallback((f) => ({ ...f, voice: v }))}
+                    placeholder={voicesRef.current[fallback.provider] ? "Select voice…" : "Loading voices…"}
+                    searchPlaceholder="Search voices…"
+                    ariaLabel="Fallback voice"
+                  />
+                </Field>
+              </>
+            )}
+            <CleanupCallout items={fallbackIssues} onApply={() => setFallback((f) => ({ ...f, voice: "" }))} />
+          </SectionCard>
+        </div>
+      </div>
+
+      {/* ── save bar ── */}
+      {saveErrors.length > 0 && (
+        <Callout tone="critical" title="The catalog rejected this configuration">
+          <ul style={{ margin: 0, paddingLeft: 16 }}>{saveErrors.map((e) => <li key={e}>{e}</li>)}</ul>
+        </Callout>
+      )}
+      {saveWarnings.length > 0 && (
+        <Callout tone="warning" title={warningsFromSave ? "Saved with warnings" : "Warnings"}>
+          <ul style={{ margin: 0, paddingLeft: 16 }}>{saveWarnings.map((w) => <li key={w}>{w}</li>)}</ul>
+        </Callout>
+      )}
+      <div className="row gap-12" style={{ justifyContent: "flex-end" }}>
         <Button
-          variant="primary" icon="check" onClick={save}
-          disabled={saving || settingsQ.loading || !canManageVoices}
-          title={canManageVoices ? undefined : "Requires the manage_voices permission"}
+          icon="check-circle" onClick={() => void validate()} busy={validating}
+          disabled={validating || saving || !canManage} title={noPermTitle}
         >
-          {saving ? "Saving…" : "Save voice settings"}
+          Validate
+        </Button>
+        <Button
+          variant="primary" icon="check" onClick={() => void save()} busy={saving}
+          disabled={saving || validating || !canManage} title={noPermTitle}
+        >
+          Save voice settings
         </Button>
       </div>
+
+      {/* 7 — Preview modal */}
+      <PreviewVoiceModal
+        ctx={preview}
+        onClose={() => setPreview(null)}
+        ttsProviders={ttsProviders}
+        modelsFor={(p) => modelsFor("tts", p)}
+        voicesFor={(p) => voicesRef.current[p]}
+        ensureModels={(p) => ensureModels("tts", p)}
+        ensureVoices={ensureVoices}
+        languages={bot.languages}
+      />
     </div>
   );
 }
 
-function VoiceCard({ voice, selected, onSelect }: { voice: VoiceProfile; selected: boolean; onSelect: () => void }) {
-  const { toast } = useApp();
-  const [playing, setPlaying] = useState(false);
-  const play = () => {
-    if (!flags.voiceSamplePlayback) {
-      setPlaying(true);
-      setTimeout(() => setPlaying(false), 1800);
-      toast("Sample playback simulated — real synthesis pending backend (TODO_BACKEND #2)", "info");
-    }
-  };
-  return (
-    <div
-      className="card card-pad card-clickable col gap-10"
-      style={selected ? { borderColor: "var(--brand-500)", boxShadow: "0 0 0 3px var(--brand-100), var(--shadow-1)" } : undefined}
-      onClick={onSelect}
-      role="radio"
-      aria-checked={selected}
-      tabIndex={0}
-      onKeyDown={(e) => e.key === "Enter" && onSelect()}
-    >
-      <div className="row-between">
-        <div className="row gap-10">
-          <button
-            className="btn-icon"
-            style={{ background: playing ? "var(--brand-500)" : "var(--brand-100)", color: playing ? "#fff" : "var(--brand-600)", borderRadius: "50%" }}
-            aria-label={`Play ${voice.name} sample`}
-            onClick={(e) => { e.stopPropagation(); play(); }}
-          >
-            <Icon name={playing ? "pause" : "play"} size={13} />
-          </button>
-          <div>
-            <span className="t-strong" style={{ fontSize: 14 }}>{voice.name}</span>
-            <div className="t-micro">{voice.provider ? `${voice.provider} · ` : ""}{voice.accent} · {voice.gender}</div>
-          </div>
-        </div>
-        <span className="row gap-4 wrap" style={{ justifyContent: "flex-end" }}>
-          {voice.isDefault && <span className="chip chip-brand"><Icon name="star" size={11} />Default</span>}
-          {voice.status && voice.status !== "active" && <StatusChip status={voice.status} />}
-          {selected ? <StatusChip status="approved" label="Selected" /> : voice.premium ? <span className="chip chip-brand"><Icon name="sparkles" size={11} />Premium</span> : null}
-        </span>
-      </div>
-      <p className="t-sub" style={{ fontSize: 12.5, fontStyle: "italic" }}>“{voice.sample}”</p>
-      <div className="row-between t-micro">
-        <span className="row gap-4 wrap">{voice.styles.map((s) => <span key={s} className="tag" style={{ height: 18, fontSize: 10.5 }}>{s}</span>)}</span>
-        <span className="t-num">{voice.latencyMs}ms · {voice.languages.length} lang</span>
-      </div>
-    </div>
-  );
-}
+/* ============================================================
+   Section / field building blocks
+   ============================================================ */
 
-function EngineRow({ label, providers, defaults, provider, model, voice, onProvider, onModel, onVoice }: {
-  label: string;
-  providers: string[];
-  defaults?: { provider: string; model: string; voice?: string };
-  provider: string;
-  model: string;
-  voice?: string;
-  onProvider: (v: string) => void;
-  onModel: (v: string) => void;
-  onVoice?: (v: string) => void;
+function SectionCard({ title, sub, actions, children }: {
+  title: string; sub?: string; actions?: ReactNode; children: ReactNode;
 }) {
   return (
-    <div className="col gap-6">
-      <span className="field-label">{label}</span>
-      <select className="select" value={provider} aria-label={`${label} provider`} onChange={(e) => onProvider(e.target.value)}>
-        <option value="">Platform default{defaults ? ` (${defaults.provider})` : ""}</option>
-        {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+    <div className="card">
+      <div className="card-header">
+        <div className="col gap-2">
+          <span className="card-title">{title}</span>
+          {sub && <span className="t-micro">{sub}</span>}
+        </div>
+        {actions}
+      </div>
+      <div className="col" style={{ padding: 18, gap: 14 }}>{children}</div>
+    </div>
+  );
+}
+
+function ProviderSelect({ label, capability, providers, value, onChange }: {
+  label: string; capability: VoiceCapability; providers: ProviderInfo[];
+  value: string; onChange: (v: string) => void;
+}) {
+  const selected = providers.find((p) => p.code === value);
+  const keyMissing = selected ? selected.requiresApiKey && !selected.hasCredentials : false;
+  return (
+    <Field label={label} plain hint={selected?.description || undefined}>
+      <div className="row gap-6">
+        <select
+          className="select grow" value={value} aria-label={`${capability.toUpperCase()} provider`}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">Platform default</option>
+          {value && !providers.some((p) => p.code === value) && <option value={value}>{value}</option>}
+          {providers.map((p) => (
+            <option key={p.code} value={p.code}>
+              {p.name}{p.requiresApiKey && !p.hasCredentials ? " — key missing" : ""}
+            </option>
+          ))}
+        </select>
+        {keyMissing && (
+          <span className="chip chip-warning" title="No API key configured — sessions will fail until it is set">
+            <Icon name="key" size={11} />key missing
+          </span>
+        )}
+      </div>
+    </Field>
+  );
+}
+
+function ModelSelect({ label, models, value, onChange, disabled }: {
+  label: string; models: ProviderModelInfo[]; value: string;
+  onChange: (v: string) => void; disabled?: boolean;
+}) {
+  return (
+    <Field label={label} plain>
+      <select
+        className="select" value={value} disabled={disabled} aria-label={label}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{disabled ? "Provider default" : "Select model"}</option>
+        {value && !models.some((m) => m.code === value) && <option value={value}>{value}</option>}
+        {models.map((m) => (
+          <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
+        ))}
       </select>
-      <input
-        className="input" value={model} aria-label={`${label} model`}
-        placeholder={defaults ? `Model — default ${defaults.model}` : "Model"}
-        onChange={(e) => onModel(e.target.value)}
-      />
-      {onVoice && (
-        <input
-          className="input" value={voice ?? ""} aria-label={`${label} voice`}
-          placeholder={defaults?.voice ? `Voice — default ${defaults.voice}` : "Voice"}
-          onChange={(e) => onVoice(e.target.value)}
-        />
+    </Field>
+  );
+}
+
+function TestControl({ state, onTest, disabled, title }: {
+  state?: { busy: boolean; result: ProviderTestResult | null };
+  onTest: () => void; disabled?: boolean; title?: string;
+}) {
+  const result = state?.result ?? null;
+  return (
+    <div className="row gap-6">
+      {result && (result.ok ? (
+        <span className="chip chip-good">
+          <Icon name="check-circle" size={11} />
+          {result.latencyMs !== undefined ? `${Math.round(result.latencyMs)} ms` : "OK"}
+        </span>
+      ) : (
+        <span className="chip chip-critical" title={result.message}>
+          <Icon name="x-circle" size={11} />{result.error ?? "failed"}
+        </span>
+      ))}
+      <Button size="sm" icon="plug" busy={state?.busy} onClick={onTest} disabled={disabled} title={title}>
+        Test
+      </Button>
+    </div>
+  );
+}
+
+function CleanupCallout({ items, onApply }: { items: string[]; onApply: () => void }) {
+  if (items.length === 0) return null;
+  return (
+    <Callout tone="warning" title="Selections no longer valid">
+      <div className="col gap-6">
+        <ul style={{ margin: 0, paddingLeft: 16 }}>{items.map((m) => <li key={m}>{m}</li>)}</ul>
+        <div><Button size="sm" onClick={onApply}>Apply changes</Button></div>
+      </div>
+    </Callout>
+  );
+}
+
+/* ============================================================
+   Schema-driven provider settings
+   ============================================================ */
+
+function ParamFields({ schema, values, onChange }: {
+  schema: Record<string, ParamSpec> | undefined;
+  values: ProviderSettings;
+  onChange: (next: ProviderSettings) => void;
+}) {
+  const entries = Object.entries(schema ?? {});
+  if (entries.length === 0) return null;
+  const basic = entries.filter(([, s]) => !s.advanced);
+  const advanced = entries.filter(([, s]) => s.advanced);
+  const set = (key: string, v: ProviderSettingValue | undefined) => {
+    const next = { ...values };
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+    onChange(next);
+  };
+  return (
+    <div className="col gap-12">
+      {basic.map(([key, spec]) => (
+        <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
+      ))}
+      {advanced.length > 0 && (
+        <details>
+          <summary className="t-label" style={{ cursor: "pointer" }}>Advanced ({advanced.length})</summary>
+          <div className="col gap-12" style={{ marginTop: 10 }}>
+            {advanced.map(([key, spec]) => (
+              <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );
 }
+
+function ParamField({ spec, value, onChange }: {
+  spec: ParamSpec; value: ProviderSettingValue | undefined;
+  onChange: (v: ProviderSettingValue | undefined) => void;
+}) {
+  if (spec.fixed) {
+    const text = spec.type === "boolean"
+      ? (spec.default ? "Always on" : "Always off")
+      : `${spec.default ?? "—"} (fixed)`;
+    return (
+      <div className="row-between" title={spec.help}>
+        <span className="field-label">{spec.label}</span>
+        <span className="t-sub" style={{ fontSize: 12.5 }}>{text}</span>
+      </div>
+    );
+  }
+  switch (spec.type) {
+    case "boolean":
+      return (
+        <div className="row-between">
+          <div className="col gap-2">
+            <span className="field-label">{spec.label}</span>
+            {spec.help && <span className="field-hint">{spec.help}</span>}
+          </div>
+          <Toggle
+            checked={Boolean(value ?? spec.default ?? false)}
+            onChange={(v) => onChange(v)}
+            label={spec.label}
+          />
+        </div>
+      );
+    case "enum":
+      return (
+        <Field label={spec.label} plain hint={spec.help}>
+          <select
+            className="select" aria-label={spec.label}
+            value={String(value ?? spec.default ?? "")}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            {(spec.values ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </Field>
+      );
+    case "number":
+    case "integer":
+      return <NumberParam spec={spec} value={value} onChange={onChange} />;
+    case "int_list":
+      return <IntListParam spec={spec} value={value} onChange={onChange} />;
+    case "string":
+    default:
+      return (
+        <Field label={spec.label} plain hint={spec.help}>
+          <input
+            className="input" aria-label={spec.label}
+            value={String(value ?? spec.default ?? "")}
+            maxLength={spec.max_length ?? 200}
+            placeholder={spec.optional ? "optional" : undefined}
+            onChange={(e) => onChange(e.target.value === "" && spec.optional ? undefined : e.target.value)}
+          />
+        </Field>
+      );
+  }
+}
+
+function NumberParam({ spec, value, onChange }: {
+  spec: ParamSpec; value: ProviderSettingValue | undefined;
+  onChange: (v: ProviderSettingValue) => void;
+}) {
+  const current = typeof value === "number" ? value
+    : typeof spec.default === "number" ? spec.default
+    : spec.min ?? 0;
+  const min = spec.min ?? 0;
+  const max = spec.max ?? 100;
+  const step = spec.step ?? (spec.type === "integer" ? 1 : 0.01);
+  const [text, setText] = useState(String(current));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setText(String(current)); }, [current, focused]);
+  const commit = (raw: number) => {
+    if (Number.isNaN(raw)) return;
+    let v = spec.type === "integer" ? Math.round(raw) : raw;
+    v = Math.min(max, Math.max(min, v));
+    onChange(v);
+  };
+  return (
+    <Field label={spec.label} plain hint={spec.help}>
+      <div className="row gap-12">
+        <input
+          type="range" min={min} max={max} step={step} value={current}
+          onChange={(e) => commit(Number(e.target.value))}
+          style={{ accentColor: "var(--brand-500)", flex: 1 }}
+          aria-label={spec.label}
+        />
+        <input
+          type="number" className="input" style={{ width: 92 }}
+          min={min} max={max} step={step} value={text}
+          aria-label={`${spec.label} value`}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); commit(Number(text)); }}
+          onChange={(e) => {
+            setText(e.target.value);
+            const n = Number(e.target.value);
+            if (e.target.value !== "" && !Number.isNaN(n) && n >= min && n <= max) commit(n);
+          }}
+        />
+      </div>
+    </Field>
+  );
+}
+
+function IntListParam({ spec, value, onChange }: {
+  spec: ParamSpec; value: ProviderSettingValue | undefined;
+  onChange: (v: ProviderSettingValue | undefined) => void;
+}) {
+  const list = Array.isArray(value) ? value : Array.isArray(spec.default) ? spec.default : [];
+  const joined = list.join(", ");
+  const [text, setText] = useState(joined);
+  const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { if (!focused) { setText(joined); setError(null); } }, [joined, focused]);
+
+  const handle = (raw: string) => {
+    setText(raw);
+    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const nums: number[] = [];
+    for (const p of parts) {
+      if (!/^-?\d+$/.test(p)) { setError(`"${p}" is not an integer`); return; }
+      nums.push(Number(p));
+    }
+    if (spec.max_items !== undefined && nums.length > spec.max_items) {
+      setError(`At most ${spec.max_items} entries allowed`);
+      return;
+    }
+    const lo = spec.min ?? Number.NEGATIVE_INFINITY;
+    const hi = spec.max ?? Number.POSITIVE_INFINITY;
+    const bad = nums.find((n) => n < lo || n > hi);
+    if (bad !== undefined) {
+      setError(`${bad} is outside ${spec.min ?? "-∞"}–${spec.max ?? "∞"}`);
+      return;
+    }
+    setError(null);
+    onChange(nums.length === 0 && spec.optional ? undefined : nums);
+  };
+
+  return (
+    <Field label={spec.label} hint={error ? undefined : (spec.help ?? "Comma-separated integers")} error={error ?? undefined}>
+      <input
+        className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
+        placeholder="e.g. 1, 2, 3"
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onChange={(e) => handle(e.target.value)}
+      />
+    </Field>
+  );
+}
+
+/* ============================================================
+   Delivery tuning slider (kept from the previous tab)
+   ============================================================ */
 
 function Slider({ label, value, min, max, step, fmt, onChange }: {
   label: string; value: number; min: number; max: number; step: number;
@@ -397,5 +1106,199 @@ function Slider({ label, value, min, max, step, fmt, onChange }: {
         aria-label={label}
       />
     </label>
+  );
+}
+
+/* ============================================================
+   Voice preview modal — real synthesis via /providers/tts-preview
+   ============================================================ */
+
+function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, ensureModels, ensureVoices, languages }: {
+  ctx: PreviewContext | null;
+  onClose: () => void;
+  ttsProviders: ProviderInfo[];
+  modelsFor: (provider: string) => ProviderModelInfo[];
+  voicesFor: (provider: string) => VoiceOption[] | undefined;
+  ensureModels: (provider: string) => Promise<ProviderModelInfo[]>;
+  ensureVoices: (provider: string) => Promise<VoiceOption[]>;
+  languages: string[];
+}) {
+  const [form, setForm] = useState({ provider: "", model: "", voice: "", language: "", text: "" });
+  const [generating, setGenerating] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [result, setResult] = useState<TtsPreviewResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  /* Prefill from the launching context each time the modal opens. */
+  useEffect(() => {
+    if (!ctx) return;
+    const voice = findVoice(voicesFor(ctx.provider), ctx.voice);
+    setForm({
+      provider: ctx.provider,
+      model: ctx.model,
+      voice: ctx.voice,
+      language: ctx.language || languages[0] || "",
+      text: voice?.sampleText || DEFAULT_SAMPLE_TEXT,
+    });
+    setResult(null);
+    setError(null);
+    setPlaying(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx]);
+
+  useEffect(() => () => { audioRef.current?.pause(); }, []);
+
+  const stop = () => {
+    audioRef.current?.pause();
+    setPlaying(false);
+  };
+  const close = () => { stop(); onClose(); };
+
+  const changeProvider = async (provider: string) => {
+    setForm((f) => ({ ...f, provider, model: "", voice: "" }));
+    if (!provider) return;
+    void ensureVoices(provider);
+    const models = await ensureModels(provider);
+    const def = models.find((m) => m.isDefault) ?? models[0];
+    setForm((f) => (f.provider === provider && !f.model ? { ...f, model: def?.code ?? "" } : f));
+  };
+
+  const generate = async () => {
+    setGenerating(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await generateTtsPreview({
+        provider: form.provider, model: form.model, voice: form.voice,
+        language: form.language, text: form.text.trim(),
+        params: ctx && form.provider === ctx.provider && form.model === ctx.model ? ctx.params : undefined,
+      });
+      setResult(r);
+      const audio = new Audio(`data:${r.mimeType};base64,${r.audioBase64}`);
+      audioRef.current = audio;
+      audio.onended = () => setPlaying(false);
+      setPlaying(true);
+      await audio.play();
+    } catch (e) {
+      setPlaying(false);
+      setError(e instanceof Error ? e.message : "Preview failed");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const models = modelsFor(form.provider);
+  const voices = voicesFor(form.provider);
+  const voiceOptions = withCurrent(
+    (voices ?? [])
+      .filter((v) => voiceSupportsModel(v, form.model))
+      .map((v) => ({
+        value: v.id,
+        label: v.name,
+        sub: [v.gender, v.locale].filter(Boolean).join(" · "),
+        disabled: v.status === "unavailable",
+      })),
+    form.voice,
+  );
+  const textLen = form.text.trim().length;
+  const canGenerate = Boolean(form.provider && form.model && form.voice && textLen > 0 && textLen <= 500);
+
+  return (
+    <Modal
+      open={ctx !== null}
+      onClose={close}
+      title="Preview voice"
+      sub="Generates real audio with the selected provider"
+      footer={
+        <>
+          <Button variant="ghost" onClick={close}>Close</Button>
+          <Button icon="pause" onClick={stop} disabled={!playing}>Stop</Button>
+          <Button
+            variant="primary" icon="play" busy={generating}
+            onClick={() => void generate()}
+            disabled={generating || playing || !canGenerate}
+            title={canGenerate ? undefined : "Pick provider, model, voice and up to 500 characters of text"}
+          >
+            {generating ? "Generating…" : "Generate"}
+          </Button>
+        </>
+      }
+    >
+      <div className="col gap-12">
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <Field label="Provider" plain>
+            <select
+              className="select" value={form.provider} aria-label="Preview provider"
+              onChange={(e) => void changeProvider(e.target.value)}
+            >
+              {form.provider && !ttsProviders.some((p) => p.code === form.provider) && (
+                <option value={form.provider}>{form.provider}</option>
+              )}
+              {ttsProviders.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Model" plain>
+            <select
+              className="select" value={form.model} aria-label="Preview model"
+              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value, voice: "" }))}
+            >
+              <option value="">Select model</option>
+              {form.model && !models.some((m) => m.code === form.model) && (
+                <option value={form.model}>{form.model}</option>
+              )}
+              {models.map((m) => <option key={m.code} value={m.code}>{m.displayName}</option>)}
+            </select>
+          </Field>
+          <Field label="Voice" plain>
+            <SearchableSelect
+              options={voiceOptions}
+              value={form.voice}
+              onChange={(v) => {
+                const voice = findVoice(voices, v);
+                setForm((f) => ({
+                  ...f, voice: v,
+                  text: f.text.trim() ? f.text : (voice?.sampleText || DEFAULT_SAMPLE_TEXT),
+                }));
+              }}
+              placeholder={voices ? "Select voice…" : "Loading voices…"}
+              searchPlaceholder="Search voices…"
+              ariaLabel="Preview voice"
+            />
+          </Field>
+          <Field label="Language" plain>
+            <select
+              className="select" value={form.language} aria-label="Preview language"
+              onChange={(e) => setForm((f) => ({ ...f, language: e.target.value }))}
+            >
+              {form.language && !languages.includes(form.language) && (
+                <option value={form.language}>{form.language}</option>
+              )}
+              {languages.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field
+          label="Sample text"
+          hint={`${textLen}/500 characters`}
+          error={textLen > 500 ? "Sample text must be 500 characters or fewer." : undefined}
+        >
+          <textarea
+            className="textarea" rows={3} value={form.text} maxLength={600}
+            aria-label="Preview sample text"
+            onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
+          />
+        </Field>
+        {error && <Callout tone="critical" title="Preview failed">{error}</Callout>}
+        {result && (
+          <div className="row gap-6 t-micro" style={{ alignItems: "center" }}>
+            <Icon name={playing ? "volume" : "check-circle"} size={13} />
+            <span className="t-num">
+              Time to first audio: {Math.round(result.ttfaMs)} ms · Total: {Math.round(result.totalMs)} ms · {result.provider}
+            </span>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }

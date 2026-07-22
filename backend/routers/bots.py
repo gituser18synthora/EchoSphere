@@ -345,16 +345,34 @@ class VoiceSettingsRequest(BaseModel):
     pause_ms: int | None = Field(default=None, alias="pauseMs", ge=0, le=5000)
     empathy: int | None = Field(default=None, ge=0, le=100)
     energy: int | None = Field(default=None, ge=0, le=100)
-    language_voice_map: dict[str, str] | None = Field(default=None, alias="languageVoiceMap")
+    # Values: legacy voice-profile id strings or {"provider","model","voice","params"?}.
+    language_voice_map: dict[str, object] | None = Field(default=None, alias="languageVoiceMap")
     stt_provider: str | None = Field(default=None, alias="sttProvider", max_length=40)
     stt_model: str | None = Field(default=None, alias="sttModel", max_length=80)
+    stt_language: str | None = Field(default=None, alias="sttLanguage", max_length=15)
+    stt_settings: dict | None = Field(default=None, alias="sttSettings")
     tts_provider: str | None = Field(default=None, alias="ttsProvider", max_length=40)
     tts_model: str | None = Field(default=None, alias="ttsModel", max_length=80)
     tts_voice: str | None = Field(default=None, alias="ttsVoice", max_length=80)
+    tts_settings: dict | None = Field(default=None, alias="ttsSettings")
     llm_provider: str | None = Field(default=None, alias="llmProvider", max_length=40)
     llm_model: str | None = Field(default=None, alias="llmModel", max_length=80)
+    llm_settings: dict | None = Field(default=None, alias="llmSettings")
+    fallback_provider: str | None = Field(default=None, alias="fallbackProvider", max_length=40)
+    fallback_model: str | None = Field(default=None, alias="fallbackModel", max_length=80)
+    fallback_voice: str | None = Field(default=None, alias="fallbackVoice", max_length=80)
+    audio_settings: dict | None = Field(default=None, alias="audioSettings")
 
     model_config = {"populate_by_name": True}
+
+
+_VOICE_SETTINGS_FIELDS = (
+    "speed", "pause_ms", "empathy", "energy", "language_voice_map",
+    "stt_provider", "stt_model", "stt_language", "stt_settings",
+    "tts_provider", "tts_model", "tts_voice", "tts_settings",
+    "llm_provider", "llm_model", "llm_settings",
+    "fallback_provider", "fallback_model", "fallback_voice", "audio_settings",
+)
 
 
 def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
@@ -368,11 +386,19 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "languageVoiceMap": s.language_voice_map or {},
         "sttProvider": s.stt_provider,
         "sttModel": s.stt_model,
+        "sttLanguage": s.stt_language,
+        "sttSettings": s.stt_settings or {},
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
+        "ttsSettings": s.tts_settings or {},
         "llmProvider": s.llm_provider,
         "llmModel": s.llm_model,
+        "llmSettings": s.llm_settings or {},
+        "fallbackProvider": s.fallback_provider,
+        "fallbackModel": s.fallback_model,
+        "fallbackVoice": s.fallback_voice,
+        "audioSettings": s.audio_settings or {},
     }
 
 
@@ -413,17 +439,30 @@ def update_voice_settings(
             raise ApiError("Unknown voice profile.", 422)
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
+
+    # The provider registry gates which adapters exist; the DB catalog gates
+    # which provider/model/language/voice/parameter combinations are valid.
     from shared.providers.factory import _REGISTRY as _provider_registry
 
     for kind, value in (("stt", body.stt_provider), ("tts", body.tts_provider),
-                        ("llm", body.llm_provider)):
+                        ("llm", body.llm_provider), ("tts", body.fallback_provider)):
         if value and (kind, value.lower()) not in _provider_registry:
             raise ApiError(f"Unknown {kind} provider '{value}'.", 422)
-    for field in (
-        "speed", "pause_ms", "empathy", "energy", "language_voice_map",
-        "stt_provider", "stt_model", "tts_provider", "tts_model", "tts_voice",
-        "llm_provider", "llm_model",
-    ):
+
+    # Validate the EFFECTIVE configuration (current row overlaid with updates)
+    # against the database catalog — frontend hiding alone is never trusted.
+    from backend.core.provider_catalog import validate_voice_settings
+
+    effective = {
+        field: getattr(body, field) if getattr(body, field) is not None
+        else getattr(s, field)
+        for field in _VOICE_SETTINGS_FIELDS
+    }
+    errors, warnings = validate_voice_settings(db, bot, effective)
+    if errors:
+        raise ApiError("Voice settings are invalid.", 422, errors=errors)
+
+    for field in _VOICE_SETTINGS_FIELDS:
         val = getattr(body, field)
         if val is not None:
             setattr(s, field, val)
@@ -441,4 +480,4 @@ def update_voice_settings(
     from shared.bot_config import invalidate_bot_config_sync
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
-    return ok(_serialize_voice_settings(s))
+    return ok(_serialize_voice_settings(s), meta={"warnings": warnings} if warnings else None)

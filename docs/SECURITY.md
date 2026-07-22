@@ -22,7 +22,9 @@ certification (SOC 2, ISO 27001, HIPAA, …) is claimed.
   Self-service change (`POST /users/me/password`) and admin reset
   (`POST /users/{id}/reset-password`, permission `reset_user_password`, also
   surfaced in Edit Tenant for the tenant admin) share one policy
-  (≥10 chars, upper/lower/digit, common-password denylist). Every change stamps
+  (`backend/core/security.py: validate_password_policy`, also applied to user
+  creation and tenant onboarding: ≥8 chars, upper/lower/digit, common-password
+  denylist). Every change stamps
   `password_changed_at`, which invalidates all previously issued JWTs
   (`iat` check in `backend/core/deps.py`), and writes an audit entry that
   records only the method — never the password.

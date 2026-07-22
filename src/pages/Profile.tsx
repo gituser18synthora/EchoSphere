@@ -199,7 +199,7 @@ export default function Profile() {
                 value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
             </Field>
             <Field label="New password" required
-              hint="At least 10 characters with an uppercase letter, a lowercase letter and a digit.">
+              hint="At least 8 characters with an uppercase letter, a lowercase letter and a digit.">
               <input className="input" type="password" autoComplete="new-password"
                 value={newPw} onChange={(e) => setNewPw(e.target.value)} />
             </Field>

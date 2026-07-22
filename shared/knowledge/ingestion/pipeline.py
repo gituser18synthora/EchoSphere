@@ -148,6 +148,8 @@ class IngestionPipeline:
         await self._update_job(job_id, stage="chunking", progress=30.0)
 
         # 2. Build chunk payloads with provenance + injection flags.
+        from shared.knowledge.chunking.chunker import count_tokens
+
         payloads: list[ChunkPayload] = []
         pages: set[int] = set()
         for index, chunk in enumerate(raw_chunks):
@@ -171,6 +173,7 @@ class IngestionPipeline:
                     content=content,
                     embedding_text=meta.get("embedding_text"),
                     content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                    token_count=count_tokens(content),
                     page_number=page_number if isinstance(page_number, int) else None,
                     section=meta.get("section"),
                     topic=meta.get("topic"),

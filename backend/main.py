@@ -104,9 +104,11 @@ def create_app() -> FastAPI:
         intents,
         knowledge,
         knowledge_documents,
+        knowledge_review,
         master_data,
         platform,
         prompts,
+        providers,
         releases,
         telephony,
         tenants,
@@ -119,8 +121,9 @@ def create_app() -> FastAPI:
     prefix = "/api/v1"
     for module in (
         auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
-        prompts, intents, apis, workflows, channels, testing, releases, conversations,
-        platform, integrations, audit, analytics, voice_sessions, telephony, master_data,
+        knowledge_review, prompts, intents, apis, workflows, channels, testing, releases,
+        conversations, platform, integrations, audit, analytics, voice_sessions, telephony,
+        master_data, providers,
     ):
         app.include_router(module.router, prefix=prefix)
 

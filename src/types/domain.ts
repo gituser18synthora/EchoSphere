@@ -51,6 +51,28 @@ export interface SipTrunk {
   status: string;
 }
 
+/* Provider-specific settings object, validated server-side against the model's paramsSchema. */
+export type ProviderSettingValue = string | number | boolean | number[];
+export type ProviderSettings = Record<string, ProviderSettingValue>;
+
+/** Per-language voice override; legacy entries may still be plain voice-id strings. */
+export interface LanguageVoiceOverride {
+  provider: string;
+  model: string;
+  voice: string;
+  params?: ProviderSettings;
+}
+
+export interface AudioTransportSettings {
+  codec: string;
+  sampleRate: number;
+}
+
+export interface AudioSettings {
+  browser?: AudioTransportSettings;
+  telephony?: AudioTransportSettings;
+}
+
 export interface VoiceSettings {
   botId: string;
   voiceId: string | null;
@@ -58,15 +80,115 @@ export interface VoiceSettings {
   pauseMs: number;
   empathy: number;
   energy: number;
-  languageVoiceMap: Record<string, string>;
-  /* Runtime engine overrides — null means "use the platform default" */
+  /** Per-locale overrides + reserved key "default" holding the default locale string. */
+  languageVoiceMap: Record<string, string | LanguageVoiceOverride>;
+  /* Runtime engine overrides — null/empty means "use the platform default" */
   sttProvider: string | null;
   sttModel: string | null;
+  /** Platform locale code, or "" for auto-detect. */
+  sttLanguage: string | null;
+  sttSettings: ProviderSettings;
   ttsProvider: string | null;
   ttsModel: string | null;
   ttsVoice: string | null;
+  ttsSettings: ProviderSettings;
   llmProvider: string | null;
   llmModel: string | null;
+  llmSettings: ProviderSettings;
+  fallbackProvider: string | null;
+  fallbackModel: string | null;
+  fallbackVoice: string | null;
+  audioSettings: AudioSettings;
+}
+
+/* ---------- Provider catalog (database-driven) ---------- */
+
+export type VoiceCapability = "stt" | "tts" | "llm";
+
+export interface ProviderInfo {
+  code: string;
+  name: string;
+  capability: VoiceCapability;
+  description: string;
+  requiresApiKey: boolean;
+  hasCredentials: boolean;
+}
+
+export interface ParamSpec {
+  type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list";
+  min?: number;
+  max?: number;
+  step?: number;
+  default?: ProviderSettingValue;
+  values?: string[];
+  label: string;
+  help?: string;
+  advanced?: boolean;
+  fixed?: boolean;
+  optional?: boolean;
+  max_items?: number;
+  max_length?: number;
+}
+
+export interface ProviderModelInfo {
+  code: string;
+  displayName: string;
+  provider: string;
+  capability: VoiceCapability;
+  /** Provider-native language codes; [] = language-agnostic. */
+  languages: string[];
+  codecs: string[];
+  sampleRates: number[];
+  streaming: boolean;
+  paramsSchema: Record<string, ParamSpec>;
+  isDefault: boolean;
+}
+
+export interface ModelLanguagesInfo {
+  /** Platform locale codes, already intersected with enabled platform languages. */
+  languages: { code: string; name: string; nativeName: string | null }[];
+  supportsAutoDetect: boolean;
+  languageAgnostic: boolean;
+}
+
+export interface VoiceOption {
+  id: string;
+  name: string;
+  gender: string;
+  provider: string;
+  providerVoiceId: string | null;
+  /** [] = any language. */
+  languages: string[];
+  modelCodes: string[];
+  locale: string | null;
+  premium: boolean;
+  isDefault: boolean;
+  status: string;
+  providerSettings: Record<string, unknown>;
+  sampleText: string | null;
+}
+
+export interface ValidateConfigResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+  message?: string;
+}
+
+export interface TtsPreviewResult {
+  audioBase64: string;
+  mimeType: string;
+  sampleRate: number;
+  ttfaMs: number;
+  totalMs: number;
+  provider: string;
+  voice: string;
 }
 
 /* ---------- Voice runtime ---------- */
@@ -322,6 +444,176 @@ export interface SearchTestResult {
   durationMs: number;
   skippedReason: string | null;
   sources: SearchTestSource[];
+}
+
+/* ---------- Knowledge Chunk Review (Super Admin) ---------- */
+
+export interface ChunkWarnings {
+  shortChunk: boolean;
+  emptyChunk: boolean;
+  missingPage: boolean;
+  missingSection: boolean;
+  ocr: boolean;
+  table: boolean;
+  fromImage: boolean;
+  promptInjection: boolean;
+  flaggedForReview: boolean;
+}
+
+export interface ReviewDocument {
+  documentId: string;
+  tenantId: string | null;
+  tenantName: string | null;
+  tenantCode: string | null;
+  kbId: string;
+  kbName: string | null;
+  fileName: string;
+  fileExt: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number;
+  docType: string | null;
+  language: string | null;
+  status: DocumentState;
+  uploadStatus: string;
+  ingestionStatus: string;
+  ingestionStage: string | null;
+  ingestionProgress: number;
+  attempts: number;
+  failureReason: string | null;
+  pageCount: number;
+  chunkCount: number;
+  embeddingModel: string | null;
+  embeddingDimension: number | null;
+  isDeleted: boolean;
+  uploadedBy: string | null;
+  uploadedByName: string | null;
+  uploadedAt: string | null;
+  processingCompletedAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface DocumentQuality {
+  totalChunks: number;
+  activeChunks: number;
+  archivedChunks: number;
+  minTokens: number | null;
+  maxTokens: number | null;
+  avgTokens: number | null;
+  chunksMissingPage: number;
+  chunksMissingSection: number;
+  shortChunks: number;
+  ocrChunks: number;
+  tableChunks: number;
+  promptInjectionChunks: number;
+  flaggedChunks: number;
+}
+
+export interface ReviewDocumentDetail extends ReviewDocument {
+  quality: DocumentQuality;
+  hasOriginalFile: boolean;
+}
+
+export interface ReviewChunk {
+  chunkId: string;
+  documentId: string;
+  kbId: string;
+  kbName: string | null;
+  tenantId: string | null;
+  chunkIndex: number;
+  pageNumber: number | null;
+  section: string | null;
+  topic: string | null;
+  chunkType: string | null;
+  language: string | null;
+  keywords: string[];
+  tokenCount: number | null;
+  charCount: number;
+  status: "active" | "archived";
+  contentPreview: string;
+  content: string;
+  hasMetadata: boolean;
+  embeddingModel: string | null;
+  embeddingDimension: number | null;
+  embeddingGenerated: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  warnings: ChunkWarnings;
+}
+
+export interface ChunkNeighbor {
+  chunkId: string;
+  chunkIndex: number;
+  pageNumber: number | null;
+  section: string | null;
+  content: string;
+  status: string;
+}
+
+export interface ChunkQuality extends ChunkWarnings {
+  tokenCount: number | null;
+  charCount: number;
+  overlapWithPrevChars: number;
+  duplicate: boolean;
+  duplicateCount: number;
+  piiKinds: string[];
+  pii: boolean;
+  promptInjectionPatterns: string[];
+  reviewFlag: { flagged?: boolean; reason?: string | null; by?: string | null } | null;
+}
+
+export interface ReviewChunkDetail extends ReviewChunk {
+  metadata: Record<string, unknown>;
+  contentHash: string;
+  quality: ChunkQuality;
+  prev: ChunkNeighbor | null;
+  current: ChunkNeighbor;
+  next: ChunkNeighbor | null;
+}
+
+export interface ReviewKnowledgeBase {
+  id: string;
+  name: string;
+  tenantId: string | null;
+  scope: string;
+  status: string;
+  chunks: number;
+}
+
+export interface ReviewFacets {
+  tenants: { id: string; name: string; code: string | null }[];
+  fileTypes: string[];
+  languages: string[];
+  uploadStatuses: string[];
+  ingestionStatuses: string[];
+  chunkStatuses: string[];
+}
+
+export interface RetrievalTestHit {
+  rank: number;
+  chunkId: string;
+  documentId: string;
+  documentName: string | null;
+  kbId: string;
+  pageNumber: number | null;
+  section: string | null;
+  score: number;
+  vectorScore: number;
+  keywordScore: number | null;
+  passedThreshold: boolean;
+  text: string;
+}
+
+export interface RetrievalTestResult {
+  query: string;
+  kbIds: string[];
+  tenantId: string | null;
+  topK: number;
+  threshold: number;
+  confidence: number;
+  answerable: boolean;
+  durationMs: number;
+  results: RetrievalTestHit[];
 }
 
 /* ---------- Prompts ---------- */

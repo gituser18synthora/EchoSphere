@@ -20,7 +20,11 @@ from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.core.security import hash_password
+from backend.core.security import (
+    MIN_PASSWORD_LENGTH,
+    hash_password,
+    validate_password_policy,
+)
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import (
@@ -178,7 +182,9 @@ class CreateTenantRequest(BaseModel):
     plan_code: str = Field(default="starter", alias="planCode")
     admin_email: EmailStr = Field(alias="adminEmail")
     admin_name: str = Field(default="Tenant Admin", alias="adminName")
-    admin_password: str | None = Field(default=None, alias="adminPassword", min_length=8)
+    admin_password: str | None = Field(
+        default=None, alias="adminPassword", min_length=MIN_PASSWORD_LENGTH
+    )
     status: str = Field(default="provisioning", pattern="^(active|trial|suspended|provisioning)$")
     seats: int | None = Field(default=None, ge=1)
 
@@ -253,6 +259,10 @@ def create_tenant(
     if existing_admin is None:
         import secrets
 
+        # An admin-chosen onboarding password must satisfy the shared policy;
+        # the generated temporary password is always above the minimum length.
+        if body.admin_password is not None:
+            validate_password_policy(body.admin_password, field="adminPassword")
         password = body.admin_password or secrets.token_urlsafe(12)
         role = db.scalar(select(Role).where(Role.code == "tenant_admin"))
         if role is None:

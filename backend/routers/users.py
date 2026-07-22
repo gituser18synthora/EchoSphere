@@ -19,7 +19,11 @@ from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.core.security import hash_password
+from backend.core.security import (
+    MIN_PASSWORD_LENGTH,
+    hash_password,
+    validate_password_policy,
+)
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import Permission, Role, User, VoiceBot
@@ -75,7 +79,7 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     role_code: str = Field(alias="roleCode")
     tenant_id: str | None = Field(default=None, alias="tenantId")
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: str | None = Field(default=None, min_length=MIN_PASSWORD_LENGTH, max_length=128)
 
     model_config = {"populate_by_name": True}
 
@@ -104,8 +108,12 @@ def create_user(
         raise ApiError("A user with this email already exists.", 409)
 
     # Invited users receive a temporary password; must be rotated on first login.
+    # An admin-chosen password must satisfy the shared policy; the generated
+    # temporary password is always well above the minimum length.
     import secrets
 
+    if body.password is not None:
+        validate_password_policy(body.password, field="password")
     password = body.password or secrets.token_urlsafe(12)
     row = User(
         id=new_id("usr"),
@@ -183,36 +191,6 @@ def update_my_profile(
     return ok(serialize_user_public(user))
 
 
-# A small deny-list on top of composition rules — full breach-corpus checks
-# need external infrastructure that does not exist here.
-_WEAK_PASSWORDS = {
-    "password", "password1", "password123", "12345678", "123456789", "1234567890",
-    "qwerty123", "letmein123", "admin123", "welcome123", "abc12345", "iloveyou1",
-}
-
-
-def _validate_password_policy(password: str) -> None:
-    problems = []
-    if len(password) < 10:
-        problems.append("at least 10 characters")
-    if not any(c.islower() for c in password):
-        problems.append("a lowercase letter")
-    if not any(c.isupper() for c in password):
-        problems.append("an uppercase letter")
-    if not any(c.isdigit() for c in password):
-        problems.append("a digit")
-    if problems:
-        raise ApiError(
-            "Password must contain " + ", ".join(problems) + ".", 422,
-            errors=[{"field": "newPassword", "message": "Password policy not met."}],
-        )
-    if password.lower() in _WEAK_PASSWORDS:
-        raise ApiError(
-            "This password is too common — choose something less guessable.", 422,
-            errors=[{"field": "newPassword", "message": "Password is too common."}],
-        )
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(alias="currentPassword", min_length=1, max_length=200)
     new_password: str = Field(alias="newPassword", min_length=1, max_length=128)
@@ -244,7 +222,7 @@ def change_my_password(
     if body.new_password == body.current_password:
         raise ApiError("The new password must be different from the current password.", 422,
                        errors=[{"field": "newPassword", "message": "Must differ from current password."}])
-    _validate_password_policy(body.new_password)
+    validate_password_policy(body.new_password)
 
     user.password_hash = hash_password(body.new_password)
     user.password_changed_at = datetime.now(tz.utc)
@@ -313,7 +291,7 @@ def admin_reset_password(
                 "The new password and confirmation do not match.", 422,
                 errors=[{"field": "confirmPassword", "message": "Passwords do not match."}],
             )
-        _validate_password_policy(body.new_password)
+        validate_password_policy(body.new_password)
         row.password_hash = hash_password(body.new_password)
         # An explicitly chosen password is a real credential — no forced
         # rotation; invited accounts become active, deactivated stay locked.

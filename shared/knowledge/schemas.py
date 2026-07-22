@@ -99,6 +99,7 @@ class ChunkPayload(BaseModel):
     content: str
     embedding_text: str | None = None
     content_hash: str
+    token_count: int | None = None
     embedding: list[float] | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None

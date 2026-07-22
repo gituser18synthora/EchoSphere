@@ -13,6 +13,21 @@ export interface Paged<T> {
   meta: { page: number; pageSize: number; total: number; totalPages: number };
 }
 
+/** Envelope meta — pagination fields on list endpoints, warnings on some saves. */
+export interface ResponseMeta {
+  page?: number;
+  pageSize?: number;
+  total?: number;
+  totalPages?: number;
+  warnings?: string[];
+}
+
+/** Error thrown for failed requests; `errors` carries the backend's error list. */
+export interface ApiRequestError extends Error {
+  status?: number;
+  errors?: string[];
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -30,7 +45,7 @@ function handleUnauthorized() {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<{ data: T; meta?: Paged<T>["meta"] }> {
+async function request<T>(method: string, path: string, body?: unknown): Promise<{ data: T; meta?: ResponseMeta }> {
   const headers: Record<string, string> = { Accept: "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -50,7 +65,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new Error("Cannot reach the server. Check that the backend is running.");
   }
 
-  let payload: { success?: boolean; data?: T; meta?: Paged<T>["meta"]; message?: string; errors?: { field: string; message: string }[] };
+  /* Backend errors are either plain strings (catalog validation) or {field, message} pairs. */
+  let payload: { success?: boolean; data?: T; meta?: ResponseMeta; message?: string; errors?: (string | { field: string; message: string })[] };
   try {
     payload = await resp.json();
   } catch {
@@ -62,19 +78,32 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new Error(payload?.message || "Session expired — please sign in again.");
   }
   if (!resp.ok || payload.success === false) {
-    const detail = payload.errors?.length
-      ? ` (${payload.errors.map((e) => `${e.field}: ${e.message}`).join("; ")})`
-      : "";
-    throw new Error((payload.message || `Request failed (HTTP ${resp.status}).`) + detail);
+    const errorList = (payload.errors ?? []).map((e) => (typeof e === "string" ? e : `${e.field}: ${e.message}`));
+    const detail = errorList.length ? ` (${errorList.join("; ")})` : "";
+    const error = new Error((payload.message || `Request failed (HTTP ${resp.status}).`) + detail) as ApiRequestError;
+    error.status = resp.status;
+    if (errorList.length) error.errors = errorList;
+    throw error;
   }
   return { data: payload.data as T, meta: payload.meta };
 }
+
+/** Raw request that also returns the envelope's meta (e.g. save warnings). */
+export const requestWithMeta = request;
 
 export const http = {
   get: async <T>(path: string): Promise<T> => (await request<T>("GET", path)).data,
   getPaged: async <T>(path: string): Promise<Paged<T>> => {
     const { data, meta } = await request<T[]>("GET", path);
-    return { items: data, meta: meta ?? { page: 1, pageSize: data.length, total: data.length, totalPages: 1 } };
+    return {
+      items: data,
+      meta: {
+        page: meta?.page ?? 1,
+        pageSize: meta?.pageSize ?? data.length,
+        total: meta?.total ?? data.length,
+        totalPages: meta?.totalPages ?? 1,
+      },
+    };
   },
   post: async <T>(path: string, body?: unknown): Promise<T> => (await request<T>("POST", path, body)).data,
   /** Multipart POST — pass a FormData; Authorization is attached, Content-Type is left to the browser. */

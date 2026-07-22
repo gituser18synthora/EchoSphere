@@ -5,9 +5,15 @@ import os
 from functools import lru_cache
 from urllib.parse import quote_plus
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+# Secret *references* (env:VAR) resolve against os.environ, so the root .env
+# must be loaded into the process environment too — not only into the pydantic
+# Settings fields. Real environment variables always win (override=False).
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=False)
 
 
 class Settings(BaseSettings):

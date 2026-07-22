@@ -15,8 +15,12 @@ import type {
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
   TenantSettings, TestScenario, UploadConfig, VoiceBot, VoiceCatalog,
   VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
+  ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
+  ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
+  ModelLanguagesInfo, ProviderInfo, ProviderModelInfo, ProviderSettings,
+  ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability, VoiceOption,
 } from "@/types/domain";
-import { http, type Paged } from "./http";
+import { http, getToken, requestWithMeta, type Paged } from "./http";
 
 /* ---------- Auth ---------- */
 export const login = (email: string, password: string) =>
@@ -56,8 +60,13 @@ export const archiveBot = (id: string) => http.delete<{ archived: boolean }>(`/b
 
 export const getVoiceSettings = (botId: string): Promise<VoiceSettings> =>
   http.get(`/bots/${botId}/voice-settings`);
-export const saveVoiceSettings = (botId: string, body: Partial<VoiceSettings>) =>
-  http.put<VoiceSettings>(`/bots/${botId}/voice-settings`, body);
+/** PUT voice settings; the catalog may accept the config with warnings (meta.warnings). */
+export const saveVoiceSettings = async (
+  botId: string, body: Partial<VoiceSettings>,
+): Promise<{ settings: VoiceSettings; warnings: string[] }> => {
+  const { data, meta } = await requestWithMeta<VoiceSettings>("PUT", `/bots/${botId}/voice-settings`, body);
+  return { settings: data, warnings: meta?.warnings ?? [] };
+};
 
 /* ---------- Knowledge ---------- */
 export const listKnowledge = async (botId?: string, tenantId?: string): Promise<KnowledgeSource[]> => {
@@ -95,11 +104,111 @@ export const deleteDocument = (documentId: string): Promise<{ archived: boolean;
 export const searchTest = (body: { query: string; kbIds?: string[]; botId?: string; topK?: number }): Promise<SearchTestResult> =>
   http.post("/knowledge/search-test", body);
 
+/* ---------- Knowledge Chunk Review (Super Admin) ---------- */
+const REVIEW = "/admin/knowledge/review";
+
+/** Append only defined, non-empty filter values to a query string. */
+function qs(params: Record<string, string | number | boolean | undefined | null>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
+export interface DocumentListParams {
+  page?: number; pageSize?: number; search?: string; sortBy?: string; sortDir?: "asc" | "desc";
+  tenantId?: string; kbId?: string; fileType?: string; status?: string; ingestionStatus?: string;
+  language?: string; uploadedFrom?: string; uploadedTo?: string; failedOnly?: boolean; includeArchived?: boolean;
+}
+export interface ChunkListParams {
+  page?: number; pageSize?: number; search?: string; sortBy?: string; sortDir?: "asc" | "desc";
+  tenantId?: string; documentId?: string; kbId?: string; status?: string; language?: string;
+  pageNumber?: number; section?: string; createdFrom?: string; createdTo?: string;
+  minTokens?: number; maxTokens?: number; hasKeywords?: boolean; hasMetadata?: boolean; flaggedOnly?: boolean;
+}
+
+export const reviewFacets = (): Promise<ReviewFacets> => http.get(`${REVIEW}/facets`);
+export const reviewKnowledgeBases = (): Promise<ReviewKnowledgeBase[]> => http.get(`${REVIEW}/knowledge-bases`);
+
+export const reviewDocuments = (p: DocumentListParams): Promise<Paged<ReviewDocument>> =>
+  http.getPaged<ReviewDocument>(`${REVIEW}/documents${qs({ ...p })}`);
+export const getReviewDocument = (id: string): Promise<ReviewDocumentDetail> =>
+  http.get(`${REVIEW}/documents/${id}`);
+export const retryReviewDocument = (id: string): Promise<DocumentStatus> =>
+  http.post(`${REVIEW}/documents/${id}/retry`);
+export const reindexReviewDocument = (id: string): Promise<DocumentStatus> =>
+  http.post(`${REVIEW}/documents/${id}/reindex`);
+export const archiveReviewDocument = (id: string): Promise<{ archived: boolean; id: string }> =>
+  http.post(`${REVIEW}/documents/${id}/archive`);
+
+/** Authorized original-file download — streams the blob and saves it client-side. */
+export const downloadReviewDocument = async (id: string, fileName: string): Promise<void> => {
+  const token = getToken();
+  const resp = await fetch(`/api/v1${REVIEW}/documents/${id}/download`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!resp.ok) throw new Error(`Download failed (HTTP ${resp.status}).`);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+export const reviewChunks = (p: ChunkListParams): Promise<Paged<ReviewChunk>> =>
+  http.getPaged<ReviewChunk>(`${REVIEW}/chunks${qs({ ...p })}`);
+export const getReviewChunk = (id: string): Promise<ReviewChunkDetail> =>
+  http.get(`${REVIEW}/chunks/${id}`);
+export const setChunkStatus = (id: string, status: "active" | "archived"): Promise<{ chunkId: string; status: string }> =>
+  http.patch(`${REVIEW}/chunks/${id}/status`, { status });
+export const flagChunk = (id: string, flagged: boolean, reason?: string): Promise<{ chunkId: string; flagged: boolean }> =>
+  http.post(`${REVIEW}/chunks/${id}/flag`, { flagged, reason });
+export const reviewRetrievalTest = (body: {
+  query: string; kbIds?: string[]; documentId?: string; topK?: number; minScore?: number;
+}): Promise<RetrievalTestResult> => http.post(`${REVIEW}/retrieval-test`, body);
+
 /* ---------- Voice runtime ---------- */
 export const createVoiceSession = (botId: string, channel = "browser"): Promise<VoiceSessionInfo> =>
   http.post("/voice-sessions", { botId, channel });
 export const getVoiceCatalog = (): Promise<VoiceCatalog> =>
   http.get("/providers/voice-catalog");
+
+/* ---------- Provider catalog (database-driven voice configuration) ---------- */
+export const getProviderCatalog = (
+  capability?: VoiceCapability,
+): Promise<Partial<Record<VoiceCapability, ProviderInfo[]>>> =>
+  http.get(`/providers/catalog${capability ? `?capability=${capability}` : ""}`);
+export const listProviderModels = (capability: VoiceCapability, code: string): Promise<ProviderModelInfo[]> =>
+  http.get(`/providers/${capability}/${encodeURIComponent(code)}/models`);
+export const getModelLanguages = (
+  capability: VoiceCapability, code: string, model: string,
+): Promise<ModelLanguagesInfo> =>
+  http.get(`/providers/${capability}/${encodeURIComponent(code)}/models/${encodeURIComponent(model)}/languages`);
+export const listProviderVoices = (
+  code: string, filters?: { model?: string; language?: string; gender?: string },
+): Promise<VoiceOption[]> => {
+  const params = new URLSearchParams();
+  if (filters?.model) params.set("model", filters.model);
+  if (filters?.language) params.set("language", filters.language);
+  if (filters?.gender) params.set("gender", filters.gender);
+  const query = params.toString();
+  return http.get(`/providers/tts/${encodeURIComponent(code)}/voices${query ? `?${query}` : ""}`);
+};
+export const validateVoiceConfig = (botId: string, config: Record<string, unknown>): Promise<ValidateConfigResult> =>
+  http.post("/providers/validate-config", { botId, config });
+export const testProviderConnection = (body: {
+  capability: VoiceCapability; provider: string; model?: string; voice?: string; language?: string;
+}): Promise<ProviderTestResult> => http.post("/providers/test", body);
+export const generateTtsPreview = (body: {
+  provider: string; model: string; voice: string; language: string; text: string; params?: ProviderSettings;
+}): Promise<TtsPreviewResult> => http.post("/providers/tts-preview", body);
 
 /* ---------- Prompts / Voice ---------- */
 export const listPrompts = (botId: string): Promise<Prompt[]> => http.get(`/bots/${botId}/prompts`);

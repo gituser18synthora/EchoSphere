@@ -110,3 +110,34 @@ class ProviderDef(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # models, locales, capabilities
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ProviderModel(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Per-provider model catalog: capabilities, languages, formats and parameter schema.
+
+    Everything the configuration UI and the validators need to offer/check a
+    provider+model combination lives here (seeded, editable via master data).
+    """
+
+    __tablename__ = "provider_models"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "capability", "code", name="uq_provider_model"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    provider_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    capability: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # stt | tts | llm
+    code: Mapped[str] = mapped_column(String(80), nullable=False)  # e.g. bulbul:v3, eleven_flash_v2_5
+    display_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    # Provider-native language codes ("hi-IN" for Sarvam, "hi" for ElevenLabs).
+    # Empty list => language-agnostic (LLMs).
+    languages: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    codecs: Mapped[list | None] = mapped_column(JSON, nullable=True)  # e.g. ["linear16","mulaw","alaw"]
+    sample_rates: Mapped[list | None] = mapped_column(JSON, nullable=True)  # e.g. [8000,16000,22050,24000]
+    streaming: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # JSON-schema-ish parameter descriptors driving the dynamic UI and backend
+    # range validation: {"field": {"type","min","max","default","enum","label","help"}}
+    params_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

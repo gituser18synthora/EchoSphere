@@ -39,6 +39,7 @@ from shared.models.master_models import (
     DataRegion,
     Industry,
     ProviderDef,
+    ProviderModel,
 )
 from shared.models.ops_models import (
     ApprovedModel,
@@ -62,5 +63,5 @@ __all__ = [
     "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
-    "Industry", "DataRegion", "AiConfigProfile", "ProviderDef",
+    "Industry", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
 ]

@@ -96,6 +96,11 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    # Provider models this voice can be used with (e.g. ["bulbul:v3"]). Empty/NULL
+    # means "any model of the provider".
+    model_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Per-voice default provider parameters (e.g. ElevenLabs VoiceSettings).
+    provider_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SupportedLanguage(Base, TimestampMixin, AuditByMixin):
@@ -146,6 +151,9 @@ class VoiceBotSetting(Base, TimestampMixin, AuditByMixin):
     pause_ms: Mapped[int] = mapped_column(Integer, default=350, nullable=False)
     empathy: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
     energy: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    # Per-language voice assignment. Values are either a voice_profiles id
+    # (legacy) or an object {"provider","model","voice","params"?}. The special
+    # key "default" holds the bot's default conversation locale.
     language_voice_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Provider selection (NULL → platform default from environment settings).
     stt_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -155,6 +163,18 @@ class VoiceBotSetting(Base, TimestampMixin, AuditByMixin):
     tts_voice: Mapped[str | None] = mapped_column(String(80), nullable=True)
     llm_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Provider-specific configuration (validated against provider_models.params_schema).
+    stt_language: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    stt_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tts_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    llm_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Fallback TTS engine used only for configured transient failures.
+    fallback_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    fallback_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    fallback_voice: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Transport audio configuration: {"browser": {"codec","sampleRate"},
+    #                                 "telephony": {"codec","sampleRate"}}
+    audio_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ChannelConfig(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedMixin):

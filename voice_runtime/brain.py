@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     OutputTransportMessageFrame,
+    StartFrame,
     TextFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -30,13 +31,18 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
 from shared.orchestration.router import RouteDecision, RouteKind, TurnRouter
-from shared.providers.base import LLMProvider
+from shared.providers.base import LLMProvider, ProviderError
+from shared.providers.languages import to_platform_language
 from shared.bot_config import ResolvedBotConfig
+from voice_runtime.frames import SwitchVoiceLanguageFrame, TTSFlushHintFrame
 from voice_runtime.recording import SessionRecorder, TurnRecord
 
 logger = logging.getLogger(__name__)
 
 _HISTORY_MAX_TURNS = 20
+# Mid-response flush: if the LLM stalls this long with text already buffered,
+# nudge the TTS to start rendering what we have.
+_LLM_PAUSE_FLUSH_SECONDS = 0.6
 
 
 class ConversationBrain(FrameProcessor):
@@ -63,11 +69,29 @@ class ConversationBrain(FrameProcessor):
         self._generation: asyncio.Task | None = None
         self._active_workflow: str | None = None
         self._last_bot_reply: str = ""
+        self._conversation_language: str = config.language
+        llm_settings = (config.llm or {}).get("settings") or {}
+        self._llm_temperature: float = float(llm_settings.get("temperature", 0.3))
+        self._llm_max_tokens: int = int(llm_settings.get("max_tokens", 256))
+        self._llm_max_retries: int = int(llm_settings.get("max_retries", 1))
+        self._pipeline_started = False
+        self._pending_greeting = False
 
     # ── pipeline plumbing ─────────────────────────────────────────────────
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            # The transport's client-connected handler can fire speak_greeting
+            # before the StartFrame has propagated (cold start) — frames pushed
+            # that early are dropped by pipecat, so the greeting is held here.
+            self._pipeline_started = True
+            await self.push_frame(frame, direction)
+            if self._pending_greeting:
+                self._pending_greeting = False
+                self._generation = self.create_task(self._say(self._config.greeting))
+            return
 
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
             await self._cancel_generation("barge_in")
@@ -76,10 +100,28 @@ class ConversationBrain(FrameProcessor):
 
         if isinstance(frame, TranscriptionFrame):
             await self._cancel_generation("new_turn")
+            await self._maybe_switch_language(frame)
             self._generation = self.create_task(self._handle_turn(frame.text))
             return
 
         await self.push_frame(frame, direction)
+
+    async def _maybe_switch_language(self, frame: TranscriptionFrame) -> None:
+        """Follow the caller's detected language for the per-language voice map."""
+        raw = getattr(frame, "language", None)
+        if not raw:
+            return
+        detected = to_platform_language(
+            self._config.stt.get("provider", ""), getattr(raw, "value", str(raw))
+        )
+        if detected and detected != self._conversation_language:
+            self._recorder.add_event(
+                "language_detected",
+                language=detected,
+                previous=self._conversation_language,
+            )
+            self._conversation_language = detected
+            await self.push_frame(SwitchVoiceLanguageFrame(language=detected))
 
     async def _cancel_generation(self, reason: str) -> None:
         if self._generation is not None and not self._generation.done():
@@ -232,13 +274,7 @@ class ConversationBrain(FrameProcessor):
         reply_parts: list[str] = []
         await self.push_frame(LLMFullResponseStartFrame())
         try:
-            async for token in self._llm.stream(
-                self._history, system=system, max_tokens=256
-            ):
-                if first_token_ms is None:
-                    first_token_ms = (time.perf_counter() - started) * 1000
-                reply_parts.append(token)
-                await self.push_frame(TextFrame(token))
+            first_token_ms = await self._stream_llm_tokens(reply_parts, system, started)
         finally:
             await self.push_frame(LLMFullResponseEndFrame())
 
@@ -263,6 +299,58 @@ class ConversationBrain(FrameProcessor):
                 )
             )
 
+    async def _stream_llm_tokens(
+        self, reply_parts: list[str], system: str, started: float
+    ) -> float | None:
+        """Stream LLM tokens downstream with pause-flush hints and retry.
+
+        Retries (bounded by the configured retry policy) only when the stream
+        fails before the first token — a mid-reply retry would repeat audio.
+        """
+        first_token_ms: float | None = None
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                stream = self._llm.stream(
+                    self._history,
+                    system=system,
+                    temperature=self._llm_temperature,
+                    max_tokens=self._llm_max_tokens,
+                ).__aiter__()
+                pending = asyncio.ensure_future(anext(stream))
+                hinted = False
+                while True:
+                    done, _ = await asyncio.wait(
+                        {pending}, timeout=_LLM_PAUSE_FLUSH_SECONDS
+                    )
+                    if not done:
+                        # LLM paused mid-reply: nudge buffered text into TTS once
+                        # per stall so speech starts without the next boundary.
+                        if reply_parts and not hinted:
+                            hinted = True
+                            await self.push_frame(TTSFlushHintFrame())
+                        continue
+                    try:
+                        token = pending.result()
+                    except StopAsyncIteration:
+                        return first_token_ms
+                    hinted = False
+                    if first_token_ms is None:
+                        first_token_ms = (time.perf_counter() - started) * 1000
+                    reply_parts.append(token)
+                    await self.push_frame(TextFrame(token))
+                    pending = asyncio.ensure_future(anext(stream))
+            except asyncio.CancelledError:
+                if "pending" in locals() and not pending.done():
+                    pending.cancel()
+                raise
+            except ProviderError as exc:
+                if reply_parts or attempts > self._llm_max_retries:
+                    raise
+                logger.warning("llm stream failed before first token (%s); retrying", exc.category)
+                await asyncio.sleep(0.2 * attempts)
+
     async def _say(self, text: str) -> None:
         """Speak a fixed phrase through the TTS path."""
         self._last_bot_reply = text
@@ -274,4 +362,7 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(LLMFullResponseEndFrame())
 
     async def speak_greeting(self) -> None:
+        if not self._pipeline_started:
+            self._pending_greeting = True
+            return
         await self._say(self._config.greeting)

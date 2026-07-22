@@ -515,6 +515,120 @@ class TestAdminChosenPasswordReset:
         assert response.status_code == 400
 
 
+class TestPasswordMinimumLength:
+    """The password minimum is 8 characters; composition (upper/lower/digit)
+    is unchanged. Verifies the boundary on both the self-service change and the
+    Super Admin reset, and that relaxing the minimum never locks out or forces a
+    rotation on existing (even sub-policy) credentials."""
+
+    @pytest.fixture(scope="class")
+    def pw_user(self, client, super_admin):
+        email = f"pwpolicy-{_SUFFIX}@example.com"
+        created = _data(client.post(f"{API}/users", headers=super_admin, json={
+            "name": "PW Policy", "email": email, "roleCode": "tenant_user",
+            "tenantId": "tn-001", "password": "Original@2026x",
+        }))
+        _created.append(("users", created["id"]))
+        return {"id": created["id"], "email": email, "password": "Original@2026x"}
+
+    def _login(self, client, email, password):
+        return client.post(f"{API}/auth/login", json={"email": email, "password": password})
+
+    def _change(self, client, token, current, new, confirm):
+        return client.post(f"{API}/users/me/password",
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"currentPassword": current, "newPassword": new,
+                                 "confirmPassword": confirm})
+
+    def _token(self, client, pw_user):
+        return self._login(client, pw_user["email"], pw_user["password"]).json()["data"]["token"]
+
+    def test_seven_char_rejected(self, client, pw_user):
+        # "Abcde12" is 7 chars with upper/lower/digit — fails on length alone.
+        response = self._change(client, self._token(client, pw_user),
+                                pw_user["password"], "Abcde12", "Abcde12")
+        assert response.status_code == 422
+        assert "at least 8 characters" in response.json()["message"]
+        # The credential is untouched — the old password still signs in.
+        assert self._login(client, pw_user["email"], pw_user["password"]).status_code == 200
+
+    def test_missing_composition_rejected(self, client, pw_user):
+        token = self._token(client, pw_user)
+        cases = [
+            ("abcdefg1", "an uppercase letter"),  # 8 chars, no uppercase
+            ("ABCDEFG1", "a lowercase letter"),   # 8 chars, no lowercase
+            ("Abcdefgh", "a digit"),              # 8 chars, no digit
+        ]
+        for bad, phrase in cases:
+            response = self._change(client, token, pw_user["password"], bad, bad)
+            assert response.status_code == 422, bad
+            assert phrase in response.json()["message"], (bad, response.json())
+        assert self._login(client, pw_user["email"], pw_user["password"]).status_code == 200
+
+    def test_mismatch_rejected(self, client, pw_user):
+        response = self._change(client, self._token(client, pw_user),
+                                pw_user["password"], "Abcdef12", "Abcdef34")
+        assert response.status_code == 422
+        assert "do not match" in response.json()["message"]
+        assert self._login(client, pw_user["email"], pw_user["password"]).status_code == 200
+
+    def test_eight_char_valid_accepted(self, client, pw_user):
+        # Exactly 8 chars, meets composition — accepted under the new minimum
+        # (would have been rejected under the old 10-char rule).
+        response = self._change(client, self._token(client, pw_user),
+                                pw_user["password"], "Abcdef12", "Abcdef12")
+        assert response.status_code == 200, response.json()
+        assert self._login(client, pw_user["email"], "Abcdef12").status_code == 200
+        assert self._login(client, pw_user["email"], pw_user["password"]).status_code == 401
+        pw_user["password"] = "Abcdef12"
+
+    def test_super_admin_reset_follows_same_rule(self, client, super_admin, pw_user):
+        # 7 chars rejected on the Super Admin reset path too...
+        seven = client.post(f"{API}/users/{pw_user['id']}/reset-password", headers=super_admin,
+                            json={"newPassword": "Abcde12", "confirmPassword": "Abcde12"})
+        assert seven.status_code == 422
+        assert "at least 8 characters" in seven.json()["message"]
+        # ...and an 8-char valid password is accepted.
+        eight = client.post(f"{API}/users/{pw_user['id']}/reset-password", headers=super_admin,
+                           json={"newPassword": "Zyxwvu98", "confirmPassword": "Zyxwvu98"})
+        assert eight.status_code == 200, eight.json()
+        assert self._login(client, pw_user["email"], "Zyxwvu98").status_code == 200
+        pw_user["password"] = "Zyxwvu98"
+
+    def test_existing_sub_policy_user_still_logs_in(self, client):
+        """A stored password that predates the policy (short, all-lowercase) must
+        still authenticate — the minimum change never forces a rotation."""
+        from sqlalchemy import select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.ids import new_id
+        from shared.models import Role, User
+        from backend.core.security import hash_password
+
+        email = f"legacy-{_SUFFIX}@example.com"
+        session = get_sessionmaker()()
+        try:
+            role = session.execute(
+                select(Role).where(Role.code == "tenant_user")).scalar_one()
+            legacy = User(
+                id=new_id("usr"), email=email, name="Legacy User",
+                password_hash=hash_password("legacy"),  # 6 chars, no upper/digit
+                role_id=role.id, tenant_id="tn-001", status="active",
+            )
+            session.add(legacy)
+            session.commit()
+            uid = legacy.id
+        finally:
+            session.close()
+        _created.append(("users", uid))
+
+        login = self._login(client, email, "legacy")
+        assert login.status_code == 200, login.json()
+        token = login.json()["data"]["token"]
+        me = client.get(f"{API}/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me.status_code == 200
+
+
 # ── Knowledge base creation rules ─────────────────────────────────────────────
 
 

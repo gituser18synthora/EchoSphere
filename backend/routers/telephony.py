@@ -136,13 +136,34 @@ async def inbound_call_webhook(provider: str, request: Request):
 
 @router.get("/providers/voice-catalog")
 def provider_catalog(user: User = Depends(require_tenant_member)):
-    """Available STT/TTS/LLM providers for the studio configuration UI."""
+    """Available STT/TTS/LLM providers for the studio configuration UI.
+
+    Sourced from the provider_defs catalog (active rows with a registered
+    adapter) — no hardcoded provider lists.
+    """
+    from sqlalchemy import select as sa_select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import ProviderDef
     from shared.providers.factory import _REGISTRY
 
     catalog: dict[str, list[str]] = {"stt": [], "tts": [], "llm": []}
-    for (kind, name) in _REGISTRY:
-        if name not in catalog[kind] and name != "mock":
-            catalog[kind].append(name)
+    session = get_sessionmaker()()
+    try:
+        rows = session.execute(
+            sa_select(ProviderDef.kind, ProviderDef.code)
+            .where(
+                ProviderDef.kind.in_(("stt", "tts", "llm")),
+                ProviderDef.status == "active",
+                ProviderDef.is_deleted.is_(False),
+            )
+            .order_by(ProviderDef.sort_order)
+        ).all()
+    finally:
+        session.close()
+    for kind, code in rows:
+        if code != "mock" and (kind, code) in _REGISTRY and code not in catalog[kind]:
+            catalog[kind].append(code)
     defaults = get_settings()
     return ok(
         {

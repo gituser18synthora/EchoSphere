@@ -15,6 +15,7 @@ import UsageReport from "@/pages/admin/Usage";
 import Governance from "@/pages/admin/Governance";
 import VoicePlatform from "@/pages/admin/VoicePlatform";
 import KnowledgeAdmin from "@/pages/admin/KnowledgeAdmin";
+import KnowledgeChunks from "@/pages/admin/KnowledgeChunks";
 import WorkflowsAdmin from "@/pages/admin/WorkflowsAdmin";
 import Monitoring from "@/pages/admin/Monitoring";
 import Security from "@/pages/admin/Security";
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="governance" element={<Governance />} />
         <Route path="voice" element={<VoicePlatform />} />
         <Route path="knowledge" element={<KnowledgeAdmin />} />
+        <Route path="knowledge-chunks" element={<KnowledgeChunks />} />
         <Route path="workflows" element={<WorkflowsAdmin />} />
         <Route path="monitoring" element={<Monitoring />} />
         <Route path="security" element={<Security />} />

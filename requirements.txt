@@ -32,6 +32,7 @@ numpy>=2.0
 
 # ── Voice runtime / orchestration ────────────────────────────
 pipecat-ai[silero]>=1.5
+sarvamai==0.1.28          # pinned to pipecat's supported version (Sarvam streaming STT)
 langgraph>=1.0
 langgraph-checkpoint-postgres>=3.0
 mcp[cli]>=1.20

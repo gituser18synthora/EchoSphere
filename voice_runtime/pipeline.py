@@ -4,7 +4,15 @@
 
 Interruption/barge-in is handled by the user-turn controller (VAD start
 strategy) which interrupts bot output; the brain additionally cancels its
-in-flight LLM/retrieval work on interruption frames.
+in-flight LLM/retrieval work on interruption frames, and the streaming TTS
+router cancels provider-side synthesis and rejects late audio.
+
+STT/TTS/LLM engines are built from the bot's database-driven provider
+configuration (ResolvedBotConfig):
+- STT: Sarvam realtime WebSocket (pipecat SarvamSTTService) when the bot's
+  STT provider is Sarvam; the segmented EchoSTTService otherwise (mock, REST).
+- TTS: StreamingTTSRouter for WebSocket providers (Sarvam, ElevenLabs) with
+  per-language voice mapping and fallback; EchoTTSService otherwise.
 """
 
 import logging
@@ -20,42 +28,117 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from shared.providers.base import ProviderConfig
+from shared.config import get_settings
+from shared.providers.base import ProviderConfig, ProviderError
 from shared.providers.factory import get_llm_provider, get_stt_provider, get_tts_provider
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoSTTService, EchoTTSService
+from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
 from voice_runtime.recording import SessionRecorder
 
 logger = logging.getLogger(__name__)
 
 
-def build_providers(config: ResolvedBotConfig):
-    stt = get_stt_provider(
+def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
+    """STT service from bot config: Sarvam realtime WS or segmented fallback."""
+    stt_conf = config.stt or {}
+    provider = stt_conf.get("provider") or "openai"
+
+    if provider == "sarvam":
+        # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK).
+        from pipecat.services.sarvam.stt import SarvamSTTService
+
+        api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
+        if not api_key:
+            raise ProviderError(
+                "sarvam-stt", "auth",
+                "Sarvam STT credentials are not configured (SARVAM_API_KEY)",
+            )
+        settings_kwargs = stt_conf.get("settings") or {}
+        model = stt_conf.get("model") or "saarika:v2.5"
+        language = stt_conf.get("language") or None  # None → auto-detect ("unknown")
+        mode = settings_kwargs.get("mode")
+        service_settings = SarvamSTTService.Settings(
+            model=model,
+            language=language,
+            vad_signals=settings_kwargs.get("vad_signals", False) or None,
+            high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity") or None,
+        )
+        return SarvamSTTService(
+            api_key=api_key,
+            mode=mode if model.startswith("saaras") else None,
+            sample_rate=sample_rate,
+            input_audio_codec=settings_kwargs.get("input_encoding", "wav")
+            if settings_kwargs.get("input_encoding") in ("wav", "pcm_s16le")
+            else "wav",
+            settings=service_settings,
+            keepalive_timeout=8.0,
+        )
+
+    stt_provider = get_stt_provider(
         ProviderConfig(
-            provider=config.stt.get("provider", "openai"),
-            model=config.stt.get("model", ""),
+            provider=provider,
+            model=stt_conf.get("model", ""),
+            language=stt_conf.get("language") or config.language,
+            api_key_reference=stt_conf.get("api_key_reference", ""),
+            extra=stt_conf.get("extra", {}),
+        )
+    )
+    return EchoSTTService(stt_provider, language=stt_conf.get("language") or config.language)
+
+
+def build_tts_service(
+    config: ResolvedBotConfig,
+    *,
+    recorder: SessionRecorder,
+    sample_rate: int = 24000,
+):
+    """TTS service from bot config: streaming router or segmented fallback."""
+    tts_conf = config.tts or {}
+    provider = tts_conf.get("provider") or "openai"
+
+    if is_streaming_tts_provider(provider):
+        return StreamingTTSRouter(
+            tts_config=tts_conf,
             language=config.language,
-            extra=config.stt.get("extra", {}),
+            speed=config.speed,
+            sample_rate=sample_rate,
+            recorder=recorder,
         )
-    )
-    tts = get_tts_provider(
+
+    tts_provider = get_tts_provider(
         ProviderConfig(
-            provider=config.tts.get("provider", "openai"),
-            model=config.tts.get("model", ""),
-            voice=config.tts.get("voice", ""),
+            provider=provider,
+            model=tts_conf.get("model", ""),
+            voice=tts_conf.get("voice", ""),
             language=config.language,
-            extra=config.tts.get("extra", {}),
+            api_key_reference=tts_conf.get("api_key_reference", ""),
+            extra=tts_conf.get("extra", {}),
         )
     )
-    llm = get_llm_provider(
+    return EchoTTSService(
+        tts_provider,
+        voice=tts_conf.get("voice") or None,
+        language=config.language,
+        speed=config.speed,
+        sample_rate=sample_rate,
+    )
+
+
+def build_llm_provider(config: ResolvedBotConfig):
+    llm_conf = config.llm or {}
+    return get_llm_provider(
         ProviderConfig(
-            provider=config.llm.get("provider", "openai"),
-            model=config.llm.get("model", ""),
-            extra=config.llm.get("extra", {}),
+            provider=llm_conf.get("provider", "openai"),
+            model=llm_conf.get("model", ""),
+            api_key_reference=llm_conf.get("api_key_reference", ""),
+            timeout_seconds=float(
+                (llm_conf.get("settings") or {}).get("timeout_seconds", 15.0)
+            ),
+            extra=llm_conf.get("extra", {}),
         )
     )
-    return stt, tts, llm
 
 
 def build_voice_pipeline(
@@ -66,20 +149,15 @@ def build_voice_pipeline(
     knowledge_service=None,
     workflow_engine=None,
     tts_sample_rate: int = 24000,
+    stt_sample_rate: int = 16000,
     use_vad: bool = True,
     idle_timeout_secs: float | None = None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
-    stt_provider, tts_provider, llm_provider = build_providers(config)
+    stt = build_stt_service(config, sample_rate=stt_sample_rate)
+    tts = build_tts_service(config, recorder=recorder, sample_rate=tts_sample_rate)
+    llm_provider = build_llm_provider(config)
 
-    stt = EchoSTTService(stt_provider, language=config.language)
-    tts = EchoTTSService(
-        tts_provider,
-        voice=config.tts.get("voice") or None,
-        language=config.language,
-        speed=config.speed,
-        sample_rate=tts_sample_rate,
-    )
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
@@ -95,7 +173,14 @@ def build_voice_pipeline(
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy()],
-                stop=[SpeechTimeoutUserTurnStopStrategy(timeout=0.8)],
+                # wait_for_transcript must be False: transcripts are consumed by
+                # the brain downstream and never reach the turn processor, so
+                # waiting for one only ever hits the 5s fallback — which also
+                # blocked barge-in (a new turn can't start while the previous
+                # one is stuck open).
+                stop=[SpeechTimeoutUserTurnStopStrategy(
+                    user_speech_timeout=0.8, wait_for_transcript=False,
+                )],
             )
         )
     )
@@ -104,7 +189,7 @@ def build_voice_pipeline(
     worker = PipelineWorker(
         Pipeline(processors),
         params=PipelineParams(
-            audio_in_sample_rate=16000,
+            audio_in_sample_rate=stt_sample_rate,
             audio_out_sample_rate=tts_sample_rate,
             enable_metrics=True,
         ),

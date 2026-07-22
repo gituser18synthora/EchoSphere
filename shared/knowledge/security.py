@@ -51,3 +51,14 @@ def mask_pii(text: str, kinds: set[str] | None = None) -> str:
             continue
         text = pattern.sub(f"[{kind.upper()}_MASKED]", text)
     return text
+
+
+def detect_pii(text: str) -> list[str]:
+    """Return the PII classes present in the text (empty list = none found).
+
+    Heuristic, best-effort — used by the chunk-review console to flag chunks
+    that may need masking before they are surfaced. Not a compliance control.
+    """
+    if not text:
+        return []
+    return [kind for kind, pattern in _PII_PATTERNS.items() if pattern.search(text)]

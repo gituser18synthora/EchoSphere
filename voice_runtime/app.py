@@ -187,14 +187,33 @@ async def _run_call(
     except Exception:  # noqa: BLE001 - voice must work without embeddings configured
         logger.warning("knowledge service unavailable — KB routing disabled")
 
-    worker, brain = build_voice_pipeline(
-        transport=transport,
-        config=config,
-        recorder=recorder,
-        knowledge_service=knowledge,
-        workflow_engine=get_workflow_engine(),
-        idle_timeout_secs=float(config.silence_timeout) * 4,
-    )
+    # Transport-aware audio formats: browser plays PCM at the configured
+    # browser rate; telephony serializers expect the 8 kHz PSTN world.
+    transport_kind = "telephony" if telephony_provider else "browser"
+    audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
+    if telephony_provider:
+        tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
+        stt_sample_rate = 8000
+    else:
+        tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
+        stt_sample_rate = 16000
+
+    try:
+        worker, brain = build_voice_pipeline(
+            transport=transport,
+            config=config,
+            recorder=recorder,
+            knowledge_service=knowledge,
+            workflow_engine=get_workflow_engine(),
+            tts_sample_rate=tts_sample_rate,
+            stt_sample_rate=stt_sample_rate,
+            idle_timeout_secs=float(config.silence_timeout) * 4,
+        )
+    except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
+        logger.exception("pipeline construction failed for %s", session_id)
+        await recorder.flush_event("pipeline_build_failed")
+        await websocket.close(code=4500, reason="voice engine configuration error")
+        return
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
