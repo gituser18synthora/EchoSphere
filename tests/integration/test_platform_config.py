@@ -358,24 +358,36 @@ class TestAsiaCountryCatalog:
             f"{API}/master/countries?includeInactive=false&pageSize=100&sortBy=name&sortDir=asc",
             headers=super_admin,
         ))
-        by_code = {country["code"]: country for country in countries}
+        by_iso2 = {country["iso2"]: country for country in countries}
 
         assert len(countries) >= 49
-        assert by_code["in"]["name"] == "India"
-        assert by_code["np"]["name"] == "Nepal"
+        assert by_iso2["IN"]["name"] == "India"
+        assert by_iso2["IN"]["iso3"] == "IND"
+        assert by_iso2["NP"]["name"] == "Nepal"
+        assert by_iso2["NP"]["iso3"] == "NPL"
+        assert all(isinstance(country["id"], int) for country in countries)
         assert all(country["region"] == "Asia" for country in countries)
 
-    def test_data_region_uses_country_code_and_server_canonicalizes_region(self, client, super_admin):
+    def test_data_region_uses_numeric_country_id_and_server_canonicalizes_region(
+        self, client, super_admin
+    ):
+        countries = _data(client.get(
+            f"{API}/master/countries?search=Nepal&pageSize=10", headers=super_admin
+        ))
+        nepal = next(country for country in countries if country["iso2"] == "NP")
         created = _data(client.post(f"{API}/master/data-regions", headers=super_admin, json={
             "code": f"np_{_SUFFIX}",
             "name": f"Nepal Region {_SUFFIX}",
-            "countryCode": "np",
+            "countryId": nepal["id"],
             # A stale/tampered client value must never override the country master.
             "region": "Europe",
         }))
         _track("data_regions", created["id"])
 
+        assert created["countryId"] == nepal["id"]
         assert created["countryCode"] == "np"
+        assert created["countryIso2"] == "NP"
+        assert created["countryIso3"] == "NPL"
         assert created["country"] == "Nepal"
         assert created["region"] == "Asia"
 
@@ -383,8 +395,8 @@ class TestAsiaCountryCatalog:
         response = client.post(f"{API}/master/data-regions", headers=super_admin, json={
             "code": f"unknown_{_SUFFIX}",
             "name": f"Unknown Country Region {_SUFFIX}",
-            "countryCode": "zz",
+            "countryId": 999999,
         })
 
         assert response.status_code == 422
-        assert "countryCode" in _field_errors(response)
+        assert "countryId" in _field_errors(response)

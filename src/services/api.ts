@@ -368,15 +368,17 @@ export const testApiConnection = (id: string, testValues?: Record<string, string
 /* ---------- Master data (Platform Configuration, Super Admin) ---------- */
 export type MasterType =
   | "industries" | "countries" | "data-regions" | "plans" | "ai-profiles"
-  | "providers" | "languages" | "voices";
+  | "providers" | "provider-models" | "languages" | "voices";
 
 export const listMaster = <T = Record<string, unknown>>(
   mtype: MasterType,
   opts?: {
     search?: string; sortBy?: string; sortDir?: "asc" | "desc"; page?: number; pageSize?: number;
     kind?: string; includeInactive?: boolean;
-    /** Voices-only server-side filters. */
+    /** Voices + provider-models server-side filters. */
     provider?: string; gender?: string; status?: string; language?: string;
+    /** Provider-models-only filter (stt | tts | llm | embedding). */
+    capability?: string;
   },
 ): Promise<Paged<T>> => {
   const params = new URLSearchParams({ pageSize: String(opts?.pageSize ?? 50) });
@@ -389,18 +391,19 @@ export const listMaster = <T = Record<string, unknown>>(
   if (opts?.gender) params.set("gender", opts.gender);
   if (opts?.status) params.set("status", opts.status);
   if (opts?.language) params.set("language", opts.language);
+  if (opts?.capability) params.set("capability", opts.capability);
   if (opts?.includeInactive === false) params.set("includeInactive", "false");
   return http.getPaged<T>(`/master/${mtype}?${params}`);
 };
 export const createMaster = <T = Record<string, unknown>>(mtype: MasterType, body: Record<string, unknown>): Promise<T> =>
   http.post(`/master/${mtype}`, body);
-export const updateMaster = <T = Record<string, unknown>>(mtype: MasterType, id: string, body: Record<string, unknown>): Promise<T> =>
+export const updateMaster = <T = Record<string, unknown>>(mtype: MasterType, id: string | number, body: Record<string, unknown>): Promise<T> =>
   http.patch(`/master/${mtype}/${id}`, body);
-export const setMasterStatus = <T = Record<string, unknown>>(mtype: MasterType, id: string, status: "active" | "inactive" | "archived"): Promise<T> =>
+export const setMasterStatus = <T = Record<string, unknown>>(mtype: MasterType, id: string | number, status: "active" | "inactive" | "archived"): Promise<T> =>
   http.post(`/master/${mtype}/${id}/status`, { status });
-export const deleteMaster = (mtype: MasterType, id: string): Promise<{ archived: boolean; id: string }> =>
+export const deleteMaster = (mtype: MasterType, id: string | number): Promise<{ archived: boolean; id: string | number }> =>
   http.delete(`/master/${mtype}/${id}`);
-export const getMasterAudit = (mtype: MasterType, id: string): Promise<{ id: string; actor: string; action: string; previousValue: unknown; newValue: unknown; time: string }[]> =>
+export const getMasterAudit = (mtype: MasterType, id: string | number): Promise<{ id: string; actor: string; action: string; previousValue: unknown; newValue: unknown; time: string }[]> =>
   http.get(`/master/${mtype}/${id}/audit`);
 export const duplicatePlan = (id: string) => http.post<Record<string, unknown>>(`/master/plans/${id}/duplicate`);
 export const listPlanTenants = (id: string): Promise<{ id: string; name: string; domain: string; subscriptionStatus: string; mrr: number }[]> =>

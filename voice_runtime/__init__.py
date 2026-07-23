@@ -6,5 +6,5 @@ cancellation, telephony media serializers, call recording and FreeSWITCH
 call control. It holds no authority over authentication or tenancy — it
 only accepts session ids the API has already written to Redis.
 
-Run: env/bin/uvicorn voice_runtime.app:app --port 8015
+Run: env/bin/python -m voice_runtime.app
 """

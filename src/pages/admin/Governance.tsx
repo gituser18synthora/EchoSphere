@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { listGuardrails, listModels, listTemplates, updateGuardrail, updateModelStatus } from "@/services/api";
+import {
+  listGuardrails, listMaster, listModels, listTemplates, setMasterStatus,
+  updateGuardrail, updateModelStatus,
+} from "@/services/api";
+import type { ProviderMaster, ProviderModelMaster, VoiceCapability } from "@/types/domain";
 import { DataTable } from "@/components/DataTable";
 import { Button, Callout, StatusChip, Tabs, Toggle, EmptyState, CardSkeleton, ErrorState } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
@@ -8,6 +12,7 @@ import { useApp } from "@/state/AppContext";
 import { Icon } from "@/components/Icon";
 
 const tabs = [
+  { id: "matrix", label: "Provider Matrix" },
   { id: "models", label: "Approved Models" },
   { id: "prompts", label: "Prompt Library" },
   { id: "versions", label: "Prompt Versions" },
@@ -16,7 +21,7 @@ const tabs = [
 ];
 
 export default function Governance() {
-  const [tab, setTab] = useState("models");
+  const [tab, setTab] = useState("matrix");
   return (
     <>
       <div className="page-head">
@@ -27,6 +32,7 @@ export default function Governance() {
       </div>
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
       <div className="mt-16">
+        {tab === "matrix" && <MatrixTab />}
         {tab === "models" && <ModelsTab />}
         {tab === "guardrails" && <GuardrailsTab />}
         {tab === "prompts" && (
@@ -50,6 +56,146 @@ export default function Governance() {
             body="Curated starter packs tenants can clone: chunking presets, FAQ scaffolds and per-industry source checklists."
           />
         )}
+      </div>
+    </>
+  );
+}
+
+const CAPABILITIES: { id: VoiceCapability; label: string }[] = [
+  { id: "llm", label: "LLM" },
+  { id: "embedding", label: "Embedding" },
+  { id: "stt", label: "Speech-to-Text" },
+  { id: "tts", label: "Text-to-Speech" },
+];
+
+function MatrixTab() {
+  const { toast, hasPermission } = useApp();
+  const canManage = hasPermission("manage_master_data");
+  const [capability, setCapability] = useState<VoiceCapability>("llm");
+  const [provider, setProvider] = useState<string>("");
+
+  const providersQ = useAsync(
+    () => listMaster<ProviderMaster>("providers", { kind: capability, pageSize: 100 }).then((p) => p.items),
+    [capability],
+  );
+  // A capability switch starts from a clean selection; the same provider code
+  // can exist per capability with a different status.
+  useEffect(() => { setProvider(""); }, [capability]);
+  // Keep a valid provider selected for the models panel: prefer the current
+  // selection, else the first ACTIVE provider, else the first row.
+  useEffect(() => {
+    const rows = providersQ.data ?? [];
+    if (rows.length === 0) { setProvider(""); return; }
+    if (provider && rows.some((r) => r.code === provider)) return;
+    setProvider((rows.find((r) => r.status === "active") ?? rows[0]).code);
+  }, [providersQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const modelsQ = useAsync(
+    () => provider
+      ? listMaster<ProviderModelMaster>("provider-models", { capability, provider, pageSize: 100 }).then((p) => p.items)
+      : Promise.resolve([] as ProviderModelMaster[]),
+    [capability, provider],
+  );
+
+  const flipStatus = async (
+    mtype: "providers" | "provider-models",
+    row: { id: string | number; status: string },
+    label: string,
+    reload: () => void,
+  ) => {
+    const next = row.status === "active" ? "inactive" : "active";
+    try {
+      await setMasterStatus(mtype, row.id, next);
+      toast(`${label} ${next === "active" ? "activated" : "deactivated"} — audit entry created`);
+      reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Status change failed", "error");
+    }
+  };
+
+  return (
+    <>
+      <Callout tone="info" title="Platform provider governance">
+        The database catalog is the source of truth for provider and model availability.
+        Deactivating an entry hides it from every dropdown, rejects it on save, and blocks it
+        at runtime immediately (cached bot configurations are invalidated). Existing
+        configurations that reference an inactive entry are flagged in edit mode and cannot be
+        re-saved until corrected. Records are never deleted — history and IDs stay stable.
+      </Callout>
+      <div className="row gap-8 mt-16" role="tablist" aria-label="Capability">
+        {CAPABILITIES.map((c) => (
+          <Button
+            key={c.id}
+            size="sm"
+            variant={capability === c.id ? "primary" : "ghost"}
+            onClick={() => setCapability(c.id)}
+            aria-pressed={capability === c.id}
+          >
+            {c.label}
+          </Button>
+        ))}
+      </div>
+      <div className="card mt-16">
+        <div className="card-header"><span className="card-title">Providers — {CAPABILITIES.find((c) => c.id === capability)?.label}</span></div>
+        <DataTable
+          loading={providersQ.loading} error={providersQ.error} onRetry={providersQ.reload}
+          rows={providersQ.data}
+          empty={{ icon: "brain", title: "No providers configured for this capability" }}
+          columns={[
+            { key: "name", header: "Provider", sortValue: (p: ProviderMaster) => p.name, render: (p: ProviderMaster) => <div><div className="t-strong">{p.name}</div><div className="t-micro"><code>{p.code}</code></div></div> },
+            { key: "status", header: "Status", render: (p: ProviderMaster) => <StatusChip status={p.status} /> },
+            { key: "usage", header: "In use by", align: "right", sortValue: (p: ProviderMaster) => p.usageCount, render: (p: ProviderMaster) => <span className="t-num">{fmtNum(p.usageCount)}</span> },
+            {
+              key: "models", header: "", width: 110,
+              render: (p: ProviderMaster) => (
+                <Button size="sm" variant={provider === p.code ? "primary" : "ghost"} onClick={() => setProvider(p.code)}>
+                  Models
+                </Button>
+              ),
+            },
+            {
+              key: "act", header: "", width: 130,
+              render: (p: ProviderMaster) => canManage ? (
+                <Button
+                  size="sm"
+                  variant={p.status === "active" ? "ghost" : "primary"}
+                  onClick={() => flipStatus("providers", p, p.name, providersQ.reload)}
+                >
+                  {p.status === "active" ? "Deactivate" : "Activate"}
+                </Button>
+              ) : null,
+            },
+          ]}
+        />
+      </div>
+      <div className="card mt-16">
+        <div className="card-header">
+          <span className="card-title">
+            Models — {provider ? <code>{provider}</code> : "select a provider"}
+          </span>
+        </div>
+        <DataTable
+          loading={modelsQ.loading} error={modelsQ.error} onRetry={modelsQ.reload}
+          rows={modelsQ.data}
+          empty={{ icon: "brain", title: provider ? "No models in the catalog for this provider" : "Select a provider to view its models" }}
+          columns={[
+            { key: "name", header: "Model", sortValue: (m: ProviderModelMaster) => m.displayName, render: (m: ProviderModelMaster) => <div><div className="t-strong">{m.displayName}</div><div className="t-micro"><code>{m.code}</code>{m.isDefault ? <span className="tag" style={{ marginLeft: 6 }}>default</span> : null}</div></div> },
+            { key: "status", header: "Status", render: (m: ProviderModelMaster) => <StatusChip status={m.status} /> },
+            { key: "usage", header: "In use by", align: "right", sortValue: (m: ProviderModelMaster) => m.usageCount, render: (m: ProviderModelMaster) => <span className="t-num">{fmtNum(m.usageCount)}</span> },
+            {
+              key: "act", header: "", width: 130,
+              render: (m: ProviderModelMaster) => canManage ? (
+                <Button
+                  size="sm"
+                  variant={m.status === "active" ? "ghost" : "primary"}
+                  onClick={() => flipStatus("provider-models", m, m.displayName, modelsQ.reload)}
+                >
+                  {m.status === "active" ? "Deactivate" : "Activate"}
+                </Button>
+              ) : null,
+            },
+          ]}
+        />
       </div>
     </>
   );

@@ -124,13 +124,13 @@ describe("ProviderModelSelect", () => {
     expect(await screen.findByText("GPT-4o mini · default")).toBeInTheDocument();
   });
 
-  it("keeps a legacy saved model visible in edit mode", async () => {
+  it("keeps an inactive saved model visible in edit mode with an unavailable warning", async () => {
     function EditHarness() {
       const [model, setModel] = useState("tts-legacy");
       return <ModelSelect capability="tts" provider="sarvam" value={model} label="Model" onChange={setModel} />;
     }
     render(<EditHarness />);
-    expect(await screen.findByText("tts-legacy (not in catalog)")).toBeInTheDocument();
+    expect(await screen.findByText("tts-legacy (unavailable — inactive)")).toBeInTheDocument();
     expect(screen.getByLabelText("Model")).toHaveValue("tts-legacy");
   });
 });

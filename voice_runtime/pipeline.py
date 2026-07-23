@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
     """STT service from bot config: Sarvam realtime WS or segmented fallback."""
     stt_conf = config.stt or {}
-    provider = stt_conf.get("provider") or "openai"
+    provider = stt_conf.get("provider") or "sarvam"
 
     if provider == "sarvam":
         # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK).
@@ -56,7 +56,7 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
                 "Sarvam STT credentials are not configured (SARVAM_API_KEY)",
             )
         settings_kwargs = stt_conf.get("settings") or {}
-        model = stt_conf.get("model") or "saarika:v2.5"
+        model = stt_conf.get("model") or "saaras:v3"
         language = stt_conf.get("language") or None  # None → auto-detect ("unknown")
         mode = settings_kwargs.get("mode")
         service_settings = SarvamSTTService.Settings(
@@ -96,7 +96,7 @@ def build_tts_service(
 ):
     """TTS service from bot config: streaming router or segmented fallback."""
     tts_conf = config.tts or {}
-    provider = tts_conf.get("provider") or "openai"
+    provider = tts_conf.get("provider") or "sarvam"
 
     if is_streaming_tts_provider(provider):
         return StreamingTTSRouter(

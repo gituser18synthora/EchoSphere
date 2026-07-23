@@ -27,6 +27,7 @@ from shared.models import (
     Industry,
     Plan,
     ProviderDef,
+    ProviderModel,
     Subscription,
     SupportedLanguage,
     Tenant,
@@ -43,6 +44,7 @@ from backend.serializers import (
     serialize_language,
     serialize_plan,
     serialize_provider,
+    serialize_provider_model,
     serialize_tenant,
     serialize_voice,
 )
@@ -65,7 +67,7 @@ def _industry_usage(db: Session, row: Industry) -> int:
 def _country_usage(db: Session, row: Country) -> int:
     return db.scalar(
         select(func.count()).select_from(DataRegion).where(
-            or_(DataRegion.country_code == row.code, DataRegion.country == row.name),
+            or_(DataRegion.country_id == row.id, DataRegion.country == row.name),
             DataRegion.is_deleted.is_(False),
         )
     ) or 0
@@ -114,6 +116,40 @@ def _provider_usage(db: Session, row: ProviderDef) -> int:
                 VoiceBotSetting.stt_provider == row.code,
                 VoiceBotSetting.tts_provider == row.code,
                 VoiceBotSetting.llm_provider == row.code,
+                VoiceBotSetting.fallback_provider == row.code,
+            )
+        )
+    ) or 0
+    return profiles + bots
+
+
+def _provider_model_usage(db: Session, row: ProviderModel) -> int:
+    profiles = db.scalar(
+        select(func.count()).select_from(AiConfigProfile).where(
+            AiConfigProfile.is_deleted.is_(False),
+            or_(
+                (AiConfigProfile.stt_provider == row.provider_code)
+                & (AiConfigProfile.stt_model == row.code),
+                (AiConfigProfile.tts_provider == row.provider_code)
+                & (AiConfigProfile.tts_model == row.code),
+                (AiConfigProfile.llm_provider == row.provider_code)
+                & (AiConfigProfile.llm_model == row.code),
+                (AiConfigProfile.embedding_provider == row.provider_code)
+                & (AiConfigProfile.embedding_model == row.code),
+            ),
+        )
+    ) or 0
+    bots = db.scalar(
+        select(func.count()).select_from(VoiceBotSetting).where(
+            or_(
+                (VoiceBotSetting.stt_provider == row.provider_code)
+                & (VoiceBotSetting.stt_model == row.code),
+                (VoiceBotSetting.tts_provider == row.provider_code)
+                & (VoiceBotSetting.tts_model == row.code),
+                (VoiceBotSetting.llm_provider == row.provider_code)
+                & (VoiceBotSetting.llm_model == row.code),
+                (VoiceBotSetting.fallback_provider == row.provider_code)
+                & (VoiceBotSetting.fallback_model == row.code),
             )
         )
     ) or 0
@@ -150,9 +186,9 @@ _EDITABLE = {
         "default_prompt_template_id", "default_guardrail_profile_id",
         "default_workflow_template_id",
     },
-    "countries": {"name", "sort_order"},
+    "countries": {"name", "iso2", "iso3", "sort_order"},
     "data-regions": {
-        "name", "description", "country_code", "country", "region", "cloud_provider",
+        "name", "description", "country_id", "country", "region", "cloud_provider",
         "storage_region", "database_region", "recording_region",
         "transcript_region", "infrastructure_ready", "sort_order",
     },
@@ -177,6 +213,10 @@ _EDITABLE = {
         "name", "description", "website", "requires_api_key", "secret_ref",
         "config", "sort_order",
     },
+    "provider-models": {
+        "display_name", "languages", "codecs", "sample_rates", "streaming",
+        "params_schema", "is_default", "sort_order",
+    },
     "languages": {
         "name", "native_name", "iso_code", "script", "direction",
         "provider_support", "is_default", "sort_order",
@@ -196,7 +236,7 @@ _TYPES: dict[str, dict] = {
     ),
     "countries": dict(
         model=Country, serializer=serialize_country, usage=_country_usage,
-        perm="manage_data_regions", label="Country", search=("code", "name", "region"),
+        perm="manage_data_regions", label="Country", search=("iso2", "iso3", "name", "region"),
     ),
     "data-regions": dict(
         model=DataRegion, serializer=serialize_data_region, usage=_region_usage,
@@ -214,6 +254,11 @@ _TYPES: dict[str, dict] = {
     "providers": dict(
         model=ProviderDef, serializer=serialize_provider, usage=_provider_usage,
         perm="manage_master_data", label="Provider", search=("code", "name", "kind"),
+    ),
+    "provider-models": dict(
+        model=ProviderModel, serializer=serialize_provider_model,
+        usage=_provider_model_usage, perm="manage_master_data",
+        label="Provider Model", search=("code", "display_name", "provider_code"),
     ),
     "languages": dict(
         model=SupportedLanguage, serializer=serialize_language, usage=_language_usage,
@@ -251,6 +296,7 @@ _NON_NEGATIVE: dict[str, set[str]] = {
         "temperature", "max_output_tokens", "response_timeout_ms", "sort_order",
     },
     "providers": {"sort_order"},
+    "provider-models": {"sort_order"},
     "languages": {"sort_order"},
     "voices": {"latency_ms", "speaking_rate", "pitch", "sort_order"},
 }
@@ -319,12 +365,23 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
             payload["currency"] = code
 
     if mtype == "countries":
-        code = str(payload.get("code") or getattr(current, "code", "")).strip()
-        if current is None and (len(code) != 2 or not code.isalpha()):
-            errors.append({
-                "field": "code",
-                "message": "Use a 2-letter ISO country code, for example IN.",
-            })
+        for field, length, example in (("iso2", 2, "IN"), ("iso3", 3, "IND")):
+            value = str(effective(field) or "").strip().upper()
+            if len(value) != length or not value.isalpha():
+                errors.append({
+                    "field": field,
+                    "message": f"Use a {length}-letter ISO country code, for example {example}.",
+                })
+            else:
+                payload[field] = value
+                duplicate = db.scalar(select(Country).where(getattr(Country, field) == value))
+                if duplicate is not None and (current is None or duplicate.id != current.id):
+                    errors.append({"field": field, "message": f"{value} is already in use."})
+
+        name = str(effective("name") or "").strip()
+        duplicate_name = db.scalar(select(Country).where(Country.name == name)) if name else None
+        if duplicate_name is not None and (current is None or duplicate_name.id != current.id):
+            errors.append({"field": "name", "message": f"{name} is already in use."})
         requested_region = str(payload.get("region") or "Asia").strip()
         if requested_region.casefold() != "asia":
             errors.append({
@@ -334,32 +391,48 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
         payload["region"] = "Asia"
 
     if mtype == "data-regions":
-        country_changed = current is None or "country_code" in payload or "country" in payload
+        country_changed = (
+            current is None
+            or "country_id" in payload
+            or "country_code" in payload  # legacy API input
+            or "country" in payload       # legacy API input
+        )
         if country_changed:
-            selected = effective("country_code") or effective("country")
+            selected_id = payload.get("country_id")
+            selected_code = payload.get("country_code")
+            selected_name = payload.get("country")
+            selected = selected_id or selected_code or selected_name
+            error_field = "countryId" if selected_id is not None or selected is None else "countryCode"
             if not selected:
                 errors.append({
-                    "field": "countryCode",
+                    "field": error_field,
                     "message": "Select a country from the country master.",
                 })
             else:
-                value = str(selected).strip()
-                country = db.scalar(
-                    select(Country).where(
-                        or_(Country.code == value.lower(), Country.name == value),
-                        Country.status == "active",
-                        Country.is_deleted.is_(False),
-                    )
-                )
+                country = None
+                if selected_id is not None:
+                    try:
+                        country_id = int(selected_id)
+                    except (TypeError, ValueError):
+                        country_id = 0
+                    country = db.get(Country, country_id) if country_id > 0 else None
+                else:
+                    value = str(selected).strip()
+                    country = db.scalar(select(Country).where(or_(
+                        func.upper(Country.iso2) == value.upper(),
+                        func.upper(Country.iso3) == value.upper(),
+                        Country.name == value,
+                    )))
+                if country is not None and (country.status != "active" or country.is_deleted):
+                    country = None
                 if country is None:
                     errors.append({
-                        "field": "countryCode",
+                        "field": error_field,
                         "message": "Select an active country from the Asia country master.",
                     })
                 else:
-                    # The client submits only the stable code. Persist canonical
-                    # display metadata so older API consumers remain compatible.
-                    payload["country_code"] = country.code
+                    # Persist the numeric FK and canonical display metadata.
+                    payload["country_id"] = country.id
                     payload["country"] = country.name
                     payload["region"] = country.region
 
@@ -397,11 +470,68 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
                     "message": f"Model '{model}' does not belong to provider '{provider}'.{detail}",
                 })
 
+    if mtype == "provider-models":
+        _validate_provider_model_payload(db, payload, effective, errors, current)
+
     if mtype == "voices":
         _validate_voice_payload(db, payload, effective, errors)
 
     if errors:
         raise ApiError("Validation failed.", 422, errors=errors)
+
+
+def _validate_provider_model_payload(db: Session, payload: dict, effective, errors: list[dict],
+                                     current) -> None:
+    """Provider-model catalog validation: the capability/provider pair must be
+    coherent and list/schema-shaped fields must be well-formed. Capability and
+    provider are immutable after creation (models never move between
+    providers — deactivate and recreate instead)."""
+    from backend.core.provider_catalog import CAPABILITIES
+
+    if current is not None:
+        for field in ("capability", "provider_code"):
+            if field in payload and payload[field] != getattr(current, field):
+                errors.append({
+                    "field": _camel(field),
+                    "message": "Cannot be changed after creation — deactivate this model "
+                               "and create a new one instead.",
+                })
+
+    capability = effective("capability")
+    provider_code = effective("provider_code")
+    if current is None:
+        if capability not in CAPABILITIES:
+            errors.append({
+                "field": "capability",
+                "message": f"Capability must be one of: {', '.join(CAPABILITIES)}.",
+            })
+        provider_row = None
+        if provider_code:
+            provider_row = db.scalar(
+                select(ProviderDef).where(
+                    ProviderDef.kind == capability,
+                    ProviderDef.code == provider_code,
+                    ProviderDef.is_deleted.is_(False),
+                )
+            )
+        if provider_row is None:
+            errors.append({
+                "field": "providerCode",
+                "message": f"'{provider_code or ''}' is not a configured {capability or ''} provider.",
+            })
+
+    for field, label in (("languages", "Languages"), ("codecs", "Codecs"),
+                         ("sample_rates", "Sample rates")):
+        if field in payload and payload[field] is not None:
+            value = payload[field]
+            if not isinstance(value, list):
+                errors.append({"field": _camel(field), "message": f"{label} must be a list."})
+    if "params_schema" in payload and payload["params_schema"] is not None:
+        if not isinstance(payload["params_schema"], dict):
+            errors.append({"field": "paramsSchema", "message": "Must be an object."})
+    if "streaming" in payload and payload["streaming"] is not None:
+        if not isinstance(payload["streaming"], bool):
+            errors.append({"field": "streaming", "message": "Must be true or false."})
 
 
 def _validate_voice_payload(db: Session, payload: dict, effective, errors: list[dict]) -> None:
@@ -534,7 +664,8 @@ def _user_names(db: Session, rows: list) -> dict[str, str]:
 def list_master(
     mtype: str,
     kind: str | None = Query(None),  # providers only
-    provider: str | None = Query(None),  # voices only
+    capability: str | None = Query(None),  # provider-models only
+    provider: str | None = Query(None),  # voices + provider-models
     gender: str | None = Query(None),  # voices only
     language: str | None = Query(None),  # voices only (locale prefix or languages[])
     status_filter: str | None = Query(None, alias="status", pattern="^(active|inactive|archived)$"),
@@ -552,6 +683,11 @@ def list_master(
         stmt = stmt.where(model.is_deleted.is_(False))
     if mtype == "providers" and kind:
         stmt = stmt.where(ProviderDef.kind == kind)
+    if mtype == "provider-models":
+        if capability:
+            stmt = stmt.where(ProviderModel.capability == capability)
+        if provider:
+            stmt = stmt.where(ProviderModel.provider_code == provider)
     if mtype == "voices":
         if provider:
             stmt = stmt.where(VoiceProfile.provider == provider)
@@ -584,6 +720,8 @@ def list_master(
     sortable = {
         "name": getattr(model, "name", None),
         "code": getattr(model, "code", None),
+        "iso2": getattr(model, "iso2", None),
+        "iso3": getattr(model, "iso3", None),
         "createdAt": model.created_at,
         "updatedAt": model.updated_at,
         "sortOrder": getattr(model, "sort_order", None),
@@ -656,8 +794,9 @@ def _apply_fields(row, payload: dict, allowed: set[str], clearable: set[str] = f
 
 
 _ID_PREFIX = {
-    "industries": "ind", "countries": "ctry", "data-regions": "dr", "plans": "pl",
-    "ai-profiles": "aip", "providers": "prov", "languages": "lang", "voices": "vp",
+    "industries": "ind", "data-regions": "dr", "plans": "pl",
+    "ai-profiles": "aip", "providers": "prov", "provider-models": "pm",
+    "languages": "lang", "voices": "vp",
 }
 
 
@@ -679,14 +818,15 @@ def create_master(
         raise ApiError("Name is required.", 422, errors=[{"field": "name", "message": "Name is required."}])
     _validate_payload(db, mtype, payload)
 
-    row = model(id=new_id(_ID_PREFIX[mtype]))
+    row = model() if mtype == "countries" else model(id=new_id(_ID_PREFIX[mtype]))
     if hasattr(model, "code"):
         code = (payload.get("code") or "").strip().replace(" ", "_")
         if mtype == "languages":
             # Locale codes keep their case (en-IN); column is 15 chars.
             if len(code) > 15:
                 raise ApiError("Language code must be at most 15 characters.", 422)
-        else:
+        elif mtype != "provider-models":
+            # Provider model codes are provider wire codes — case preserved.
             code = code.lower()
         if mtype != "voices":
             if not code:
@@ -698,20 +838,35 @@ def create_master(
                     raise ApiError("kind must be one of voice, stt, tts, llm, embedding.", 422)
                 dup_stmt = dup_stmt.where(ProviderDef.kind == p_kind)
                 row.kind = p_kind
+            if mtype == "provider-models":
+                # Uniqueness is scoped per provider+capability (validated above).
+                dup_stmt = dup_stmt.where(
+                    ProviderModel.provider_code == payload.get("provider_code"),
+                    ProviderModel.capability == payload.get("capability"),
+                )
+                row.provider_code = payload.get("provider_code")
+                row.capability = payload.get("capability")
             if db.scalar(dup_stmt) is not None:
                 raise ApiError(
                     f"A {spec['label'].lower()} with code '{code}' already exists.", 409
                 )
             row.code = code
-    row.name = name
+    if mtype == "provider-models":
+        row.display_name = name
+    else:
+        row.name = name
     _apply_fields(row, payload, _EDITABLE[mtype], _CLEARABLE.get(mtype, frozenset()))
     if hasattr(row, "created_by"):
         row.created_by = user.id
     db.add(row)
+    if mtype == "countries":
+        db.flush()  # Numeric auto-increment ID is needed by the audit record.
     record_audit(
         db, user=user, action=f"Created {spec['label'].lower()}",
-        entity_type=f"master:{mtype}", entity_id=row.id, target_label=name,
-        new_value={"name": name, "code": getattr(row, "code", None)}, request=request,
+        entity_type=f"master:{mtype}", entity_id=str(row.id), target_label=name,
+        new_value={"name": name, "code": getattr(row, "code", None),
+                   "iso2": getattr(row, "iso2", None), "iso3": getattr(row, "iso3", None)},
+        request=request,
     )
     db.commit()
     return ok(_serialize(db, mtype, row))
@@ -719,7 +874,11 @@ def create_master(
 
 def _get_row(db: Session, mtype: str, item_id: str):
     model = _spec(mtype)["model"]
-    row = db.get(model, item_id)
+    try:
+        identity = int(item_id) if mtype == "countries" else item_id
+    except ValueError:
+        identity = -1
+    row = db.get(model, identity)
     if row is None or (hasattr(row, "is_deleted") and row.is_deleted):
         raise NotFoundError(_spec(mtype)["label"])
     return row
@@ -744,13 +903,23 @@ def update_master(
         # DataRegion.country is a compatibility/display snapshot. Keep it in
         # sync with the canonical country master when a name is corrected.
         for data_region in db.scalars(
-            select(DataRegion).where(DataRegion.country_code == row.code)
+            select(DataRegion).where(DataRegion.country_id == row.id)
         ).all():
             data_region.country = row.name
-    if changed.get("is_default") and mtype in ("voices", "languages"):
-        # Exactly one platform default at a time.
+    if changed.get("is_default") and mtype in ("voices", "languages", "provider-models"):
+        # Exactly one default at a time — per provider for voices (a default
+        # Sarvam speaker and a default ElevenLabs voice coexist), per
+        # provider+capability for provider models, platform-wide for languages.
         model = spec["model"]
-        for other in db.scalars(select(model).where(model.is_default.is_(True))).all():
+        query = select(model).where(model.is_default.is_(True))
+        if mtype == "voices":
+            query = query.where(model.provider == row.provider)
+        if mtype == "provider-models":
+            query = query.where(
+                model.provider_code == row.provider_code,
+                model.capability == row.capability,
+            )
+        for other in db.scalars(query).all():
             if other.id != row.id:
                 other.is_default = False
     if hasattr(row, "updated_by"):
@@ -758,8 +927,8 @@ def update_master(
     if changed:
         record_audit(
             db, user=user, action=f"Updated {spec['label'].lower()}",
-            entity_type=f"master:{mtype}", entity_id=row.id,
-            target_label=getattr(row, "name", row.id),
+            entity_type=f"master:{mtype}", entity_id=str(row.id),
+            target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
             new_value={k: v for k, v in changed.items() if not isinstance(v, (dict, list))} or {"fields": list(changed)},
             request=request,
         )
@@ -797,12 +966,18 @@ def set_master_status(
     action = {"active": "Activated", "inactive": "Deactivated", "archived": "Archived"}[body.status]
     record_audit(
         db, user=user, action=f"{action} {spec['label'].lower()}",
-        entity_type=f"master:{mtype}", entity_id=row.id,
-        target_label=getattr(row, "name", row.id),
+        entity_type=f"master:{mtype}", entity_id=str(row.id),
+        target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
         previous_value={"status": before}, new_value={"status": body.status},
         request=request,
     )
     db.commit()
+    if mtype in ("providers", "provider-models", "voices"):
+        # Governance change: cached runtime snapshots must not keep serving a
+        # provider/model that was just deactivated.
+        from shared.bot_config import invalidate_all_bot_configs_sync
+
+        invalidate_all_bot_configs_sync()
     return ok(_serialize(db, mtype, row))
 
 
@@ -836,10 +1011,15 @@ def delete_master(
         row.status = "archived"
     record_audit(
         db, user=user, action=f"Archived {spec['label'].lower()}",
-        entity_type=f"master:{mtype}", entity_id=row.id,
-        target_label=getattr(row, "name", row.id), request=request,
+        entity_type=f"master:{mtype}", entity_id=str(row.id),
+        target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
+        request=request,
     )
     db.commit()
+    if mtype in ("providers", "provider-models", "voices"):
+        from shared.bot_config import invalidate_all_bot_configs_sync
+
+        invalidate_all_bot_configs_sync()
     return ok({"archived": True, "id": row.id})
 
 

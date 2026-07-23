@@ -1,11 +1,11 @@
 # Voice Runtime
 
 The voice runtime hosts realtime calls in a dedicated process
-(`voice_runtime/app.py`, port 8015) built on **Pipecat 1.5**. It is deliberately
+(`voice_runtime/app.py`, `VOICE_WORKER_PORT`, currently 9002) built on **Pipecat 1.5**. It is deliberately
 separate from the HTTP API: a failure inside one call is contained to that call's
 pipeline task, and the API process never blocks on audio.
 
-Run: `env/bin/uvicorn voice_runtime.app:app --port 8015`
+Run: `env/bin/python -m voice_runtime.app` (reads `VOICE_WORKER_HOST/PORT` from `.env`)
 
 ## Session issuance (trust boundary)
 

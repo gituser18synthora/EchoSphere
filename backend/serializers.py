@@ -17,6 +17,7 @@ from shared.models import (
     DataRegion,
     Industry,
     ProviderDef,
+    ProviderModel,
     ChannelConfig,
     ConversationSession,
     EntityDef,
@@ -117,20 +118,26 @@ def serialize_industry(row: Industry, *, usage: int = 0, names: dict | None = No
 def serialize_country(row: Country, *, usage: int = 0, names: dict | None = None) -> dict:
     return {
         **_master_common(row, usage=usage, names=names),
-        "code": row.code,
         "name": row.name,
+        "iso2": row.iso2,
+        "iso3": row.iso3,
         "region": row.region,
         "sortOrder": row.sort_order,
     }
 
 
 def serialize_data_region(row: DataRegion, *, usage: int = 0, names: dict | None = None) -> dict:
+    country_ref = row.country_ref
     return {
         **_master_common(row, usage=usage, names=names),
         "code": row.code,
         "name": row.name,
         "description": row.description or "",
-        "countryCode": row.country_code or "",
+        "countryId": row.country_id,
+        # Kept for older API clients; new clients use countryId.
+        "countryCode": country_ref.iso2.lower() if country_ref else "",
+        "countryIso2": country_ref.iso2 if country_ref else "",
+        "countryIso3": country_ref.iso3 if country_ref else "",
         "country": row.country or "",
         "region": row.region or "",
         "cloudProvider": row.cloud_provider or "",
@@ -182,6 +189,24 @@ def serialize_provider(row: ProviderDef, *, usage: int = 0, names: dict | None =
         "requiresApiKey": row.requires_api_key,
         "secretRef": row.secret_ref,  # reference only, never a raw key
         "config": row.config or {},
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_provider_model(row: ProviderModel, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.display_name,
+        "displayName": row.display_name,
+        "providerCode": row.provider_code,
+        "capability": row.capability,
+        "languages": row.languages or [],
+        "codecs": row.codecs or [],
+        "sampleRates": row.sample_rates or [],
+        "streaming": row.streaming,
+        "paramsSchema": row.params_schema or {},
+        "isDefault": row.is_default,
         "sortOrder": row.sort_order,
     }
 

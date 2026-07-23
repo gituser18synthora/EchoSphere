@@ -30,7 +30,7 @@ import { DataTable, type Column } from "@/components/DataTable";
 /* ---------- Generic row & field descriptors ---------- */
 
 type Row = Record<string, unknown> & {
-  id: string;
+  id: string | number;
   name?: string;
   code?: string;
   status?: string;
@@ -136,13 +136,18 @@ const SPECS: TypeSpec[] = [
   {
     mtype: "countries", label: "Countries", singular: "country",
     columns: [
-      nameCol, codeCol,
+      { key: "id", header: "ID", align: "right", sortValue: (r) => Number(r.id),
+        render: (r) => <span className="t-num">{Number(r.id)}</span> },
+      nameCol,
+      { key: "iso2", header: "ISO2", sortValue: (r) => String(r.iso2 ?? "") },
+      { key: "iso3", header: "ISO3", sortValue: (r) => String(r.iso3 ?? "") },
       { key: "region", header: "Region", render: () => <span className="tag">Asia</span> },
       usageCol, statusCol, sortOrderCol,
     ],
     fields: [
-      text("code", "ISO country code", { required: true, createOnly: true, hint: "2-letter ISO code, e.g. IN", section: "Identity" }),
       text("name", "Country name", { required: true, section: "Identity" }),
+      text("iso2", "ISO2", { required: true, createOnly: true, hint: "2-letter ISO code, e.g. IN", section: "Identity" }),
+      text("iso3", "ISO3", { required: true, createOnly: true, hint: "3-letter ISO code, e.g. IND", section: "Identity" }),
       { key: "region", label: "Region", type: "select", readOnly: true, section: "Location",
         hint: "The current rollout supports Asia only.", options: [{ value: "Asia", label: "Asia" }] },
       num("sortOrder", "Sort order", { section: "Presentation" }),
@@ -165,7 +170,7 @@ const SPECS: TypeSpec[] = [
       text("code", "Code", { required: true, createOnly: true, hint: "e.g. in-mumbai", section: "Identity" }),
       text("name", "Name", { required: true, section: "Identity" }),
       { key: "description", label: "Description", type: "textarea", section: "Identity" },
-      { key: "countryCode", label: "Country", type: "country", requiredOnCreate: true,
+      { key: "countryId", label: "Country", type: "country", requiredOnCreate: true,
         section: "Location", hint: "Loaded from the active Asia country master." },
       { key: "region", label: "Region", type: "select", readOnly: true, section: "Location",
         hint: "Auto-filled from the selected country.", options: [{ value: "Asia", label: "Asia" }] },
@@ -375,8 +380,10 @@ function buildVoiceForm(row: Row | null): Record<string, unknown> {
 type FormPatch = Record<string, unknown>;
 
 interface CountryOption {
-  code: string;
+  id: number;
   name: string;
+  iso2: string;
+  iso3: string;
   region: string;
 }
 
@@ -394,8 +401,10 @@ function useAsiaCountries(enabled: boolean) {
     }).then((result) => {
       if (!alive) return;
       setCountries(result.items.map((country) => ({
-        code: String(country.code ?? ""),
+        id: Number(country.id),
         name: String(country.name ?? ""),
+        iso2: String(country.iso2 ?? ""),
+        iso3: String(country.iso3 ?? ""),
         region: String(country.region ?? "Asia"),
       })));
       setLoading(false);
@@ -514,12 +523,14 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
     }
     if (f.type === "country") {
       const value = String(form[f.key] ?? "");
-      const known = countryCatalog.countries.some((country) => country.code === value);
+      const known = countryCatalog.countries.some((country) => String(country.id) === value);
       return (
         <select className="select" value={value} {...common}
           onChange={(e) => {
-            const selected = countryCatalog.countries.find((country) => country.code === e.target.value);
-            set(f.key, e.target.value, selected ? { region: selected.region } : {});
+            const selected = countryCatalog.countries.find(
+              (country) => String(country.id) === e.target.value,
+            );
+            set(f.key, selected?.id ?? "", selected ? { region: selected.region } : {});
           }}>
           <option value="">
             {countryCatalog.loading ? "Loading countries…"
@@ -528,7 +539,9 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
           </option>
           {value && !known && <option value={value}>{String(row?.country ?? value)} (legacy)</option>}
           {countryCatalog.countries.map((country) => (
-            <option key={country.code} value={country.code}>{country.name}</option>
+            <option key={country.id} value={country.id}>
+              {country.name} ({country.iso2} / {country.iso3})
+            </option>
           ))}
         </select>
       );
@@ -948,7 +961,7 @@ function PlanTenantsDrawer({ row, onClose }: { row: Row; onClose: () => void }) 
   const [tenants, setTenants] = useState<{ id: string; name: string; domain: string; subscriptionStatus: string; mrr: number }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    listPlanTenants(row.id).then(setTenants).catch((e) => setError(e.message));
+    listPlanTenants(String(row.id)).then(setTenants).catch((e) => setError(e.message));
   }, [row.id]);
   return (
     <Drawer open onClose={onClose} title={`Tenants on ${String(row.name ?? "plan")}`}>
@@ -1016,7 +1029,7 @@ function VoiceProviderSelect({ value, onChange, disabled, label }: {
     <select className="select" value={value} disabled={disabled} aria-label={label ?? "Voice provider"}
       onChange={(e) => onChange(e.target.value)}>
       <option value="">—</option>
-      {value && !known && <option value={value}>{value} (not in catalog)</option>}
+      {value && !known && <option value={value}>{value} (unavailable — inactive)</option>}
       {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
     </select>
   );
@@ -1159,7 +1172,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
   const doDuplicate = async (row: Row) => {
     setActionError(null);
     try {
-      await duplicatePlan(row.id);
+      await duplicatePlan(String(row.id));
       toast("Plan duplicated (created inactive)");
       void load();
     } catch (e) {
@@ -1246,7 +1259,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         loading={rows === null}
         error={error}
         onRetry={() => void load()}
-        rowKey={(r) => r.id}
+        rowKey={(r) => String(r.id)}
         empty={
           filtersActive
             ? { icon: "filter", title: `No ${spec.label.toLowerCase()} match the current filters`, body: "Adjust or clear the filters to see more results." }

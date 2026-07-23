@@ -47,8 +47,8 @@ const VOICE_ROW = {
 };
 
 const COUNTRY_ROWS = [
-  { id: "ctry_in", code: "in", name: "India", region: "Asia", status: "active", sortOrder: 0 },
-  { id: "ctry_np", code: "np", name: "Nepal", region: "Asia", status: "active", sortOrder: 1 },
+  { id: 12, iso2: "IN", iso3: "IND", name: "India", region: "Asia", status: "active", sortOrder: 0 },
+  { id: 28, iso2: "NP", iso3: "NPL", name: "Nepal", region: "Asia", status: "active", sortOrder: 1 },
 ];
 
 function installDefaultMocks() {
@@ -208,8 +208,8 @@ describe("PlatformConfig — Data Region country catalog", () => {
     const user = userEvent.setup();
     await openAddDataRegion(user);
     const country = await screen.findByLabelText("Country");
-    await waitFor(() => expect(within(country).getByRole("option", { name: "India" })).toBeInTheDocument());
-    expect(within(country).getByRole("option", { name: "Nepal" })).toBeInTheDocument();
+    await waitFor(() => expect(within(country).getByRole("option", { name: "India (IN / IND)" })).toBeInTheDocument());
+    expect(within(country).getByRole("option", { name: "Nepal (NP / NPL)" })).toBeInTheDocument();
     expect(screen.getByLabelText("Region")).toHaveValue("Asia");
     expect(screen.getByLabelText("Region")).toBeDisabled();
     expect(listMaster).toHaveBeenCalledWith("countries", expect.objectContaining({
@@ -217,17 +217,17 @@ describe("PlatformConfig — Data Region country catalog", () => {
     }));
   });
 
-  it("submits the selected country code with the canonical Asia region", async () => {
+  it("submits the selected numeric country ID with the canonical Asia region", async () => {
     const user = userEvent.setup();
     await openAddDataRegion(user);
     await user.type(screen.getByLabelText("Code"), "np-kathmandu");
     await user.type(screen.getByLabelText("Name"), "Nepal – Kathmandu");
-    await user.selectOptions(await screen.findByLabelText("Country"), ["np"]);
+    await user.selectOptions(await screen.findByLabelText("Country"), ["28"]);
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
     expect(createMaster.mock.calls[0][0]).toBe("data-regions");
     expect(createMaster.mock.calls[0][1]).toMatchObject({
-      code: "np-kathmandu", name: "Nepal – Kathmandu", countryCode: "np", region: "Asia",
+      code: "np-kathmandu", name: "Nepal – Kathmandu", countryId: 28, region: "Asia",
     });
   });
 });

@@ -219,3 +219,89 @@ class TestPermissionsAndAudit:
             "text": "x" * 501,
         })
         assert response.status_code == 422
+
+
+class TestSarvamSpeakerConsistency:
+    """bulbul:v3 speaker list consistency + validation (v2→v3 mismatch fix)."""
+
+    def test_api_speaker_list_matches_seed_catalog(self, client, tenant_admin):
+        # The frontend dropdown is fed by this endpoint, so API == seed means
+        # frontend == backend == seed — one source of truth, no duplicates.
+        from backend.seeds.provider_catalog_seed import SARVAM_SPEAKERS
+
+        voices = data(client.get(
+            f"{API}/providers/tts/sarvam/voices?model=bulbul:v3", headers=tenant_admin,
+        ))
+        assert {v["providerVoiceId"] for v in voices} == set(SARVAM_SPEAKERS)
+        # Legacy bulbul:v2-only names must be gone.
+        assert not ({"anushka", "abhilash", "manisha", "vidya", "arya", "karun",
+                     "hitesh"} & {v["providerVoiceId"] for v in voices})
+
+    def test_default_sarvam_voice_is_verified_speaker(self, client, tenant_admin):
+        voices = data(client.get(
+            f"{API}/providers/tts/sarvam/voices?model=bulbul:v3", headers=tenant_admin,
+        ))
+        defaults = [v for v in voices if v["isDefault"]]
+        assert [v["providerVoiceId"] for v in defaults] == ["shubh"]
+
+    def test_v2_speaker_on_v3_rejected_with_clear_error(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"ttsProvider": "sarvam", "ttsModel": "bulbul:v3",
+                       "ttsVoice": "anushka"},
+        }))
+        assert not result["valid"]
+        assert any("'anushka' does not belong to provider 'sarvam'" in e
+                   for e in result["errors"])
+
+    def test_bot_update_rejects_outdated_speaker(self, client, tenant_admin):
+        response = client.put(f"{API}/bots/bot-101/voice-settings", headers=tenant_admin, json={
+            "ttsProvider": "sarvam", "ttsModel": "bulbul:v3", "ttsVoice": "anushka",
+        })
+        assert response.status_code == 422
+        body = response.json()
+        assert any("anushka" in e for e in body.get("errors", []))
+
+    def test_case_and_whitespace_tolerated_in_validation(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"ttsProvider": "sarvam", "ttsModel": "bulbul:v3",
+                       "ttsVoice": "  SHUBH  "},
+        }))
+        voice_errors = [e for e in result["errors"] if "voice" in e.lower()]
+        assert voice_errors == []
+
+    def test_missing_speaker_is_allowed_but_model_required_rules_hold(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"ttsProvider": "sarvam", "ttsModel": "bulbul:v3"},
+        }))
+        # No voice given: runtime falls back to the model default explicitly.
+        voice_errors = [e for e in result["errors"] if "voice" in e.lower()]
+        assert voice_errors == []
+
+    def test_inactive_voice_rejected(self, client, tenant_admin):
+        from shared.models.bot_models import VoiceProfile
+
+        db = get_sessionmaker()()
+        vid = f"vp-test-inactive-{uuid.uuid4().hex[:8]}"
+        try:
+            db.add(VoiceProfile(
+                id=vid, name="Test Inactive", gender="male", languages=[],
+                provider="sarvam", provider_voice_id=f"ghost-{vid}",
+                model_codes=["bulbul:v3"], status="inactive",
+            ))
+            db.commit()
+            result = data(client.post(
+                f"{API}/providers/validate-config", headers=tenant_admin, json={
+                    "botId": "bot-101",
+                    "config": {"ttsProvider": "sarvam", "ttsModel": "bulbul:v3",
+                               "ttsVoice": vid},
+                }))
+            assert not result["valid"]
+            assert any(f"'{vid}' does not belong to provider 'sarvam'" in e
+                       for e in result["errors"])
+        finally:
+            db.query(VoiceProfile).filter(VoiceProfile.id == vid).delete()
+            db.commit()
+            db.close()

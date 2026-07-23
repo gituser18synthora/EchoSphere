@@ -6,7 +6,7 @@ Records are never hard-deleted while referenced — deactivate or archive instea
 """
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.models.base import (
     ID_LEN,
@@ -38,18 +38,19 @@ class Industry(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 class Country(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     """Country catalog used by regional platform configuration.
 
-    The first rollout intentionally contains Asia only. ``code`` is the
-    lowercase ISO 3166-1 alpha-2 code and is stable after creation.
+    The first rollout intentionally contains Asia only. ISO 3166-1
+    alpha-2/alpha-3 codes are stored alongside a numeric primary key.
     """
 
     __tablename__ = "countries"
 
-    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
-    code: Mapped[str] = mapped_column(String(2), unique=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
+    iso2: Mapped[str] = mapped_column(String(2), unique=True, nullable=False)
+    iso3: Mapped[str] = mapped_column(String(3), unique=True, nullable=False)
     region: Mapped[str] = mapped_column(String(50), default="Asia", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, index=True)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
 
 
 class DataRegion(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
@@ -59,12 +60,21 @@ class DataRegion(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    country_code: Mapped[str | None] = mapped_column(
-        String(2), ForeignKey("countries.code"), nullable=True, index=True
+    country_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "countries.id",
+            name="fk_data_regions_country_id",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        ),
+        nullable=True,
+        index=True,
     )
     # Denormalized display name retained for existing API/data compatibility;
     # writes are canonicalized from ``countries`` by the master-data service.
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country_ref: Mapped[Country | None] = relationship(lazy="joined")
     region: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cloud_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     storage_region: Mapped[str | None] = mapped_column(String(100), nullable=True)

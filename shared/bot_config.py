@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from sqlalchemy import select
 
 from shared.config import get_settings
-from shared.errors import NotFoundError
+from shared.errors import NotFoundError, ProviderNotAvailableError
 from shared.db.mysql import get_sessionmaker
 from shared.db.redis import get_redis
 from shared.models import (
@@ -25,6 +25,7 @@ from shared.models import (
     PhoneNumber,
     Prompt,
     ProviderDef,
+    ProviderModel,
     VoiceBot,
     VoiceBotSetting,
     VoiceProfile,
@@ -54,6 +55,54 @@ def _secret_ref_for(session, kind: str, code: str) -> str:
         )
     ).scalar_one_or_none()
     return row or f"env:{code.upper()}_API_KEY"
+
+
+def _engine_allowed(session, kind: str, provider: str, model: str | None) -> str | None:
+    """Return None when the engine is usable, else a human-readable reason.
+
+    Runtime governance mirror of backend/core/provider_catalog: the provider
+    (and model, when set) must be active and not deleted. The "mock"
+    pseudo-provider is a dev/test convenience and is refused in production.
+    """
+    if not provider:
+        return f"no {kind.upper()} provider is configured"
+    if provider == "mock":
+        if get_settings().app_env == "production":
+            return "the mock provider is not available in production"
+        return None
+    row = session.execute(
+        select(ProviderDef.id).where(
+            ProviderDef.kind == kind,
+            ProviderDef.code == provider,
+            ProviderDef.status == "active",
+            ProviderDef.is_deleted.is_(False),
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return f"{kind.upper()} provider '{provider}' is inactive under platform governance"
+    if model:
+        model_row = session.execute(
+            select(ProviderModel.id).where(
+                ProviderModel.capability == kind,
+                ProviderModel.provider_code == provider,
+                ProviderModel.code == model,
+                ProviderModel.status == "active",
+                ProviderModel.is_deleted.is_(False),
+            )
+        ).scalar_one_or_none()
+        if model_row is None:
+            return (
+                f"{kind.upper()} model '{provider}/{model}' is inactive "
+                "under platform governance"
+            )
+    return None
+
+
+def _ensure_engine_allowed(session, kind: str, provider: str, model: str | None) -> None:
+    """Fail closed when a primary engine resolves to an inactive provider/model."""
+    reason = _engine_allowed(session, kind, provider, model)
+    if reason is not None:
+        raise ProviderNotAvailableError(f"Voice engine unavailable: {reason}.")
 
 
 def _wire_voice(session, provider: str, voice: str | None) -> str:
@@ -102,6 +151,13 @@ def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
                 "params": profile.provider_settings or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
+        # Governance: a per-language engine on an inactive provider/model is
+        # dropped so the locale deterministically uses the (validated) default
+        # engine — never an inactive one, never a silent substitute provider.
+        reason = _engine_allowed(session, "tts", engine["provider"], engine["model"])
+        if reason is not None:
+            logger.warning("voice map entry '%s' skipped: %s", locale, reason)
+            continue
         mapping[locale] = engine
     return mapping
 
@@ -177,6 +233,29 @@ def invalidate_bot_config_sync(tenant_id: str, bot_id: str) -> None:
         client.close()
     except Exception:  # noqa: BLE001
         logger.warning("bot config cache invalidation failed for %s/%s", tenant_id, bot_id)
+
+
+def invalidate_all_bot_configs_sync() -> None:
+    """Drop every cached bot-config snapshot.
+
+    Used when platform-level governance changes provider/model availability —
+    a deactivation must reach runtime resolution immediately, not after the
+    cache TTL. Best-effort: the 300s TTL bounds staleness if Redis is down.
+    """
+    import redis as redis_sync
+
+    try:
+        client = redis_sync.from_url(get_settings().redis_url)
+        cursor = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match="botcfg:*", count=500)
+            if keys:
+                client.delete(*keys)
+            if cursor == 0:
+                break
+        client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("platform-wide bot config cache flush failed")
 
 
 def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig:
@@ -276,9 +355,20 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         tts_provider = (vbs.tts_provider if vbs and vbs.tts_provider else settings.tts_provider)
         llm_provider = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
 
+        # Governance enforcement: live calls must never run on a provider or
+        # model that is inactive in the platform catalog. Primary engines fail
+        # closed (the session ends with a configuration error instead of
+        # silently substituting another provider).
+        stt_model = (vbs.stt_model if vbs and vbs.stt_model else settings.stt_model)
+        tts_model = (vbs.tts_model if vbs and vbs.tts_model else settings.tts_model)
+        llm_model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)
+        _ensure_engine_allowed(session, "stt", stt_provider, stt_model)
+        _ensure_engine_allowed(session, "tts", tts_provider, tts_model)
+        _ensure_engine_allowed(session, "llm", llm_provider, llm_model)
+
         tts_engine = {
             "provider": tts_provider,
-            "model": (vbs.tts_model if vbs and vbs.tts_model else settings.tts_model),
+            "model": tts_model,
             "voice": _wire_voice(
                 session,
                 tts_provider,
@@ -290,12 +380,19 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         tts_engine["language_map"] = _normalize_voice_map(session, vbs, tts_engine)
         fallback = None
         if vbs is not None and vbs.fallback_provider:
-            fallback = {
-                "provider": vbs.fallback_provider,
-                "model": vbs.fallback_model or "",
-                "voice": _wire_voice(session, vbs.fallback_provider, vbs.fallback_voice),
-                "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
-            }
+            # Governance: an inactive fallback engine is dropped (fallback
+            # disabled) rather than failing the call — the primary engine is
+            # already validated above, so behavior stays deterministic.
+            reason = _engine_allowed(session, "tts", vbs.fallback_provider, vbs.fallback_model)
+            if reason is not None:
+                logger.warning("fallback TTS engine skipped for bot %s: %s", bot_id, reason)
+            else:
+                fallback = {
+                    "provider": vbs.fallback_provider,
+                    "model": vbs.fallback_model or "",
+                    "voice": _wire_voice(session, vbs.fallback_provider, vbs.fallback_voice),
+                    "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
+                }
         tts_engine["fallback"] = fallback
 
         audio_settings = {
@@ -316,7 +413,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             system_prompt=system_prompt,
             stt={
                 "provider": stt_provider,
-                "model": (vbs.stt_model if vbs and vbs.stt_model else settings.stt_model),
+                "model": stt_model,
                 "language": (vbs.stt_language if vbs else None) or "",
                 "settings": (vbs.stt_settings if vbs else None) or {},
                 "api_key_reference": _secret_ref_for(session, "stt", stt_provider),
@@ -324,7 +421,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             tts=tts_engine,
             llm={
                 "provider": llm_provider,
-                "model": (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model),
+                "model": llm_model,
                 "settings": (vbs.llm_settings if vbs else None) or {},
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
             },

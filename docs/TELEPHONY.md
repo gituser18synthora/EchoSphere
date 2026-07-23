@@ -102,7 +102,7 @@ Two integration surfaces (`voice_runtime/freeswitch.py`):
 - **Control**: `ESLClient`, a minimal asyncio Event Socket Layer client (inbound
   mode) implementing `transfer` (`uuid_transfer`), `hangup` (`uuid_kill`),
   `api`, and `health_check`. Configuration: `FREESWITCH_HOST` (default 127.0.0.1),
-  `FREESWITCH_PORT` (default 8021), `FREESWITCH_PASSWORD_REFERENCE`
+  `FREESWITCH_PORT` (default 9004), `FREESWITCH_PASSWORD_REFERENCE`
   (`env:FREESWITCH_PASSWORD`). Every operation **fails loudly** when unconfigured or
   rejected (`ProviderError`) — nothing fakes success.
 

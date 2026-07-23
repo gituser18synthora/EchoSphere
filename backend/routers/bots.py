@@ -435,8 +435,16 @@ def update_voice_settings(
         db.add(s)
     before = _serialize_voice_settings(s)
     if body.voice_id is not None:
-        if body.voice_id and db.get(VoiceProfile, body.voice_id) is None:
-            raise ApiError("Unknown voice profile.", 422)
+        if body.voice_id:
+            profile = db.get(VoiceProfile, body.voice_id)
+            if profile is None or profile.is_deleted:
+                raise ApiError("Unknown voice profile.", 422)
+            if profile.status != "active":
+                raise ApiError(
+                    f"Voice '{profile.name}' is inactive and cannot be selected.", 422,
+                    errors=[{"field": "voiceId",
+                             "message": f"Voice '{profile.name}' is inactive and cannot be selected."}],
+                )
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
 

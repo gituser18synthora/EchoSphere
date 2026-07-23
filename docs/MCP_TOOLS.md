@@ -4,14 +4,13 @@
 Model Context Protocol (streamable HTTP, endpoint `/mcp`). It is a thin, hardened
 facade over the same `KnowledgeService` the REST API and voice runtime use.
 
-Run (either form):
+Run:
 
 ```bash
-env/bin/uvicorn backend.mcp_server.server:app --port 8020
 env/bin/python -m backend.mcp_server.server        # honors MCP_HOST/MCP_PORT; refuses to start if MCP_ENABLED=false
 ```
 
-Health: `GET http://localhost:8020/health` (reports Postgres/pgvector status,
+Health: `GET http://localhost:9003/health` (reports Postgres/pgvector status,
 no auth required).
 
 > The voice runtime does **not** go through this server — `ConversationBrain` calls
@@ -88,13 +87,13 @@ document's KB; deleted or non-`active` chunks are excluded.
 Any streamable-HTTP MCP client works. Example (Claude Code):
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+TOKEN=$(curl -s -X POST http://localhost:9001/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"priya.sharma@meridianhealth.com","password":"Demo@2026!"}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 
 claude mcp add --transport http echosphere-knowledge \
-  http://localhost:8020/mcp --header "Authorization: Bearer $TOKEN"
+  http://localhost:9003/mcp --header "Authorization: Bearer $TOKEN"
 ```
 
 Note that platform JWTs expire (`ACCESS_TOKEN_EXPIRE_MINUTES`, default 720), so

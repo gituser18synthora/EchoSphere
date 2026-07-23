@@ -5,7 +5,7 @@ Multi-tenant VoiceBot platform: React 18 + TypeScript frontend, FastAPI backend,
 (knowledge plane: documents, chunks, embeddings), **MongoDB** (conversation
 transcripts via Motor) and **Redis** (sessions, caches). The realtime voice
 engine is built on Pipecat and is a **separate service** (`voice_runtime/`,
-its own uvicorn process on port 8015); the legacy `VoiceBot/` folder has been
+its own Uvicorn process on `VOICE_WORKER_PORT` (currently 9002)); the legacy `VoiceBot/` folder has been
 removed (see [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md)).
 
 ## Architecture
@@ -16,8 +16,8 @@ is strictly `backend → shared ← voice_runtime` — the services never import
 each other.
 
 ```
-backend/                 Control-plane platform API (port 8000)
-  main.py                FastAPI app — run: uvicorn backend.main:app
+backend/                 Control-plane platform API (API_PORT, currently 9001)
+  main.py                FastAPI app — run: python -m backend.main
   routers/               REST API (/api/v1/…) — auth, RBAC, tenants, bots,
                          knowledge mgmt, prompts, intents, admin, voice-session
                          issuance, telephony webhooks
@@ -25,14 +25,14 @@ backend/                 Control-plane platform API (port 8000)
                          responses, pagination, safe_http (SSRF guard), softdelete
   serializers.py         API response shaping
   telephony/             Inbound-webhook signature verification + replay guard
-  mcp_server/            Tenant-scoped MCP knowledge tools (port 8020)
+  mcp_server/            Tenant-scoped MCP knowledge tools (MCP_PORT, currently 9003)
   workers/ingestion.py   Document-ingestion worker (embedded in API by default)
   seeds/                 base_seed (mandatory, idempotent) + demo_seed (opt-in)
   alembic/ alembic_pg/   MySQL and PostgreSQL migrations
   cli.py                 migrate / pg-migrate / seed
 
-voice_runtime/           Realtime voice worker (port 8015)
-  app.py                 FastAPI app — run: uvicorn voice_runtime.app:app
+voice_runtime/           Realtime voice worker (VOICE_WORKER_PORT, currently 9002)
+  app.py                 FastAPI app — run: python -m voice_runtime.app
                          WS endpoints /ws/voice/{session} + /ws/telephony/…
   pipeline.py            Pipecat pipeline: VAD → turn control → STT → brain → TTS
   brain.py               ConversationBrain: routing, RAG, streaming, barge-in
@@ -73,11 +73,11 @@ docs/                    Architecture & operations documentation (see below)
 
 ## Voice runtime & knowledge plane
 
-- **Realtime calls** run in a dedicated service (`voice_runtime/`, port 8015)
+- **Realtime calls** run in a dedicated service (`voice_runtime/`, port 9002)
   on a Pipecat pipeline: Silero VAD → turn control → STT → ConversationBrain →
   TTS, with barge-in cancellation, per-bot provider selection and pinned
   published-config snapshots. Browser test calls use
-  `ws://…:8015/ws/voice/{session_id}`; telephony media streams
+  `ws://…:9002/ws/voice/{session_id}`; telephony media streams
   (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH) use
   `/ws/telephony/{provider}/{session_id}`. Sessions are issued **only** by the
   API (`POST /api/v1/voice-sessions` or a signed telephony webhook), which
@@ -94,17 +94,17 @@ docs/                    Architecture & operations documentation (see below)
 - **Workflows**: stateful multi-step flows (e.g. appointment booking) run on
   LangGraph with PostgreSQL checkpoints; audio never touches LangGraph.
 - **MCP**: external agents can query tenant-scoped knowledge over streamable-HTTP
-  MCP (port 8020) with platform JWTs, rate limiting and audit logging.
+  MCP (port 9003) with platform JWTs, rate limiting and audit logging.
 
 ## Services
 
 | Service | Port | Command |
 |---|---|---|
-| Platform API | 8000 | `env/bin/uvicorn backend.main:app --port 8000` |
-| Voice worker | 8015 | `env/bin/uvicorn voice_runtime.app:app --port 8015` |
+| Platform API | `API_PORT` (9001) | `env/bin/python -m backend.main` |
+| Voice worker | `VOICE_WORKER_PORT` (9002) | `env/bin/python -m voice_runtime.app` |
 | Ingestion worker | — | `env/bin/python -m backend.workers.ingestion` |
-| MCP server | 8020 | `env/bin/uvicorn backend.mcp_server.server:app --port 8020` |
-| Frontend (dev) | 5199 | `npm run dev` (proxies `/api` → 8000) |
+| MCP server | `MCP_PORT` (9003) | `env/bin/python -m backend.mcp_server.server` |
+| Frontend (dev) | `FRONTEND_PORT` (5199) | `npm run dev` (proxies `/api` → `API_PORT`) |
 
 API docs: `/api/docs` · liveness: `/api/health` · readiness: `/api/health/ready`
 (checks MySQL, PostgreSQL+pgvector, Redis, MongoDB).
@@ -141,10 +141,10 @@ env/bin/python -m backend.cli seed           # idempotent base records
 env/bin/python -m backend.cli seed --demo    # optional: dev demo dataset
 
 # 7. Run (each in its own shell — see the Services table above)
-env/bin/uvicorn backend.main:app --port 8000 --reload
-env/bin/uvicorn voice_runtime.app:app --port 8015
+env/bin/python -m backend.main
+env/bin/python -m voice_runtime.app
 env/bin/python -m backend.workers.ingestion
-env/bin/uvicorn backend.mcp_server.server:app --port 8020   # optional
+env/bin/python -m backend.mcp_server.server                 # optional
 npm install && npm run dev                   # frontend → http://localhost:5199
 ```
 

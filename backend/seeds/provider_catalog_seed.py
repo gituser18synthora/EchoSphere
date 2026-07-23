@@ -19,7 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.ids import new_id
-from shared.models import ProviderModel, VoiceProfile
+from shared.models import (
+    AiConfigProfile,
+    ApprovedModel,
+    ProviderDef,
+    ProviderModel,
+    VoiceProfile,
+)
 
 # ── Parameter schemas ────────────────────────────────────────────────────────
 # {"field": {"type": number|integer|boolean|enum|string|int_list,
@@ -256,13 +262,14 @@ PROVIDER_MODELS = [
     ("mock", "tts", "mock", "Mock TTS", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # OpenAI Whisper — REST/segmented (non-streaming), language auto-detect.
+    # Inactive under platform governance: STT is Sarvam-only.
     ("openai", "stt", "whisper-1", "Whisper (whisper-1)",
-     [], ["linear16"], [8000, 16000, 24000], False, {}, True, "active", 0),
-    # OpenAI TTS — REST synthesis used by the openai TTS adapter.
+     [], ["linear16"], [8000, 16000, 24000], False, {}, True, "inactive", 0),
+    # OpenAI TTS — inactive under platform governance: TTS is Sarvam/ElevenLabs.
     ("openai", "tts", "tts-1", "TTS-1", [], ["linear16"], [24000], False,
-     {}, True, "active", 0),
+     {}, True, "inactive", 0),
     ("openai", "tts", "tts-1-hd", "TTS-1 HD", [], ["linear16"], [24000], False,
-     {}, False, "active", 1),
+     {}, False, "inactive", 1),
     # ── LLM ──────────────────────────────────────────────────────────────
     ("openai", "llm", "gpt-4o-mini", "GPT-4o mini", [], None, None, True,
      _OPENAI_LLM_SCHEMA, True, "active", 0),
@@ -305,6 +312,10 @@ ELEVENLABS_VOICES = [
 
 # Sarvam bulbul:v3 speakers — wire codes are lowercase; display names Title case.
 # Gender labels are catalog data (editable in master data), best-effort here.
+# All 37 verified against the live Sarvam API (2026-07-23): every speaker
+# returned valid audio for en-IN and hi-IN with bulbul:v3. "niharika" appears
+# in Sarvam's own compatibility error message but is rejected with
+# "Speaker 'niharika' is not recognized" — do not add it without re-testing.
 _SARVAM_FEMALE = {
     "ritu", "priya", "neha", "pooja", "simran", "kavya", "ishita", "shreya",
     "roopa", "tanya", "shruti", "suhani", "kavitha", "rupali",
@@ -376,3 +387,182 @@ def seed_provider_catalog(db: Session) -> dict:
             created["provider_voices"] += 1
 
     return created
+
+
+# ── AI Governance: required active provider matrix ───────────────────────────
+# The database stays the source of truth for availability; this reconciliation
+# converges any database (fresh or long-lived) to the governed matrix without
+# deleting rows, changing IDs or touching operator-maintained metadata.
+#
+# "mock" is a dev/test pseudo-provider: it keeps its status here and is
+# excluded from production by the catalog layer (backend/core/provider_catalog).
+
+ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
+    "llm": {"openai"},
+    "embedding": {"openai"},
+    "stt": {"sarvam"},
+    "tts": {"sarvam", "elevenlabs"},
+    # Voice catalogs follow their TTS vendor's governance.
+    "voice": {"platform", "elevenlabs"},
+}
+
+_DEV_PSEUDO_PROVIDERS = {"mock"}
+
+# Approved-model registry vendors allowed on the AI Governance page.
+_ALLOWED_REGISTRY_VENDORS = {"openai", "sarvam", "elevenlabs"}
+
+# Platform-seeded AI profiles are re-pointed inside the matrix when they
+# reference a now-inactive provider. Operator-created profiles are left
+# untouched — the UI/API surface those as "inactive selection" instead.
+_SEEDED_PROFILE_CODES = {
+    "low_cost", "balanced", "high_accuracy", "low_latency", "enterprise", "custom",
+}
+_PROFILE_REMAP: dict[str, tuple[str, str]] = {
+    "stt": ("sarvam", "saaras:v3"),
+    "tts": ("sarvam", "bulbul:v3"),
+    "llm": ("openai", "gpt-4o-mini"),
+    "embedding": ("openai", "text-embedding-3-small"),
+}
+_REMAPPED_DEFAULT_VOICE = "vp-sv-shubh"
+
+
+def reconcile_provider_governance(db: Session) -> dict:
+    """Idempotent convergence of provider/model activation to the matrix.
+
+    Audits every change with the System actor. Bot/tenant configurations are
+    never rewritten here — save-path validation and runtime enforcement handle
+    references to providers this pass deactivates.
+    """
+    from backend.core.audit import record_audit
+
+    changed = {
+        "providers_activated": 0, "providers_deactivated": 0,
+        "provider_models_deactivated": 0, "ai_profiles_reconciled": 0,
+        "approved_models_deprecated": 0,
+    }
+
+    def _set_status(row, new_status: str, *, entity_type: str, label: str, action: str):
+        before = row.status
+        row.status = new_status
+        record_audit(
+            db, user=None, action=action, entity_type=entity_type,
+            entity_id=str(row.id), target_label=label,
+            previous_value={"status": before}, new_value={"status": new_status},
+        )
+
+    from shared.config import get_settings
+
+    # The mock pseudo-provider backs the credential-free dev/test harness: it
+    # converges to active outside production and inactive in production. The
+    # catalog and runtime layers additionally refuse mock in production
+    # regardless of status (defense in depth).
+    mock_target = "inactive" if get_settings().app_env == "production" else "active"
+
+    providers = db.scalars(
+        select(ProviderDef).where(ProviderDef.is_deleted.is_(False))
+    ).all()
+    for provider in providers:
+        allowed = ALLOWED_ACTIVE_PROVIDERS.get(provider.kind)
+        if allowed is None:
+            continue
+        label = f"{provider.name} ({provider.kind})"
+        if provider.code in _DEV_PSEUDO_PROVIDERS:
+            target = mock_target
+        else:
+            target = "active" if provider.code in allowed else "inactive"
+        if target == "active" and provider.status != "active":
+            _set_status(provider, "active", entity_type="master:providers",
+                        label=label, action="Activated provider (governance)")
+            changed["providers_activated"] += 1
+        elif target == "inactive" and provider.status == "active":
+            _set_status(provider, "inactive", entity_type="master:providers",
+                        label=label, action="Deactivated provider (governance)")
+            changed["providers_deactivated"] += 1
+
+    models = db.scalars(
+        select(ProviderModel).where(ProviderModel.is_deleted.is_(False))
+    ).all()
+    for model in models:
+        allowed = ALLOWED_ACTIVE_PROVIDERS.get(model.capability)
+        if allowed is None or model.provider_code in _DEV_PSEUDO_PROVIDERS:
+            continue
+        # Models of allowed providers keep their operator-managed status;
+        # models of disallowed providers must never stay active.
+        if model.provider_code not in allowed and model.status == "active":
+            _set_status(
+                model, "inactive", entity_type="master:provider-models",
+                label=f"{model.provider_code}/{model.code} ({model.capability})",
+                action="Deactivated provider model (governance)",
+            )
+            changed["provider_models_deactivated"] += 1
+
+    profiles = db.scalars(
+        select(AiConfigProfile).where(
+            AiConfigProfile.is_deleted.is_(False),
+            AiConfigProfile.code.in_(sorted(_SEEDED_PROFILE_CODES)),
+        )
+    ).all()
+    for profile in profiles:
+        before: dict = {}
+        after: dict = {}
+        for capability, (target_provider, target_model) in _PROFILE_REMAP.items():
+            provider_field = f"{capability}_provider"
+            model_field = f"{capability}_model"
+            current = getattr(profile, provider_field)
+            if not current or current in ALLOWED_ACTIVE_PROVIDERS[capability]:
+                continue
+            before[provider_field] = current
+            before[model_field] = getattr(profile, model_field)
+            setattr(profile, provider_field, target_provider)
+            setattr(profile, model_field, target_model)
+            after[provider_field] = target_provider
+            after[model_field] = target_model
+            if capability == "tts":
+                before["default_voice"] = profile.default_voice
+                profile.default_voice = _REMAPPED_DEFAULT_VOICE
+                after["default_voice"] = _REMAPPED_DEFAULT_VOICE
+            if capability == "embedding":
+                profile.embedding_dimension = 1536
+        fallbacks = profile.fallback_providers or []
+        kept = [
+            entry for entry in fallbacks
+            if isinstance(entry, dict) and all(
+                entry.get(f"{cap}_provider") in (None, *ALLOWED_ACTIVE_PROVIDERS[cap])
+                for cap in _PROFILE_REMAP
+            )
+        ]
+        if kept != fallbacks:
+            before["fallback_providers"] = fallbacks
+            after["fallback_providers"] = kept
+            profile.fallback_providers = kept
+        if after:
+            record_audit(
+                db, user=None, action="Reconciled AI configuration profile (governance)",
+                entity_type="master:ai-profiles", entity_id=profile.id,
+                target_label=profile.name, previous_value=before, new_value=after,
+            )
+            changed["ai_profiles_reconciled"] += 1
+
+    registry_rows = db.scalars(
+        select(ApprovedModel).where(ApprovedModel.is_deleted.is_(False))
+    ).all()
+    for row in registry_rows:
+        vendor = (row.provider or "").strip().lower()
+        if vendor not in _ALLOWED_REGISTRY_VENDORS and row.status != "deprecated":
+            previous = row.status
+            row.status = "deprecated"
+            record_audit(
+                db, user=None, action="Deprecated model (governance)",
+                entity_type="approved_model", entity_id=row.id,
+                target_label=f"{row.name} · {row.purpose}",
+                previous_value={"status": previous}, new_value={"status": "deprecated"},
+            )
+            changed["approved_models_deprecated"] += 1
+
+    if any(changed.values()):
+        # Deactivations must reach live call resolution promptly — drop every
+        # cached bot config snapshot (best-effort; TTL caps staleness anyway).
+        from shared.bot_config import invalidate_all_bot_configs_sync
+
+        invalidate_all_bot_configs_sync()
+    return changed

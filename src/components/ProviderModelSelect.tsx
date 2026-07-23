@@ -114,7 +114,10 @@ export function ProviderSelect({ capability, value, onChange, disabled, label }:
       onChange={(e) => onChange(e.target.value)}
     >
       <option value="">{loading ? "Loading providers…" : "—"}</option>
-      {value && !loading && !known && <option value={value}>{value} (not in catalog)</option>}
+      {/* Keep an inactive/removed saved value visible in edit mode with a
+          warning; it is never offered as a normal option and the backend
+          rejects it on save. */}
+      {value && !loading && !known && <option value={value}>{value} (unavailable — inactive)</option>}
       {(providers ?? []).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
       {error && <option value="" disabled>Failed to load providers</option>}
     </select>
@@ -149,8 +152,9 @@ export function ModelSelect({ capability, provider, value, onChange, disabled, l
           : empty ? "No models configured for this provider"
           : "—"}
       </option>
-      {/* Keep a legacy saved value visible in edit mode; the backend decides validity. */}
-      {value && provider && !loading && !known && <option value={value}>{value} (not in catalog)</option>}
+      {/* Keep an inactive/removed saved value visible in edit mode with a
+          warning; the backend rejects it on save. */}
+      {value && provider && !loading && !known && <option value={value}>{value} (unavailable — inactive)</option>}
       {(models ?? []).map((m) => (
         <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " · default" : ""}</option>
       ))}

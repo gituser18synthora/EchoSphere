@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "EchoSphere"
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 9001
+    frontend_port: int = 5199
     cors_origins: str = "http://localhost:5199"
 
     jwt_secret: str = ""
@@ -106,13 +107,15 @@ class Settings(BaseSettings):
     ingestion_worker_embedded: bool = True
 
     # ── Providers (platform defaults; tenant/bot overrides in DB) ─
-    stt_provider: str = "openai"
-    stt_api_key_reference: str = "env:OPENAI_API_KEY"
-    stt_model: str = "whisper-1"
-    tts_provider: str = "openai"
-    tts_api_key_reference: str = "env:OPENAI_API_KEY"
-    tts_model: str = "tts-1"
-    tts_voice: str = "alloy"
+    # Defaults must stay inside the governed provider matrix:
+    # STT=Sarvam, TTS=Sarvam/ElevenLabs, LLM=OpenAI, Embedding=OpenAI.
+    stt_provider: str = "sarvam"
+    stt_api_key_reference: str = "env:SARVAM_API_KEY"
+    stt_model: str = "saaras:v3"
+    tts_provider: str = "sarvam"
+    tts_api_key_reference: str = "env:SARVAM_API_KEY"
+    tts_model: str = "bulbul:v3"
+    tts_voice: str = "shubh"
     llm_provider: str = "openai"
     llm_api_key_reference: str = "env:OPENAI_API_KEY"
     llm_model: str = "gpt-4o-mini"
@@ -127,11 +130,11 @@ class Settings(BaseSettings):
     # ── MCP server ───────────────────────────────────────────────
     mcp_enabled: bool = True
     mcp_host: str = "0.0.0.0"
-    mcp_port: int = 8020
+    mcp_port: int = 9003
 
     # ── Voice runtime ────────────────────────────────────────────
     voice_worker_host: str = "0.0.0.0"
-    voice_worker_port: int = 8015
+    voice_worker_port: int = 9002
     voice_worker_concurrency: int = 20
     voice_session_timeout: int = 900
     max_call_duration: int = 3600
@@ -139,7 +142,7 @@ class Settings(BaseSettings):
 
     # ── Telephony ────────────────────────────────────────────────
     freeswitch_host: str = "127.0.0.1"
-    freeswitch_port: int = 8021
+    freeswitch_port: int = 9004
     freeswitch_password_reference: str = "env:FREESWITCH_PASSWORD"
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
 

@@ -75,16 +75,16 @@ env/bin/python -m backend.cli seed --demo   # optional demo dataset + logins
 ### 1.6 Run the services
 
 ```bash
-env/bin/uvicorn backend.main:app --port 8000               # Platform API
-env/bin/uvicorn voice_runtime.app:app --port 8015          # Voice runtime (WS)
+env/bin/python -m backend.main                             # Platform API (API_PORT)
+env/bin/python -m voice_runtime.app                        # Voice runtime (VOICE_WORKER_PORT)
 env/bin/python -m backend.workers.ingestion                # Ingestion worker (optional; embedded in API by default)
-env/bin/uvicorn backend.mcp_server.server:app --port 8020  # MCP server (optional)
+env/bin/python -m backend.mcp_server.server                # MCP server (optional; MCP_PORT)
 npm run dev                                                # Frontend → http://localhost:5199
 ```
 
-Verify: `curl -s localhost:8000/api/health/ready` — all four checks (`mysql`,
+Verify: `curl -s localhost:9001/api/health/ready` — all four checks (`mysql`,
 `postgres`, `redis`, `mongodb`) must report `ok: true`. Voice worker:
-`curl -s localhost:8015/health`; MCP: `curl -s localhost:8020/health`.
+`curl -s localhost:9002/health`; MCP: `curl -s localhost:9003/health`.
 
 ### 1.7 Scaling voice workers
 
@@ -93,9 +93,9 @@ Redis (`voice:session:{id}`, `botcfg:*`), MongoDB and MySQL — so capacity is
 added by running more worker processes:
 
 ```bash
-env/bin/uvicorn voice_runtime.app:app --port 8015
-env/bin/uvicorn voice_runtime.app:app --port 8016
-env/bin/uvicorn voice_runtime.app:app --port 8017
+env/bin/python -m voice_runtime.app
+VOICE_WORKER_PORT=9012 env/bin/python -m voice_runtime.app
+VOICE_WORKER_PORT=9013 env/bin/python -m voice_runtime.app
 ```
 
 - Each process serves up to `VOICE_WORKER_CONCURRENCY` simultaneous calls
@@ -122,12 +122,12 @@ env/bin/uvicorn voice_runtime.app:app --port 8017
 ### 2.1 Login and create a knowledge source
 
 ```bash
-TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login \
+TOKEN=$(curl -s -X POST localhost:9001/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"priya.sharma@meridianhealth.com","password":"Demo@2026!"}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 
-KB=$(curl -s -X POST localhost:8000/api/v1/knowledge \
+KB=$(curl -s -X POST localhost:9001/api/v1/knowledge \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"Docs smoke test","type":"document","scope":"tenant"}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["id"])')
@@ -136,7 +136,7 @@ KB=$(curl -s -X POST localhost:8000/api/v1/knowledge \
 ### 2.2 Upload a document
 
 ```bash
-curl -s -X POST "localhost:8000/api/v1/knowledge/$KB/documents" \
+curl -s -X POST "localhost:9001/api/v1/knowledge/$KB/documents" \
   -H "Authorization: Bearer $TOKEN" \
   -F "file=@/path/to/handbook.pdf"
 # → {"success": true, "data": {"documentId": "...", "jobId": "...", "status": "pending"}}
@@ -145,7 +145,7 @@ curl -s -X POST "localhost:8000/api/v1/knowledge/$KB/documents" \
 Watch ingestion (requires the ingestion worker to be running):
 
 ```bash
-curl -s "localhost:8000/api/v1/knowledge/documents/<documentId>/status" \
+curl -s "localhost:9001/api/v1/knowledge/documents/<documentId>/status" \
   -H "Authorization: Bearer $TOKEN"
 # stage: parsing → chunking → embedding → storing → verifying; status → ready
 ```
@@ -153,7 +153,7 @@ curl -s "localhost:8000/api/v1/knowledge/documents/<documentId>/status" \
 ### 2.3 Retrieval test
 
 ```bash
-curl -s -X POST localhost:8000/api/v1/knowledge/search-test \
+curl -s -X POST localhost:9001/api/v1/knowledge/search-test \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"query\":\"what is the refund policy\",\"kbIds\":[\"$KB\"],\"topK\":5}"
 # → answerable/confidence + sources[] with page numbers and scores
@@ -162,7 +162,7 @@ curl -s -X POST localhost:8000/api/v1/knowledge/search-test \
 ### 2.4 MCP
 
 See [MCP_TOOLS.md](MCP_TOOLS.md#client-configuration-example) for connecting an
-MCP client to `http://localhost:8020/mcp` with the same bearer token.
+MCP client to `http://localhost:9003/mcp` with the same bearer token.
 
 ### 2.5 Browser voice test
 
@@ -170,7 +170,7 @@ MCP client to `http://localhost:8020/mcp` with the same bearer token.
 2. Open **Studio** for a bot → **Testing** tab → switch to **Voice** mode.
 3. Grant microphone access; the page creates a session via
    `POST /api/v1/voice-sessions` and connects to
-   `ws://localhost:8015/ws/voice/{sessionId}`. Live transcripts and bot events
+   `ws://localhost:9002/ws/voice/{sessionId}`. Live transcripts and bot events
    render from the JSON side-channel; `mock` providers work without any keys.
 
 ## 3. docker-compose sketch
@@ -217,28 +217,28 @@ services:
 
   api:
     build: .            # python:3.12 base; pip install -r requirements.txt
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    command: python -m backend.main
     env_file: .env
     environment: &svc_env { MYSQL_HOST: mysql, POSTGRES_HOST: postgres,
       REDIS_URL: "redis://redis:6379", MONGODB_URI: "mongodb://mongo:27017" }
-    ports: ["8000:8000"]
+    ports: ["${API_PORT:-9001}:${API_PORT:-9001}"]
     volumes: [knowledge_files:/app/storage/knowledge]
     depends_on:
       { mysql: { condition: service_healthy }, postgres: { condition: service_healthy },
         redis: { condition: service_healthy }, mongo: { condition: service_healthy } }
     healthcheck:
-      { test: ["CMD-SHELL", "curl -fs http://localhost:8000/api/health"],
+      { test: ["CMD-SHELL", "curl -fs http://localhost:$${API_PORT:-9001}/api/health"],
         interval: 15s, retries: 5 }
 
   voice-worker:
     build: .
-    command: uvicorn voice_runtime.app:app --host 0.0.0.0 --port 8015
+    command: python -m voice_runtime.app
     env_file: .env
     environment: *svc_env
-    ports: ["8015:8015"]
+    ports: ["${VOICE_WORKER_PORT:-9002}:${VOICE_WORKER_PORT:-9002}"]
     depends_on: [api]
     healthcheck:
-      { test: ["CMD-SHELL", "curl -fs http://localhost:8015/health"],
+      { test: ["CMD-SHELL", "curl -fs http://localhost:$${VOICE_WORKER_PORT:-9002}/health"],
         interval: 15s, retries: 5 }
 
   ingestion-worker:
@@ -251,13 +251,13 @@ services:
 
   mcp:
     build: .
-    command: uvicorn backend.mcp_server.server:app --host 0.0.0.0 --port 8020
+    command: python -m backend.mcp_server.server
     env_file: .env
     environment: *svc_env
-    ports: ["8020:8020"]
+    ports: ["${MCP_PORT:-9003}:${MCP_PORT:-9003}"]
     depends_on: [api]
     healthcheck:
-      { test: ["CMD-SHELL", "curl -fs http://localhost:8020/health"],
+      { test: ["CMD-SHELL", "curl -fs http://localhost:$${MCP_PORT:-9003}/health"],
         interval: 15s, retries: 5 }
 
   frontend:
@@ -265,7 +265,7 @@ services:
     working_dir: /app
     command: sh -c "npm ci && npm run dev -- --host"
     volumes: [".:/app"]
-    ports: ["5199:5199"]
+    ports: ["${FRONTEND_PORT:-5199}:${FRONTEND_PORT:-5199}"]
 
 volumes:
   { mysql_data: {}, pg_data: {}, redis_data: {}, mongo_data: {}, knowledge_files: {} }
@@ -278,18 +278,18 @@ backend.cli migrate` (then `pg-migrate` and `seed` the same way).
 
 - Media: a dialplan attaches `mod_audio_fork` to
   `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` (raw L16 @ 8 kHz).
-- Call control: enable `mod_event_socket` (default `127.0.0.1:8021`), set its
+- Call control: enable `mod_event_socket` at `127.0.0.1:9004`, set its
   password, configure `FREESWITCH_HOST`/`FREESWITCH_PORT` and
   `FREESWITCH_PASSWORD` (via `FREESWITCH_PASSWORD_REFERENCE=env:FREESWITCH_PASSWORD`).
 - On separate hosts, change the event socket `listen-ip` from loopback and firewall
-  port 8021 — ESL is plaintext. All ESL operations fail loudly when unconfigured
+  port 9004 — ESL is plaintext. All ESL operations fail loudly when unconfigured
   (`voice_runtime/freeswitch.py`).
 
 ## 5. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Port already in use / stale uvicorn | Kill by port, not by pattern: `fuser -k 8000/tcp` (a `pkill -f uvicorn` can match your own shell and kill it). Kill and restart in separate shell invocations. |
+| Port already in use / stale Uvicorn | Kill by configured port, not by process pattern: `fuser -k 9001/tcp` for the current API port (a `pkill -f uvicorn` can match your own shell and kill it). Kill and restart in separate shell invocations. |
 | Tests fail with cross-event-loop asyncpg errors | Export `ECHOSPHERE_TEST_NULLPOOL=1` (the test suite sets it in `tests/conftest.py`; needed when driving app code from ad-hoc scripts under multiple loops). |
 | Alembic `ConfigParser` interpolation error | A `%` in a DB password must be escaped as `%%` in ini-style URLs. `backend/alembic_pg/env.py` already escapes the injected URL; do the same if you hand-edit `sqlalchemy.url`. |
 | `/api/health/ready` shows `postgres.ok=false, error: pgvector extension not installed` | Run the `CREATE EXTENSION vector` command from 1.3 as superuser, then re-run `pg-migrate`. |

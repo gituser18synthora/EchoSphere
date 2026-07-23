@@ -1,6 +1,9 @@
 """Voice worker — realtime call host, separate from the HTTP API process.
 
-Run: uvicorn voice_runtime.app:app --port 8015
+Run: env/bin/python -m voice_runtime.app
+
+The module entry point reads VOICE_WORKER_HOST/VOICE_WORKER_PORT from .env and
+passes them explicitly to Uvicorn.
 
 Sessions are issued by the main API (POST /api/v1/voice-sessions) which writes
 a trusted tenant/bot mapping into Redis; the browser/telephony client then
@@ -252,3 +255,19 @@ async def _run_call(
         if websocket.client_state == WebSocketState.CONNECTED:
             await websocket.close()
         logger.info("voice session %s ended (turns=%d)", session_id, len(recorder.turns))
+
+
+def main() -> None:
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        app,
+        host=settings.voice_worker_host,
+        port=settings.voice_worker_port,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

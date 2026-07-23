@@ -32,6 +32,17 @@ class ForbiddenError(ApiError):
         super().__init__(message, status.HTTP_403_FORBIDDEN)
 
 
+class ProviderNotAvailableError(ApiError):
+    """A configured provider/model is inactive under platform AI governance.
+
+    Raised at runtime resolution so live sessions fail closed instead of
+    silently using (or replacing) a deactivated provider.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
 class HardDeleteBlockedError(ApiError):
     def __init__(self):
         super().__init__(

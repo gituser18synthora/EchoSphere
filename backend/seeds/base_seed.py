@@ -148,41 +148,44 @@ DATA_REGIONS = [
     ("global", "Global", None, "Global", "No regional pinning — global routing."),
 ]
 
-# ISO 3166-1 alpha-2 countries offered by the first regional rollout.
+# ISO 3166-1 alpha-2/alpha-3 countries offered by the first regional rollout.
 # This catalog is intentionally Asia-only for now.
 COUNTRIES = [
-    ("af", "Afghanistan"), ("am", "Armenia"), ("az", "Azerbaijan"),
-    ("bh", "Bahrain"), ("bd", "Bangladesh"), ("bt", "Bhutan"),
-    ("bn", "Brunei"), ("kh", "Cambodia"), ("cn", "China"),
-    ("cy", "Cyprus"), ("ge", "Georgia"), ("in", "India"),
-    ("id", "Indonesia"), ("ir", "Iran"), ("iq", "Iraq"),
-    ("il", "Israel"), ("jp", "Japan"), ("jo", "Jordan"),
-    ("kz", "Kazakhstan"), ("kw", "Kuwait"), ("kg", "Kyrgyzstan"),
-    ("la", "Laos"), ("lb", "Lebanon"), ("my", "Malaysia"),
-    ("mv", "Maldives"), ("mn", "Mongolia"), ("mm", "Myanmar"),
-    ("np", "Nepal"), ("kp", "North Korea"), ("om", "Oman"),
-    ("pk", "Pakistan"), ("ps", "Palestine"), ("ph", "Philippines"),
-    ("qa", "Qatar"), ("sa", "Saudi Arabia"), ("sg", "Singapore"),
-    ("kr", "South Korea"), ("lk", "Sri Lanka"), ("sy", "Syria"),
-    ("tw", "Taiwan"), ("tj", "Tajikistan"), ("th", "Thailand"),
-    ("tl", "Timor-Leste"), ("tr", "Türkiye"), ("tm", "Turkmenistan"),
-    ("ae", "United Arab Emirates"), ("uz", "Uzbekistan"),
-    ("vn", "Vietnam"), ("ye", "Yemen"),
+    ("AF", "AFG", "Afghanistan"), ("AM", "ARM", "Armenia"), ("AZ", "AZE", "Azerbaijan"),
+    ("BH", "BHR", "Bahrain"), ("BD", "BGD", "Bangladesh"), ("BT", "BTN", "Bhutan"),
+    ("BN", "BRN", "Brunei"), ("KH", "KHM", "Cambodia"), ("CN", "CHN", "China"),
+    ("CY", "CYP", "Cyprus"), ("GE", "GEO", "Georgia"), ("IN", "IND", "India"),
+    ("ID", "IDN", "Indonesia"), ("IR", "IRN", "Iran"), ("IQ", "IRQ", "Iraq"),
+    ("IL", "ISR", "Israel"), ("JP", "JPN", "Japan"), ("JO", "JOR", "Jordan"),
+    ("KZ", "KAZ", "Kazakhstan"), ("KW", "KWT", "Kuwait"), ("KG", "KGZ", "Kyrgyzstan"),
+    ("LA", "LAO", "Laos"), ("LB", "LBN", "Lebanon"), ("MY", "MYS", "Malaysia"),
+    ("MV", "MDV", "Maldives"), ("MN", "MNG", "Mongolia"), ("MM", "MMR", "Myanmar"),
+    ("NP", "NPL", "Nepal"), ("KP", "PRK", "North Korea"), ("OM", "OMN", "Oman"),
+    ("PK", "PAK", "Pakistan"), ("PS", "PSE", "Palestine"), ("PH", "PHL", "Philippines"),
+    ("QA", "QAT", "Qatar"), ("SA", "SAU", "Saudi Arabia"), ("SG", "SGP", "Singapore"),
+    ("KR", "KOR", "South Korea"), ("LK", "LKA", "Sri Lanka"), ("SY", "SYR", "Syria"),
+    ("TW", "TWN", "Taiwan"), ("TJ", "TJK", "Tajikistan"), ("TH", "THA", "Thailand"),
+    ("TL", "TLS", "Timor-Leste"), ("TR", "TUR", "Türkiye"), ("TM", "TKM", "Turkmenistan"),
+    ("AE", "ARE", "United Arab Emirates"), ("UZ", "UZB", "Uzbekistan"),
+    ("VN", "VNM", "Vietnam"), ("YE", "YEM", "Yemen"),
 ]
 
 AI_PROFILES = [
     # (code, name, cost_category, description, overrides)
+    # Provider/model choices must stay inside the governed provider matrix
+    # (STT=Sarvam, TTS=Sarvam/ElevenLabs, LLM=OpenAI, Embedding=OpenAI).
     ("low_cost", "Low Cost", "low",
      "Cheapest viable stack for high-volume simple flows.",
-     {"llm_model": "gpt-4o-mini", "tts_model": "tts-1", "retrieval_top_k": 4,
+     {"llm_model": "gpt-4o-mini", "retrieval_top_k": 4,
       "max_output_tokens": 300, "temperature": 0.3}),
     ("balanced", "Balanced", "medium",
      "Balanced latency, quality and cost — the default starting point.",
-     {"llm_model": "gpt-4o-mini", "tts_model": "tts-1", "retrieval_top_k": 6}),
+     {"llm_model": "gpt-4o-mini", "retrieval_top_k": 6}),
     ("high_accuracy", "High Accuracy", "high",
      "Best answer quality; larger models and deeper retrieval.",
-     {"llm_model": "gpt-4o", "tts_model": "tts-1-hd", "retrieval_top_k": 10,
-      "max_output_tokens": 900, "temperature": 0.2}),
+     {"llm_model": "gpt-4o", "tts_provider": "elevenlabs",
+      "tts_model": "eleven_flash_v2_5", "default_voice": "vp-el-monika",
+      "retrieval_top_k": 10, "max_output_tokens": 900, "temperature": 0.2}),
     ("low_latency", "Low Latency", "medium",
      "Tuned for fastest turn-taking on voice calls.",
      {"llm_model": "gpt-4o-mini", "retrieval_top_k": 3, "max_output_tokens": 250,
@@ -190,37 +193,42 @@ AI_PROFILES = [
     ("enterprise", "Enterprise", "high",
      "Enterprise defaults with fallback providers and generous limits.",
      {"llm_model": "gpt-4o", "retrieval_top_k": 8, "max_output_tokens": 800,
-      "fallback_providers": [{"llm_provider": "anthropic", "llm_model": "claude-sonnet-5"}]}),
+      "fallback_providers": [{"tts_provider": "elevenlabs", "tts_model": "eleven_flash_v2_5"}]}),
     ("custom", "Custom", "medium",
      "Start empty and configure every provider and model manually.", {}),
 ]
 
 PROVIDERS = [
-    # (kind, code, name, requires_api_key, description)
-    ("stt", "openai", "OpenAI Whisper", True, "Whisper speech-to-text via the OpenAI API."),
-    ("stt", "deepgram", "Deepgram", True, "Low-latency streaming STT."),
-    ("stt", "assemblyai", "AssemblyAI", True, "Batch and realtime STT."),
-    ("stt", "sarvam", "Sarvam AI", True, "Indic-language STT (saarika)."),
-    ("stt", "azure", "Azure Speech", True, "Microsoft Azure speech-to-text."),
-    ("stt", "google", "Google Cloud STT", True, "Google Cloud speech-to-text."),
-    ("stt", "mock", "Mock STT (dev)", False, "Deterministic development STT — no external calls."),
-    ("tts", "openai", "OpenAI TTS", True, "OpenAI text-to-speech voices."),
-    ("tts", "elevenlabs", "ElevenLabs", True, "High-fidelity neural voices."),
-    ("tts", "sarvam", "Sarvam AI", True, "Indic-language TTS (bulbul)."),
-    ("tts", "azure", "Azure Speech", True, "Microsoft Azure neural voices."),
-    ("tts", "google", "Google Cloud TTS", True, "Google Cloud neural voices."),
-    ("tts", "mock", "Mock TTS (dev)", False, "Deterministic development TTS — no external calls."),
-    ("llm", "openai", "OpenAI", True, "GPT model family."),
-    ("llm", "anthropic", "Anthropic", True, "Claude model family."),
-    ("llm", "azure", "Azure OpenAI", True, "GPT models on Azure."),
-    ("llm", "google", "Google Gemini", True, "Gemini model family."),
-    ("llm", "mock", "Mock LLM (dev)", False, "Deterministic development LLM — no external calls."),
-    ("embedding", "openai", "OpenAI Embeddings", True, "text-embedding-3 family."),
-    ("embedding", "mock", "Mock Embeddings (dev)", False, "Hash-based development embedder."),
-    ("voice", "platform", "Platform Voices", False, "Built-in platform voice catalog."),
-    ("voice", "elevenlabs", "ElevenLabs Voices", True, "ElevenLabs voice catalog."),
-    ("voice", "azure", "Azure Voice Catalog", True, "Azure neural voice catalog."),
-    ("voice", "google", "Google Voice Catalog", True, "Google Cloud voice catalog."),
+    # (kind, code, name, requires_api_key, description, status)
+    # Governed matrix: only Sarvam (STT), Sarvam+ElevenLabs (TTS), OpenAI
+    # (LLM+Embedding) are active. Other vendors stay in the catalog inactive so
+    # existing references keep resolving to stable IDs. The mock provider is a
+    # dev/test pseudo-provider — it is excluded from production by the catalog
+    # layer, not by status.
+    ("stt", "openai", "OpenAI Whisper", True, "Whisper speech-to-text via the OpenAI API.", "inactive"),
+    ("stt", "deepgram", "Deepgram", True, "Low-latency streaming STT.", "inactive"),
+    ("stt", "assemblyai", "AssemblyAI", True, "Batch and realtime STT.", "inactive"),
+    ("stt", "sarvam", "Sarvam AI", True, "Indic-language STT (saarika).", "active"),
+    ("stt", "azure", "Azure Speech", True, "Microsoft Azure speech-to-text.", "inactive"),
+    ("stt", "google", "Google Cloud STT", True, "Google Cloud speech-to-text.", "inactive"),
+    ("stt", "mock", "Mock STT (dev)", False, "Deterministic development STT — no external calls.", "active"),
+    ("tts", "openai", "OpenAI TTS", True, "OpenAI text-to-speech voices.", "inactive"),
+    ("tts", "elevenlabs", "ElevenLabs", True, "High-fidelity neural voices.", "active"),
+    ("tts", "sarvam", "Sarvam AI", True, "Indic-language TTS (bulbul).", "active"),
+    ("tts", "azure", "Azure Speech", True, "Microsoft Azure neural voices.", "inactive"),
+    ("tts", "google", "Google Cloud TTS", True, "Google Cloud neural voices.", "inactive"),
+    ("tts", "mock", "Mock TTS (dev)", False, "Deterministic development TTS — no external calls.", "active"),
+    ("llm", "openai", "OpenAI", True, "GPT model family.", "active"),
+    ("llm", "anthropic", "Anthropic", True, "Claude model family.", "inactive"),
+    ("llm", "azure", "Azure OpenAI", True, "GPT models on Azure.", "inactive"),
+    ("llm", "google", "Google Gemini", True, "Gemini model family.", "inactive"),
+    ("llm", "mock", "Mock LLM (dev)", False, "Deterministic development LLM — no external calls.", "active"),
+    ("embedding", "openai", "OpenAI Embeddings", True, "text-embedding-3 family.", "active"),
+    ("embedding", "mock", "Mock Embeddings (dev)", False, "Hash-based development embedder.", "active"),
+    ("voice", "platform", "Platform Voices", False, "Built-in platform voice catalog.", "active"),
+    ("voice", "elevenlabs", "ElevenLabs Voices", True, "ElevenLabs voice catalog.", "active"),
+    ("voice", "azure", "Azure Voice Catalog", True, "Azure neural voice catalog.", "inactive"),
+    ("voice", "google", "Google Voice Catalog", True, "Google Cloud voice catalog.", "inactive"),
 ]
 
 # (code, name, monthly, bots, minutes, seats, recommended, description)
@@ -300,12 +308,15 @@ GUARDRAILS = [
     ("Profanity / abuse de-escalation", "Safety", "Switches to calm register and offers human handover on repeated abuse.", "flag", True),
 ]
 
+# Legacy approved-model registry shown on the AI Governance page. Entries must
+# stay inside the governed provider matrix; out-of-matrix vendors are
+# deprecated by reconcile_provider_governance, never deleted.
 MODELS = [
-    ("sonnet-5", "Anthropic", "conversation", "approved", 0.003, 640),
-    ("haiku-4.5", "Anthropic", "classification", "approved", 0.0008, 210),
-    ("opus-4.8", "Anthropic", "conversation", "testing", 0.012, 980),
-    ("embed-multilingual-3", "VectorWorks", "embedding", "approved", 0.0001, 45),
-    ("summarize-lite-2", "VectorWorks", "summarization", "deprecated", 0.0004, 380),
+    ("gpt-4o-mini", "OpenAI", "conversation", "approved", 0.0006, 320),
+    ("gpt-4o", "OpenAI", "conversation", "approved", 0.005, 640),
+    ("gpt-4.1-mini", "OpenAI", "classification", "approved", 0.0007, 300),
+    ("text-embedding-3-small", "OpenAI", "embedding", "approved", 0.00002, 45),
+    ("text-embedding-3-large", "OpenAI", "embedding", "approved", 0.00013, 60),
 ]
 
 INTEGRATIONS = [
@@ -453,16 +464,16 @@ def run_base_seed(db: Session | None = None) -> dict:
                 created["industries"] += 1
 
         countries: dict[str, Country] = {}
-        for i, (code, name) in enumerate(COUNTRIES):
-            row = db.scalar(select(Country).where(Country.code == code))
+        for i, (iso2, iso3, name) in enumerate(COUNTRIES):
+            row = db.scalar(select(Country).where(Country.iso2 == iso2))
             if row is None:
                 row = Country(
-                    id=new_id("ctry"), code=code, name=name,
-                    region="Asia", sort_order=i,
+                    iso2=iso2, iso3=iso3, name=name, region="Asia", sort_order=i,
                 )
                 db.add(row)
                 created["countries"] += 1
             countries[name] = row
+        db.flush()  # Assign numeric country IDs before creating Data Region FKs.
 
         for i, (code, name, country, region, desc) in enumerate(DATA_REGIONS):
             row = db.scalar(select(DataRegion).where(DataRegion.code == code))
@@ -470,15 +481,15 @@ def run_base_seed(db: Session | None = None) -> dict:
             if row is None:
                 db.add(DataRegion(
                     id=new_id("dr"), code=code, name=name, country=country,
-                    country_code=country_row.code if country_row else None,
+                    country_id=country_row.id if country_row else None,
                     region=region, description=desc, sort_order=i,
                     infrastructure_ready=False,
                 ))
                 created["data_regions"] += 1
-            elif country_row is not None and not row.country_code:
+            elif country_row is not None and not row.country_id:
                 # Backfill only the structured country reference; user-edited
                 # deployment/service settings remain untouched.
-                row.country_code = country_row.code
+                row.country_id = country_row.id
                 row.country = country_row.name
 
         for i, (code, name, cost, desc, overrides) in enumerate(AI_PROFILES):
@@ -486,9 +497,9 @@ def run_base_seed(db: Session | None = None) -> dict:
                 profile = AiConfigProfile(
                     id=new_id("aip"), code=code, name=name, description=desc,
                     cost_category=cost, sort_order=i,
-                    stt_provider="openai", stt_model="whisper-1",
+                    stt_provider="sarvam", stt_model="saaras:v3",
                     llm_provider="openai", llm_model="gpt-4o-mini",
-                    tts_provider="openai", tts_model="tts-1", default_voice="alloy",
+                    tts_provider="sarvam", tts_model="bulbul:v3", default_voice="vp-sv-shubh",
                     embedding_provider="openai", embedding_model="text-embedding-3-small",
                     embedding_dimension=1536,
                 )
@@ -503,7 +514,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                 db.add(profile)
                 created["ai_profiles"] += 1
 
-        for i, (kind, code, name, needs_key, desc) in enumerate(PROVIDERS):
+        for i, (kind, code, name, needs_key, desc, provider_status) in enumerate(PROVIDERS):
             exists = db.scalar(
                 select(ProviderDef).where(ProviderDef.kind == kind, ProviderDef.code == code)
             )
@@ -512,6 +523,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                     id=new_id("prov"), kind=kind, code=code, name=name,
                     description=desc, requires_api_key=needs_key, sort_order=i,
                     secret_ref=f"env:{code.upper()}_API_KEY" if needs_key else None,
+                    status=provider_status,
                 ))
                 created["providers"] += 1
 
@@ -525,9 +537,15 @@ def run_base_seed(db: Session | None = None) -> dict:
                 created["voices"] += 1
 
         # Provider model catalog + provider voices (Sarvam speakers, ElevenLabs voices).
-        from backend.seeds.provider_catalog_seed import seed_provider_catalog
+        from backend.seeds.provider_catalog_seed import (
+            reconcile_provider_governance,
+            seed_provider_catalog,
+        )
 
         created.update(seed_provider_catalog(db))
+        # Converge provider/model activation to the governed matrix on every
+        # bootstrap so long-lived databases pick up governance changes too.
+        created.update(reconcile_provider_governance(db))
 
         for name, category, desc, enforcement, enabled in GUARDRAILS:
             if db.scalar(select(Guardrail).where(Guardrail.name == name)) is None:

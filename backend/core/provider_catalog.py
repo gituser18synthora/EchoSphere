@@ -31,6 +31,10 @@ CAPABILITIES = ("stt", "tts", "llm", "embedding")
 # ── lookups ──────────────────────────────────────────────────────────────────
 
 def get_provider(db: Session, capability: str, code: str) -> ProviderDef | None:
+    # The mock pseudo-provider is dev/test only — reject direct submissions in
+    # production too, not just hide it from listings.
+    if code == "mock" and get_settings().app_env == "production":
+        return None
     return db.scalar(
         select(ProviderDef).where(
             ProviderDef.kind == capability,
@@ -55,6 +59,8 @@ def list_providers(db: Session, capability: str) -> list[ProviderDef]:
 
 
 def get_model(db: Session, capability: str, provider: str, code: str) -> ProviderModel | None:
+    if provider == "mock" and get_settings().app_env == "production":
+        return None
     return db.scalar(
         select(ProviderModel).where(
             ProviderModel.capability == capability,
@@ -118,16 +124,24 @@ def list_voices(
 
 
 def find_voice(db: Session, provider: str, voice: str) -> VoiceProfile | None:
-    """Look a voice up by catalog id or provider wire code."""
-    if not voice:
+    """Look an ACTIVE voice up by catalog id or provider wire code.
+
+    Input is trimmed so padded ids validate; wire-code matching is
+    case-insensitive via the column collation. Inactive/deleted voices are
+    not returned — a disabled speaker must fail validation, not resolve.
+    """
+    if not voice or not str(voice).strip():
         return None
+    voice = str(voice).strip()
     row = db.get(VoiceProfile, voice)
-    if row is not None and row.provider == provider and not row.is_deleted:
+    if (row is not None and row.provider == provider
+            and row.status == "active" and not row.is_deleted):
         return row
     return db.scalar(
         select(VoiceProfile).where(
             VoiceProfile.provider == provider,
             VoiceProfile.provider_voice_id == voice,
+            VoiceProfile.status == "active",
             VoiceProfile.is_deleted.is_(False),
         )
     )

@@ -149,11 +149,21 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
 
         language = to_provider_language("sarvam", s.language) or "en-IN"
         codec = "linear16" if s.codec in ("linear16", "pcm") else s.codec
+        # Speaker codes must be lowercase, unpadded strings on the wire. An
+        # unknown speaker is rejected by Sarvam (surfaced as an error event) —
+        # it is never silently replaced here; only a MISSING speaker falls
+        # back to the model default, and that fallback is logged.
+        speaker = str(s.voice or "").strip().lower()
+        if not speaker:
+            speaker = "shubh" if is_v3 else "anushka"
+            logger.info(
+                "sarvam-tts: no speaker configured; using model default '%s' for %s",
+                speaker, model,
+            )
         config = {
             "model": model,
             "target_language_code": language,
-            # Speaker codes must be lowercase on the wire.
-            "speaker": (s.voice or ("shubh" if is_v3 else "anushka")).lower(),
+            "speaker": speaker,
             "speech_sample_rate": str(s.sample_rate),
             "output_audio_codec": codec,
         }

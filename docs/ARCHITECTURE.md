@@ -16,13 +16,13 @@ transcripts live in MongoDB; live call/session state and caches live in Redis.
 
 | Process | Entry point | Port | Run command |
 |---|---|---|---|
-| Platform API | `backend/main.py` | 8000 | `env/bin/uvicorn backend.main:app --port 8000` |
-| Voice worker | `voice_runtime/app.py` | 8015 | `env/bin/uvicorn voice_runtime.app:app --port 8015` |
+| Platform API | `backend/main.py` | `API_PORT` (9001) | `env/bin/python -m backend.main` |
+| Voice worker | `voice_runtime/app.py` | `VOICE_WORKER_PORT` (9002) | `env/bin/python -m voice_runtime.app` |
 | Ingestion worker | `backend/workers/ingestion.py` | — | `env/bin/python -m backend.workers.ingestion` |
-| MCP server | `backend/mcp_server/server.py` | 8020 | `env/bin/uvicorn backend.mcp_server.server:app --port 8020` |
-| Frontend (dev) | Vite (`vite.config.ts`) | 5199 | `npm run dev` (proxies `/api` → 8000) |
+| MCP server | `backend/mcp_server/server.py` | `MCP_PORT` (9003) | `env/bin/python -m backend.mcp_server.server` |
+| Frontend (dev) | Vite (`vite.config.ts`) | `FRONTEND_PORT` (5199) | `npm run dev` (proxies `/api` → `API_PORT`) |
 
-- API docs: `http://localhost:8000/api/docs`. Liveness: `GET /api/health`.
+- API docs: `http://localhost:9001/api/docs`. Liveness: `GET /api/health`.
   Readiness: `GET /api/health/ready` — checks MySQL, PostgreSQL (+pgvector), Redis and
   MongoDB (`backend/main.py`).
 - The voice worker exposes `GET /health` plus two WebSocket endpoints:
@@ -42,10 +42,10 @@ flowchart LR
     end
 
     subgraph Processes
-        API["Platform API :8000"]
-        VW["Voice worker :8015"]
+        API["Platform API :9001"]
+        VW["Voice worker :9002"]
         IW["Ingestion worker"]
-        MCP["MCP server :8020"]
+        MCP["MCP server :9003"]
     end
 
     subgraph Datastores
@@ -107,9 +107,9 @@ Migrations: `env/bin/python -m backend.cli migrate` (MySQL),
 ```mermaid
 sequenceDiagram
     participant C as Caller / Browser
-    participant API as Platform API :8000
+    participant API as Platform API :9001
     participant R as Redis
-    participant VW as Voice worker :8015
+    participant VW as Voice worker :9002
     participant K as KnowledgeService
     participant M as MongoDB / MySQL
 

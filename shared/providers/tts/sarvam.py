@@ -9,6 +9,7 @@ legacy per-sample pure-python loop), and output is 16 kHz 16-bit mono PCM.
 
 import asyncio
 import base64
+import logging
 import re
 import time
 
@@ -46,10 +47,14 @@ _SHORT_TO_SARVAM = {
     "te": "te-IN", "gu": "gu-IN",
 }
 
-_ALLOWED_SPEAKERS = {
-    "anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh", "rohan",
-}
-_DEFAULT_SPEAKER = "rohan"
+logger = logging.getLogger(__name__)
+
+# Used only when NO speaker is configured. Speaker validity is enforced by the
+# DB voice catalog (backend/core/provider_catalog.py) — the single source of
+# truth — and ultimately by the Sarvam API itself; an unknown speaker surfaces
+# as a ProviderError("invalid_input"), never as a silent substitution.
+_MODEL_DEFAULT_SPEAKER = {"bulbul:v2": "anushka", "bulbul:v3": "shubh"}
+_FALLBACK_DEFAULT_SPEAKER = "shubh"
 
 
 def _detect_language(text: str) -> str:
@@ -76,9 +81,9 @@ def _resolve_language(explicit: str | None, text: str) -> str:
     return _detect_language(text)
 
 
-def _map_voice_to_speaker(voice: str | None) -> str:
-    candidate = (voice or "").strip().lower()
-    return candidate if candidate in _ALLOWED_SPEAKERS else _DEFAULT_SPEAKER
+def _normalize_speaker(voice: object) -> str:
+    """Sarvam speaker wire codes are lowercase strings without padding."""
+    return str(voice).strip().lower() if voice is not None else ""
 
 
 class SarvamTTS(TTSProvider):
@@ -116,7 +121,13 @@ class SarvamTTS(TTSProvider):
             return TTSResult(audio=b"", sample_rate=_PCM_RATE)
         started = time.perf_counter()
         language_code = _resolve_language(language or self._language or None, text)
-        speaker = _map_voice_to_speaker(voice or self._voice)
+        speaker = _normalize_speaker(voice) or _normalize_speaker(self._voice)
+        if not speaker:
+            speaker = _MODEL_DEFAULT_SPEAKER.get(self._model, _FALLBACK_DEFAULT_SPEAKER)
+            logger.info(
+                "sarvam-tts: no speaker configured; using model default '%s' for %s",
+                speaker, self._model,
+            )
         try:
             response = await asyncio.wait_for(
                 self._client.text_to_speech.convert(
@@ -140,10 +151,27 @@ class SarvamTTS(TTSProvider):
         audios = getattr(response, "audios", None) or []
         pcm = b""
         if audios:
-            wav_bytes = base64.b64decode(audios[0])
-            pcm, rate = wav_to_pcm(wav_bytes)
-            if pcm and rate and rate != _PCM_RATE:
+            try:
+                wav_bytes = base64.b64decode(audios[0], validate=True)
+                pcm, rate = wav_to_pcm(wav_bytes)
+            except Exception as exc:  # noqa: BLE001 — corrupt payload, not our bug
+                raise ProviderError(
+                    self.name, "upstream",
+                    f"Provider returned an unparseable audio payload: {type(exc).__name__}",
+                ) from exc
+            if not pcm:
+                # wav_to_pcm returns (b"", 0) for non-WAV bytes — corrupt payload.
+                raise ProviderError(
+                    self.name, "upstream",
+                    "Provider returned an audio payload that is not a 16-bit PCM WAV",
+                )
+            if rate and rate != _PCM_RATE:
                 pcm = resample_pcm(pcm, rate, _PCM_RATE)
+        else:
+            logger.warning(
+                "sarvam-tts: provider returned no audio for speaker '%s' (%s)",
+                speaker, self._model,
+            )
         return TTSResult(
             audio=pcm,
             sample_rate=_PCM_RATE,
@@ -152,12 +180,25 @@ class SarvamTTS(TTSProvider):
 
 
 def _categorize(provider: str, exc: Exception) -> ProviderError:
-    text = str(exc)
+    # sarvamai SDK errors expose status_code/body; prefer the structured
+    # message over str(exc), which leads with an unreadable header dump.
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    detail = ""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            detail = str(error.get("message") or "")
+    text = detail or str(exc)
     lowered = text.lower()
-    if "401" in text or "403" in text or "unauthorized" in lowered or "auth" in lowered:
-        return ProviderError(provider, "auth", text[:200])
-    if "429" in text or "rate" in lowered:
-        return ProviderError(provider, "rate_limit", text[:200])
+    if status in (401, 403) or "401" in text or "403" in text or "unauthorized" in lowered:
+        return ProviderError(provider, "auth", text[:300])
+    if status == 429 or "429" in text or "rate limit" in lowered:
+        return ProviderError(provider, "rate_limit", text[:300])
+    if status == 400 or "invalid_request" in lowered:
+        # e.g. "Speaker 'x' is not compatible with model bulbul:v3. …" —
+        # configuration errors must surface, never trigger engine fallback.
+        return ProviderError(provider, "invalid_input", text[:300])
     if "timeout" in lowered or "timed out" in lowered:
-        return ProviderError(provider, "timeout", text[:200])
-    return ProviderError(provider, "upstream", text[:200])
+        return ProviderError(provider, "timeout", text[:300])
+    return ProviderError(provider, "upstream", text[:300])

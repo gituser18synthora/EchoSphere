@@ -915,7 +915,7 @@ export interface ApiTestResult {
 /* ---------- Master data (Platform Configuration) ---------- */
 
 export interface MasterCommon {
-  id: string;
+  id: string | number;
   status: string;
   usageCount: number;
   createdAt: string;
@@ -933,8 +933,10 @@ export interface IndustryMaster extends MasterCommon {
 }
 
 export interface CountryMaster extends MasterCommon {
-  code: string;
+  id: number;
   name: string;
+  iso2: string;
+  iso3: string;
   region: "Asia";
   sortOrder: number;
 }
@@ -943,7 +945,10 @@ export interface DataRegionMaster extends MasterCommon {
   code: string;
   name: string;
   description: string;
+  countryId: number | null;
   countryCode: string;
+  countryIso2: string;
+  countryIso3: string;
   country: string;
   region: string;
   cloudProvider: string;
@@ -1016,6 +1021,21 @@ export interface ProviderMaster extends MasterCommon {
   requiresApiKey: boolean;
   secretRef: string | null;
   config: Record<string, unknown>;
+  sortOrder: number;
+}
+
+export interface ProviderModelMaster extends MasterCommon {
+  code: string;
+  name: string;
+  displayName: string;
+  providerCode: string;
+  capability: VoiceCapability;
+  languages: string[];
+  codecs: string[];
+  sampleRates: number[];
+  streaming: boolean;
+  paramsSchema: Record<string, ParamSpec>;
+  isDefault: boolean;
   sortOrder: number;
 }
 

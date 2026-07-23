@@ -1,6 +1,9 @@
 """EchoSphere platform API.
 
-Run: .venv/bin/uvicorn backend.main:app --reload --port 8000
+Run: env/bin/python -m backend.main
+
+The module entry point reads API_HOST/API_PORT from .env and passes them
+explicitly to Uvicorn.
 """
 
 import logging
@@ -161,3 +164,14 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+def main() -> None:
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(app, host=settings.api_host, port=settings.api_port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

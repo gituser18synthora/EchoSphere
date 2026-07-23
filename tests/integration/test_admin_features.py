@@ -940,7 +940,7 @@ class TestApiConnections:
         assert "private or internal" in (result["error"] or "")
 
         created2 = _data(client.post(f"{API}/api-connections", headers=tenant_admin, json={
-            "name": f"SSRF2 {_SUFFIX}", "url": "http://localhost:8000/api/health",
+            "name": f"SSRF2 {_SUFFIX}", "url": "http://localhost:9001/api/health",
         }))
         _created.append(("api_connections", created2["id"]))
         result2 = _data(client.post(f"{API}/api-connections/{created2['id']}/test",
@@ -1034,9 +1034,16 @@ class TestVoicesMaster:
                                       headers=super_admin, json={"isDefault": True}))
         assert promoted["isDefault"] is True
         listing = _data(client.get(f"{API}/master/voices?pageSize=200", headers=super_admin))
-        defaults = [v for v in listing if v["isDefault"]]
-        assert len(defaults) == 1 and defaults[0]["id"] == created["id"]
-        # Reset: no default voice.
+        # Defaults are per provider: exactly one for THIS provider, and
+        # promoting a platform voice must not clear other providers' defaults
+        # (e.g. the seeded Sarvam default speaker).
+        platform_defaults = [v for v in listing
+                             if v["isDefault"] and v["provider"] == "platform"]
+        assert len(platform_defaults) == 1 and platform_defaults[0]["id"] == created["id"]
+        sarvam_defaults = [v["providerVoiceId"] for v in listing
+                           if v["isDefault"] and v["provider"] == "sarvam"]
+        assert sarvam_defaults == ["shubh"]
+        # Reset: no default platform voice.
         _data(client.patch(f"{API}/master/voices/{created['id']}",
                            headers=super_admin, json={"isDefault": False}))
 
