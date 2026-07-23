@@ -38,7 +38,7 @@ async def create_session(
 ):
     bot = db.get(VoiceBot, body.bot_id)
     if bot is None or bot.is_deleted:
-        raise NotFoundError("Bot not found")
+        raise NotFoundError("Bot")
     assert_tenant_access(user, bot.tenant_id)
 
     session = await create_voice_session(

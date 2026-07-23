@@ -25,7 +25,7 @@ from shared.models import (
 )
 from shared.providers.languages import matches_model_language
 
-CAPABILITIES = ("stt", "tts", "llm")
+CAPABILITIES = ("stt", "tts", "llm", "embedding")
 
 
 # ── lookups ──────────────────────────────────────────────────────────────────

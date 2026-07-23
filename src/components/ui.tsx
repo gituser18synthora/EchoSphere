@@ -1,5 +1,5 @@
 import {
-  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes,
+  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./Icon";
@@ -418,6 +418,94 @@ export function Field({ label, hint, error, required, plain, children }: {
         <span className="field-hint">{hint}</span>
       ) : null}
     </Tag>
+  );
+}
+
+/* ---------- Non-negative number input ---------- */
+interface NumberInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange" | "value" | "min" | "className"> {
+  value: string | number;
+  onChange: (value: string) => void;
+  /** Lower bound (default 0 — quota/limit/price fields must never go negative). */
+  min?: number;
+  invalid?: boolean;
+}
+/** The single numeric input for limits, quotas, prices and sort orders.
+    Blocks the minus key, clamps pasted/typed values below `min` (and on blur),
+    and never lets the spinner decrement past `min`. */
+export function NumberInput({ value, onChange, min = 0, step, invalid, onBlur, ...rest }: NumberInputProps) {
+  const clamp = (raw: string): string => {
+    if (raw === "" || raw === undefined) return "";
+    const n = Number(raw);
+    if (Number.isNaN(n)) return "";
+    return n < min ? String(min) : raw;
+  };
+  return (
+    <input
+      className="input"
+      type="number"
+      min={min}
+      step={step}
+      value={String(value ?? "")}
+      aria-invalid={invalid || undefined}
+      onKeyDown={(e) => {
+        if (min >= 0 && e.key === "-") e.preventDefault();
+      }}
+      onChange={(e) => onChange(clamp(e.target.value))}
+      onPaste={(e) => {
+        const text = e.clipboardData.getData("text");
+        if (min >= 0 && text.includes("-")) {
+          e.preventDefault();
+          onChange(clamp(text.replace(/-/g, "")));
+        }
+      }}
+      onBlur={(e) => {
+        const clamped = clamp(e.target.value);
+        if (clamped !== e.target.value) onChange(clamped);
+        onBlur?.(e);
+      }}
+      {...rest}
+    />
+  );
+}
+
+/* ---------- Password input (masked by default, eye/eye-off toggle) ---------- */
+interface PasswordInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange" | "value" | "className"> {
+  value: string;
+  onChange: (value: string) => void;
+  invalid?: boolean;
+}
+/** The single password input used everywhere a secret is typed. The visibility
+    toggle is a real button (keyboard reachable, labelled), and toggling never
+    touches the field's value or the surrounding form behavior. */
+export function PasswordInput({ value, onChange, invalid, autoComplete = "current-password", ...rest }: PasswordInputProps) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative", width: "100%" }}>
+      <input
+        className="input"
+        style={{ paddingRight: 38, width: "100%" }}
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        aria-invalid={invalid || undefined}
+        {...rest}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        aria-label={show ? "Hide password" : "Show password"}
+        aria-pressed={show}
+        title={show ? "Hide password" : "Show password"}
+        style={{
+          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+          display: "flex", padding: 6, background: "none", border: "none",
+          cursor: "pointer", color: "var(--ink-3)",
+        }}
+      >
+        <Icon name={show ? "eye-off" : "eye"} size={16} />
+      </button>
+    </div>
   );
 }
 

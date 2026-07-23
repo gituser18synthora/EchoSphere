@@ -157,9 +157,11 @@ class TestMasterData:
         _created.append(("plans", plan["id"]))
         assert plan["priceMonthly"] == 99
 
+        # llmModel must exist in the provider_models catalog for the provider
+        # (the legacy 'mock-1' alias was migrated to 'mock' in a3c5e7f9b1d3).
         profile = _data(client.post(f"{API}/master/ai-profiles", headers=super_admin, json={
             "code": f"aip_{_SUFFIX}", "name": "Test Profile", "llmProvider": "mock",
-            "llmModel": "mock-1", "costCategory": "low",
+            "llmModel": "mock", "costCategory": "low",
         }))
         _created.append(("ai_config_profiles", profile["id"]))
         assert profile["llmProvider"] == "mock"

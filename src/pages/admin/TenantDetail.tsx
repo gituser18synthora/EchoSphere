@@ -8,9 +8,10 @@ import {
 } from "@/services/api";
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
-  Health, KpiCard, Modal, StatusChip, Tabs, Timeline, Avatar,
+  Health, KpiCard, Modal, PasswordInput, StatusChip, Tabs, Timeline, Avatar,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
+import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
 import type { Release, Tenant, VoiceBot } from "@/types/domain";
@@ -78,7 +79,7 @@ export default function TenantDetail() {
         {tab === "overview" && <OverviewTab tenant={t} />}
         {tab === "users" && <UsersTab tenantId={t.id} />}
         {tab === "bots" && <BotsTab tenantId={t.id} />}
-        {tab === "knowledge" && <KnowledgeTab tenantId={t.id} />}
+        {tab === "knowledge" && <KnowledgeTab tenantId={t.id} tenantName={t.name} />}
         {tab === "usage" && <UsageTab tenantId={t.id} />}
         {tab === "ai" && <AiUsageTab tenantId={t.id} />}
         {tab === "deployments" && <DeploymentsTab tenantId={t.id} />}
@@ -97,37 +98,6 @@ function passwordPolicyError(password: string): string | null {
   if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
   if (!/\d/.test(password)) missing.push("a digit");
   return missing.length ? `Password must contain ${missing.join(", ")}.` : null;
-}
-
-function PasswordInput({ value, onChange, show, onToggleShow, invalid }: {
-  value: string; onChange: (v: string) => void; show: boolean; onToggleShow: () => void; invalid?: boolean;
-}) {
-  return (
-    <div style={{ position: "relative" }}>
-      <input
-        className="input"
-        style={{ paddingRight: 38, width: "100%" }}
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete="new-password"
-        aria-invalid={invalid || undefined}
-      />
-      <button
-        type="button"
-        onClick={onToggleShow}
-        aria-label={show ? "Hide password" : "Show password"}
-        title={show ? "Hide password" : "Show password"}
-        style={{
-          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
-          display: "flex", padding: 6, background: "none", border: "none",
-          cursor: "pointer", color: "var(--ink-3)",
-        }}
-      >
-        <Icon name={show ? "eye-off" : "eye"} size={16} />
-      </button>
-    </div>
-  );
 }
 
 function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
@@ -149,7 +119,6 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
   });
   const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const [pw, setPw] = useState({ next: "", confirm: "" });
-  const [showPw, setShowPw] = useState({ next: false, confirm: false });
   const [pwErr, setPwErr] = useState<{ next?: string; confirm?: string }>({});
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const wantsPasswordReset = pw.next !== "" || pw.confirm !== "";
@@ -295,8 +264,7 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
                   <PasswordInput
                     value={pw.next}
                     onChange={(v) => { setPw((p) => ({ ...p, next: v })); setPwErr({}); }}
-                    show={showPw.next}
-                    onToggleShow={() => setShowPw((s) => ({ ...s, next: !s.next }))}
+                    autoComplete="new-password"
                     invalid={Boolean(pwErr.next)}
                   />
                 </Field>
@@ -304,8 +272,7 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
                   <PasswordInput
                     value={pw.confirm}
                     onChange={(v) => { setPw((p) => ({ ...p, confirm: v })); setPwErr({}); }}
-                    show={showPw.confirm}
-                    onToggleShow={() => setShowPw((s) => ({ ...s, confirm: !s.confirm }))}
+                    autoComplete="new-password"
                     invalid={Boolean(pwErr.confirm)}
                   />
                 </Field>
@@ -408,20 +375,36 @@ function BotsTab({ tenantId }: { tenantId: string }) {
   );
 }
 
-function KnowledgeTab({ tenantId }: { tenantId: string }) {
+function KnowledgeTab({ tenantId, tenantName }: { tenantId: string; tenantName?: string }) {
   const q = useAsync(() => listKnowledge(undefined, tenantId), [tenantId]);
+  const [viewId, setViewId] = useState<string | null>(null);
   return (
-    <div className="card">
-      <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
-        empty={{ icon: "book", title: "No knowledge sources", body: "Documents, URLs and FAQs the tenant indexes will appear here." }}
-        columns={[
-          { key: "name", header: "Source", sortValue: (k) => k.name, render: (k) => <div><div className="t-strong">{k.name}</div><div className="t-micro">{k.detail}</div></div> },
-          { key: "type", header: "Type", render: (k) => <span className="tag" style={{ textTransform: "capitalize" }}>{k.type}</span> },
-          { key: "status", header: "Index status", render: (k) => <StatusChip status={k.status} /> },
-          { key: "chunks", header: "Chunks", align: "right", sortValue: (k) => k.chunks, render: (k) => <span className="t-num">{fmtNum(k.chunks)}</span> },
-          { key: "quality", header: "Quality", align: "right", sortValue: (k) => k.quality, render: (k) => <span className="t-num">{k.quality ? `${k.quality}%` : "—"}</span> },
-        ]}
-      />
+    <div className="col gap-8">
+      <span className="t-micro t-sub">
+        Knowledge Bases of <strong>{tenantName ?? tenantId}</strong> — the View action stays scoped to this tenant.
+      </span>
+      <div className="card">
+        <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
+          onRowClick={(k) => setViewId(k.id)}
+          empty={{ icon: "book", title: "No knowledge sources", body: "Documents, URLs and FAQs the tenant indexes will appear here." }}
+          columns={[
+            { key: "name", header: "Source", sortValue: (k) => k.name, render: (k) => <div><div className="t-strong">{k.name}</div><div className="t-micro">{k.detail}</div></div> },
+            { key: "type", header: "Type", render: (k) => <span className="tag" style={{ textTransform: "capitalize" }}>{k.type}</span> },
+            { key: "status", header: "Index status", render: (k) => <StatusChip status={k.status} /> },
+            { key: "chunks", header: "Chunks", align: "right", sortValue: (k) => k.chunks, render: (k) => <span className="t-num">{fmtNum(k.chunks)}</span> },
+            { key: "quality", header: "Quality", align: "right", sortValue: (k) => k.quality, render: (k) => <span className="t-num">{k.quality ? `${k.quality}%` : "—"}</span> },
+            {
+              key: "actions", header: "", align: "right", width: 90,
+              render: (k) => (
+                <span onClick={(e) => e.stopPropagation()}>
+                  <Button size="sm" icon="eye" onClick={() => setViewId(k.id)}>View</Button>
+                </span>
+              ),
+            },
+          ]}
+        />
+      </div>
+      {viewId && <KnowledgeDetailDrawer sourceId={viewId} onClose={() => setViewId(null)} />}
     </div>
   );
 }

@@ -18,6 +18,7 @@ from shared.db.mysql import get_sessionmaker
 from shared.models import (
     AiConfigProfile,
     ApprovedModel,
+    Country,
     DataRegion,
     Guardrail,
     HealthMetric,
@@ -145,6 +146,28 @@ DATA_REGIONS = [
     ("us", "United States", "United States", "North America", "United States region."),
     ("me", "Middle East", None, "MEA", "Middle East region."),
     ("global", "Global", None, "Global", "No regional pinning — global routing."),
+]
+
+# ISO 3166-1 alpha-2 countries offered by the first regional rollout.
+# This catalog is intentionally Asia-only for now.
+COUNTRIES = [
+    ("af", "Afghanistan"), ("am", "Armenia"), ("az", "Azerbaijan"),
+    ("bh", "Bahrain"), ("bd", "Bangladesh"), ("bt", "Bhutan"),
+    ("bn", "Brunei"), ("kh", "Cambodia"), ("cn", "China"),
+    ("cy", "Cyprus"), ("ge", "Georgia"), ("in", "India"),
+    ("id", "Indonesia"), ("ir", "Iran"), ("iq", "Iraq"),
+    ("il", "Israel"), ("jp", "Japan"), ("jo", "Jordan"),
+    ("kz", "Kazakhstan"), ("kw", "Kuwait"), ("kg", "Kyrgyzstan"),
+    ("la", "Laos"), ("lb", "Lebanon"), ("my", "Malaysia"),
+    ("mv", "Maldives"), ("mn", "Mongolia"), ("mm", "Myanmar"),
+    ("np", "Nepal"), ("kp", "North Korea"), ("om", "Oman"),
+    ("pk", "Pakistan"), ("ps", "Palestine"), ("ph", "Philippines"),
+    ("qa", "Qatar"), ("sa", "Saudi Arabia"), ("sg", "Singapore"),
+    ("kr", "South Korea"), ("lk", "Sri Lanka"), ("sy", "Syria"),
+    ("tw", "Taiwan"), ("tj", "Tajikistan"), ("th", "Thailand"),
+    ("tl", "Timor-Leste"), ("tr", "Türkiye"), ("tm", "Turkmenistan"),
+    ("ae", "United Arab Emirates"), ("uz", "Uzbekistan"),
+    ("vn", "Vietnam"), ("ye", "Yemen"),
 ]
 
 AI_PROFILES = [
@@ -348,7 +371,8 @@ def run_base_seed(db: Session | None = None) -> dict:
     created = {"roles": 0, "permissions": 0, "plans": 0, "languages": 0, "voices": 0,
                "guardrails": 0, "models": 0, "integrations": 0, "health_metrics": 0,
                "settings": 0, "templates": 0, "users": 0,
-               "industries": 0, "data_regions": 0, "ai_profiles": 0, "providers": 0}
+               "industries": 0, "countries": 0, "data_regions": 0,
+               "ai_profiles": 0, "providers": 0}
     try:
         role_map: dict[str, Role] = {}
         for code, name, scope, desc in ROLES:
@@ -428,14 +452,34 @@ def run_base_seed(db: Session | None = None) -> dict:
                 ))
                 created["industries"] += 1
 
+        countries: dict[str, Country] = {}
+        for i, (code, name) in enumerate(COUNTRIES):
+            row = db.scalar(select(Country).where(Country.code == code))
+            if row is None:
+                row = Country(
+                    id=new_id("ctry"), code=code, name=name,
+                    region="Asia", sort_order=i,
+                )
+                db.add(row)
+                created["countries"] += 1
+            countries[name] = row
+
         for i, (code, name, country, region, desc) in enumerate(DATA_REGIONS):
-            if db.scalar(select(DataRegion).where(DataRegion.code == code)) is None:
+            row = db.scalar(select(DataRegion).where(DataRegion.code == code))
+            country_row = countries.get(country or "")
+            if row is None:
                 db.add(DataRegion(
                     id=new_id("dr"), code=code, name=name, country=country,
+                    country_code=country_row.code if country_row else None,
                     region=region, description=desc, sort_order=i,
                     infrastructure_ready=False,
                 ))
                 created["data_regions"] += 1
+            elif country_row is not None and not row.country_code:
+                # Backfill only the structured country reference; user-edited
+                # deployment/service settings remain untouched.
+                row.country_code = country_row.code
+                row.country = country_row.name
 
         for i, (code, name, cost, desc, overrides) in enumerate(AI_PROFILES):
             if db.scalar(select(AiConfigProfile).where(AiConfigProfile.code == code)) is None:

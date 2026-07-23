@@ -103,7 +103,7 @@ export interface VoiceSettings {
 
 /* ---------- Provider catalog (database-driven) ---------- */
 
-export type VoiceCapability = "stt" | "tts" | "llm";
+export type VoiceCapability = "stt" | "tts" | "llm" | "embedding";
 
 export interface ProviderInfo {
   code: string;
@@ -372,6 +372,7 @@ export type IndexStatus = "indexed" | "indexing" | "failed" | "pending" | "stale
 
 export interface KnowledgeSource {
   id: string;
+  tenantId?: string | null;
   botId?: string;
   scope: "bot" | "tenant" | "global";
   type: KnowledgeType;
@@ -383,6 +384,8 @@ export interface KnowledgeSource {
   lastSync: string;
   quality: number; // 0-100 index health
   usage30d: number; // retrieval hits
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface KnowledgeGap {
@@ -391,6 +394,38 @@ export interface KnowledgeGap {
   frequency: number;
   lastAsked: string;
   suggestedSource: string;
+}
+
+/** Complete Knowledge Base detail (admin/tenant View action). */
+export interface KnowledgeDetail {
+  id: string;
+  name: string;
+  description: string;
+  type: KnowledgeType;
+  scope: string;
+  status: IndexStatus;
+  tenantId: string | null;
+  tenantName: string | null;
+  botId: string | null;
+  botName: string | null;
+  chunks: number;
+  sizeKb: number;
+  quality: number;
+  usage30d: number;
+  lastSync: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  createdBy: string | null;
+  stats: {
+    documentCount: number;
+    readyDocuments: number;
+    failedDocuments: number;
+    activeChunks: number;
+    embeddedChunks: number;
+    embeddingModels: string[];
+    lastError: string | null;
+  };
+  documents: DocumentStatus[];
 }
 
 /* ---------- Knowledge documents (ingestion pipeline) ---------- */
@@ -428,11 +463,37 @@ export interface SearchTestSource {
   chunkIndex: number;
   pageNumber: number | null;
   section: string | null;
-  score: number;
-  vectorScore: number;
-  keywordScore: number;
+  rank: number | null;
+  score: number; // final fused score, normalized to 0..1
+  vectorScore: number | null;
+  keywordScore: number | null; // raw BM25 (ts_rank_cd)
+  rerankScore: number | null;
+  passedGate: boolean;
   text: string;
-  documentName: string;
+  documentName: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+/** Stage counts/timings from the retrieval pipeline (test console). */
+export interface SearchDiagnostics {
+  kbCount: number;
+  queryLength: number;
+  embedder?: string;
+  embedError?: string | null;
+  fusionMethod?: string;
+  semanticWeight?: number;
+  bm25Weight?: number;
+  minScore?: number;
+  minKeywordRank?: number;
+  denseCandidates: number;
+  keywordCandidates: number;
+  mergedCandidates: number;
+  afterDedupe?: number;
+  afterGate?: number;
+  reranked?: number;
+  returned: number;
+  timingsMs?: Record<string, number>;
+  zeroResultReason: string | null;
 }
 
 export interface SearchTestResult {
@@ -443,6 +504,7 @@ export interface SearchTestResult {
   kbIds: string[];
   durationMs: number;
   skippedReason: string | null;
+  diagnostics: SearchDiagnostics | null;
   sources: SearchTestSource[];
 }
 
@@ -565,6 +627,9 @@ export interface ChunkQuality extends ChunkWarnings {
 export interface ReviewChunkDetail extends ReviewChunk {
   metadata: Record<string, unknown>;
   contentHash: string;
+  /** Ownership context for the detail drawer. */
+  tenantName: string | null;
+  fileName: string | null;
   quality: ChunkQuality;
   prev: ChunkNeighbor | null;
   current: ChunkNeighbor;
@@ -867,10 +932,18 @@ export interface IndustryMaster extends MasterCommon {
   sortOrder: number;
 }
 
+export interface CountryMaster extends MasterCommon {
+  code: string;
+  name: string;
+  region: "Asia";
+  sortOrder: number;
+}
+
 export interface DataRegionMaster extends MasterCommon {
   code: string;
   name: string;
   description: string;
+  countryCode: string;
   country: string;
   region: string;
   cloudProvider: string;

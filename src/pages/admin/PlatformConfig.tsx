@@ -1,19 +1,30 @@
 /* Platform Configuration — Super Admin master-data management.
-   Industries, Data Regions, Plans, AI Configuration Profiles, Providers
+   Industries, Countries, Data Regions, Plans, AI Configuration Profiles, Providers
    (Voice/STT/TTS/LLM/Embedding), Supported Languages and Voice Profiles.
 
-   Every list is server-backed (search / sort / pagination), every mutation is
-   permission-enforced and audited on the backend; referenced records cannot be
-   permanently deleted — the API returns a clear message and the UI offers
-   deactivation instead. */
+   Every list is server-backed (search / filters / sort / pagination), every
+   mutation is permission-enforced and audited on the backend; referenced
+   records cannot be permanently deleted — the API returns a clear message and
+   the UI offers deactivation instead.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+   Add-form drafts live at the page level (per master type), so accidentally
+   closing a modal never loses typed data — drafts clear only on successful
+   save or an explicit Reset. */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/state/AppContext";
 import {
-  createMaster, deleteMaster, duplicatePlan, getMasterAudit, listMaster,
-  listPlanTenants, setMasterStatus, updateMaster, type MasterType,
+  createMaster, deleteMaster, duplicatePlan, getMasterAudit, getModelLanguages,
+  listMaster, listPlanTenants, setMasterStatus, updateMaster, type MasterType,
 } from "@/services/api";
-import { Button, Callout, ConfirmModal, Drawer, EmptyState, ErrorState, Field, Modal, StatusChip, Tabs, Toggle } from "@/components/ui";
+import type { ApiRequestError } from "@/services/http";
+import type { ModelLanguagesInfo, ProviderSettings, VoiceCapability } from "@/types/domain";
+import {
+  Button, Callout, ConfirmModal, Drawer, EmptyState, ErrorState, Field, Modal,
+  NumberInput, StatusChip, Tabs, Toggle,
+} from "@/components/ui";
+import { ModelSelect, ProviderSelect, useModelInfos } from "@/components/ProviderModelSelect";
+import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
 import { DataTable, type Column } from "@/components/DataTable";
 
 /* ---------- Generic row & field descriptors ---------- */
@@ -34,12 +45,22 @@ type Row = Record<string, unknown> & {
 interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "toggle" | "select";
+  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider";
   options?: { value: string; label: string }[];
   required?: boolean;
+  /** Required only while creating; legacy records can still be edited. */
+  requiredOnCreate?: boolean;
   hint?: string;
   createOnly?: boolean;
+  /** Displayed but never directly editable (the value may be auto-filled). */
+  readOnly?: boolean;
   step?: number;
+  /** Fields are rendered grouped under their section heading. */
+  section?: string;
+  /** provider/model fields: which catalog capability they configure. */
+  capability?: VoiceCapability;
+  /** model fields: the form key holding the selected provider. */
+  providerKey?: string;
 }
 
 interface TypeSpec {
@@ -49,12 +70,27 @@ interface TypeSpec {
   columns: Column<Row>[];
   fields: FieldDef[];
   kindFilter?: boolean;
+  voiceFilters?: boolean;
 }
 
 const text = (key: string, label: string, opts: Partial<FieldDef> = {}): FieldDef =>
   ({ key, label, type: "text", ...opts });
 const num = (key: string, label: string, opts: Partial<FieldDef> = {}): FieldDef =>
   ({ key, label, type: "number", ...opts });
+
+/* Supported plan currencies — must stay in sync with the backend whitelist. */
+export const CURRENCIES = [
+  { code: "USD", symbol: "$", name: "US Dollar" },
+  { code: "INR", symbol: "₹", name: "Indian Rupee" },
+  { code: "EUR", symbol: "€", name: "Euro" },
+  { code: "GBP", symbol: "£", name: "British Pound" },
+  { code: "AED", symbol: "د.إ", name: "UAE Dirham" },
+] as const;
+/* The Plan table's DB default is USD — the existing application configuration. */
+const DEFAULT_CURRENCY = "USD";
+
+const currencySymbol = (code: unknown): string =>
+  CURRENCIES.find((c) => c.code === String(code ?? ""))?.symbol ?? "";
 
 const nameCol: Column<Row> = {
   key: "name", header: "Name", sortValue: (r) => String(r.name ?? ""),
@@ -77,6 +113,11 @@ const updatedCol: Column<Row> = {
   key: "updatedAt", header: "Updated", sortValue: (r) => String(r.updatedAt ?? ""),
   render: (r) => <span className="t-micro">{r.updatedAt ? new Date(String(r.updatedAt)).toLocaleDateString() : "—"}{r.updatedBy ? ` · ${r.updatedBy}` : ""}</span>,
 };
+const sortOrderCol: Column<Row> = {
+  key: "sortOrder", header: "Sort order", align: "right",
+  sortValue: (r) => Number(r.sortOrder ?? 0),
+  render: (r) => <span className="t-num">{Number(r.sortOrder ?? 0)}</span>,
+};
 
 const PROVIDER_KINDS = ["stt", "tts", "llm", "embedding", "voice"] as const;
 
@@ -85,11 +126,26 @@ const SPECS: TypeSpec[] = [
     mtype: "industries", label: "Industries", singular: "industry",
     columns: [nameCol, codeCol, { key: "description", header: "Description", render: (r) => <span className="t-sub">{String(r.description ?? "")}</span> }, usageCol, statusCol, updatedCol],
     fields: [
-      text("code", "Code", { required: true, createOnly: true, hint: "Stable identifier, e.g. banking" }),
-      text("name", "Name", { required: true }),
-      { key: "description", label: "Description", type: "textarea" },
-      text("icon", "Icon"),
-      num("sortOrder", "Sort order"),
+      text("code", "Code", { required: true, createOnly: true, hint: "Stable identifier, e.g. banking", section: "Identity" }),
+      text("name", "Name", { required: true, section: "Identity" }),
+      { key: "description", label: "Description", type: "textarea", section: "Identity" },
+      text("icon", "Icon", { section: "Presentation" }),
+      num("sortOrder", "Sort order", { section: "Presentation" }),
+    ],
+  },
+  {
+    mtype: "countries", label: "Countries", singular: "country",
+    columns: [
+      nameCol, codeCol,
+      { key: "region", header: "Region", render: () => <span className="tag">Asia</span> },
+      usageCol, statusCol, sortOrderCol,
+    ],
+    fields: [
+      text("code", "ISO country code", { required: true, createOnly: true, hint: "2-letter ISO code, e.g. IN", section: "Identity" }),
+      text("name", "Country name", { required: true, section: "Identity" }),
+      { key: "region", label: "Region", type: "select", readOnly: true, section: "Location",
+        hint: "The current rollout supports Asia only.", options: [{ value: "Asia", label: "Asia" }] },
+      num("sortOrder", "Sort order", { section: "Presentation" }),
     ],
   },
   {
@@ -106,53 +162,56 @@ const SPECS: TypeSpec[] = [
       usageCol, statusCol, updatedCol,
     ],
     fields: [
-      text("code", "Code", { required: true, createOnly: true, hint: "e.g. in-mumbai" }),
-      text("name", "Name", { required: true }),
-      { key: "description", label: "Description", type: "textarea" },
-      text("country", "Country"),
-      text("region", "Region"),
-      text("cloudProvider", "Cloud provider"),
-      text("storageRegion", "Storage region"),
-      text("databaseRegion", "Database region"),
-      text("recordingRegion", "Recording region"),
-      text("transcriptRegion", "Transcript region"),
-      { key: "infrastructureReady", label: "Infrastructure deployed", type: "toggle",
+      text("code", "Code", { required: true, createOnly: true, hint: "e.g. in-mumbai", section: "Identity" }),
+      text("name", "Name", { required: true, section: "Identity" }),
+      { key: "description", label: "Description", type: "textarea", section: "Identity" },
+      { key: "countryCode", label: "Country", type: "country", requiredOnCreate: true,
+        section: "Location", hint: "Loaded from the active Asia country master." },
+      { key: "region", label: "Region", type: "select", readOnly: true, section: "Location",
+        hint: "Auto-filled from the selected country.", options: [{ value: "Asia", label: "Asia" }] },
+      text("cloudProvider", "Cloud provider", { section: "Location" }),
+      text("storageRegion", "Storage region", { section: "Service regions" }),
+      text("databaseRegion", "Database region", { section: "Service regions" }),
+      text("recordingRegion", "Recording region", { section: "Service regions" }),
+      text("transcriptRegion", "Transcript region", { section: "Service regions" }),
+      { key: "infrastructureReady", label: "Infrastructure deployed", type: "toggle", section: "Deployment",
         hint: "Only enable when infrastructure actually runs in this region — the UI distinguishes configured vs deployed regions." },
-      num("sortOrder", "Sort order"),
+      num("sortOrder", "Sort order", { section: "Deployment" }),
     ],
   },
   {
     mtype: "plans", label: "Plans", singular: "plan",
     columns: [
       nameCol, codeCol,
-      { key: "priceMonthly", header: "Monthly", align: "right", sortValue: (r) => Number(r.priceMonthly ?? 0), render: (r) => <span>{String(r.currency ?? "USD")} {Number(r.priceMonthly ?? 0).toLocaleString()}</span> },
+      { key: "priceMonthly", header: "Monthly", align: "right", sortValue: (r) => Number(r.priceMonthly ?? 0), render: (r) => <span>{currencySymbol(r.currency)}{Number(r.priceMonthly ?? 0).toLocaleString()} {String(r.currency ?? DEFAULT_CURRENCY)}</span> },
       { key: "limits", header: "Limits", render: (r) => <span className="t-micro">{Number(r.botLimit ?? 0)} bots · {Number(r.minutesIncluded ?? 0).toLocaleString()} min · {Number(r.seatsIncluded ?? 0)} seats</span> },
       { key: "isRecommended", header: "Flags", render: (r) => <span className="row gap-6">{Boolean(r.isRecommended) && <span className="tag">Recommended</span>}{!r.isPublic && <span className="tag">Hidden</span>}</span> },
       usageCol, statusCol, updatedCol,
     ],
     fields: [
-      text("code", "Code", { required: true, createOnly: true }),
-      text("name", "Name", { required: true }),
-      { key: "description", label: "Description", type: "textarea" },
-      num("priceMonthly", "Monthly price", { step: 0.01 }),
-      num("priceAnnual", "Annual price", { step: 0.01 }),
-      text("currency", "Currency", { hint: "ISO code, e.g. USD / INR" }),
-      num("botLimit", "Included bots"),
-      num("minutesIncluded", "Included minutes"),
-      num("seatsIncluded", "Included users"),
-      num("kbLimit", "Included knowledge bases"),
-      num("storageGbIncluded", "Included storage (GB)"),
-      num("languagesIncluded", "Included languages"),
-      num("concurrentCallLimit", "Concurrent call limit"),
-      num("monthlyCallLimit", "Monthly call limit (0 = unlimited)"),
-      num("monthlyTokenLimit", "Monthly token limit (0 = unlimited)"),
-      num("monthlyEmbeddingLimit", "Monthly embedding limit (0 = unlimited)"),
-      num("recordingRetentionDays", "Recording retention (days)"),
-      num("transcriptRetentionDays", "Transcript retention (days)"),
-      num("analyticsRetentionDays", "Analytics retention (days)"),
-      { key: "isPublic", label: "Visible in onboarding", type: "toggle" },
-      { key: "isRecommended", label: "Recommended", type: "toggle" },
-      num("sortOrder", "Sort order"),
+      text("code", "Code", { required: true, createOnly: true, section: "Basics" }),
+      text("name", "Name", { required: true, section: "Basics" }),
+      { key: "description", label: "Description", type: "textarea", section: "Basics" },
+      num("priceMonthly", "Monthly price", { step: 0.01, section: "Pricing" }),
+      num("priceAnnual", "Annual price", { step: 0.01, section: "Pricing" }),
+      { key: "currency", label: "Currency", type: "currency", section: "Pricing",
+        hint: "Applies to both prices; shown to tenants during onboarding." },
+      num("botLimit", "Included bots", { section: "Included limits" }),
+      num("minutesIncluded", "Included minutes", { section: "Included limits" }),
+      num("seatsIncluded", "Included users", { section: "Included limits" }),
+      num("kbLimit", "Included knowledge bases", { section: "Included limits" }),
+      num("storageGbIncluded", "Included storage (GB)", { section: "Included limits" }),
+      num("languagesIncluded", "Included languages", { section: "Included limits" }),
+      num("concurrentCallLimit", "Concurrent call limit", { section: "Usage caps", hint: "0 = unlimited" }),
+      num("monthlyCallLimit", "Monthly call limit", { section: "Usage caps", hint: "0 = unlimited" }),
+      num("monthlyTokenLimit", "Monthly token limit", { section: "Usage caps", hint: "0 = unlimited" }),
+      num("monthlyEmbeddingLimit", "Monthly embedding limit", { section: "Usage caps", hint: "0 = unlimited" }),
+      num("recordingRetentionDays", "Recording retention (days)", { section: "Data retention" }),
+      num("transcriptRetentionDays", "Transcript retention (days)", { section: "Data retention" }),
+      num("analyticsRetentionDays", "Analytics retention (days)", { section: "Data retention" }),
+      { key: "isPublic", label: "Visible in onboarding", type: "toggle", section: "Presentation" },
+      { key: "isRecommended", label: "Recommended", type: "toggle", section: "Presentation" },
+      num("sortOrder", "Sort order", { section: "Presentation" }),
     ],
   },
   {
@@ -164,25 +223,29 @@ const SPECS: TypeSpec[] = [
       usageCol, statusCol, updatedCol,
     ],
     fields: [
-      text("code", "Code", { required: true, createOnly: true }),
-      text("name", "Name", { required: true }),
-      { key: "description", label: "Description", type: "textarea" },
-      text("sttProvider", "STT provider"), text("sttModel", "STT model"),
-      text("llmProvider", "LLM provider"), text("llmModel", "LLM model"),
-      text("ttsProvider", "TTS provider"), text("ttsModel", "TTS model"),
-      text("defaultVoice", "Default voice"),
-      text("embeddingProvider", "Embedding provider"), text("embeddingModel", "Embedding model"),
-      num("embeddingDimension", "Embedding dimension"),
-      text("rerankingModel", "Reranking model"),
-      num("retrievalTopK", "Retrieval top-K"),
-      num("retrievalThreshold", "Retrieval threshold", { step: 0.05 }),
-      num("temperature", "Temperature", { step: 0.1 }),
-      num("maxOutputTokens", "Max output tokens"),
-      num("responseTimeoutMs", "Response timeout (ms)"),
-      { key: "costCategory", label: "Cost category", type: "select", options: [
+      text("code", "Code", { required: true, createOnly: true, section: "Basics" }),
+      text("name", "Name", { required: true, section: "Basics" }),
+      { key: "description", label: "Description", type: "textarea", section: "Basics" },
+      { key: "sttProvider", label: "STT provider", type: "provider", capability: "stt", section: "Speech to text" },
+      { key: "sttModel", label: "STT model", type: "model", capability: "stt", providerKey: "sttProvider", section: "Speech to text" },
+      { key: "llmProvider", label: "LLM provider", type: "provider", capability: "llm", section: "Language model" },
+      { key: "llmModel", label: "LLM model", type: "model", capability: "llm", providerKey: "llmProvider", section: "Language model" },
+      { key: "ttsProvider", label: "TTS provider", type: "provider", capability: "tts", section: "Text to speech" },
+      { key: "ttsModel", label: "TTS model", type: "model", capability: "tts", providerKey: "ttsProvider", section: "Text to speech" },
+      text("defaultVoice", "Default voice", { section: "Text to speech" }),
+      { key: "embeddingProvider", label: "Embedding provider", type: "provider", capability: "embedding", section: "Retrieval" },
+      { key: "embeddingModel", label: "Embedding model", type: "model", capability: "embedding", providerKey: "embeddingProvider", section: "Retrieval" },
+      num("embeddingDimension", "Embedding dimension", { section: "Retrieval" }),
+      text("rerankingModel", "Reranking model", { section: "Retrieval" }),
+      num("retrievalTopK", "Retrieval top-K", { section: "Retrieval" }),
+      num("retrievalThreshold", "Retrieval threshold", { step: 0.05, section: "Retrieval" }),
+      num("temperature", "Temperature", { step: 0.1, section: "Generation" }),
+      num("maxOutputTokens", "Max output tokens", { section: "Generation" }),
+      num("responseTimeoutMs", "Response timeout (ms)", { section: "Generation" }),
+      { key: "costCategory", label: "Cost category", type: "select", section: "Presentation", options: [
         { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" },
       ]},
-      num("sortOrder", "Sort order"),
+      num("sortOrder", "Sort order", { section: "Presentation" }),
     ],
   },
   {
@@ -194,15 +257,15 @@ const SPECS: TypeSpec[] = [
       usageCol, statusCol, updatedCol,
     ],
     fields: [
-      { key: "kind", label: "Kind", type: "select", required: true, createOnly: true,
+      { key: "kind", label: "Kind", type: "select", required: true, createOnly: true, section: "Identity",
         options: PROVIDER_KINDS.map((k) => ({ value: k, label: k.toUpperCase() })) },
-      text("code", "Code", { required: true, createOnly: true }),
-      text("name", "Name", { required: true }),
-      { key: "description", label: "Description", type: "textarea" },
-      text("website", "Website"),
-      { key: "requiresApiKey", label: "Requires API key", type: "toggle" },
-      text("secretRef", "Secret reference", { hint: "env:VAR_NAME reference only — raw keys are never stored here." }),
-      num("sortOrder", "Sort order"),
+      text("code", "Code", { required: true, createOnly: true, section: "Identity" }),
+      text("name", "Name", { required: true, section: "Identity" }),
+      { key: "description", label: "Description", type: "textarea", section: "Identity" },
+      text("website", "Website", { section: "Access" }),
+      { key: "requiresApiKey", label: "Requires API key", type: "toggle", section: "Access" },
+      text("secretRef", "Secret reference", { hint: "env:VAR_NAME reference only — raw keys are never stored here.", section: "Access" }),
+      num("sortOrder", "Sort order", { section: "Access" }),
     ],
   },
   {
@@ -229,84 +292,182 @@ const SPECS: TypeSpec[] = [
           return <span className="t-micro">STT {ps.stt?.length ?? 0} · TTS {ps.tts?.length ?? 0}</span>;
         },
       },
-      usageCol, statusCol, updatedCol,
+      usageCol, statusCol, sortOrderCol,
     ],
     fields: [
-      text("code", "Locale code", { required: true, createOnly: true, hint: "BCP-47, e.g. hi-IN" }),
-      text("name", "Display name", { required: true }),
-      text("nativeName", "Native name"),
-      text("isoCode", "ISO 639 code", { hint: "e.g. hi" }),
-      text("script", "Script", { hint: "e.g. Devanagari" }),
-      { key: "direction", label: "Text direction", type: "select", options: [
+      text("code", "Locale code", { required: true, createOnly: true, hint: "BCP-47, e.g. hi-IN", section: "Identity" }),
+      text("name", "Display name", { required: true, section: "Identity" }),
+      text("nativeName", "Native name", { section: "Identity" }),
+      text("isoCode", "ISO 639 code", { hint: "e.g. hi", section: "Script" }),
+      text("script", "Script", { hint: "e.g. Devanagari", section: "Script" }),
+      { key: "direction", label: "Text direction", type: "select", section: "Script", options: [
         { value: "ltr", label: "Left to right" }, { value: "rtl", label: "Right to left" },
       ]},
-      { key: "isDefault", label: "Platform default", type: "toggle" },
-      num("sortOrder", "Sort order"),
+      { key: "isDefault", label: "Platform default", type: "toggle", section: "Presentation" },
+      num("sortOrder", "Sort order", { section: "Presentation" }),
     ],
   },
   {
-    mtype: "voices", label: "Voices", singular: "voice",
+    mtype: "voices", label: "Voices", singular: "voice", voiceFilters: true,
     columns: [
       { ...nameCol, render: (r) => <span className="row gap-8"><span className="t-strong">{String(r.name ?? "")}</span>{Boolean(r.isDefault) && <span className="tag">Default</span>}</span> },
       { key: "provider", header: "Provider", render: (r) => <span>{String(r.provider ?? "platform")}</span> },
-      { key: "languages", header: "Languages", render: (r) => <span className="t-micro">{((r.languages as string[]) ?? []).join(", ")}</span> },
+      { key: "languages", header: "Languages", render: (r) => <span className="t-micro">{((r.languages as string[]) ?? []).join(", ") || String(r.locale ?? "")}</span> },
       { key: "gender", header: "Gender", render: (r) => <span>{String(r.gender ?? "")}</span> },
       { key: "speakingRate", header: "Rate", align: "right", render: (r) => <span>{Number(r.speakingRate ?? 1).toFixed(2)}×</span> },
-      usageCol, statusCol, updatedCol,
+      usageCol, statusCol, sortOrderCol,
     ],
-    fields: [
-      text("name", "Name", { required: true }),
-      { key: "gender", label: "Gender / style", type: "select", options: [
-        { value: "female", label: "Female" }, { value: "male", label: "Male" }, { value: "neutral", label: "Neutral" },
-      ]},
-      text("provider", "Provider", { hint: "platform, elevenlabs, azure, google…" }),
-      text("providerVoiceId", "Provider voice ID"),
-      text("locale", "Locale", { hint: "e.g. en-IN" }),
-      text("accent", "Accent"),
-      { key: "description", label: "Description", type: "textarea" },
-      num("speakingRate", "Speaking rate", { step: 0.05 }),
-      num("pitch", "Pitch", { step: 0.05 }),
-      num("latencyMs", "Latency (ms)"),
-      { key: "premium", label: "Premium", type: "toggle" },
-      { key: "isDefault", label: "Platform default", type: "toggle" },
-      { key: "sampleText", label: "Sample sentence", type: "textarea" },
-      num("sortOrder", "Sort order"),
-    ],
+    // Voices use the dedicated provider-aware VoiceEditor (fields depend on
+    // the selected TTS provider's catalog schema), not the generic editor.
+    fields: [],
   },
 ];
 
+/* ---------- Form state helpers ---------- */
+
+function buildInitialForm(spec: TypeSpec): Record<string, unknown> {
+  if (spec.mtype === "voices") return buildVoiceForm(null);
+  const initial: Record<string, unknown> = {};
+  for (const f of spec.fields) {
+    initial[f.key] = f.type === "toggle" ? false
+      : f.type === "currency" ? DEFAULT_CURRENCY
+      : f.key === "region" && (spec.mtype === "countries" || spec.mtype === "data-regions") ? "Asia"
+      : "";
+  }
+  return initial;
+}
+
+function buildFormFromRow(spec: TypeSpec, row: Row): Record<string, unknown> {
+  if (spec.mtype === "voices") return buildVoiceForm(row);
+  const form: Record<string, unknown> = {};
+  for (const f of spec.fields) {
+    const value = row[f.key];
+    form[f.key] = f.type === "toggle" ? Boolean(value)
+      : f.type === "currency" ? String(value ?? DEFAULT_CURRENCY)
+      : value ?? "";
+  }
+  return form;
+}
+
+/** Voice form state — the provider decides which settings exist; the single
+    selected model is stored as `modelCodes: [model]` on the API. */
+function buildVoiceForm(row: Row | null): Record<string, unknown> {
+  return {
+    name: String(row?.name ?? ""),
+    gender: String(row?.gender ?? ""),
+    description: String(row?.description ?? ""),
+    provider: String(row?.provider ?? ""),
+    providerVoiceId: String(row?.providerVoiceId ?? ""),
+    model: (row?.modelCodes as string[] | undefined)?.[0] ?? "",
+    locale: String(row?.locale ?? ""),
+    sampleText: String(row?.sample ?? ""),
+    premium: Boolean(row?.premium),
+    isDefault: Boolean(row?.isDefault),
+    sortOrder: row?.sortOrder ?? "",
+    providerSettings: (row?.providerSettings as ProviderSettings | undefined) ?? {},
+  };
+}
+
 /* ---------- Editor modal ---------- */
 
-function MasterEditor({ spec, row, onClose, onSaved }: {
-  spec: TypeSpec; row: Row | null; onClose: () => void; onSaved: () => void;
+/** Multi-key form updates are delivered as one patch so no key is lost when a
+    change cascades (e.g. a provider change also clearing its model). */
+type FormPatch = Record<string, unknown>;
+
+interface CountryOption {
+  code: string;
+  name: string;
+  region: string;
+}
+
+function useAsiaCountries(enabled: boolean) {
+  const [countries, setCountries] = useState<CountryOption[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    listMaster<Row>("countries", {
+      includeInactive: false, pageSize: 100, sortBy: "name", sortDir: "asc",
+    }).then((result) => {
+      if (!alive) return;
+      setCountries(result.items.map((country) => ({
+        code: String(country.code ?? ""),
+        name: String(country.name ?? ""),
+        region: String(country.region ?? "Asia"),
+      })));
+      setLoading(false);
+    }).catch((e: Error) => {
+      if (!alive) return;
+      setError(e.message || "Countries could not be loaded.");
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [enabled]);
+  return { countries, loading, error };
+}
+
+function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
+  spec: TypeSpec;
+  row: Row | null; // null = add mode
+  form: Record<string, unknown>;
+  onChange: (patch: FormPatch) => void;
+  onReset: () => void;
+  onClose: () => void;
+  onSaved: () => void;
 }) {
   const { toast } = useApp();
-  const [form, setForm] = useState<Record<string, unknown>>(() => {
-    const initial: Record<string, unknown> = {};
-    for (const f of spec.fields) initial[f.key] = row ? row[f.key] ?? "" : f.type === "toggle" ? false : "";
-    return initial;
-  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const countryCatalog = useAsiaCountries(spec.mtype === "data-regions");
 
-  const set = (key: string, value: unknown) => setForm((f) => ({ ...f, [key]: value }));
+  const set = (key: string, value: unknown, extra: FormPatch = {}) => {
+    const patch: FormPatch = { ...extra, [key]: value };
+    // A provider change invalidates its dependent model selection.
+    for (const f of spec.fields) {
+      if (f.type === "model" && f.providerKey === key && form[f.key]) patch[f.key] = "";
+    }
+    onChange(patch);
+    // Stale API/client validation for this field is cleared as soon as it changes.
+    setFieldErrors((errs) => {
+      if (!(key in errs)) return errs;
+      const next = { ...errs };
+      delete next[key];
+      return next;
+    });
+    if (error) setError(null);
+  };
 
   const save = async () => {
+    if (busy) return;
+    const clientErrors: Record<string, string> = {};
     for (const f of spec.fields) {
-      if (f.required && (row ? !f.createOnly : true) && !String(form[f.key] ?? "").trim()) {
-        setError(`${f.label} is required.`);
-        return;
+      const required = f.required || (!row && f.requiredOnCreate);
+      if (required && (row ? !f.createOnly : true) && !String(form[f.key] ?? "").trim()) {
+        clientErrors[f.key] = `${f.label} is required.`;
       }
+    }
+    if (Object.keys(clientErrors).length) {
+      setFieldErrors(clientErrors);
+      setError("Fix the highlighted fields and try again.");
+      return;
     }
     setBusy(true);
     setError(null);
+    setFieldErrors({});
     try {
       const payload: Record<string, unknown> = {};
       for (const f of spec.fields) {
         if (row && f.createOnly) continue;
         let value = form[f.key];
         if (f.type === "number") value = value === "" || value === null ? undefined : Number(value);
-        if (value === "" || value === undefined) continue;
+        // Provider/model fields submit explicitly on edit so an emptied model
+        // clears the stored value instead of being silently skipped.
+        const clearable = f.type === "provider" || f.type === "model";
+        if ((value === "" && !(row && clearable)) || value === undefined) continue;
         payload[f.key] = value;
       }
       if (row) await updateMaster(spec.mtype, row.id, payload);
@@ -315,48 +476,439 @@ function MasterEditor({ spec, row, onClose, onSaved }: {
       onSaved();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed.");
+      const api = e as ApiRequestError;
+      if (api.fieldErrors) setFieldErrors(api.fieldErrors);
+      setError(api instanceof Error ? api.message : "Save failed.");
     } finally {
       setBusy(false);
     }
   };
 
+  /* Group fields by section, preserving spec order. */
+  const sections = useMemo(() => {
+    const grouped: { title: string; fields: FieldDef[] }[] = [];
+    for (const f of spec.fields) {
+      const title = f.section ?? "";
+      const last = grouped[grouped.length - 1];
+      if (last && last.title === title) last.fields.push(f);
+      else grouped.push({ title, fields: [f] });
+    }
+    return grouped;
+  }, [spec]);
+
+  const renderField = (f: FieldDef) => {
+    const locked = Boolean(row && f.createOnly) || Boolean(f.readOnly);
+    const common = { "aria-label": f.label, disabled: locked };
+    if (f.type === "toggle") {
+      return <Toggle checked={Boolean(form[f.key])} onChange={(v) => set(f.key, v)} label={f.label} />;
+    }
+    if (f.type === "currency") {
+      return (
+        <select className="select" value={String(form[f.key] ?? DEFAULT_CURRENCY)} {...common}
+          onChange={(e) => set(f.key, e.target.value)}>
+          {CURRENCIES.map((c) => (
+            <option key={c.code} value={c.code}>{c.code} · {c.symbol} {c.name}</option>
+          ))}
+        </select>
+      );
+    }
+    if (f.type === "country") {
+      const value = String(form[f.key] ?? "");
+      const known = countryCatalog.countries.some((country) => country.code === value);
+      return (
+        <select className="select" value={value} {...common}
+          onChange={(e) => {
+            const selected = countryCatalog.countries.find((country) => country.code === e.target.value);
+            set(f.key, e.target.value, selected ? { region: selected.region } : {});
+          }}>
+          <option value="">
+            {countryCatalog.loading ? "Loading countries…"
+              : countryCatalog.error ? "Countries unavailable"
+              : "Select country"}
+          </option>
+          {value && !known && <option value={value}>{String(row?.country ?? value)} (legacy)</option>}
+          {countryCatalog.countries.map((country) => (
+            <option key={country.code} value={country.code}>{country.name}</option>
+          ))}
+        </select>
+      );
+    }
+    if (f.type === "provider" && f.capability) {
+      return (
+        <ProviderSelect capability={f.capability} value={String(form[f.key] ?? "")}
+          label={f.label} disabled={locked} onChange={(code) => set(f.key, code)} />
+      );
+    }
+    if (f.type === "voiceProvider") {
+      return (
+        <VoiceProviderSelect value={String(form[f.key] ?? "")} label={f.label}
+          disabled={locked} onChange={(code) => set(f.key, code)} />
+      );
+    }
+    if (f.type === "model" && f.capability && f.providerKey) {
+      return (
+        <ModelSelect capability={f.capability} provider={String(form[f.providerKey] ?? "")}
+          value={String(form[f.key] ?? "")} label={f.label} disabled={locked}
+          onChange={(code) => set(f.key, code)} />
+      );
+    }
+    if (f.type === "select") {
+      return (
+        <select className="select" value={String(form[f.key] ?? "")} {...common}
+          onChange={(e) => set(f.key, e.target.value)}>
+          <option value="">—</option>
+          {(f.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      );
+    }
+    if (f.type === "textarea") {
+      return (
+        <textarea className="textarea" rows={2} value={String(form[f.key] ?? "")} {...common}
+          onChange={(e) => set(f.key, e.target.value)} />
+      );
+    }
+    if (f.type === "number") {
+      return (
+        <NumberInput value={String(form[f.key] ?? "")} step={f.step} min={0} {...common}
+          invalid={Boolean(fieldErrors[f.key])} onChange={(v) => set(f.key, v)} />
+      );
+    }
+    return (
+      <input className="input" type="text" value={String(form[f.key] ?? "")} {...common}
+        aria-invalid={Boolean(fieldErrors[f.key]) || undefined}
+        onChange={(e) => set(f.key, e.target.value)} />
+    );
+  };
+
   return (
     <Modal open onClose={onClose} wide
       title={row ? `Edit ${spec.singular}` : `Add ${spec.singular}`}
+      sub={row ? undefined : "Closing this dialog keeps your draft — it clears on Create or Reset."}
       footer={
         <>
+          <Button onClick={onReset} icon="undo" title="Restore the initial values">Reset</Button>
+          <div className="grow" />
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" busy={busy} onClick={save}>{row ? "Save changes" : "Create"}</Button>
+          <Button variant="primary" busy={busy} disabled={busy} onClick={() => void save()}>
+            {row ? "Save changes" : "Create"}
+          </Button>
         </>
       }>
-      <div className="col gap-12">
+      <div className="col gap-16">
         {error && <Callout tone="critical">{error}</Callout>}
-        <div className="grid grid-2">
-          {spec.fields.map((f) => (
-            <Field key={f.key} label={f.label} required={f.required} hint={f.hint}>
-              {f.type === "toggle" ? (
-                <Toggle checked={Boolean(form[f.key])} onChange={(v) => set(f.key, v)} />
-              ) : f.type === "select" ? (
-                <select className="select" value={String(form[f.key] ?? "")}
-                  disabled={Boolean(row && f.createOnly)}
-                  onChange={(e) => set(f.key, e.target.value)}>
+        {sections.map((s, i) => (
+          <section key={s.title || i} className="col gap-12">
+            {s.title && (
+              <h3 className="t-label" style={{ margin: 0, paddingBottom: 6, borderBottom: "1px solid var(--hairline)" }}>
+                {s.title}
+              </h3>
+            )}
+            <div className="grid grid-2">
+              {s.fields.map((f) => (
+                <Field key={f.key} label={f.label} required={f.required || (!row && f.requiredOnCreate)}
+                  error={fieldErrors[f.key]} hint={f.hint}
+                  plain={f.type === "toggle"}>
+                  {renderField(f)}
+                </Field>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- Voice editor (provider-specific) ----------
+   The TTS provider decides everything below it: which models exist, which
+   languages the model supports, and which synthesis settings are legal — all
+   read from the DB provider catalog (params_schema per model), never
+   hardcoded. The backend re-validates the same catalog on save. */
+
+const VOICE_ID_META: Record<string, { label: string; hint: string }> = {
+  elevenlabs: { label: "ElevenLabs voice ID", hint: "Voice ID from the ElevenLabs voice library, e.g. f1abxvIEijusskcPWE5x." },
+  sarvam: { label: "Speaker code", hint: "Lowercase Sarvam speaker code, e.g. shubh or priya." },
+};
+
+function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
+  spec: TypeSpec;
+  row: Row | null; // null = add mode
+  form: Record<string, unknown>;
+  onChange: (patch: FormPatch) => void;
+  onReset: () => void;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [switchNote, setSwitchNote] = useState<string | null>(null);
+
+  const provider = String(form.provider ?? "");
+  const model = String(form.model ?? "");
+  const settings = (form.providerSettings ?? {}) as ProviderSettings;
+
+  const { models, loading: modelsLoading } = useModelInfos("tts", provider || null);
+  const modelInfo = (models ?? []).find((m) => m.code === model);
+  const schema = modelInfo?.paramsSchema;
+  const hasCatalogModels = (models ?? []).length > 0;
+
+  /* Platform languages supported by the selected model. */
+  const [langInfo, setLangInfo] = useState<ModelLanguagesInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setLangInfo(null);
+    if (provider && model) {
+      getModelLanguages("tts", provider, model)
+        .then((info) => { if (alive) setLangInfo(info); })
+        .catch(() => { /* backend still validates; free-text locale stays available */ });
+    }
+    return () => { alive = false; };
+  }, [provider, model]);
+
+  const set = (patch: FormPatch) => {
+    onChange(patch);
+    setFieldErrors((errs) => {
+      const next = { ...errs };
+      for (const key of Object.keys(patch)) delete next[key];
+      delete next.modelCodes; // model changes invalidate stale model errors
+      delete next.providerSettings;
+      return Object.keys(next).length === Object.keys(errs).length ? errs : next;
+    });
+    if (error) setError(null);
+  };
+
+  /* Provider-specific data worth a confirmation before it is discarded. */
+  const hasSubstantialProviderData = () => {
+    if (String(form.providerVoiceId ?? "").trim()) return true;
+    if (!schema) return Object.keys(settings).length > 0;
+    return JSON.stringify({ ...schemaDefaults(schema), ...settings }) !== JSON.stringify(schemaDefaults(schema));
+  };
+
+  const applyProvider = (next: string) => {
+    set({ provider: next, model: "", providerVoiceId: "", locale: "", providerSettings: {} });
+    setSwitchNote(next
+      ? `Provider changed — model, voice ID, language and provider settings were reset for ${next}. Name, gender and description were kept.`
+      : null);
+  };
+
+  const requestProvider = (next: string) => {
+    if (next === provider) return;
+    if (provider && hasSubstantialProviderData()) setPendingProvider(next);
+    else applyProvider(next);
+  };
+
+  const applyModel = (next: string) => {
+    const nextSchema = (models ?? []).find((m) => m.code === next)?.paramsSchema;
+    set({ model: next, providerSettings: next ? reconcileSettings(nextSchema, settings) : {} });
+  };
+
+  const save = async () => {
+    if (busy) return;
+    const clientErrors: Record<string, string> = {};
+    if (!String(form.name ?? "").trim()) clientErrors.name = "Name is required.";
+    if (!provider) clientErrors.provider = "Select the TTS provider first.";
+    if (provider && hasCatalogModels) {
+      if (!model) clientErrors.model = "Select the provider model.";
+      if (!String(form.providerVoiceId ?? "").trim()) {
+        clientErrors.providerVoiceId = `${VOICE_ID_META[provider]?.label ?? "Provider voice ID"} is required.`;
+      }
+    }
+    if (Object.keys(clientErrors).length) {
+      setFieldErrors(clientErrors);
+      setError("Fix the highlighted fields and try again.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const payload: Record<string, unknown> = {
+        name: String(form.name).trim(),
+        provider,
+        modelCodes: model ? [model] : [],
+        providerSettings: settings,
+        premium: Boolean(form.premium),
+        isDefault: Boolean(form.isDefault),
+      };
+      // Clearable strings are sent explicitly on edit so provider switches
+      // wipe stale values; optional fields are skipped when empty on create.
+      for (const key of ["gender", "description", "providerVoiceId", "locale", "sampleText"]) {
+        const value = String(form[key] ?? "");
+        if (value !== "" || row) payload[key] = value;
+      }
+      if (form.sortOrder !== "" && form.sortOrder !== null && form.sortOrder !== undefined) {
+        payload.sortOrder = Number(form.sortOrder);
+      }
+      if (row) await updateMaster(spec.mtype, row.id, payload);
+      else await createMaster(spec.mtype, payload);
+      toast(row ? "Voice updated" : "Voice created");
+      onSaved();
+      onClose();
+    } catch (e) {
+      const api = e as ApiRequestError;
+      if (api.fieldErrors) {
+        // Backend reports model errors as modelCodes — surface them on the model field.
+        const mapped: Record<string, string> = { ...api.fieldErrors };
+        if (mapped.modelCodes) mapped.model = mapped.modelCodes;
+        setFieldErrors(mapped);
+      }
+      setError(api instanceof Error ? api.message : "Save failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const voiceIdMeta = VOICE_ID_META[provider] ?? {
+    label: "Provider voice ID",
+    hint: "Identifier of this voice on the provider's side, if any.",
+  };
+  const localeOptions = langInfo?.languages ?? [];
+  const localeKnown = localeOptions.some((l) => l.code === String(form.locale ?? ""));
+
+  return (
+    <Modal open onClose={onClose} wide
+      title={row ? "Edit voice" : "Add voice"}
+      sub={row ? undefined : "Closing this dialog keeps your draft — it clears on Create or Reset."}
+      footer={
+        <>
+          <Button onClick={onReset} icon="undo" title="Restore the initial values">Reset</Button>
+          <div className="grow" />
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" busy={busy} disabled={busy} onClick={() => void save()}>
+            {row ? "Save changes" : "Create"}
+          </Button>
+        </>
+      }>
+      <div className="col gap-16">
+        {error && <Callout tone="critical">{error}</Callout>}
+        {switchNote && <Callout tone="info" title="Provider changed">{switchNote}</Callout>}
+
+        <section className="col gap-12">
+          <h3 className="t-label" style={{ margin: 0, paddingBottom: 6, borderBottom: "1px solid var(--hairline)" }}>
+            Provider & model
+          </h3>
+          <div className="grid grid-2">
+            <Field label="TTS provider" required error={fieldErrors.provider}
+              hint={provider ? undefined : "Select the provider first — it decides the models, languages and settings below."}>
+              <VoiceProviderSelect value={provider} label="TTS provider" onChange={requestProvider} />
+            </Field>
+            <Field label="Model" required={hasCatalogModels} error={fieldErrors.model}>
+              <ModelSelect capability="tts" provider={provider} value={model} label="Model"
+                onChange={applyModel} />
+            </Field>
+            <Field label={voiceIdMeta.label} required={hasCatalogModels}
+              error={fieldErrors.providerVoiceId} hint={voiceIdMeta.hint}>
+              <input className="input" value={String(form.providerVoiceId ?? "")}
+                aria-label={voiceIdMeta.label}
+                aria-invalid={Boolean(fieldErrors.providerVoiceId) || undefined}
+                disabled={!provider}
+                onChange={(e) => set({ providerVoiceId: e.target.value })} />
+            </Field>
+            <Field label="Language" error={fieldErrors.locale}
+              hint={model ? "Languages supported by the selected model." : "Select a model to list its supported languages."}>
+              {localeOptions.length > 0 ? (
+                <select className="select" aria-label="Language" value={String(form.locale ?? "")}
+                  onChange={(e) => set({ locale: e.target.value })}>
                   <option value="">—</option>
-                  {(f.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {!localeKnown && form.locale ? <option value={String(form.locale)}>{String(form.locale)} (not supported)</option> : null}
+                  {localeOptions.map((l) => <option key={l.code} value={l.code}>{l.name} ({l.code})</option>)}
                 </select>
-              ) : f.type === "textarea" ? (
-                <textarea className="textarea" rows={2} value={String(form[f.key] ?? "")}
-                  onChange={(e) => set(f.key, e.target.value)} />
               ) : (
-                <input className="input" type={f.type === "number" ? "number" : "text"}
-                  step={f.step} disabled={Boolean(row && f.createOnly)}
-                  value={String(form[f.key] ?? "")}
-                  onChange={(e) => set(f.key, e.target.value)} />
+                <input className="input" aria-label="Language" placeholder="e.g. hi-IN"
+                  value={String(form.locale ?? "")} disabled={!provider}
+                  onChange={(e) => set({ locale: e.target.value })} />
               )}
             </Field>
-          ))}
-        </div>
+          </div>
+        </section>
+
+        <section className="col gap-12">
+          <h3 className="t-label" style={{ margin: 0, paddingBottom: 6, borderBottom: "1px solid var(--hairline)" }}>
+            Identity
+          </h3>
+          <div className="grid grid-2">
+            <Field label="Display name" required error={fieldErrors.name}>
+              <input className="input" value={String(form.name ?? "")} aria-label="Display name"
+                aria-invalid={Boolean(fieldErrors.name) || undefined}
+                onChange={(e) => set({ name: e.target.value })} />
+            </Field>
+            <Field label="Gender / style">
+              <select className="select" aria-label="Gender / style" value={String(form.gender ?? "")}
+                onChange={(e) => set({ gender: e.target.value })}>
+                <option value="">—</option>
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="neutral">Neutral</option>
+              </select>
+            </Field>
+            <Field label="Description">
+              <textarea className="textarea" rows={2} aria-label="Description"
+                value={String(form.description ?? "")}
+                onChange={(e) => set({ description: e.target.value })} />
+            </Field>
+            <Field label="Sample sentence" hint="Used by the voice preview.">
+              <textarea className="textarea" rows={2} aria-label="Sample sentence"
+                value={String(form.sampleText ?? "")}
+                onChange={(e) => set({ sampleText: e.target.value })} />
+            </Field>
+          </div>
+        </section>
+
+        <section className="col gap-12">
+          <h3 className="t-label" style={{ margin: 0, paddingBottom: 6, borderBottom: "1px solid var(--hairline)" }}>
+            Provider settings{provider ? ` — ${provider}` : ""}
+          </h3>
+          {fieldErrors.providerSettings && <Callout tone="critical">{fieldErrors.providerSettings}</Callout>}
+          {!provider ? (
+            <p className="t-sub" style={{ margin: 0 }}>Select a TTS provider to see its synthesis settings.</p>
+          ) : modelsLoading ? (
+            <p className="t-sub" style={{ margin: 0 }}>Loading provider configuration…</p>
+          ) : !hasCatalogModels ? (
+            <p className="t-sub" style={{ margin: 0 }}>
+              This provider has no configurable synthesis settings — voices are used as-is.
+            </p>
+          ) : !model ? (
+            <p className="t-sub" style={{ margin: 0 }}>Select a model to configure its provider-specific settings.</p>
+          ) : (
+            <ParamFields schema={schema} values={settings}
+              onChange={(next) => set({ providerSettings: next })} />
+          )}
+        </section>
+
+        <section className="col gap-12">
+          <h3 className="t-label" style={{ margin: 0, paddingBottom: 6, borderBottom: "1px solid var(--hairline)" }}>
+            Presentation
+          </h3>
+          <div className="grid grid-2">
+            <Field label="Premium" plain>
+              <Toggle checked={Boolean(form.premium)} onChange={(v) => set({ premium: v })} label="Premium" />
+            </Field>
+            <Field label="Platform default" plain>
+              <Toggle checked={Boolean(form.isDefault)} onChange={(v) => set({ isDefault: v })} label="Platform default" />
+            </Field>
+            <Field label="Sort order" error={fieldErrors.sortOrder}>
+              <NumberInput value={String(form.sortOrder ?? "")} aria-label="Sort order"
+                invalid={Boolean(fieldErrors.sortOrder)}
+                onChange={(v) => set({ sortOrder: v })} />
+            </Field>
+          </div>
+        </section>
       </div>
+
+      {pendingProvider !== null && (
+        <ConfirmModal
+          open
+          danger
+          title="Switch provider?"
+          body="Switching the provider discards the voice ID, model, language and provider-specific settings you entered. Name, gender and description are kept."
+          confirmLabel="Switch provider"
+          onConfirm={() => { applyProvider(pendingProvider); setPendingProvider(null); }}
+          onClose={() => setPendingProvider(null)}
+        />
+      )}
     </Modal>
   );
 }
@@ -422,21 +974,130 @@ function PlanTenantsDrawer({ row, onClose }: { row: Row; onClose: () => void }) 
   );
 }
 
+/* ---------- Voice providers (shared by the voices filter bar and voice form) ---------- */
+
+let voiceProvidersPromise: Promise<{ code: string; name: string }[]> | null = null;
+
+function fetchVoiceProviders(): Promise<{ code: string; name: string }[]> {
+  if (!voiceProvidersPromise) {
+    /* Voice rows reference tts- and voice-kind providers; options come from the
+       provider master itself — never duplicated locally. */
+    voiceProvidersPromise = Promise.all([
+      listMaster<Row>("providers", { kind: "tts", pageSize: 100 }),
+      listMaster<Row>("providers", { kind: "voice", pageSize: 100 }),
+    ]).then(([tts, voice]) => {
+      const seen = new Map<string, string>();
+      for (const p of [...tts.items, ...voice.items]) {
+        if (p.status === "active" && !seen.has(String(p.code))) seen.set(String(p.code), String(p.name));
+      }
+      return [...seen].map(([code, name]) => ({ code, name }));
+    });
+    voiceProvidersPromise.catch(() => { voiceProvidersPromise = null; });
+  }
+  return voiceProvidersPromise;
+}
+
+function useVoiceProviders() {
+  const [providers, setProviders] = useState<{ code: string; name: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    fetchVoiceProviders().then((p) => { if (alive) setProviders(p); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return providers;
+}
+
+function VoiceProviderSelect({ value, onChange, disabled, label }: {
+  value: string; onChange: (code: string) => void; disabled?: boolean; label?: string;
+}) {
+  const providers = useVoiceProviders();
+  const known = providers.some((p) => p.code === value);
+  return (
+    <select className="select" value={value} disabled={disabled} aria-label={label ?? "Voice provider"}
+      onChange={(e) => onChange(e.target.value)}>
+      <option value="">—</option>
+      {value && !known && <option value={value}>{value} (not in catalog)</option>}
+      {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+    </select>
+  );
+}
+
+/* ---------- Voice filter bar ---------- */
+
+interface VoiceFilterState {
+  provider: string;
+  gender: string;
+  status: string;
+}
+
+const EMPTY_VOICE_FILTERS: VoiceFilterState = { provider: "", gender: "", status: "" };
+
+function VoiceFilters({ value, onChange }: {
+  value: VoiceFilterState;
+  onChange: (next: VoiceFilterState) => void;
+}) {
+  const providers = useVoiceProviders();
+  const active = Object.values(value).filter(Boolean).length;
+  return (
+    <>
+      <select className="select" style={{ width: 170 }} value={value.provider}
+        aria-label="Filter voices by provider"
+        onChange={(e) => onChange({ ...value, provider: e.target.value })}>
+        <option value="">All providers</option>
+        {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+      </select>
+      <select className="select" style={{ width: 130 }} value={value.gender}
+        aria-label="Filter voices by gender"
+        onChange={(e) => onChange({ ...value, gender: e.target.value })}>
+        <option value="">All genders</option>
+        <option value="female">Female</option>
+        <option value="male">Male</option>
+        <option value="neutral">Neutral</option>
+      </select>
+      <select className="select" style={{ width: 130 }} value={value.status}
+        aria-label="Filter voices by status"
+        onChange={(e) => onChange({ ...value, status: e.target.value })}>
+        <option value="">All statuses</option>
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+        <option value="archived">Archived</option>
+      </select>
+      {active > 0 && (
+        <span className="row gap-6" style={{ alignItems: "center" }}>
+          <span className="tag">{active} filter{active === 1 ? "" : "s"} active</span>
+          <Button size="sm" variant="ghost" icon="x" onClick={() => onChange(EMPTY_VOICE_FILTERS)}>
+            Clear filters
+          </Button>
+        </span>
+      )}
+    </>
+  );
+}
+
 /* ---------- Panel per master type ---------- */
 
-function MasterPanel({ spec }: { spec: TypeSpec }) {
+function MasterPanel({ spec, addDraft, onAddDraftChange }: {
+  spec: TypeSpec;
+  addDraft: Record<string, unknown> | null;
+  /** Updater-style so cascaded patches never read a stale draft. */
+  onAddDraftChange: (update: (prev: Record<string, unknown> | null) => Record<string, unknown> | null) => void;
+}) {
   const { toast, hasPermission } = useApp();
   const canManage = hasPermission("manage_master_data")
     || hasPermission(`manage_${spec.mtype.replace("-", "_")}`)
+    || hasPermission("manage_data_regions") && spec.mtype === "countries"
     || hasPermission("manage_languages") && spec.mtype === "languages";
 
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [kind, setKind] = useState("");
+  const [voiceFilters, setVoiceFilters] = useState<VoiceFilterState>(EMPTY_VOICE_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Row | null | "new">(null);
+  const [editForm, setEditForm] = useState<Record<string, unknown> | null>(null);
   const [auditRow, setAuditRow] = useState<Row | null>(null);
   const [tenantsRow, setTenantsRow] = useState<Row | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Row | null>(null);
@@ -444,12 +1105,21 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
 
   const pageSize = 25;
 
+  /* Text search is debounced so typing doesn't fire an API call per keystroke. */
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const load = useCallback(async () => {
     setError(null);
     try {
       const result = await listMaster<Row>(spec.mtype, {
-        search: search || undefined, page, pageSize,
+        search: debouncedSearch || undefined, page, pageSize,
         kind: spec.kindFilter && kind ? kind : undefined,
+        provider: spec.voiceFilters ? voiceFilters.provider || undefined : undefined,
+        gender: spec.voiceFilters ? voiceFilters.gender || undefined : undefined,
+        status: spec.voiceFilters ? voiceFilters.status || undefined : undefined,
       });
       setRows(result.items);
       setTotal(result.meta?.total ?? result.items.length);
@@ -457,7 +1127,7 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
       setError(e instanceof Error ? e.message : "Failed to load.");
       setRows([]);
     }
-  }, [spec.mtype, spec.kindFilter, search, page, kind]);
+  }, [spec.mtype, spec.kindFilter, spec.voiceFilters, debouncedSearch, page, kind, voiceFilters]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -497,6 +1167,16 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
     }
   };
 
+  const openAdd = () => {
+    if (!addDraft) onAddDraftChange(() => buildInitialForm(spec));
+    setEditing("new");
+  };
+
+  const openEdit = (row: Row) => {
+    setEditForm(buildFormFromRow(spec, row)); // fresh per row — edits never leak between records
+    setEditing(row);
+  };
+
   const columns = useMemo<Column<Row>[]>(() => [
     ...spec.columns,
     {
@@ -505,7 +1185,7 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
         const active = (r.status ?? (r.enabled === false ? "inactive" : "active")) === "active";
         return (
           <span className="row gap-6" style={{ justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" disabled={!canManage} onClick={() => setEditing(r)}>Edit</Button>
+            <Button size="sm" disabled={!canManage} onClick={() => openEdit(r)}>Edit</Button>
             {spec.mtype === "plans" && (
               <>
                 <Button size="sm" disabled={!canManage} onClick={() => void doDuplicate(r)}>Duplicate</Button>
@@ -526,25 +1206,34 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
   ], [spec, canManage]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const filtersActive = Boolean(debouncedSearch) || (spec.voiceFilters && Object.values(voiceFilters).some(Boolean));
+
+  const isAdd = editing === "new";
+  const editorForm = isAdd ? (addDraft ?? buildInitialForm(spec)) : editForm;
 
   return (
     <div className="col gap-12">
       <div className="row gap-8" style={{ flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ position: "relative", minWidth: 240 }}>
           <input className="input" placeholder={`Search ${spec.label.toLowerCase()}…`} value={search}
+            aria-label={`Search ${spec.label.toLowerCase()}`}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
         </div>
         {spec.kindFilter && (
           <select className="select" style={{ width: 160 }} value={kind}
+            aria-label="Filter by provider kind"
             onChange={(e) => { setKind(e.target.value); setPage(1); }}>
             <option value="">All kinds</option>
             {PROVIDER_KINDS.map((k) => <option key={k} value={k}>{k.toUpperCase()}</option>)}
           </select>
         )}
+        {spec.voiceFilters && (
+          <VoiceFilters value={voiceFilters} onChange={(next) => { setVoiceFilters(next); setPage(1); }} />
+        )}
         <div className="grow" />
         <Button variant="primary" icon="plus" disabled={!canManage}
           title={canManage ? undefined : "You don't have permission to manage this master data"}
-          onClick={() => setEditing("new")}>
+          onClick={openAdd}>
           Add {spec.singular}
         </Button>
       </div>
@@ -558,7 +1247,11 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
         error={error}
         onRetry={() => void load()}
         rowKey={(r) => r.id}
-        empty={{ icon: "settings", title: `No ${spec.label.toLowerCase()} yet`, body: canManage ? "Add the first one to make it available across the platform." : undefined }}
+        empty={
+          filtersActive
+            ? { icon: "filter", title: `No ${spec.label.toLowerCase()} match the current filters`, body: "Adjust or clear the filters to see more results." }
+            : { icon: "settings", title: `No ${spec.label.toLowerCase()} yet`, body: canManage ? "Add the first one to make it available across the platform." : undefined }
+        }
         footer={
           totalPages > 1 ? (
             <div className="row gap-8" style={{ justifyContent: "flex-end", alignItems: "center" }}>
@@ -570,10 +1263,29 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
         }
       />
 
-      {editing !== null && (
-        <MasterEditor spec={spec} row={editing === "new" ? null : editing}
-          onClose={() => setEditing(null)} onSaved={() => void load()} />
-      )}
+      {editing !== null && editorForm && (() => {
+        const Editor = spec.mtype === "voices" ? VoiceEditor : MasterEditor;
+        return (
+          <Editor
+            spec={spec}
+            row={isAdd ? null : (editing as Row)}
+            form={editorForm}
+            onChange={(patch) => {
+              if (isAdd) onAddDraftChange((prev) => ({ ...(prev ?? buildInitialForm(spec)), ...patch }));
+              else setEditForm((f) => ({ ...(f ?? {}), ...patch }));
+            }}
+            onReset={() => {
+              if (isAdd) onAddDraftChange(() => buildInitialForm(spec));
+              else setEditForm(buildFormFromRow(spec, editing as Row));
+            }}
+            onClose={() => setEditing(null)}
+            onSaved={() => {
+              if (isAdd) onAddDraftChange(() => null); // draft clears only after a successful create
+              void load();
+            }}
+          />
+        );
+      })()}
       {auditRow && <AuditDrawer spec={spec} row={auditRow} onClose={() => setAuditRow(null)} />}
       {tenantsRow && <PlanTenantsDrawer row={tenantsRow} onClose={() => setTenantsRow(null)} />}
       {confirmDelete && (
@@ -596,6 +1308,10 @@ function MasterPanel({ spec }: { spec: TypeSpec }) {
 export default function PlatformConfig() {
   const [tab, setTab] = useState(SPECS[0].mtype);
   const spec = SPECS.find((s) => s.mtype === tab) ?? SPECS[0];
+  /* Add-form drafts per master type — kept at page level so closing the modal
+     or switching tabs never discards typed data. Cleared on save or Reset. */
+  const drafts = useRef<Record<string, Record<string, unknown> | null>>({});
+  const [, bump] = useState(0);
   return (
     <div className="col gap-16">
       <div>
@@ -611,7 +1327,15 @@ export default function PlatformConfig() {
         active={tab}
         onChange={(id) => setTab(id as MasterType)}
       />
-      <MasterPanel key={spec.mtype} spec={spec} />
+      <MasterPanel
+        key={spec.mtype}
+        spec={spec}
+        addDraft={drafts.current[spec.mtype] ?? null}
+        onAddDraftChange={(update) => {
+          drafts.current[spec.mtype] = update(drafts.current[spec.mtype] ?? null);
+          bump((n) => n + 1);
+        }}
+      />
     </div>
   );
 }

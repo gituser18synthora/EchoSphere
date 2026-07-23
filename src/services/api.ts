@@ -9,7 +9,7 @@ import type {
   AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent,
   ChannelConfig, ChannelProviderConfig, Conversation, DocumentStatus, DocumentUploadResult, EntityDef,
   EntityExtraction, Guardrail, HealthMetric, Intent, IntentTestResult,
-  Integration, Invoice, KnowledgeGap, KnowledgeSource, OnboardingOptions,
+  Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptTestResult,
   Release, RoleInfo, SearchTestResult, SessionUserInfo, SipTrunk,
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
@@ -75,6 +75,22 @@ export const listKnowledge = async (botId?: string, tenantId?: string): Promise<
   if (tenantId) params.set("tenantId", tenantId);
   return (await http.getPaged<KnowledgeSource>(`/knowledge?${params}`)).items;
 };
+/** Server-filtered, paginated knowledge list (admin views). */
+export const listKnowledgePaged = (opts?: {
+  tenantId?: string; search?: string; status?: string; type?: string;
+  scope?: string; page?: number; pageSize?: number;
+}): Promise<Paged<KnowledgeSource>> => {
+  const params = new URLSearchParams({ pageSize: String(opts?.pageSize ?? 25) });
+  if (opts?.page) params.set("page", String(opts.page));
+  if (opts?.tenantId) params.set("tenantId", opts.tenantId);
+  if (opts?.search) params.set("search", opts.search);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.type) params.set("type", opts.type);
+  if (opts?.scope) params.set("scope", opts.scope);
+  return http.getPaged<KnowledgeSource>(`/knowledge?${params}`);
+};
+export const getKnowledgeDetail = (id: string): Promise<KnowledgeDetail> =>
+  http.get(`/knowledge/${id}`);
 export const createKnowledge = (body: { name: string; type: string; detail?: string; scope?: string; botId?: string; sizeKb?: number }) =>
   http.post<KnowledgeSource>("/knowledge", body);
 export const resyncKnowledge = (id: string) =>
@@ -101,7 +117,9 @@ export const reindexDocument = (documentId: string): Promise<DocumentStatus> =>
   http.post(`/knowledge/documents/${documentId}/reindex`);
 export const deleteDocument = (documentId: string): Promise<{ archived: boolean; id: string }> =>
   http.delete(`/knowledge/documents/${documentId}`);
-export const searchTest = (body: { query: string; kbIds?: string[]; botId?: string; topK?: number }): Promise<SearchTestResult> =>
+export const searchTest = (body: {
+  query: string; kbIds?: string[]; botId?: string; topK?: number; minScore?: number;
+}): Promise<SearchTestResult> =>
   http.post("/knowledge/search-test", body);
 
 /* ---------- Knowledge Chunk Review (Super Admin) ---------- */
@@ -349,12 +367,17 @@ export const testApiConnection = (id: string, testValues?: Record<string, string
 
 /* ---------- Master data (Platform Configuration, Super Admin) ---------- */
 export type MasterType =
-  | "industries" | "data-regions" | "plans" | "ai-profiles"
+  | "industries" | "countries" | "data-regions" | "plans" | "ai-profiles"
   | "providers" | "languages" | "voices";
 
 export const listMaster = <T = Record<string, unknown>>(
   mtype: MasterType,
-  opts?: { search?: string; sortBy?: string; sortDir?: "asc" | "desc"; page?: number; pageSize?: number; kind?: string; includeInactive?: boolean },
+  opts?: {
+    search?: string; sortBy?: string; sortDir?: "asc" | "desc"; page?: number; pageSize?: number;
+    kind?: string; includeInactive?: boolean;
+    /** Voices-only server-side filters. */
+    provider?: string; gender?: string; status?: string; language?: string;
+  },
 ): Promise<Paged<T>> => {
   const params = new URLSearchParams({ pageSize: String(opts?.pageSize ?? 50) });
   if (opts?.page) params.set("page", String(opts.page));
@@ -362,6 +385,10 @@ export const listMaster = <T = Record<string, unknown>>(
   if (opts?.sortBy) params.set("sortBy", opts.sortBy);
   if (opts?.sortDir) params.set("sortDir", opts.sortDir);
   if (opts?.kind) params.set("kind", opts.kind);
+  if (opts?.provider) params.set("provider", opts.provider);
+  if (opts?.gender) params.set("gender", opts.gender);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.language) params.set("language", opts.language);
   if (opts?.includeInactive === false) params.set("includeInactive", "false");
   return http.getPaged<T>(`/master/${mtype}?${params}`);
 };

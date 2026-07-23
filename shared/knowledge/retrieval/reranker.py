@@ -38,5 +38,6 @@ async def rerank(query: str, sources: list[SourceRef]) -> list[SourceRef]:
     if not sources:
         return sources
     scores = await asyncio.to_thread(_score, query, sources)
-    ranked = sorted(zip(sources, scores, strict=True), key=lambda pair: -pair[1])
-    return [src for src, _ in ranked]
+    for src, score in zip(sources, scores, strict=True):
+        src.rerank_score = float(score)
+    return sorted(sources, key=lambda src: -(src.rerank_score or 0.0))

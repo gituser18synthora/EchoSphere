@@ -26,6 +26,8 @@ export interface ResponseMeta {
 export interface ApiRequestError extends Error {
   status?: number;
   errors?: string[];
+  /** Structured {field: message} map when the backend returned field errors. */
+  fieldErrors?: Record<string, string>;
 }
 
 export function getToken(): string | null {
@@ -83,6 +85,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     const error = new Error((payload.message || `Request failed (HTTP ${resp.status}).`) + detail) as ApiRequestError;
     error.status = resp.status;
     if (errorList.length) error.errors = errorList;
+    const fieldErrors: Record<string, string> = {};
+    for (const e of payload.errors ?? []) {
+      if (typeof e !== "string" && e.field && !(e.field in fieldErrors)) fieldErrors[e.field] = e.message;
+    }
+    if (Object.keys(fieldErrors).length) error.fieldErrors = fieldErrors;
     throw error;
   }
   return { data: payload.data as T, meta: payload.meta };

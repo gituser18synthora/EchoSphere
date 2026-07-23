@@ -7,7 +7,7 @@ import { useApp } from "@/state/AppContext";
 import { useAsync } from "@/hooks/useAsync";
 import { changeMyPassword, listLanguages, me, updateMyProfile } from "@/services/api";
 import { setToken } from "@/services/http";
-import { Avatar, Button, Callout, Field, StatusChip, Tabs } from "@/components/ui";
+import { Avatar, Button, Callout, Field, PasswordInput, StatusChip, Tabs } from "@/components/ui";
 
 const TIMEZONES = [
   "UTC", "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London",
@@ -195,17 +195,14 @@ export default function Profile() {
               <Callout tone="critical">{pwError || pwLocalError}</Callout>
             )}
             <Field label="Current password" required>
-              <input className="input" type="password" autoComplete="current-password"
-                value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
+              <PasswordInput autoComplete="current-password" value={currentPw} onChange={setCurrentPw} />
             </Field>
             <Field label="New password" required
               hint="At least 8 characters with an uppercase letter, a lowercase letter and a digit.">
-              <input className="input" type="password" autoComplete="new-password"
-                value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+              <PasswordInput autoComplete="new-password" value={newPw} onChange={setNewPw} />
             </Field>
             <Field label="Confirm new password" required>
-              <input className="input" type="password" autoComplete="new-password"
-                value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} />
+              <PasswordInput autoComplete="new-password" value={confirmPw} onChange={setConfirmPw} />
             </Field>
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button

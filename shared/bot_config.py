@@ -185,7 +185,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
     try:
         bot = session.get(VoiceBot, bot_id)
         if bot is None or bot.is_deleted:
-            raise NotFoundError("Bot not found")
+            raise NotFoundError("Bot")
         if require_published and bot.status != "published":
             raise NotFoundError("Bot has no published release")
 

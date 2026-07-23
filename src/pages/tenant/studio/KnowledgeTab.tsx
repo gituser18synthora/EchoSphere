@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { DocumentState, KnowledgeSource, SearchTestResult, VoiceBot } from "@/types/domain";
+import type { DocumentState, KnowledgeSource, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
   archiveKnowledge, createKnowledge, deleteDocument, getDocumentStatus, getUploadConfig,
   listKnowledge, listKnowledgeDocuments, listKnowledgeGaps, reindexDocument,
-  resyncKnowledge, retryDocument, searchTest, uploadKnowledgeDocument,
+  resyncKnowledge, retryDocument, uploadKnowledgeDocument,
 } from "@/services/api";
 import { Button, Drawer, Modal, Progress, StatusChip, CardSkeleton, Field, Callout } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
+import { RetrievalTester } from "@/components/RetrievalTester";
 import { Icon, type IconName } from "@/components/Icon";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
@@ -215,7 +216,10 @@ export default function KnowledgeTab({ bot }: { bot: VoiceBot }) {
               </div>
             </div>
             <SourceDocuments sourceId={preview.id} onChanged={q.reload} />
-            <RetrievalTester kbId={preview.id} />
+            <div>
+              <span className="t-label">Test retrieval</span>
+              <div className="mt-8"><RetrievalTester kbIds={[preview.id]} /></div>
+            </div>
           </div>
         )}
       </Drawer>
@@ -337,70 +341,6 @@ function SourceDocuments({ sourceId, onChanged }: { sourceId: string; onChanged:
             </div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Retrieval tester (preview drawer) ---------- */
-
-function RetrievalTester({ kbId }: { kbId: string }) {
-  const { toast } = useApp();
-  const [query, setQuery] = useState("");
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<SearchTestResult | null>(null);
-
-  const run = async () => {
-    const trimmed = query.trim();
-    if (!trimmed || running) return;
-    setRunning(true);
-    try {
-      setResult(await searchTest({ query: trimmed, kbIds: [kbId] }));
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Retrieval test failed", "error");
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  return (
-    <div>
-      <span className="t-label">Test retrieval</span>
-      <div className="col gap-8 mt-8">
-        <textarea
-          className="textarea"
-          rows={2}
-          value={query}
-          placeholder="Ask a question this source should answer…"
-          aria-label="Retrieval test query"
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <Button icon="search" busy={running} disabled={!query.trim()} style={{ alignSelf: "flex-start" }} onClick={() => void run()}>
-          Run retrieval test
-        </Button>
-        {result && (
-          <>
-            <div className="row gap-8 wrap">
-              <StatusChip status={result.answerable ? "good" : "warning"} label={result.answerable ? "Answerable" : "Not answerable"} />
-              <span className="t-micro t-num">confidence {result.confidence.toFixed(2)} · {result.durationMs}ms</span>
-            </div>
-            {result.skippedReason && (
-              <span className="t-micro" style={{ color: "var(--status-warning)" }}>Skipped: {result.skippedReason}</span>
-            )}
-            {result.sources.length === 0 && <span className="t-sub">No chunks retrieved for this query.</span>}
-            {result.sources.map((s) => (
-              <div key={s.chunkId} className="col gap-4 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
-                <div className="row-between gap-8">
-                  <span className="t-strong truncate" style={{ fontSize: 12.5 }}>{s.documentName}</span>
-                  <span className="t-micro t-num" style={{ whiteSpace: "nowrap" }}>
-                    {s.pageNumber != null ? `p.${s.pageNumber} · ` : ""}score {s.score.toFixed(2)}
-                  </span>
-                </div>
-                <p className="t-sub" style={{ fontSize: 12, margin: 0 }}>{s.text}</p>
-              </div>
-            ))}
-          </>
-        )}
       </div>
     </div>
   );

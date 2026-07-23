@@ -79,6 +79,20 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int = 24
     retrieval_rerank_k: int = 12
     retrieval_min_score: float = 0.35
+    # Score fusion: "weighted" = normalized weighted-sum of semantic + BM25
+    # scores; "rrf" = weighted reciprocal-rank fusion (rank-only, use when the
+    # two score distributions cannot be compared reliably).
+    retrieval_fusion_method: str = "weighted"
+    retrieval_semantic_weight: float = 0.65
+    retrieval_bm25_weight: float = 0.35
+    # ts_rank_cd is unbounded — saturate to (0,1) via rank/(rank+k) before fusing.
+    retrieval_bm25_saturation: float = 1.0
+    # A keyword hit counts as relevant on its own once its raw ts_rank_cd
+    # clears this floor (protects exact terms/codes/names from the vector gate).
+    retrieval_min_keyword_rank: float = 0.02
+    # Fused-score bonus when a chunk contains the whole query as a phrase.
+    retrieval_phrase_boost: float = 0.1
+    # RRF-mode weights (legacy names kept so existing .env files keep working).
     retrieval_hybrid_vector_weight: float = 0.6
     retrieval_hybrid_keyword_weight: float = 0.4
     retrieval_use_reranker: bool = False

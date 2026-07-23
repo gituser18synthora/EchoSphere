@@ -242,7 +242,7 @@ async def get_document_context(document_id: str, chunk_id: str, window: int = 1)
                 )
             ).scalar_one_or_none()
             if anchor is None:
-                raise NotFoundError("Chunk not found")
+                raise NotFoundError("Chunk")
             neighbors = (
                 await session.execute(
                     select(KnowledgeChunk)

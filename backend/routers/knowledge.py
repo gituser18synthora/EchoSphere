@@ -33,6 +33,8 @@ def list_knowledge(
     bot_id: str | None = Query(None, alias="botId"),
     scope: str | None = Query(None, pattern="^(bot|tenant|global)$"),
     tenant_id: str | None = Query(None, alias="tenantId"),
+    status: str | None = Query(None, pattern="^(indexed|indexing|failed|pending|stale)$"),
+    source_type: str | None = Query(None, alias="type", pattern="^(document|url|faq|connector)$"),
     params: PageParams = Depends(page_params),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -41,6 +43,8 @@ def list_knowledge(
     if is_super_admin(user) and tenant_id is None and bot_id is None:
         pass  # platform view: all sources
     else:
+        # Tenant scoping is enforced server-side: non-admin callers can only
+        # ever resolve their own tenant regardless of the query parameter.
         tid = resolve_tenant_id(user, tenant_id)
         stmt = stmt.where(
             or_(KnowledgeSource.tenant_id == tid, KnowledgeSource.scope == "global")
@@ -52,6 +56,10 @@ def list_knowledge(
         )
     if scope:
         stmt = stmt.where(KnowledgeSource.scope == scope)
+    if status:
+        stmt = stmt.where(KnowledgeSource.status == status)
+    if source_type:
+        stmt = stmt.where(KnowledgeSource.type == source_type)
     if params.search:
         like = f"%{params.search}%"
         stmt = stmt.where(or_(KnowledgeSource.name.like(like), KnowledgeSource.detail.like(like)))

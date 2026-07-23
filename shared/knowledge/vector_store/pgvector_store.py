@@ -209,6 +209,7 @@ class PgVectorStore:
                 vector_score=max(0.0, 1.0 - float(row.distance)),
                 text=row.content,
                 document_name=(row.meta or {}).get("file_name"),
+                meta=row.meta,
             )
             for row in rows
         ]
@@ -251,6 +252,7 @@ class PgVectorStore:
                 keyword_score=float(row.rank),
                 text=row.content,
                 document_name=(row.meta or {}).get("file_name"),
+                meta=row.meta,
             )
             for row in rows
         ]

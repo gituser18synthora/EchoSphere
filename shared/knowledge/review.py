@@ -359,7 +359,7 @@ class KnowledgeReviewService:
                 await session.execute(select(KnowledgeDocument).where(*clauses))
             ).scalar_one_or_none()
             if doc is None:
-                raise NotFoundError("Document not found")
+                raise NotFoundError("Document")
             jobs = await self._latest_jobs(session, [doc.id])
             quality = await self._document_quality(session, doc.id)
 
@@ -595,7 +595,7 @@ class KnowledgeReviewService:
         async with self._session_factory() as session:
             row = (await session.execute(select(*_CHUNK_COLS).where(*clauses))).one_or_none()
             if row is None:
-                raise NotFoundError("Chunk not found")
+                raise NotFoundError("Chunk")
 
             # Neighbours by chunk_index within the same (non-deleted) document.
             prev = (
@@ -637,11 +637,16 @@ class KnowledgeReviewService:
                 or 0
             )
 
-        kbs = await self._resolve_names(set(), {row.kb_id}, set())
-        detail = self._serialize_chunk_row(row, kbs[1])
+        names = await self._resolve_names({row.tenant_id} if row.tenant_id else set(), {row.kb_id}, set())
+        detail = self._serialize_chunk_row(row, names[1])
         detail["contentPreview"] = detail["content"][:_CONTENT_PREVIEW]
         detail["metadata"] = row.meta or {}
         detail["contentHash"] = row.content_hash
+        # Ownership context for the detail drawer (tenant + parent document).
+        detail["tenantName"] = names[0].get(row.tenant_id, {}).get("name") or (
+            "Platform (global)" if row.tenant_id is None else None
+        )
+        detail["fileName"] = (await self._document_names({row.document_id})).get(row.document_id)
 
         # Quality signals that need cross-row context / heavier compute.
         pii = detect_pii(row.content or "")
@@ -676,7 +681,7 @@ class KnowledgeReviewService:
             await session.execute(select(KnowledgeChunk).where(*clauses))
         ).scalar_one_or_none()
         if chunk is None:
-            raise NotFoundError("Chunk not found")
+            raise NotFoundError("Chunk")
         return chunk
 
     async def set_chunk_status(
@@ -747,13 +752,13 @@ class KnowledgeReviewService:
         _, kb_map, _ = await self._resolve_names(set(), set(kb_ids), set())
         missing = [k for k in kb_ids if k not in kb_map]
         if missing:
-            raise NotFoundError("Knowledge base not found")
+            raise NotFoundError("Knowledge base")
         tenants = {kb_map[k]["tenantId"] for k in kb_ids}
         if len(tenants) > 1:
             raise ApiError("Retrieval testing supports one tenant's knowledge bases at a time", 422)
         target_tenant = next(iter(tenants))
         if caller_tenant_id is not None and target_tenant != caller_tenant_id:
-            raise NotFoundError("Knowledge base not found")
+            raise NotFoundError("Knowledge base")
 
         # Search with min_score=0 so candidates below the answerability threshold
         # are still returned for inspection; the real threshold is applied here.

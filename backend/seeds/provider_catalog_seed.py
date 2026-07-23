@@ -255,6 +255,14 @@ PROVIDER_MODELS = [
      _ELEVENLABS_TTS_SCHEMA, False, "inactive", 1),
     ("mock", "tts", "mock", "Mock TTS", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
+    # OpenAI Whisper — REST/segmented (non-streaming), language auto-detect.
+    ("openai", "stt", "whisper-1", "Whisper (whisper-1)",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, True, "active", 0),
+    # OpenAI TTS — REST synthesis used by the openai TTS adapter.
+    ("openai", "tts", "tts-1", "TTS-1", [], ["linear16"], [24000], False,
+     {}, True, "active", 0),
+    ("openai", "tts", "tts-1-hd", "TTS-1 HD", [], ["linear16"], [24000], False,
+     {}, False, "active", 1),
     # ── LLM ──────────────────────────────────────────────────────────────
     ("openai", "llm", "gpt-4o-mini", "GPT-4o mini", [], None, None, True,
      _OPENAI_LLM_SCHEMA, True, "active", 0),
@@ -263,6 +271,13 @@ PROVIDER_MODELS = [
     ("openai", "llm", "gpt-4.1-mini", "GPT-4.1 mini", [], None, None, True,
      _OPENAI_LLM_SCHEMA, False, "active", 2),
     ("mock", "llm", "mock", "Mock LLM", [], None, None, True, {}, True, "active", 99),
+    # ── Embedding ────────────────────────────────────────────────────────
+    ("openai", "embedding", "text-embedding-3-small", "text-embedding-3-small (1536d)",
+     [], None, None, False, {}, True, "active", 0),
+    ("openai", "embedding", "text-embedding-3-large", "text-embedding-3-large (3072d)",
+     [], None, None, False, {}, False, "active", 1),
+    ("mock", "embedding", "mock-embedding", "Mock Embeddings (dev)",
+     [], None, None, False, {}, True, "active", 99),
 ]
 
 # Platform locale codes for voice rows (or-IN is the platform form of od-IN).

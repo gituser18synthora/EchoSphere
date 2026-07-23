@@ -13,6 +13,7 @@ from shared.models import (
     ApiConnection,
     ApprovedModel,
     AuditLog,
+    Country,
     DataRegion,
     Industry,
     ProviderDef,
@@ -113,12 +114,23 @@ def serialize_industry(row: Industry, *, usage: int = 0, names: dict | None = No
     }
 
 
+def serialize_country(row: Country, *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.name,
+        "region": row.region,
+        "sortOrder": row.sort_order,
+    }
+
+
 def serialize_data_region(row: DataRegion, *, usage: int = 0, names: dict | None = None) -> dict:
     return {
         **_master_common(row, usage=usage, names=names),
         "code": row.code,
         "name": row.name,
         "description": row.description or "",
+        "countryCode": row.country_code or "",
         "country": row.country or "",
         "region": row.region or "",
         "cloudProvider": row.cloud_provider or "",
@@ -273,6 +285,7 @@ def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
 def serialize_knowledge(k: KnowledgeSource) -> dict:
     return {
         "id": k.id,
+        "tenantId": k.tenant_id,
         "botId": k.bot_id,
         "scope": k.scope,
         "type": k.type,
@@ -284,6 +297,8 @@ def serialize_knowledge(k: KnowledgeSource) -> dict:
         "lastSync": iso(k.last_sync_at) or "—",
         "quality": k.quality,
         "usage30d": k.usage_30d,
+        "createdAt": iso(k.created_at),
+        "updatedAt": iso(k.updated_at),
     }
 
 
@@ -346,6 +361,9 @@ def serialize_voice(v: VoiceProfile, *, usage: int = 0) -> dict:
         "pitch": v.pitch,
         "isDefault": v.is_default,
         "status": v.status,
+        "sortOrder": v.sort_order,
+        "modelCodes": v.model_codes or [],
+        "providerSettings": v.provider_settings or {},
         "usageCount": usage,
         "updatedAt": iso(v.updated_at),
     }

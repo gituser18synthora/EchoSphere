@@ -5,6 +5,8 @@ Usage:
   python -m backend.cli pg-migrate         # apply PostgreSQL (knowledge plane) migrations
   python -m backend.cli seed               # idempotent base seed
   python -m backend.cli seed --demo        # + development demo dataset (opt-in)
+  python -m backend.cli knowledge-verify   # cross-check sources/chunks/embeddings/indexes
+  python -m backend.cli knowledge-reindex --kb <kb_id>   # safe re-index of one KB
 """
 
 import argparse
@@ -49,6 +51,9 @@ def main() -> None:
     sub.add_parser("pg-migrate")
     seed = sub.add_parser("seed")
     seed.add_argument("--demo", action="store_true", help="also load the development demo dataset")
+    sub.add_parser("knowledge-verify", help="cross-check sources, chunks, embeddings and indexes")
+    reindex = sub.add_parser("knowledge-reindex", help="queue a safe re-index of a knowledge base")
+    reindex.add_argument("--kb", required=True, help="knowledge base (source) id")
     args = parser.parse_args()
 
     if args.cmd == "migrate":
@@ -57,6 +62,14 @@ def main() -> None:
         cmd_pg_migrate()
     elif args.cmd == "seed":
         cmd_seed(demo=args.demo)
+    elif args.cmd == "knowledge-verify":
+        from backend.knowledge_verify import run_verify
+
+        sys.exit(1 if run_verify() else 0)
+    elif args.cmd == "knowledge-reindex":
+        from backend.knowledge_verify import run_reindex
+
+        run_reindex(args.kb)
     else:
         parser.print_help()
         sys.exit(1)

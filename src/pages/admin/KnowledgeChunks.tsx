@@ -12,6 +12,7 @@ import {
   Progress, StatusChip, Toggle, type MenuAction,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
+import { JsonView } from "@/components/JsonView";
 import { useAsync } from "@/hooks/useAsync";
 import * as api from "@/services/api";
 import type {
@@ -228,7 +229,10 @@ function DocumentsPanel({
       fileType: filters.fileType || undefined, status: filters.status || undefined,
       ingestionStatus: filters.ingestionStatus || undefined,
       tenantId: filters.tenantId || undefined, kbId: filters.kbId || undefined,
-      uploadedFrom: filters.uploadedFrom || undefined, uploadedTo: filters.uploadedTo || undefined,
+      // Temporarily hidden from the Knowledge Chunks filter UI — the uploaded
+      // date-range filter is not sent while hidden. Backend support is kept
+      // for possible future re-enablement.
+      uploadedFrom: undefined, uploadedTo: undefined,
     }),
     [filters, search, page, pageSize, sortBy, sortDir],
   );
@@ -315,55 +319,75 @@ function DocumentsPanel({
 
   return (
     <div className="col gap-12">
-      {/* filters */}
+      {/* filters — labeled cells in one aligned, responsive grid */}
       <div className="card card-pad col gap-12">
-        <div className="filter-bar" style={{ flexWrap: "wrap" }}>
-          <div className="search-box">
-            <Icon name="search" size={14} />
+        <div className="filter-grid">
+          <div className="filter-cell filter-cell-wide">
+            <span className="filter-label">Search</span>
             <input
-              className="input" placeholder="Search file name or document ID…"
+              className="input" placeholder="File name or document ID…"
+              aria-label="Search documents"
               value={searchRaw} onChange={(e) => setSearchRaw(e.target.value)}
             />
           </div>
-          <select className="select" value={filters.tenantId} onChange={(e) => setF({ tenantId: e.target.value, kbId: "" })}>
-            <option value="">All tenants</option>
-            {facets?.tenants.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}{t.code ? ` (${t.code})` : ""}</option>
-            ))}
-          </select>
-          <select className="select" value={filters.fileType} onChange={(e) => setF({ fileType: e.target.value })}>
-            <option value="">All types</option>
-            {facets?.fileTypes.map((t) => <option key={t} value={t}>.{t}</option>)}
-          </select>
-          <select className="select" value={filters.status} onChange={(e) => setF({ status: e.target.value })}>
-            <option value="">All statuses</option>
-            {facets?.uploadStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select className="select" value={filters.ingestionStatus} onChange={(e) => setF({ ingestionStatus: e.target.value })}>
-            <option value="">All ingestion states</option>
-            {facets?.ingestionStatuses.map((s) => <option key={s} value={s}>ingest: {s}</option>)}
-          </select>
-        </div>
-        <div className="filter-bar" style={{ flexWrap: "wrap", alignItems: "center" }}>
-          <label className="t-micro row gap-4">
-            Uploaded from
+          <div className="filter-cell">
+            <span className="filter-label">Tenant</span>
+            <select className="select" aria-label="Filter by tenant" value={filters.tenantId}
+              onChange={(e) => setF({ tenantId: e.target.value, kbId: "" })}>
+              <option value="">All tenants</option>
+              {facets?.tenants.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}{t.code ? ` (${t.code})` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">File type</span>
+            <select className="select" aria-label="Filter by file type" value={filters.fileType}
+              onChange={(e) => setF({ fileType: e.target.value })}>
+              <option value="">All types</option>
+              {facets?.fileTypes.map((t) => <option key={t} value={t}>.{t}</option>)}
+            </select>
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Status</span>
+            <select className="select" aria-label="Filter by status" value={filters.status}
+              onChange={(e) => setF({ status: e.target.value })}>
+              <option value="">All statuses</option>
+              {facets?.uploadStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Ingestion</span>
+            <select className="select" aria-label="Filter by ingestion state" value={filters.ingestionStatus}
+              onChange={(e) => setF({ ingestionStatus: e.target.value })}>
+              <option value="">All ingestion states</option>
+              {facets?.ingestionStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          {/* Temporarily hidden from the Knowledge Chunks filter UI.
+              Keep backend support for possible future re-enablement.
+          <div className="filter-cell">
+            <span className="filter-label">Uploaded from</span>
             <input type="date" className="input" value={filters.uploadedFrom}
               onChange={(e) => setF({ uploadedFrom: e.target.value })} />
-          </label>
-          <label className="t-micro row gap-4">
-            to
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Uploaded to</span>
             <input type="date" className="input" value={filters.uploadedTo}
               onChange={(e) => setF({ uploadedTo: e.target.value })} />
-          </label>
-          <label className="t-micro row gap-6" style={{ alignItems: "center" }}>
+          </div>
+          */}
+        </div>
+        <div className="row gap-12" style={{ flexWrap: "wrap", alignItems: "center" }}>
+          <label className="filter-cell-toggle row gap-6" style={{ alignItems: "center" }}>
             <Toggle checked={filters.failedOnly} onChange={(v) => setF({ failedOnly: v })} label="Failed only" />
             Failed / incomplete only
           </label>
-          <label className="t-micro row gap-6" style={{ alignItems: "center" }}>
+          <label className="filter-cell-toggle row gap-6" style={{ alignItems: "center" }}>
             <Toggle checked={filters.includeArchived} onChange={(v) => setF({ includeArchived: v })} label="Include archived" />
             Include archived
           </label>
-          <div className="row gap-8" style={{ marginLeft: "auto" }}>
+          <div className="row gap-8" style={{ marginLeft: "auto", flexWrap: "wrap" }}>
             <select className="select" value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort by">
               <option value="createdAt">Sort: Uploaded</option>
               <option value="fileName">Sort: Name</option>
@@ -518,10 +542,29 @@ function ChunkExplorer({
   const columns: Column<ReviewChunk>[] = [
     { key: "chunkIndex", header: "#", align: "right", width: 56, render: (c) => <span className="t-num">{c.chunkIndex}</span> },
     { key: "pageNumber", header: "Page", align: "right", width: 60, render: (c) => <span className="t-num">{c.pageNumber ?? "—"}</span> },
-    { key: "section", header: "Section", render: (c) => <span className="t-body">{c.section || <em className="t-sub">none</em>}</span> },
+    {
+      key: "section", header: "Section",
+      render: (c) => (
+        <span className="t-body truncate" style={{ display: "block", maxWidth: 160 }} title={c.section ?? undefined}>
+          {c.section || <em className="t-sub">none</em>}
+        </span>
+      ),
+    },
     {
       key: "content", header: "Content preview",
-      render: (c) => <span className="t-body" style={{ display: "block", maxWidth: 460 }}>{c.contentPreview}{c.content.length > c.contentPreview.length ? "…" : ""}</span>,
+      // Clamped to two lines — the full text lives in the chunk View drawer,
+      // so long chunks can never blow up the row height or table layout.
+      render: (c) => (
+        <span
+          className="t-body"
+          style={{
+            display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+            overflow: "hidden", maxWidth: 460, overflowWrap: "anywhere",
+          }}
+        >
+          {c.contentPreview}{c.content.length > c.contentPreview.length ? "…" : ""}
+        </span>
+      ),
     },
     { key: "tokenCount", header: "Tokens", align: "right", width: 72, render: (c) => <span className="t-num">{c.tokenCount ?? "—"}</span> },
     { key: "status", header: "Status", width: 96, render: (c) => <StatusChip status={c.status} /> },
@@ -540,37 +583,59 @@ function ChunkExplorer({
       {/* document summary */}
       <DocumentSummary doc={doc} detail={detail} loading={detailQ.loading} />
 
-      {/* chunk filters */}
+      {/* chunk filters — labeled cells in one aligned, responsive grid */}
       <div className="card card-pad col gap-12">
-        <div className="filter-bar" style={{ flexWrap: "wrap" }}>
-          <div className="search-box">
-            <Icon name="search" size={14} />
-            <input className="input" placeholder="Search content, section, topic, keywords or chunk ID…"
+        <div className="filter-grid">
+          <div className="filter-cell filter-cell-wide">
+            <span className="filter-label">Search</span>
+            <input className="input" placeholder="Content, section, topic, keywords or chunk ID…"
+              aria-label="Search chunks"
               value={searchRaw} onChange={(e) => setSearchRaw(e.target.value)} />
           </div>
-          <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All chunks</option>
-            <option value="active">Active</option>
-            <option value="archived">Archived</option>
-          </select>
-          <select className="select" value={language} onChange={(e) => setLanguage(e.target.value)}>
-            <option value="">Any language</option>
-            {languages.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-          <input className="input" style={{ width: 90 }} type="number" min={0} placeholder="Page #"
-            value={pageNumber} onChange={(e) => setPageNumber(e.target.value)} />
-          <input className="input" style={{ width: 150 }} placeholder="Section contains…"
-            value={section} onChange={(e) => setSection(e.target.value)} />
+          <div className="filter-cell">
+            <span className="filter-label">Status</span>
+            <select className="select" aria-label="Filter by chunk status" value={status}
+              onChange={(e) => setStatus(e.target.value)}>
+              <option value="">All chunks</option>
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+            </select>
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Language</span>
+            <select className="select" aria-label="Filter by language" value={language}
+              onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">Any language</option>
+              {languages.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Page #</span>
+            <input className="input" type="number" min={0} placeholder="Any"
+              aria-label="Filter by page number"
+              value={pageNumber} onChange={(e) => setPageNumber(e.target.value)} />
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Section</span>
+            <input className="input" placeholder="Contains…" aria-label="Filter by section"
+              value={section} onChange={(e) => setSection(e.target.value)} />
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Tokens ≥</span>
+            <input className="input" type="number" min={0} placeholder="Min" aria-label="Minimum tokens"
+              value={minTokens} onChange={(e) => setMinTokens(e.target.value)} />
+          </div>
+          <div className="filter-cell">
+            <span className="filter-label">Tokens ≤</span>
+            <input className="input" type="number" min={0} placeholder="Max" aria-label="Maximum tokens"
+              value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
+          </div>
         </div>
-        <div className="filter-bar" style={{ flexWrap: "wrap", alignItems: "center" }}>
-          <label className="t-micro row gap-4">Tokens ≥ <input className="input" style={{ width: 80 }} type="number" min={0}
-            value={minTokens} onChange={(e) => setMinTokens(e.target.value)} /></label>
-          <label className="t-micro row gap-4">Tokens ≤ <input className="input" style={{ width: 80 }} type="number" min={0}
-            value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} /></label>
-          <label className="t-micro row gap-6" style={{ alignItems: "center" }}>
+        <div className="row gap-12" style={{ flexWrap: "wrap", alignItems: "center" }}>
+          <label className="filter-cell-toggle row gap-6" style={{ alignItems: "center" }}>
             <Toggle checked={hasKeywords} onChange={setHasKeywords} label="Has keywords" /> Has keywords
           </label>
-          <label className="t-micro row gap-6" style={{ alignItems: "center" }}>
+          <label className="filter-cell-toggle row gap-6" style={{ alignItems: "center" }}>
             <Toggle checked={flaggedOnly} onChange={setFlaggedOnly} label="Flagged only" /> Flagged for review
           </label>
           <div className="segmented" role="group" aria-label="Chunk view" style={{ marginLeft: "auto" }}>
@@ -639,7 +704,9 @@ function DocumentSummary({ doc, detail, loading }: { doc: ReviewDocument; detail
         <KpiCard label="Chunks" value={String(doc.chunkCount)} icon="database" />
         <KpiCard label="Pages" value={String(doc.pageCount)} icon="file" />
         <KpiCard label="Embedding" value={doc.embeddingModel ? `${doc.embeddingDimension}d` : "—"} icon="cpu" />
-        <KpiCard label="Uploaded" value={fmtDate(doc.uploadedAt)} icon="clock" />
+        {/* Temporarily hidden: "Uploaded" date KPI (kept in the API).
+            Size fills the slot so the grid keeps four aligned cards. */}
+        <KpiCard label="Size" value={fmtBytes(doc.sizeBytes)} icon="download" />
       </div>
       {loading && <p className="t-micro t-sub">Loading quality summary…</p>}
       {qy && (
@@ -753,7 +820,8 @@ function DocumentDetailDrawer({
     ["Embedding", d.embeddingModel ? `${d.embeddingModel} · ${d.embeddingDimension}d` : "—"],
     ["Language", d.language ?? "—"],
     ["Uploaded by", d.uploadedByName ?? d.uploadedBy ?? "—"],
-    ["Uploaded at", fmtDate(d.uploadedAt)],
+    // Temporarily hidden from the detail view (API still returns it):
+    // ["Uploaded at", fmtDate(d.uploadedAt)],
     ["Processing completed", fmtDate(d.processingCompletedAt)],
   ] : [];
 
@@ -860,14 +928,21 @@ function ChunkDetailDrawer({
             </Callout>
           )}
 
-          {/* metadata */}
+          {/* ownership + metadata (uploaded date temporarily hidden from this
+              view — kept in the API for future re-enablement) */}
           <div className="grid grid-4">
+            <Meta label="Tenant" value={d.tenantName ?? d.tenantId ?? "—"} />
+            <Meta label="Knowledge Base" value={d.kbName ?? d.kbId} />
+            <Meta label="Document" value={d.fileName ?? "—"} />
+            <Meta label="Document ID" value={<code className="t-num" style={{ fontSize: 11 }}>{d.documentId}</code>} />
+            <Meta label="Chunk index" value={`#${d.chunkIndex}`} />
             <Meta label="Page" value={d.pageNumber ?? "—"} />
             <Meta label="Section" value={d.section ?? "—"} />
             <Meta label="Topic" value={d.topic ?? "—"} />
             <Meta label="Language" value={d.language ?? "—"} />
             <Meta label="Chunk type" value={d.chunkType ?? "—"} />
             <Meta label="Embedding model" value={d.embeddingModel ?? "—"} />
+            <Meta label="Vector dimension" value={d.embeddingDimension ? `${d.embeddingDimension}d` : "—"} />
             <Meta label="Created" value={fmtDate(d.createdAt)} />
             <Meta label="Updated" value={fmtDate(d.updatedAt)} />
           </div>
@@ -891,16 +966,12 @@ function ChunkDetailDrawer({
             <NeighborBlock label="Next" n={d.next} onOpen={onNavigate} />
           </div>
 
-          {/* raw metadata */}
-          <details>
-            <summary className="t-label" style={{ cursor: "pointer" }}>Raw metadata</summary>
-            <pre style={{
-              whiteSpace: "pre-wrap", fontSize: 12, marginTop: 8, padding: 12,
-              background: "var(--surface-2, rgba(127,127,127,.08))", borderRadius: 8,
-              border: "1px solid var(--hairline)", overflowX: "auto",
-            }}>
-              {JSON.stringify(d.metadata, null, 2)}
-            </pre>
+          {/* raw metadata — readable JSON tree instead of a raw dump */}
+          <details open>
+            <summary className="t-label" style={{ cursor: "pointer" }}>Metadata</summary>
+            <div style={{ marginTop: 8 }}>
+              <JsonView value={d.metadata} />
+            </div>
           </details>
         </div>
       )}

@@ -36,6 +36,7 @@ from shared.models.content_models import (
 )
 from shared.models.master_models import (
     AiConfigProfile,
+    Country,
     DataRegion,
     Industry,
     ProviderDef,
@@ -63,5 +64,5 @@ __all__ = [
     "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
-    "Industry", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
+    "Industry", "Country", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
 ]

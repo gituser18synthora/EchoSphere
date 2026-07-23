@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "@/components/Icon";
+import { PasswordInput } from "@/components/ui";
 import { useApp } from "@/state/AppContext";
 import * as api from "@/services/api";
 
@@ -68,13 +69,12 @@ export default function Login() {
           </label>
           <label className="col gap-6">
             <span className="t-section">Password</span>
-            <input
-              className="input"
-              type="password"
+            <PasswordInput
               autoComplete="current-password"
               placeholder="••••••••"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={setPassword}
+              aria-label="Password"
               required
             />
           </label>

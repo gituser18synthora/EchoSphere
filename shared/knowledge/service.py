@@ -128,7 +128,7 @@ class KnowledgeService:
             found = {row.id for row in rows}
             missing = [kb for kb in kb_ids if kb not in found]
             if missing:
-                raise NotFoundError("Knowledge base not found")
+                raise NotFoundError("Knowledge base")
             usable = [
                 row.id for row in rows if not searchable_only or row.status in _SEARCHABLE_STATUSES
             ]
@@ -148,15 +148,26 @@ class KnowledgeService:
             include_global=request.include_global,
         )
         result = await self.retriever.retrieve(request, authorized)
+        diag = result.diagnostics or {}
         logger.info(
-            "knowledge.search tenant=%s bot=%s kbs=%d answerable=%s confidence=%.3f "
-            "sources=%d duration_ms=%.1f",
+            "knowledge.search tenant=%s bot=%s kbs=%d query_len=%d answerable=%s "
+            "confidence=%.3f dense=%s keyword=%s merged=%s gated=%s reranked=%s "
+            "returned=%d threshold=%s zero_reason=%s stage_ms=%s total_ms=%.1f",
             request.tenant_id,
             request.bot_id,
             len(authorized),
+            len(request.query),
             result.answerable,
             result.confidence,
+            diag.get("denseCandidates"),
+            diag.get("keywordCandidates"),
+            diag.get("mergedCandidates"),
+            diag.get("afterGate"),
+            diag.get("reranked"),
             len(result.sources),
+            diag.get("minScore"),
+            diag.get("zeroResultReason"),
+            diag.get("timingsMs"),
             (time.perf_counter() - started) * 1000,
         )
         return result
@@ -275,7 +286,7 @@ class KnowledgeService:
                 )
             ).scalar_one_or_none()
         if doc is None or (tenant_id is not None and doc.tenant_id not in (tenant_id, None)):
-            raise NotFoundError("Document not found")
+            raise NotFoundError("Document")
         return doc
 
     async def list_documents(

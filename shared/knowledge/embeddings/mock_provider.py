@@ -18,7 +18,10 @@ class MockEmbeddingProvider:
 
     def _embed(self, text: str) -> list[float]:
         vec = [0.0] * self.dimension
-        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        # Unicode-aware tokens (Devanagari etc.); identical to the previous
+        # [a-z0-9]+ split for plain-English text, so stored mock embeddings
+        # of English chunks stay compatible.
+        tokens = re.findall(r"[^\W_]+", text.lower())
         if not tokens:
             tokens = ["empty"]
         for token in tokens:

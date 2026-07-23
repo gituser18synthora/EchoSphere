@@ -26,6 +26,11 @@ class RetrievalRequest(BaseModel):
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     language: str | None = None
     include_global: bool = True
+    # Diagnostic mode (test console): when nothing clears the relevance gate,
+    # return the best below-threshold candidates instead of an empty list so
+    # the caller can see *why* retrieval found nothing. Runtime callers keep
+    # the default (False) and receive [] — never near-miss context.
+    include_below_threshold: bool = False
 
     @field_validator("kb_ids", mode="before")
     @classmethod
@@ -55,11 +60,16 @@ class SourceRef(BaseModel):
     page_number: int | None = None
     section: str | None = None
     topic: str | None = None
+    # Final fused score, normalized to [0, 1] for both fusion methods.
     score: float
     vector_score: float | None = None
     keyword_score: float | None = None
+    rerank_score: float | None = None
+    rank: int | None = None
+    passed_gate: bool = True
     text: str
     document_name: str | None = None
+    meta: dict | None = None
 
 
 class RetrievalResult(BaseModel):
@@ -71,6 +81,8 @@ class RetrievalResult(BaseModel):
     sources: list[SourceRef] = []
     duration_ms: float = 0.0
     skipped_reason: str | None = None
+    # Stage counts/timings and the applied thresholds (never chunk content).
+    diagnostics: dict | None = None
 
 
 class IngestionStatus(BaseModel):
