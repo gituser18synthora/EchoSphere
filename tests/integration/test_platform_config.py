@@ -195,10 +195,34 @@ class TestProviderModelValidation:
         assert "sttProvider" in _field_errors(response)
 
     def test_provider_without_models_rejects_any_model(self, client, super_admin):
-        # deepgram is a configured STT provider but has no catalog models yet.
-        response = self._create(client, super_admin, sttProvider="deepgram", sttModel="nova-2")
-        assert response.status_code == 422
-        assert "no configured models" in _field_errors(response)["sttModel"]
+        # deepgram has no catalog models; the governance matrix keeps it
+        # inactive, so activate it just for this scenario and restore after.
+        from sqlalchemy import select as sa_select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.models import ProviderDef
+
+        session = get_sessionmaker()()
+        try:
+            provider = session.execute(sa_select(ProviderDef).where(
+                ProviderDef.kind == "stt", ProviderDef.code == "deepgram",
+            )).scalar_one_or_none()
+            if provider is None:
+                pytest.skip("deepgram STT provider not seeded")
+            previous_status = provider.status
+            provider.status = "active"
+            session.commit()
+            try:
+                response = self._create(
+                    client, super_admin, sttProvider="deepgram", sttModel="nova-2"
+                )
+                assert response.status_code == 422
+                assert "no configured models" in _field_errors(response)["sttModel"]
+            finally:
+                provider.status = previous_status
+                session.commit()
+        finally:
+            session.close()
 
     def test_embedding_pair_validated(self, client, super_admin):
         ok_response = self._create(
@@ -315,10 +339,20 @@ class TestVoiceFilters:
         mine = self._mine(self._search(client, super_admin))
         assert all(isinstance(v["sortOrder"], int) for v in mine)
 
-    def test_ordered_by_sort_order_then_name(self, client, super_admin):
+    def test_status_first_then_sort_order(self, client, super_admin):
+        # Platform Config lists are status-first: active voices come first
+        # (sort_order ascending), then the deactivated one — even though its
+        # sort_order (1) sits between the active ones (0 and 2).
         mine = self._mine(self._search(client, super_admin))
-        orders = [v["sortOrder"] for v in mine]
-        assert orders == sorted(orders)
+        statuses = [v["status"] for v in mine]
+        first_inactive = next((i for i, s in enumerate(statuses) if s != "active"), len(statuses))
+        assert all(s != "active" for s in statuses[first_inactive:]), statuses
+        active = [v["sortOrder"] for v in mine if v["status"] == "active"]
+        inactive = [v["sortOrder"] for v in mine if v["status"] != "active"]
+        assert active == sorted(active)
+        assert inactive == sorted(inactive)
+        # Concretely: Filter C (0, active), Filter A (2, active), Filter B (1, inactive).
+        assert [str(v["name"]).split()[1] for v in mine] == ["C", "A", "B"]
 
     def test_unknown_voice_provider_rejected(self, client, super_admin):
         response = client.post(f"{API}/master/voices", headers=super_admin, json={
@@ -332,11 +366,18 @@ class TestVoiceFilters:
 
 
 class TestLanguageOrdering:
-    def test_default_order_is_sort_order_with_stable_secondary(self, client, super_admin):
-        items = _data(client.get(f"{API}/master/languages?pageSize=100", headers=super_admin))
-        # Secondary name sort uses the DB's case-insensitive collation.
-        keys = [(lang["sortOrder"], str(lang["name"]).casefold()) for lang in items]
-        assert keys == sorted(keys)
+    def test_enabled_first_then_sort_order_with_stable_secondary(self, client, super_admin):
+        # Languages use the `enabled` flag as their lifecycle column: enabled
+        # languages are returned before disabled ones, and within each group the
+        # (sort_order, name) order holds (secondary name sort uses the DB's
+        # case-insensitive collation).
+        items = _data(client.get(f"{API}/master/languages?pageSize=200", headers=super_admin))
+        priorities = [0 if lang["enabled"] else 1 for lang in items]
+        assert priorities == sorted(priorities), "all enabled languages must precede disabled ones"
+        for enabled in (True, False):
+            keys = [(lang["sortOrder"], str(lang["name"]).casefold())
+                    for lang in items if lang["enabled"] is enabled]
+            assert keys == sorted(keys)
 
     def test_language_sort_order_editable(self, client, super_admin):
         created = _data(client.post(f"{API}/master/languages", headers=super_admin, json={
@@ -400,3 +441,363 @@ class TestAsiaCountryCatalog:
 
         assert response.status_code == 422
         assert "countryId" in _field_errors(response)
+
+
+# ── Providers: status-first ordering ─────────────────────────────────────────
+
+
+class TestProviderOrdering:
+    """Providers list active rows before inactive/archived ones; within a status
+    group they order by sort_order ascending with a stable name/id fallback.
+    Deactivating a provider drops it to the bottom on the next fetch (no manual
+    refresh needed by the UI, which refetches after a status change);
+    reactivating lifts it back into the active group. The ordering holds for
+    search/filtered responses too."""
+
+    def _make(self, client, headers, code, name, sort_order):
+        created = _data(client.post(f"{API}/master/providers", headers=headers, json={
+            "kind": "llm", "code": code, "name": name, "sortOrder": sort_order,
+        }))
+        _track("provider_defs", created["id"])
+        return created
+
+    def _codes_in_order(self, client, headers, tag):
+        # A tag-scoped search exercises the "search results preserve ordering"
+        # path and isolates this test's rows from the seeded catalog.
+        items = _data(client.get(
+            f"{API}/master/providers?kind=llm&pageSize=200&search={tag}", headers=headers))
+        return [p["code"] for p in items if tag in str(p["code"])]
+
+    def test_active_first_sort_order_and_deactivation_moves_to_bottom(self, client, super_admin):
+        tag = f"pmove{_SUFFIX}"
+        a = self._make(client, super_admin, f"{tag}_a", f"P A {_SUFFIX}", 5)
+        b = self._make(client, super_admin, f"{tag}_b", f"P B {_SUFFIX}", 1)
+        c = self._make(client, super_admin, f"{tag}_c", f"P C {_SUFFIX}", 3)
+        # All active → sort_order ascending: b(1), c(3), a(5).
+        assert self._codes_in_order(client, super_admin, tag) == [b["code"], c["code"], a["code"]]
+
+        # Deactivate the lowest-sort-order active row → it drops to the bottom.
+        response = client.post(f"{API}/master/providers/{b['id']}/status",
+                               headers=super_admin, json={"status": "inactive"})
+        assert response.status_code == 200
+        assert self._codes_in_order(client, super_admin, tag) == [c["code"], a["code"], b["code"]]
+
+        # Reactivate → b returns to its sort_order position in the active group.
+        client.post(f"{API}/master/providers/{b['id']}/status",
+                    headers=super_admin, json={"status": "active"})
+        assert self._codes_in_order(client, super_admin, tag) == [b["code"], c["code"], a["code"]]
+
+    def test_equal_sort_order_uses_deterministic_name_fallback(self, client, super_admin):
+        tag = f"peq{_SUFFIX}"
+        # Created zeta first, but the secondary name sort must order alpha first.
+        zeta = self._make(client, super_admin, f"{tag}_z", f"Zeta {_SUFFIX}", 4)
+        alpha = self._make(client, super_admin, f"{tag}_a", f"Alpha {_SUFFIX}", 4)
+        assert self._codes_in_order(client, super_admin, tag) == [alpha["code"], zeta["code"]]
+
+    def test_archived_rows_sort_after_active(self, client, super_admin):
+        tag = f"parch{_SUFFIX}"
+        active = self._make(client, super_admin, f"{tag}_a", f"AA {_SUFFIX}", 9)
+        archived = self._make(client, super_admin, f"{tag}_b", f"BB {_SUFFIX}", 0)
+        client.post(f"{API}/master/providers/{archived['id']}/status",
+                    headers=super_admin, json={"status": "archived"})
+        # Despite its lower sort_order, the archived row lands after the active one.
+        assert self._codes_in_order(client, super_admin, tag) == [active["code"], archived["code"]]
+
+    def test_order_field_is_editable_and_persisted(self, client, super_admin):
+        created = self._make(client, super_admin, f"pedit_{_SUFFIX}", f"Editable {_SUFFIX}", 8)
+        assert created["sortOrder"] == 8
+        updated = _data(client.patch(f"{API}/master/providers/{created['id']}",
+                                     headers=super_admin, json={"sortOrder": 2}))
+        assert updated["sortOrder"] == 2
+
+    def test_negative_provider_sort_order_rejected(self, client, super_admin):
+        response = client.post(f"{API}/master/providers", headers=super_admin, json={
+            "kind": "llm", "code": f"pneg_{_SUFFIX}", "name": f"Neg {_SUFFIX}", "sortOrder": -1,
+        })
+        assert response.status_code == 422
+        assert "sortOrder" in _field_errors(response)
+
+
+# ── Provider models: status-first ordering ───────────────────────────────────
+
+
+class TestProviderModelOrdering:
+    """Provider-model lists follow the same active-first, sort_order-ascending
+    contract as providers. Models live under a dedicated test provider so the
+    seeded catalog never interferes."""
+
+    @pytest.fixture
+    def provider(self, client, super_admin):
+        code = f"pmord_{uuid.uuid4().hex[:8]}"
+        created = _data(client.post(f"{API}/master/providers", headers=super_admin, json={
+            "kind": "llm", "code": code, "name": f"PM Order Provider {code}",
+        }))
+        _track("provider_defs", created["id"])
+        return created
+
+    def _make(self, client, headers, provider, code, sort_order):
+        created = _data(client.post(f"{API}/master/provider-models", headers=headers, json={
+            "capability": "llm", "providerCode": provider["code"],
+            "code": code, "name": code, "sortOrder": sort_order,
+        }))
+        _track("provider_models", created["id"])
+        return created
+
+    def _codes_in_order(self, client, headers, provider):
+        items = _data(client.get(
+            f"{API}/master/provider-models?capability=llm&provider={provider['code']}&pageSize=200",
+            headers=headers))
+        return [m["code"] for m in items]
+
+    def test_active_first_and_deactivation_moves_model_to_bottom(self, client, super_admin, provider):
+        a = self._make(client, super_admin, provider, "mord-a", 5)
+        b = self._make(client, super_admin, provider, "mord-b", 1)
+        c = self._make(client, super_admin, provider, "mord-c", 3)
+        assert self._codes_in_order(client, super_admin, provider) == ["mord-b", "mord-c", "mord-a"]
+
+        response = client.post(f"{API}/master/provider-models/{b['id']}/status",
+                               headers=super_admin, json={"status": "inactive"})
+        assert response.status_code == 200
+        assert self._codes_in_order(client, super_admin, provider) == ["mord-c", "mord-a", "mord-b"]
+
+        client.post(f"{API}/master/provider-models/{b['id']}/status",
+                    headers=super_admin, json={"status": "active"})
+        assert self._codes_in_order(client, super_admin, provider) == ["mord-b", "mord-c", "mord-a"]
+
+    def test_provider_model_sort_order_editable(self, client, super_admin, provider):
+        created = self._make(client, super_admin, provider, "mord-edit", 7)
+        assert created["sortOrder"] == 7
+        updated = _data(client.patch(f"{API}/master/provider-models/{created['id']}",
+                                     headers=super_admin, json={"sortOrder": 1}))
+        assert updated["sortOrder"] == 1
+
+
+# ── Status-first ordering across the whole Platform Configuration module ──────
+
+# Simple `status`-based master types creatable with just code + name + sortOrder.
+_STATUS_TYPES = [
+    ("industries", "industries"),
+    ("plans", "plans"),
+    ("ai-profiles", "ai_config_profiles"),
+]
+
+
+@pytest.mark.parametrize("mtype, table", _STATUS_TYPES)
+class TestStatusFirstOrderingAcrossTypes:
+    """The active-first / sort_order-ascending contract holds for *every* master
+    type, not only providers — verified generically across a representative set
+    of `status`-based sections. Search-scoped so seeded rows never interfere."""
+
+    def _make(self, client, headers, mtype, table, code, sort_order):
+        created = _data(client.post(f"{API}/master/{mtype}", headers=headers,
+                                    json={"code": code, "name": f"SF {code}", "sortOrder": sort_order}))
+        _track(table, created["id"])
+        return created
+
+    def _rows(self, client, headers, mtype, tag):
+        items = _data(client.get(f"{API}/master/{mtype}?pageSize=200&search={tag}", headers=headers))
+        mine = [i for i in items if tag in str(i["code"])]
+        return [(i["code"], i["status"], i["sortOrder"]) for i in mine]
+
+    def test_full_lifecycle_ordering(self, client, super_admin, mtype, table):
+        tag = f"sf{mtype.replace('-', '')[:3]}{_SUFFIX}"
+        a = self._make(client, super_admin, mtype, table, f"{tag}_a", 5)
+        b = self._make(client, super_admin, mtype, table, f"{tag}_b", 1)
+        c = self._make(client, super_admin, mtype, table, f"{tag}_c", 3)
+
+        # All active → sort_order ascending.
+        assert [r[0] for r in self._rows(client, super_admin, mtype, tag)] == \
+            [b["code"], c["code"], a["code"]]
+
+        # Deactivate b → drops below every active record despite its low sort_order.
+        assert client.post(f"{API}/master/{mtype}/{b['id']}/status", headers=super_admin,
+                           json={"status": "inactive"}).status_code == 200
+        rows = self._rows(client, super_admin, mtype, tag)
+        assert [r[0] for r in rows] == [c["code"], a["code"], b["code"]]
+        assert [r[1] for r in rows] == ["active", "active", "inactive"]
+
+        # Archive c too → both unavailable rows sit at the bottom, ordered by
+        # sort_order ascending among themselves (b=1 before c=3).
+        client.post(f"{API}/master/{mtype}/{c['id']}/status", headers=super_admin,
+                    json={"status": "archived"})
+        rows = self._rows(client, super_admin, mtype, tag)
+        assert [r[0] for r in rows] == [a["code"], b["code"], c["code"]]
+        assert [r[1] for r in rows] == ["active", "inactive", "archived"]
+
+        # Reactivate b → back into the active group at its sort_order position.
+        client.post(f"{API}/master/{mtype}/{b['id']}/status", headers=super_admin,
+                    json={"status": "active"})
+        rows = self._rows(client, super_admin, mtype, tag)
+        assert [r[0] for r in rows] == [b["code"], a["code"], c["code"]]
+
+    def test_equal_sort_order_deterministic_name_fallback(self, client, super_admin, mtype, table):
+        tag = f"eq{mtype.replace('-', '')[:3]}{_SUFFIX}"
+        zeta = self._make(client, super_admin, mtype, table, f"{tag}_zeta", 4)
+        alpha = self._make(client, super_admin, mtype, table, f"{tag}_alpha", 4)
+        # Same sort_order → the name (SF <code>) breaks the tie deterministically.
+        assert [r[0] for r in self._rows(client, super_admin, mtype, tag)] == \
+            [alpha["code"], zeta["code"]]
+
+
+class TestLanguageStatusOrdering:
+    """Languages use the `enabled` flag as their lifecycle column: disabling one
+    drops it below every enabled language; re-enabling lifts it back."""
+
+    def _make(self, client, headers, code, sort_order):
+        created = _data(client.post(f"{API}/master/languages", headers=headers,
+            json={"code": code, "name": f"SFLang{_SUFFIX}-{code}", "sortOrder": sort_order}))
+        _track("supported_languages", created["id"])
+        return created
+
+    def _rows(self, client, headers):
+        items = _data(client.get(
+            f"{API}/master/languages?pageSize=200&search=SFLang{_SUFFIX}", headers=headers))
+        mine = [l for l in items if f"SFLang{_SUFFIX}" in str(l["name"])]
+        return [(l["code"], l["enabled"], l["sortOrder"]) for l in mine]
+
+    def test_disable_moves_to_bottom_enable_restores(self, client, super_admin):
+        a = self._make(client, super_admin, f"e{_SUFFIX[:4]}-A", 5)
+        b = self._make(client, super_admin, f"e{_SUFFIX[:4]}-B", 1)
+        c = self._make(client, super_admin, f"e{_SUFFIX[:4]}-C", 3)
+        assert [r[0] for r in self._rows(client, super_admin)] == [b["code"], c["code"], a["code"]]
+
+        # Disable b → enabled=False, drops to the bottom.
+        assert client.post(f"{API}/master/languages/{b['id']}/status", headers=super_admin,
+                           json={"status": "inactive"}).status_code == 200
+        rows = self._rows(client, super_admin)
+        assert [r[0] for r in rows] == [c["code"], a["code"], b["code"]]
+        assert [r[1] for r in rows] == [True, True, False]
+
+        # Re-enable b → back into the enabled group by sort_order.
+        client.post(f"{API}/master/languages/{b['id']}/status", headers=super_admin,
+                    json={"status": "active"})
+        assert [r[0] for r in self._rows(client, super_admin)] == [b["code"], c["code"], a["code"]]
+
+
+class TestPaginationDeterministicOrdering:
+    """Search, filter and pagination all preserve one global status-first order:
+    concatenating the pages reproduces the single-page ordering with no overlap."""
+
+    def test_pages_concatenate_to_global_status_first_order(self, client, super_admin):
+        tag = f"pg{_SUFFIX}"
+        specs = [(f"{tag}_a", 3, "active"), (f"{tag}_b", 1, "active"),
+                 (f"{tag}_c", 2, "inactive"), (f"{tag}_d", 0, "inactive"),
+                 (f"{tag}_e", 5, "active")]
+        for code, sort_order, status in specs:
+            created = _data(client.post(f"{API}/master/industries", headers=super_admin,
+                                        json={"code": code, "name": f"PG {code}", "sortOrder": sort_order}))
+            _track("industries", created["id"])
+            if status != "active":
+                client.post(f"{API}/master/industries/{created['id']}/status",
+                            headers=super_admin, json={"status": status})
+
+        def page(p, ps):
+            items = _data(client.get(
+                f"{API}/master/industries?search={tag}&page={p}&pageSize={ps}", headers=super_admin))
+            return [i["code"] for i in items if tag in str(i["code"])]
+
+        # Active by sort_order (b=1, a=3, e=5) then inactive by sort_order (d=0, c=2).
+        expected = [f"{tag}_b", f"{tag}_a", f"{tag}_e", f"{tag}_d", f"{tag}_c"]
+        assert page(1, 100) == expected
+        # Paginated (size 2) pages concatenate to the same global order.
+        assert page(1, 2) + page(2, 2) + page(3, 2) == expected
+
+    def test_reload_returns_same_order(self, client, super_admin):
+        tag = f"rl{_SUFFIX}"
+        for code, sort_order in [(f"{tag}_a", 2), (f"{tag}_b", 1)]:
+            created = _data(client.post(f"{API}/master/industries", headers=super_admin,
+                                        json={"code": code, "name": f"RL {code}", "sortOrder": sort_order}))
+            _track("industries", created["id"])
+        first = [i["code"] for i in _data(client.get(
+            f"{API}/master/industries?search={tag}&pageSize=100", headers=super_admin)) if tag in str(i["code"])]
+        second = [i["code"] for i in _data(client.get(
+            f"{API}/master/industries?search={tag}&pageSize=100", headers=super_admin)) if tag in str(i["code"])]
+        assert first == second == [f"{tag}_b", f"{tag}_a"]
+
+    def test_page_meta_matches_request_and_survives_status_change(self, client, super_admin):
+        """Refetching the *same* page after a status change returns that page's
+        slice of the re-sorted global order, with meta echoing the requested
+        page — the contract the frontend relies on to stay on page N."""
+        tag = f"pm{_SUFFIX}"
+        ids = {}
+        for i in range(5):
+            created = _data(client.post(f"{API}/master/industries", headers=super_admin,
+                                        json={"code": f"{tag}_{i}", "name": f"PM {tag}_{i}", "sortOrder": i}))
+            _track("industries", created["id"])
+            ids[f"{tag}_{i}"] = created["id"]
+
+        def fetch(p):
+            response = client.get(
+                f"{API}/master/industries?search={tag}&page={p}&pageSize=2", headers=super_admin)
+            body = response.json()
+            assert body.get("success") is True, body
+            return [r["code"] for r in body["data"]], body["meta"]
+
+        codes, meta = fetch(2)
+        assert meta == {"page": 2, "pageSize": 2, "total": 5, "totalPages": 3}
+        assert codes == [f"{tag}_2", f"{tag}_3"]
+
+        # Deactivating the first page-2 record drops it to the global bottom;
+        # page 2 refetched with the same number shows the shifted slice.
+        client.post(f"{API}/master/industries/{ids[f'{tag}_2']}/status",
+                    headers=super_admin, json={"status": "inactive"})
+        codes, meta = fetch(2)
+        assert meta == {"page": 2, "pageSize": 2, "total": 5, "totalPages": 3}
+        assert codes == [f"{tag}_3", f"{tag}_4"]
+        # And the deactivated record is now the global tail.
+        assert fetch(1)[0] == [f"{tag}_0", f"{tag}_1"]
+        assert fetch(3)[0] == [f"{tag}_2"]
+
+
+class TestDataRegionOrdering:
+    """Data Regions require a country FK, so they get a dedicated ordering test
+    (the generic parametrized class only covers code+name+sortOrder types)."""
+
+    @pytest.fixture
+    def country_id(self, client, super_admin):
+        countries = _data(client.get(
+            f"{API}/master/countries?search=India&pageSize=10", headers=super_admin))
+        return next(c["id"] for c in countries if c["iso2"] == "IN")
+
+    def _make(self, client, headers, country_id, code, sort_order):
+        created = _data(client.post(f"{API}/master/data-regions", headers=headers, json={
+            "code": code, "name": f"SF {code}", "countryId": country_id, "sortOrder": sort_order,
+        }))
+        _track("data_regions", created["id"])
+        return created
+
+    def _rows(self, client, headers, tag):
+        items = _data(client.get(
+            f"{API}/master/data-regions?pageSize=200&search={tag}", headers=headers))
+        mine = [i for i in items if tag in str(i["code"])]
+        return [(i["code"], i["status"]) for i in mine]
+
+    def test_status_first_and_deactivation_moves_to_bottom(self, client, super_admin, country_id):
+        tag = f"drord{_SUFFIX}"
+        a = self._make(client, super_admin, country_id, f"{tag}-a", 5)
+        b = self._make(client, super_admin, country_id, f"{tag}-b", 1)
+        c = self._make(client, super_admin, country_id, f"{tag}-c", 3)
+        assert [r[0] for r in self._rows(client, super_admin, tag)] == \
+            [b["code"], c["code"], a["code"]]
+
+        client.post(f"{API}/master/data-regions/{b['id']}/status", headers=super_admin,
+                    json={"status": "inactive"})
+        rows = self._rows(client, super_admin, tag)
+        assert [r[0] for r in rows] == [c["code"], a["code"], b["code"]]
+        assert [r[1] for r in rows] == ["active", "active", "inactive"]
+
+        client.post(f"{API}/master/data-regions/{b['id']}/status", headers=super_admin,
+                    json={"status": "active"})
+        assert [r[0] for r in self._rows(client, super_admin, tag)] == \
+            [b["code"], c["code"], a["code"]]
+
+
+@pytest.mark.parametrize("mtype", ["industries", "data-regions", "plans", "ai-profiles"])
+def test_serializer_exposes_integer_sort_order(client, super_admin, mtype):
+    """Data-flow guard: the four config sections whose column switched from
+    Updated to Order must return a real integer `sortOrder` in the API response
+    (DB sort_order → model → serializer → response) — never a timestamp."""
+    items = _data(client.get(f"{API}/master/{mtype}?pageSize=5", headers=super_admin))
+    assert items, f"expected seeded {mtype} rows to verify sortOrder"
+    assert all(isinstance(i["sortOrder"], int) for i in items)
+    assert all("sortOrder" in i for i in items)

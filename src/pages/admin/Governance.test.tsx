@@ -125,4 +125,39 @@ describe("AI Governance — provider matrix", () => {
     await waitFor(() =>
       expect(setMasterStatus).toHaveBeenCalledWith("provider-models", "pm_2", "inactive"));
   });
+
+  it("moves a deactivated provider model to the bottom after the refetch", async () => {
+    const user = userEvent.setup();
+    let flipped = false;
+    // Active-first server ordering: once GPT-4o mini is inactive it returns last.
+    const REORDERED = [
+      { ...MODELS["llm:openai"][1] },                      // GPT-4o (active) → first
+      { ...MODELS["llm:openai"][0], status: "inactive" },  // GPT-4o mini (inactive) → last
+    ];
+    listMaster.mockImplementation(((mtype: string, opts?: { kind?: string; capability?: string; provider?: string }) => {
+      if (mtype === "providers") return Promise.resolve(paged(PROVIDERS[opts?.kind ?? ""] ?? []));
+      if (mtype === "provider-models") {
+        const key = `${opts?.capability}:${opts?.provider}`;
+        if (key === "llm:openai") return Promise.resolve(paged(flipped ? REORDERED : MODELS[key]));
+        return Promise.resolve(paged(MODELS[key] ?? []));
+      }
+      return Promise.resolve(paged([]));
+    }) as never);
+    setMasterStatus.mockImplementation(() => { flipped = true; return Promise.resolve({} as never); });
+
+    render(<Governance />);
+    await screen.findByText("GPT-4o mini");
+    const modelOrder = () => screen.getAllByRole("row")
+      .map((r) => within(r).queryByText("GPT-4o mini") ? "mini"
+        : within(r).queryByText("GPT-4o") ? "gpt4o" : null)
+      .filter(Boolean);
+    expect(modelOrder()).toEqual(["mini", "gpt4o"]);
+
+    const miniRow = screen.getByText("GPT-4o mini").closest("tr")!;
+    await user.click(within(miniRow).getByRole("button", { name: "Deactivate" }));
+    await waitFor(() =>
+      expect(setMasterStatus).toHaveBeenCalledWith("provider-models", "pm_1", "inactive"));
+    // No manual refresh: the models table refetched and the inactive model dropped last.
+    await waitFor(() => expect(modelOrder()).toEqual(["gpt4o", "mini"]));
+  });
 });

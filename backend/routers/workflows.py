@@ -12,7 +12,7 @@ from backend.core.deps import (
     require_tenant_admin,
     resolve_tenant_id,
 )
-from shared.errors import NotFoundError
+from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
 from shared.db.mysql import get_db
@@ -80,6 +80,101 @@ class SaveWorkflowRequest(BaseModel):
     status: str | None = Field(default=None, pattern="^(draft|pending_approval|approved)$")
 
 
+# The node kinds the runtime interpreter executes
+# (shared/orchestration/workflow_engine.py::build_definition_graph).
+NODE_KINDS = (
+    "start", "message", "ask", "intent", "condition",
+    "api", "knowledge", "handover", "end",
+)
+_TERMINAL_KINDS = ("end", "handover")
+
+
+def validate_definition(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Structural validation of a workflow document.
+
+    Returns (hard_errors, issues): hard errors reject the save (the document
+    could not execute or is corrupt); issues are stored on the workflow and
+    surfaced in the builder (drafts may be saved incomplete).
+    """
+    errors: list[dict] = []
+    issues: list[dict] = []
+
+    ids = [str(n.get("id") or "") for n in nodes]
+    if any(not i for i in ids):
+        errors.append({"field": "nodes", "message": "Every node needs an id."})
+    duplicates = sorted({i for i in ids if i and ids.count(i) > 1})
+    if duplicates:
+        errors.append({"field": "nodes",
+                       "message": f"Duplicate node ids: {', '.join(duplicates)}."})
+    for n in nodes:
+        if n.get("kind") not in NODE_KINDS:
+            errors.append({
+                "field": "nodes",
+                "message": f"Unknown node kind '{n.get('kind')}' on node "
+                           f"'{n.get('id')}'. Allowed: {', '.join(NODE_KINDS)}.",
+            })
+    starts = [n for n in nodes if n.get("kind") == "start"]
+    if nodes and not starts:
+        errors.append({"field": "nodes", "message": "A start node is required."})
+    if len(starts) > 1:
+        errors.append({"field": "nodes", "message": "Only one start node is allowed."})
+    node_ids = set(ids)
+    for e in edges:
+        if str(e.get("from") or "") not in node_ids or str(e.get("to") or "") not in node_ids:
+            errors.append({
+                "field": "edges",
+                "message": f"Connection '{e.get('id') or '?'}' references a node "
+                           "that doesn't exist.",
+            })
+    if errors:
+        return errors, issues
+
+    adjacency: dict[str, list[str]] = {}
+    for e in edges:
+        adjacency.setdefault(str(e["from"]), []).append(str(e["to"]))
+
+    start_id = str(starts[0]["id"]) if starts else None
+    reachable: set[str] = set()
+    stack = [start_id] if start_id else []
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        stack.extend(adjacency.get(current, []))
+
+    for n in nodes:
+        nid, kind = str(n["id"]), n.get("kind")
+        config = n.get("config") or {}
+        out = adjacency.get(nid, [])
+        if nid not in reachable:
+            issues.append({"nodeId": nid, "level": "warning",
+                           "message": "Not connected to the start node — this step never runs."})
+            continue
+        if kind == "condition":
+            if not config.get("variable"):
+                issues.append({"nodeId": nid, "level": "error",
+                               "message": "Condition needs a variable to evaluate."})
+            if len(out) < 2:
+                issues.append({"nodeId": nid, "level": "warning",
+                               "message": "Condition should have true and false branches."})
+        if kind == "ask" and not config.get("variable"):
+            issues.append({"nodeId": nid, "level": "warning",
+                           "message": "No variable name set — the node id will be used."})
+        if kind == "intent" and not out:
+            issues.append({"nodeId": nid, "level": "error",
+                           "message": "Intent node needs at least one outgoing branch."})
+        if kind not in _TERMINAL_KINDS and kind != "start" and not out:
+            issues.append({"nodeId": nid, "level": "warning",
+                           "message": "Dead end — no outgoing connection."})
+    if start_id and nodes and not any(
+        n.get("kind") in _TERMINAL_KINDS and str(n["id"]) in reachable for n in nodes
+    ):
+        issues.append({"nodeId": start_id, "level": "warning",
+                       "message": "No end or handover step is reachable — the flow cannot finish."})
+    return errors, issues
+
+
 @router.put("/bots/{bot_id}/workflow")
 def save_bot_workflow(
     bot_id: str,
@@ -104,12 +199,17 @@ def save_bot_workflow(
     before = {"version": w.version, "status": w.status}
     if body.name:
         w.name = body.name
-    if body.nodes is not None:
-        w.nodes = body.nodes
-    if body.edges is not None:
-        w.edges = body.edges
-    if body.issues is not None:
-        w.issues = body.issues
+    if body.nodes is not None or body.edges is not None:
+        nodes = body.nodes if body.nodes is not None else (w.nodes or [])
+        edges = body.edges if body.edges is not None else (w.edges or [])
+        errors, computed_issues = validate_definition(nodes, edges)
+        if errors:
+            raise ApiError("Workflow validation failed.", 422, errors=errors)
+        w.nodes = nodes
+        w.edges = edges
+        # Issues are server-computed and authoritative — client-supplied
+        # issues are ignored so stale warnings can't be persisted.
+        w.issues = computed_issues
     if body.status is not None:
         w.status = body.status
     w.version += 1

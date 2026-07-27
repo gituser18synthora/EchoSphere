@@ -191,6 +191,9 @@ class IngestionPipeline:
         # 3. Embed in batches.
         texts = [p.embedding_text or p.content for p in payloads]
         vectors = await self.embedder.embed_documents(texts)
+        await asyncio.to_thread(
+            self._record_embedding_usage, tenant_id, document_id, job_id
+        )
         for payload, vector in zip(payloads, vectors, strict=True):
             payload.embedding = vector
             payload.embedding_model = self.embedder.model
@@ -247,6 +250,41 @@ class IngestionPipeline:
             for key, value in fields.items():
                 setattr(doc, key, value)
             await session.commit()
+
+    def _record_embedding_usage(self, tenant_id: str, document_id: str, job_id: str) -> None:
+        """Bill the ingestion embedding batch to the owning tenant.
+
+        Reads the provider-reported token usage captured by the embedder for
+        its most recent embed_documents call. The job-scoped request id makes
+        a retried finalize idempotent while a re-embedding run (new job) is
+        billed as the new provider work it is. Mock embedders report no usage
+        and are never recorded.
+        """
+        tokens = int(getattr(self.embedder, "last_usage_tokens", 0) or 0)
+        requests = int(getattr(self.embedder, "last_usage_requests", 0) or 0)
+        if not tokens and not requests:
+            return
+        from shared.billing.metering import record_usage_event
+
+        session = get_sessionmaker()()
+        try:
+            record_usage_event(
+                session,
+                tenant_id=tenant_id,
+                capability="embedding",
+                provider_code=getattr(self.embedder, "provider_code", "openai"),
+                model_code=self.embedder.model,
+                request_id=f"{job_id}:embed",
+                requests=requests or 1,
+                total_tokens=tokens,
+                usage_source=getattr(self.embedder, "last_usage_source", "provider"),
+                usage_metadata={"documentId": document_id, "kind": "ingestion"},
+            )
+        except Exception:  # noqa: BLE001 — metering must never fail ingestion
+            logger.warning("embedding usage recording failed for job %s", job_id)
+            session.rollback()
+        finally:
+            session.close()
 
     @staticmethod
     def _sync_source(kb_id: str, tenant_id: str | None, *, failed: bool) -> None:

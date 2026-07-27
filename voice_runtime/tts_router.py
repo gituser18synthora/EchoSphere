@@ -244,9 +244,21 @@ class StreamingTTSRouter(TTSService):
         if context_id and self.audio_context_available(context_id):
             await self.flush_audio(context_id)
 
+    def _log_engine_failure(self, engine: dict | None, error: ProviderError, stage: str):
+        """One structured line per unrecovered TTS failure — enough to place
+        the failure (engine + language + category) without leaking secrets."""
+        engine = engine or {}
+        logger.error(
+            "tts-router: %s failed (provider=%s model=%s voice=%s language=%s "
+            "category=%s): %s",
+            stage, engine.get("provider"), engine.get("model"), engine.get("voice"),
+            self._current_language, error.category, str(error)[:300],
+        )
+
     # ── TTSService contract ─────────────────────────────────────────────
     async def run_tts(self, text: str, context_id: str):
         state = self._generations.get(context_id)
+        engine: dict | None = state.engine if state else None
         try:
             if state is None:
                 engine = self._engine_for_language(self._current_language)
@@ -258,6 +270,7 @@ class StreamingTTSRouter(TTSService):
         except ProviderError as exc:
             handled = await self._try_fallback(context_id, exc)
             if not handled:
+                self._log_engine_failure(engine, exc, "synthesis dispatch")
                 yield ErrorFrame(error=f"tts_failure:{exc.category}")
                 await self._finalize_generation(context_id, failed=True)
                 return
@@ -265,6 +278,7 @@ class StreamingTTSRouter(TTSService):
             error = ProviderError("tts", "upstream", str(exc)[:200])
             handled = await self._try_fallback(context_id, error)
             if not handled:
+                self._log_engine_failure(engine, error, "synthesis dispatch")
                 yield ErrorFrame(error="tts_failure:upstream")
                 await self._finalize_generation(context_id, failed=True)
                 return
@@ -368,6 +382,7 @@ class StreamingTTSRouter(TTSService):
             if generation and state is not None:
                 handled = await self._try_fallback(generation, error)
                 if not handled:
+                    self._log_engine_failure(state.engine, error, "provider stream")
                     await self.push_error(error_msg=f"tts_failure:{error.category}")
                     await self._finalize_generation(generation, failed=True)
             else:
@@ -381,6 +396,18 @@ class StreamingTTSRouter(TTSService):
         if state.watchdog is not None:
             state.watchdog.cancel()
         if self._recorder is not None:
+            # Billable characters: counted once per generation against the
+            # engine that actually delivered audio (fallback replays the same
+            # texts on the new engine — never double-counted). Failed
+            # generations produced no audio and are not billed.
+            add_usage = getattr(self._recorder, "add_tts_usage", None)
+            if add_usage is not None and not failed and state.texts:
+                add_usage(
+                    provider=state.engine.get("provider") or "",
+                    model=state.engine.get("model") or "",
+                    voice=state.engine.get("voice") or "",
+                    characters=sum(len(t) for t in state.texts),
+                )
             await self._recorder.flush_event(
                 "tts_provider_used",
                 provider=state.engine.get("provider"),

@@ -310,6 +310,7 @@ export interface TenantProfile {
 }
 
 export interface Subscription {
+  id: string;
   tenantId: string;
   tenant: string;
   plan: PlanTier;
@@ -1039,6 +1040,40 @@ export interface ProviderModelMaster extends MasterCommon {
   sortOrder: number;
 }
 
+export interface CurrencyMaster extends MasterCommon {
+  code: string;
+  name: string;
+  symbol: string;
+  decimalPlaces: number;
+  isBase: boolean;
+  sortOrder: number;
+}
+
+export interface ExchangeRateMaster extends MasterCommon {
+  name: string; // "USD → INR"
+  baseCode: string;
+  targetCode: string;
+  /** Decimal string — preserves the full Numeric(18,8) precision. */
+  rate: string;
+  effectiveFrom: string | null;
+  source: string;
+  sortOrder: number;
+}
+
+export interface ProviderPricingMaster extends MasterCommon {
+  name: string;
+  providerCode: string;
+  capability: string;
+  modelCode: string;
+  component: string;
+  unit: string;
+  /** Decimal string — preserves the full Numeric(18,10) precision. */
+  unitPrice: string;
+  currencyCode: string;
+  effectiveFrom: string | null;
+  sortOrder: number;
+}
+
 export interface LanguageMaster {
   id: string;
   code: string;
@@ -1074,12 +1109,19 @@ export interface UploadConfig {
 export type NodeKind =
   | "start"
   | "message"
+  | "ask"
   | "intent"
   | "condition"
   | "api"
   | "knowledge"
   | "handover"
   | "end";
+
+/** Per-kind execution settings interpreted by the runtime workflow engine:
+    message/end/handover `text`; ask `question`/`variable`/`entityType`;
+    intent `prompt`; condition `variable`/`operator`/`value`; api `name`/
+    `onFailure`; knowledge `query`/`fallbackText`. */
+export type WorkflowNodeConfig = Record<string, unknown>;
 
 export interface WorkflowNode {
   id: string;
@@ -1088,6 +1130,7 @@ export interface WorkflowNode {
   sub?: string;
   x: number;
   y: number;
+  config?: WorkflowNodeConfig;
 }
 
 export interface WorkflowEdge {
@@ -1161,6 +1204,13 @@ export interface TraceStep {
   text: string;
   intent?: string;
   confidence?: number;
+  /** Runtime routing decision for this turn (workflow/knowledge/chat/…). */
+  route?: string;
+  /** Saved-workflow execution detail (from the runtime engine). */
+  workflowName?: string;
+  workflowNodes?: string[];
+  workflowSlots?: Record<string, unknown>;
+  workflowDone?: boolean;
   chunksUsed?: string[];
   apiCalls?: { name: string; ms: number; ok: boolean }[];
   promptVersion?: string;

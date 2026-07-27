@@ -138,6 +138,15 @@ class TurnRouter:
             if route and route.startswith("tool:"):
                 return RouteDecision(kind=RouteKind.TOOL, intent=name, confidence=confidence,
                                      action=route.split(":", 1)[1], reason="intent_tool")
+            # Explicit destination routes: "knowledge" forces tenant-safe KB
+            # retrieval (needed for locales the _KB_SIGNALS heuristics don't
+            # cover), "handoff" escalates to a human agent deterministically.
+            if route == "knowledge" and self._has_kbs:
+                return RouteDecision(kind=RouteKind.KNOWLEDGE, intent=name, confidence=confidence,
+                                     reason="intent_knowledge", considered_kb=True)
+            if route == "handoff":
+                return RouteDecision(kind=RouteKind.HANDOFF, intent=name, confidence=confidence,
+                                     action="transfer", reason="intent_handoff")
             return RouteDecision(kind=RouteKind.INTENT, intent=name, confidence=confidence,
                                  reason="configured_intent")
 

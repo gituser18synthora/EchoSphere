@@ -478,6 +478,24 @@ async def test_prompt(
         )
         response_text = result.text
         tokens_in, tokens_out = result.input_tokens, result.output_tokens
+        if provider_code != "mock":
+            # A real provider call was billed — record it for the bot's tenant.
+            from shared.billing.metering import record_usage_event
+
+            record_usage_event(
+                db,
+                tenant_id=bot.tenant_id,
+                bot_id=bot.id,
+                capability="llm",
+                provider_code=provider_code,
+                model_code=model or "",
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                usage_source="provider",
+                usage_metadata={"kind": "prompt_test"},
+                commit=False,
+            )
+            db.commit()
     except Exception as exc:  # noqa: BLE001 — surfaced as a safe test failure
         error = f"LLM provider '{provider_code}' failed: {type(exc).__name__}"
     latency_ms = round((time.monotonic() - started) * 1000)

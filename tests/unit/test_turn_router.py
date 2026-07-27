@@ -93,6 +93,48 @@ class TestWorkflowPriority:
         assert decision.action == "appointment_booking"
 
 
+class TestExplicitIntentRoutes:
+    """Intent route values "knowledge" and "handoff" — used by locale-specific
+    intents whose utterances the English KB/handoff heuristics can't detect."""
+
+    def _router(self, route: str, **kwargs) -> TurnRouter:
+        return make_router(
+            intents=[{
+                "name": "penalty_charges",
+                "samples": ["penalty kitni lagegi", "late fee"],
+                "route": route,
+                "confidence_threshold": 0.3,
+            }],
+            **kwargs,
+        )
+
+    def test_knowledge_route_forces_retrieval(self):
+        decision = self._router("knowledge").decide("mujhe batao penalty kitni lagegi")
+        assert decision.kind == RouteKind.KNOWLEDGE
+        assert decision.intent == "penalty_charges"
+        assert decision.considered_kb is True
+
+    def test_knowledge_route_without_kbs_degrades_to_intent(self):
+        decision = self._router("knowledge", has_knowledge_bases=False).decide(
+            "mujhe batao penalty kitni lagegi"
+        )
+        assert decision.kind == RouteKind.INTENT
+
+    def test_handoff_route_transfers(self):
+        router = make_router(
+            intents=[{
+                "name": "human_agent",
+                "samples": ["agent se baat karni hai", "kisi insaan se baat"],
+                "route": "handoff",
+                "confidence_threshold": 0.3,
+            }]
+        )
+        decision = router.decide("mujhe agent se baat karni hai abhi")
+        assert decision.kind == RouteKind.HANDOFF
+        assert decision.action == "transfer"
+        assert decision.intent == "human_agent"
+
+
 class TestSafety:
     def test_card_number_disclosure(self):
         decision = make_router().decide("my card number is 4111 1111 1111 1111")

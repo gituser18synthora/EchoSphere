@@ -12,7 +12,7 @@ Replacing a mock with a real call must not change any component.
 | 3 | Scheduled publish | `Release.scheduledFor` | `scheduledPublish` | Publish Center shows the schedule picker behind the flag. |
 | 4 | Call recording playback | `getConversation` audio URL | `recordingPlayback` | Transcript is always available; the audio player is flag-gated. |
 | 5 | Knowledge connectors (Zendesk, Confluence, SharePoint OAuth) | `listKnowledge` type `connector` | `knowledgeConnectors` | "Connect source" CTA disabled with explanation until flag on. |
-| 6 | Report/CSV export jobs | `simulateAction("export")` | `exportGeneration` | Buttons trigger a toast explaining the pending backend job API. |
+| 6 | Optional background exports for unusually large datasets | `—` | `exportGeneration` | Every visible export is functional through authorized synchronous CSV/XLSX endpoints. A queued worker may be added later for datasets that outgrow synchronous delivery; no current button depends on it. |
 | 7 | Tenant provisioning orchestration | onboarding wizard step 7 | — | Wizard simulates retryable provisioning tasks; real API must expose per-task status + retry. |
 | 8 | Prompt approval workflow | `Prompt.state` transitions | — | UI models draft → pending_approval → approved; backend must enforce RBAC on the transition. |
 | 9 | Release approval + rollback | `listReleases` mutations | — | Stage machine draft → review → approved → published → rolled_back; server must gate `published` on checklist. |

@@ -18,7 +18,7 @@ interface NavSection {
   items: NavEntry[];
 }
 
-function navFor(role: Role, criticalAlerts: number): NavSection[] {
+export function navFor(role: Role, criticalAlerts: number): NavSection[] {
   if (role === "super_admin") {
     return [
       { items: [{ to: "/admin", label: "Dashboard", icon: "dashboard" }] },
@@ -36,6 +36,7 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
         title: "Platform",
         items: [
           { to: "/admin/platform-config", label: "Platform Configuration", icon: "settings" },
+          { to: "/admin/regional-settings", label: "Regional & Currency Settings", icon: "globe" },
           { to: "/admin/governance", label: "AI Governance", icon: "brain" },
           { to: "/admin/voice", label: "Voice Platform", icon: "phone" },
           { to: "/admin/knowledge", label: "Knowledge", icon: "book" },
@@ -85,6 +86,8 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
 const crumbNames: Record<string, string> = {
   admin: "Super Admin", t: "Workspace", tenants: "Organizations",
   "platform-config": "Platform Configuration", profile: "My Profile",
+  "regional-settings": "Regional & Currency Settings", countries: "Countries",
+  "data-regions": "Data Regions", currencies: "Currencies", "exchange-rates": "Exchange Rates",
   onboarding: "Tenant Onboarding", subscriptions: "Subscriptions", billing: "Billing",
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
   knowledge: "Knowledge", "knowledge-chunks": "Chunk Review",

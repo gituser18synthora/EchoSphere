@@ -20,6 +20,7 @@ from shared.errors import NotFoundError, ProviderNotAvailableError
 from shared.db.mysql import get_sessionmaker
 from shared.db.redis import get_redis
 from shared.models import (
+    BotLanguage,
     Intent,
     KnowledgeSource,
     PhoneNumber,
@@ -119,6 +120,30 @@ def _wire_voice(session, provider: str, voice: str | None) -> str:
     return voice
 
 
+def _voice_display_name(session, voice: str | None) -> str:
+    """Human-readable voice name for UIs (falls back to the raw value)."""
+    if not voice:
+        return ""
+    profile = session.get(VoiceProfile, voice)
+    return profile.name if profile is not None else voice
+
+
+def _profile_supports_language(profile, locale: str) -> bool:
+    """Whether a voice profile officially supports a platform locale.
+
+    An empty/None languages list means the catalog treats the voice as
+    language-agnostic (e.g. ElevenLabs multilingual voices). An unknown
+    profile (wire code stored directly) is treated as compatible — the
+    operator explicitly chose that value.
+    """
+    if profile is None:
+        return True
+    languages = profile.languages or []
+    if not languages:
+        return True
+    return locale in languages or locale.split("-")[0] in languages
+
+
 def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
     """Normalize language_voice_map entries to engine dicts.
 
@@ -136,6 +161,7 @@ def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
                 "provider": provider,
                 "model": entry.get("model") or default_engine["model"],
                 "voice": _wire_voice(session, provider, entry.get("voice")),
+                "voice_name": _voice_display_name(session, entry.get("voice")),
                 "params": entry.get("params") or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -148,6 +174,7 @@ def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
                 "provider": provider,
                 "model": (profile.model_codes or [default_engine["model"]])[0],
                 "voice": profile.provider_voice_id or profile.name,
+                "voice_name": profile.name,
                 "params": profile.provider_settings or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -195,6 +222,10 @@ class ResolvedBotConfig:
     silence_timeout: int = 12
     max_call_duration: int = 3600
     audio_settings: dict = field(default_factory=dict)
+    # Languages the bot is configured for (bot_languages), and per-language
+    # voice-configuration problems found at resolution time ({locale: message}).
+    languages: list[str] = field(default_factory=list)
+    language_warnings: dict = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -366,14 +397,14 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         _ensure_engine_allowed(session, "tts", tts_provider, tts_model)
         _ensure_engine_allowed(session, "llm", llm_provider, llm_model)
 
+        default_voice_value = (
+            (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name
+        )
         tts_engine = {
             "provider": tts_provider,
             "model": tts_model,
-            "voice": _wire_voice(
-                session,
-                tts_provider,
-                (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name,
-            ),
+            "voice": _wire_voice(session, tts_provider, default_voice_value),
+            "voice_name": _voice_display_name(session, default_voice_value),
             "settings": (vbs.tts_settings if vbs else None) or {},
             "api_key_reference": _secret_ref_for(session, "tts", tts_provider),
         }
@@ -391,9 +422,46 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                     "provider": vbs.fallback_provider,
                     "model": vbs.fallback_model or "",
                     "voice": _wire_voice(session, vbs.fallback_provider, vbs.fallback_voice),
+                    "voice_name": _voice_display_name(session, vbs.fallback_voice),
                     "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
                 }
         tts_engine["fallback"] = fallback
+
+        # Deterministic per-language voice resolution for every configured bot
+        # language. Priority: explicit per-language entry → the user-selected
+        # default voice when it supports the locale → the explicitly configured
+        # fallback engine when its voice supports the locale. A locale nothing
+        # covers becomes a configuration WARNING surfaced to the test UI — the
+        # user's selection is never silently replaced with another voice.
+        bot_languages = sorted(session.scalars(
+            select(BotLanguage.language_code).where(BotLanguage.bot_id == bot_id)
+        ).all())
+        language_warnings: dict[str, str] = {}
+        default_profile = (
+            session.get(VoiceProfile, default_voice_value) if default_voice_value else None
+        )
+        fallback_profile = (
+            session.get(VoiceProfile, vbs.fallback_voice)
+            if (fallback is not None and vbs is not None and vbs.fallback_voice)
+            else None
+        )
+        for locale in bot_languages:
+            if locale in tts_engine["language_map"]:
+                continue
+            if _profile_supports_language(default_profile, locale):
+                continue  # runtime falls through to the default engine
+            if fallback is not None and _profile_supports_language(fallback_profile, locale):
+                tts_engine["language_map"][locale] = {**fallback, "params": {}}
+                continue
+            language_warnings[locale] = (
+                f"No compatible voice is configured for {locale}. Set a "
+                "per-language voice in Voice Platform or pick a default voice "
+                "that supports this language."
+            )
+            logger.warning(
+                "bot %s: no compatible TTS voice for configured language %s",
+                bot_id, locale,
+            )
 
         audio_settings = {
             "browser": {**DEFAULT_AUDIO_SETTINGS["browser"],
@@ -402,13 +470,22 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                           **(((vbs.audio_settings if vbs else None) or {}).get("telephony") or {})},
         }
 
+        # Default call language: the explicit per-language voice map "default"
+        # wins; otherwise the bot's own configured languages (bot_languages)
+        # decide — a bare "en" here used to reach providers that only accept
+        # full locales (Sarvam 422-rejects it), producing calls with no TTS
+        # audio at all. Bot languages are DB-validated platform locale codes.
+        default_language = ((vbs.language_voice_map or {}).get("default") if vbs else None)
+        if not default_language:
+            default_language = bot_languages[0] if bot_languages else "en"
+
         return ResolvedBotConfig(
             tenant_id=bot.tenant_id,
             bot_id=bot.id,
             bot_name=bot.name,
             version=bot.live_version or bot.version or "draft",
             published=bot.status == "published",
-            language=(vbs.language_voice_map or {}).get("default", "en") if vbs else "en",
+            language=default_language,
             greeting=greeting or f"Hello! You've reached {bot.name}. How can I help you today?",
             system_prompt=system_prompt,
             stt={
@@ -431,6 +508,8 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
             audio_settings=audio_settings,
+            languages=bot_languages,
+            language_warnings=language_warnings,
         )
     finally:
         session.close()
@@ -479,7 +558,8 @@ def _resolve_phone_sync(phone_number: str) -> str:
             )
         ).scalar_one_or_none()
         if row is None or not row.bot_id:
-            raise NotFoundError("No bot is assigned to this number")
+            # NotFoundError appends "not found." — pass a resource label only.
+            raise NotFoundError("A bot assignment for this number")
         return row.bot_id
     finally:
         session.close()

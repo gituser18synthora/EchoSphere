@@ -7,6 +7,7 @@ opt-in development dataset).
 """
 
 import logging
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from shared.models import (
     AiConfigProfile,
     ApprovedModel,
     Country,
+    Currency,
     DataRegion,
     Guardrail,
     HealthMetric,
@@ -28,6 +30,7 @@ from shared.models import (
     Plan,
     PlatformTemplate,
     ProviderDef,
+    ProviderPricing,
     Role,
     RolePermission,
     SupportedLanguage,
@@ -93,6 +96,10 @@ PERMISSIONS = [
     ("test_api_connections", "Test API connections", "tenant"),
     # Channels
     ("manage_channels", "Manage deployment channels", "tenant"),
+    # Billing configuration (platform)
+    ("manage_currencies", "Manage currencies", "platform"),
+    ("manage_exchange_rates", "Manage exchange rates", "platform"),
+    ("manage_pricing", "Manage provider pricing", "platform"),
 ]
 
 ROLE_PERMISSIONS = {
@@ -339,6 +346,31 @@ HEALTH_METRICS = [
     ("Recording storage", "neutral", "—", "<80%"),
 ]
 
+# ISO 4217 display currencies. USD is the platform base currency; exchange
+# rates are configured by Super Admin — never hardcoded here.
+CURRENCIES = [
+    # (code, name, symbol, decimal_places, is_base)
+    ("USD", "US Dollar", "$", 2, True),
+    ("INR", "Indian Rupee", "₹", 2, False),
+    ("EUR", "Euro", "€", 2, False),
+    ("GBP", "British Pound", "£", 2, False),
+    ("AED", "UAE Dirham", "د.إ", 2, False),  # already a supported plan currency
+]
+
+# Provider prices carried over from the existing approved-model registry
+# (MODELS above) — the only real prices the platform already had. Blended
+# per-1k-token rates; Super Admin refines these (e.g. input/output split)
+# under Platform Configuration → Provider Pricing. STT/TTS prices are NOT
+# invented here — they surface as "Pricing unavailable" until configured.
+PROVIDER_PRICING = [
+    # (provider_code, capability, model_code, component, unit, unit_price)
+    ("openai", "llm", "gpt-4o-mini", "tokens", "per_1k_tokens", "0.0006"),
+    ("openai", "llm", "gpt-4o", "tokens", "per_1k_tokens", "0.005"),
+    ("openai", "llm", "gpt-4.1-mini", "tokens", "per_1k_tokens", "0.0007"),
+    ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1k_tokens", "0.00002"),
+    ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1k_tokens", "0.00013"),
+]
+
 SYSTEM_SETTINGS = [
     ("platform.name", "AUREXION EchoSphere", "Display name of the platform"),
     ("platform.default_language", "en-US", "Default language for new bots"),
@@ -383,7 +415,8 @@ def run_base_seed(db: Session | None = None) -> dict:
                "guardrails": 0, "models": 0, "integrations": 0, "health_metrics": 0,
                "settings": 0, "templates": 0, "users": 0,
                "industries": 0, "countries": 0, "data_regions": 0,
-               "ai_profiles": 0, "providers": 0}
+               "ai_profiles": 0, "providers": 0,
+               "currencies": 0, "provider_pricing": 0}
     try:
         role_map: dict[str, Role] = {}
         for code, name, scope, desc in ROLES:
@@ -567,6 +600,32 @@ def run_base_seed(db: Session | None = None) -> dict:
                     status=status, cost_per_1k=cost, latency_p50=latency,
                 ))
                 created["models"] += 1
+
+        for i, (code, name, symbol, places, is_base) in enumerate(CURRENCIES):
+            if db.scalar(select(Currency).where(Currency.code == code)) is None:
+                db.add(Currency(
+                    id=new_id("cur"), code=code, name=name, symbol=symbol,
+                    decimal_places=places, is_base=is_base, sort_order=i,
+                ))
+                created["currencies"] += 1
+        db.flush()  # provider_pricing rows reference currencies.code
+
+        for provider_code, capability, model_code, component, unit, price in PROVIDER_PRICING:
+            exists = db.scalar(
+                select(ProviderPricing).where(
+                    ProviderPricing.provider_code == provider_code,
+                    ProviderPricing.capability == capability,
+                    ProviderPricing.model_code == model_code,
+                    ProviderPricing.component == component,
+                )
+            )
+            if exists is None:
+                db.add(ProviderPricing(
+                    id=new_id("ppr"), provider_code=provider_code, capability=capability,
+                    model_code=model_code, component=component, unit=unit,
+                    unit_price=Decimal(price), currency_code="USD",
+                ))
+                created["provider_pricing"] += 1
 
         for name, category, desc in INTEGRATIONS:
             if db.scalar(select(Integration).where(Integration.name == name)) is None:

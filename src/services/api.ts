@@ -20,7 +20,15 @@ import type {
   ModelLanguagesInfo, ProviderInfo, ProviderModelInfo, ProviderSettings,
   ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability, VoiceOption,
 } from "@/types/domain";
-import { http, getToken, requestWithMeta, type Paged } from "./http";
+import { http, requestWithMeta, type Paged } from "./http";
+import { downloadFile } from "./fileDownload";
+export {
+  downloadReport,
+  filenameFromDisposition,
+  type ReportExportFilters,
+  type ReportExportFormat,
+  type ReportType,
+} from "./reportDownload";
 
 /* ---------- Auth ---------- */
 export const login = (email: string, password: string) =>
@@ -164,20 +172,10 @@ export const archiveReviewDocument = (id: string): Promise<{ archived: boolean; 
 
 /** Authorized original-file download — streams the blob and saves it client-side. */
 export const downloadReviewDocument = async (id: string, fileName: string): Promise<void> => {
-  const token = getToken();
-  const resp = await fetch(`/api/v1${REVIEW}/documents/${id}/download`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  await downloadFile({
+    url: `/api/v1${REVIEW}/documents/${encodeURIComponent(id)}/download`,
+    fallbackFilename: fileName,
   });
-  if (!resp.ok) throw new Error(`Download failed (HTTP ${resp.status}).`);
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 };
 
 export const reviewChunks = (p: ChunkListParams): Promise<Paged<ReviewChunk>> =>
@@ -280,6 +278,30 @@ export const archiveChannel = (botId: string, type: string): Promise<{ archived:
 export const listChannelsSummary = (): Promise<{ type: string; live: number; testing: number; failed: number; configured: number }[]> =>
   http.get("/channels/summary");
 export const listScenarios = (botId: string): Promise<TestScenario[]> => http.get(`/bots/${botId}/scenarios`);
+
+/** One text turn through the REAL runtime stack (TurnRouter + WorkflowEngine). */
+export interface ChatTestResult {
+  sessionId: string;
+  route: string;
+  action: string | null;
+  matchedIntent: string | null;
+  confidence: number;
+  reason: string;
+  reply: string;
+  done: boolean;
+  activeWorkflow: string | null;
+  workflow: {
+    name: string;
+    source: "definition" | "builtin" | "missing";
+    status: string;
+    workflowId: string | null;
+    nodeTrace: string[];
+    slots: Record<string, unknown>;
+    done: boolean;
+  } | null;
+}
+export const testBotChat = (botId: string, message: string, sessionId?: string): Promise<ChatTestResult> =>
+  http.post(`/bots/${botId}/testing/chat`, { message, ...(sessionId ? { sessionId } : {}) });
 export const runSuite = (botId: string): Promise<{ passed: number; failed: number; total: number; at: string }> =>
   http.post(`/bots/${botId}/scenarios/run`);
 export const listReleases = (botId: string): Promise<Release[]> => http.get(`/bots/${botId}/releases`);
@@ -357,9 +379,60 @@ export interface PlatformAnalytics {
   callsSeries: { t: string; calls: number }[];
   revVsCost: { t: string; revenue: number; aiCost: number }[];
   planMix: { label: string; value: number }[];
+  mrrByPlan: { label: string; value: number }[];
   topTenantsByCalls: { label: string; value: number }[];
   aiCostByProvider: { label: string; value: number }[];
 }
+
+/* ---------- Usage & currency (backend-authoritative costing) ---------- */
+
+export interface UsageQuantities {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  characters: number;
+  audioSeconds: number;
+  costUsd: number;
+  missingPriceEvents: number;
+}
+
+export interface UsageProviderRow extends UsageQuantities {
+  capability: string;
+  provider: string;
+  model: string;
+}
+
+export interface UsageSummary {
+  tenantId: string;
+  period: { start: string; end: string; days: number };
+  baseCurrency: string;
+  totalCostUsd: number;
+  /** Backend-computed conversions with the rates currently in force. */
+  totalCostConverted: Record<string, number>;
+  missingPriceEvents: number;
+  capabilities: Record<string, UsageQuantities>;
+  byProviderModel: UsageProviderRow[];
+}
+
+export interface PlatformUsage {
+  period: { start: string; end: string; days: number };
+  baseCurrency: string;
+  totalCostUsd: number;
+  totalCostConverted: Record<string, number>;
+  missingPriceEvents: number;
+  byTenant: ({ tenantId: string; tenant: string } & UsageQuantities)[];
+  byCapability: Record<string, UsageQuantities>;
+  byProviderModel: UsageProviderRow[];
+}
+
+export const getUsageSummary = (days = 30, tenantId?: string, botId?: string): Promise<UsageSummary> =>
+  http.get(`/usage/summary?days=${days}${tenantId ? `&tenantId=${tenantId}` : ""}${botId ? `&botId=${botId}` : ""}`);
+export const getPlatformUsage = (days = 30): Promise<PlatformUsage> =>
+  http.get(`/usage/platform?days=${days}`);
+export const getCurrencyRates = (): Promise<import("./money").CurrencyRates> =>
+  http.get("/currency/rates");
 
 /* ---------- API test console ---------- */
 export const testApiConnection = (id: string, testValues?: Record<string, string>): Promise<ApiTestResult> =>
@@ -368,7 +441,8 @@ export const testApiConnection = (id: string, testValues?: Record<string, string
 /* ---------- Master data (Platform Configuration, Super Admin) ---------- */
 export type MasterType =
   | "industries" | "countries" | "data-regions" | "plans" | "ai-profiles"
-  | "providers" | "provider-models" | "languages" | "voices";
+  | "providers" | "provider-models" | "languages" | "voices"
+  | "currencies" | "exchange-rates" | "provider-pricing";
 
 export const listMaster = <T = Record<string, unknown>>(
   mtype: MasterType,
@@ -489,7 +563,7 @@ export const deleteApi = (id: string): Promise<{ archived: boolean }> =>
 
 /* ---------- UI-only action stub ----------
    Used solely by flag-gated capabilities that have no backend yet
-   (CSV export jobs, recording playback…) — see TODO_BACKEND.md.
+   (recording playback and similar deferred actions) — see TODO_BACKEND.md.
    Real operations must never route through this. */
 export const simulateAction = (label: string): Promise<{ ok: true; label: string }> =>
   new Promise((resolve) => setTimeout(() => resolve({ ok: true, label }), 350));

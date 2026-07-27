@@ -9,6 +9,8 @@ message it receives for assertions. `behavior` selects failure injection:
   invalid_json      emit a non-JSON frame before the audio
   invalid_b64       emit an audio message whose payload is not base64
   error_message     emit a protocol error message instead of audio on flush
+  invalid_config    (Sarvam) emit the API's 422 config-rejection error instead
+                    of audio — a configuration error that must never fall back
   silent            accept everything, never emit audio
   drop_conn         close the connection right after the first text message
   late_after_close  (ElevenLabs) keep emitting audio for a context after the
@@ -98,6 +100,16 @@ class MockSarvamTTSServer(_BaseMockServer):
             await websocket.send(json.dumps({
                 "type": "error",
                 "data": {"message": "synthesis backend unavailable", "code": 503},
+            }))
+            return
+        if self.behavior == "invalid_config":
+            # Exactly what api.sarvam.ai returns for a bad config payload
+            # (e.g. an unsupported target_language_code).
+            await websocket.send(json.dumps({
+                "type": "error",
+                "data": {"request_id": "req-invalid",
+                         "message": "Input parameters has to be a valid dictionary",
+                         "code": 422},
             }))
             return
         if self.behavior == "silent":

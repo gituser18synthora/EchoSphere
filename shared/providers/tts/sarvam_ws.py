@@ -30,7 +30,11 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.protocol import State
 
 from shared.providers.base import ProviderError
-from shared.providers.languages import to_provider_language
+from shared.providers.languages import (
+    SARVAM_SUPPORTED_LOCALES,
+    to_platform_language,
+    to_provider_language,
+)
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
     TTSStreamEvent,
@@ -147,7 +151,19 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         allowed = _V3_PARAMS if is_v3 else _V2_PARAMS
         params = dict(s.params or {})
 
+        # Canonical language mapping shared with the REST implementation: bare
+        # ISO codes expand to full locales ("en" → "en-IN") and the platform
+        # Odia alias is applied. Sarvam 422-rejects the whole config message on
+        # an unsupported target_language_code (no audio at all), so anything
+        # outside the supported set is normalized to en-IN — loudly, never
+        # silently — mirroring the REST implementation's Latin-text fallback.
         language = to_provider_language("sarvam", s.language) or "en-IN"
+        if to_platform_language("sarvam", language) not in SARVAM_SUPPORTED_LOCALES:
+            logger.warning(
+                "sarvam-tts: language '%s' is not supported by the Sarvam TTS API — "
+                "using en-IN for this stream (model=%s)", s.language, model,
+            )
+            language = "en-IN"
         codec = "linear16" if s.codec in ("linear16", "pcm") else s.codec
         # Speaker codes must be lowercase, unpadded strings on the wire. An
         # unknown speaker is rejected by Sarvam (surfaced as an error event) —

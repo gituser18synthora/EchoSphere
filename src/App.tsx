@@ -21,6 +21,7 @@ import Monitoring from "@/pages/admin/Monitoring";
 import Security from "@/pages/admin/Security";
 import Reports from "@/pages/admin/Reports";
 import PlatformConfig from "@/pages/admin/PlatformConfig";
+import RegionalSettings from "@/pages/admin/RegionalSettings";
 import Profile from "@/pages/Profile";
 
 /* Tenant Admin */
@@ -67,6 +68,8 @@ export default function App() {
         <Route path="security" element={<Security />} />
         <Route path="reports" element={<Reports />} />
         <Route path="platform-config" element={<PlatformConfig />} />
+        <Route path="regional-settings" element={<RegionalSettings />} />
+        <Route path="regional-settings/:tab" element={<RegionalSettings />} />
         <Route path="profile" element={<Profile />} />
       </Route>
 

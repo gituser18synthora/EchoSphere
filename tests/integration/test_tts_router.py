@@ -216,6 +216,36 @@ class TestStreamingRouter:
         assert eleven_server.connections == 0
         assert not [e for e in recorder.events if e["kind"] == "tts_fallback"]
 
+    async def test_no_fallback_on_invalid_config_error(self, monkeypatch):
+        """Sarvam 422 config rejections (bad language/speaker payload) are
+        configuration errors: they must surface as invalid_input and never
+        silently switch to the fallback engine."""
+        monkeypatch.setenv("TEST_SARVAM_KEY", API_KEY)
+        monkeypatch.setenv("TEST_EL_KEY", API_KEY)
+        async with MockSarvamTTSServer(behavior="invalid_config") as sarvam_server, \
+                MockElevenLabsServer(chunks=2) as eleven_server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", sarvam_server.url)
+            monkeypatch.setattr(elevenlabs_ws, "_WS_BASE", eleven_server.url)
+            recorder = make_recorder("vs_router_invalid_config")
+            router = StreamingTTSRouter(
+                tts_config=tts_config(fallback=eleven_engine()),
+                language="hi-IN", sample_rate=16000, recorder=recorder,
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["This config will be rejected. "], settle=1.0)
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert collector.audio_count() == 0
+        assert eleven_server.connections == 0  # config errors never fall back
+        assert not [e for e in recorder.events if e["kind"] == "tts_fallback"]
+        used = [e for e in recorder.events if e["kind"] == "tts_provider_used"]
+        assert used and used[-1]["failed"] is True and used[-1]["provider"] == "sarvam"
+
     async def test_per_language_provider_switch_reuses_connections(self, monkeypatch):
         monkeypatch.setenv("TEST_SARVAM_KEY", API_KEY)
         monkeypatch.setenv("TEST_EL_KEY", API_KEY)

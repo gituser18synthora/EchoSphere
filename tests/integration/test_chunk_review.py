@@ -186,6 +186,19 @@ def test_document_detail_has_quality(client, seeded):
     assert d["tenantCode"]
 
 
+def test_original_document_download_preserves_file_type_and_permissions(client, seeded):
+    h = _bearer("admin@aurexion.com")
+    response = client.get(f"{API}/documents/{seeded['doc_a']}/download", headers=h)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "alpha.txt" in response.headers["content-disposition"]
+    assert response.content.startswith(b"The grace period")
+    assert client.get(
+        f"{API}/documents/{seeded['doc_a']}/download",
+        headers=_bearer("priya.sharma@meridianhealth.com"),
+    ).status_code == 403
+
+
 # ── chunk listing / filtering / search / pagination ──────────────────────────
 
 

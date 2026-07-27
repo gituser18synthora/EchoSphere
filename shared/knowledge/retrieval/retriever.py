@@ -194,6 +194,7 @@ class HybridRetriever:
         embed_error: str | None = None
         try:
             query_embedding = await self._embedder.embed_query(query)
+            self._record_query_embedding_usage(request)
         except Exception as exc:  # noqa: BLE001 - fail open to keyword search
             embed_error = exc.__class__.__name__
             logger.warning("knowledge.retrieve embed failed (%s) — keyword-only", embed_error)
@@ -324,6 +325,48 @@ class HybridRetriever:
             skipped_reason=skipped_reason,
             diagnostics=diagnostics,
         )
+
+    def _record_query_embedding_usage(self, request: RetrievalRequest) -> None:
+        """Bill the query embedding to the searching tenant, off the hot path.
+
+        Every search is one real provider call (no request-id dedupe needed);
+        embedders that report no usage (mock) are never recorded. Failures
+        only log — metering must not break retrieval.
+        """
+        tokens = int(getattr(self._embedder, "last_usage_tokens", 0) or 0)
+        requests = int(getattr(self._embedder, "last_usage_requests", 0) or 0)
+        if (not tokens and not requests) or not request.tenant_id:
+            return
+
+        def _write() -> None:
+            from shared.billing.metering import record_usage_event
+            from shared.db.mysql import get_sessionmaker
+
+            session = get_sessionmaker()()
+            try:
+                record_usage_event(
+                    session,
+                    tenant_id=request.tenant_id,
+                    bot_id=request.bot_id,
+                    capability="embedding",
+                    provider_code=getattr(self._embedder, "provider_code", "openai"),
+                    model_code=getattr(self._embedder, "model", ""),
+                    requests=requests or 1,
+                    total_tokens=tokens,
+                    usage_source=getattr(self._embedder, "last_usage_source", "provider"),
+                    usage_metadata={"kind": "query"},
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("query embedding usage recording failed")
+                session.rollback()
+            finally:
+                session.close()
+
+        try:
+            asyncio.get_running_loop()
+            asyncio.ensure_future(asyncio.to_thread(_write))
+        except RuntimeError:
+            _write()
 
     @staticmethod
     def _ms(since: float) -> float:

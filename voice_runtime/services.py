@@ -21,17 +21,24 @@ logger = logging.getLogger(__name__)
 class EchoSTTService(SegmentedSTTService):
     """VAD-segmented STT backed by an EchoSphere STTProvider."""
 
-    def __init__(self, provider: STTProvider, *, language: str | None = None, **kwargs) -> None:
+    def __init__(self, provider: STTProvider, *, language: str | None = None,
+                 recorder=None, **kwargs) -> None:
         from pipecat.services.settings import STTSettings
 
         super().__init__(settings=STTSettings(model=None, language=language), **kwargs)
         self._provider = provider
         self._language = language
+        self._recorder = recorder
 
     async def run_stt(self, audio: bytes):
         """`audio` arrives as a WAV container (wants_wav_segments default)."""
         try:
             pcm, rate = wav_to_pcm(audio)
+            if self._recorder is not None and rate:
+                # Billable audio duration from the actual PCM16 payload.
+                usage = self._recorder.usage
+                usage["stt_seconds"] = usage.get("stt_seconds", 0) + len(pcm) / (rate * 2)
+                usage["stt_requests"] = usage.get("stt_requests", 0) + 1
             result = await self._provider.transcribe(
                 pcm, sample_rate=rate, language=self._language
             )
@@ -56,6 +63,8 @@ class EchoTTSService(TTSService):
         language: str | None = None,
         speed: float = 1.0,
         sample_rate: int | None = None,
+        recorder=None,
+        model: str | None = None,
         **kwargs,
     ) -> None:
         from pipecat.services.settings import TTSSettings
@@ -69,6 +78,8 @@ class EchoTTSService(TTSService):
         self._voice = voice
         self._language = language
         self._speed = speed
+        self._recorder = recorder
+        self._model = model or ""
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -85,6 +96,15 @@ class EchoTTSService(TTSService):
                 if first:
                     await self.stop_ttfb_metrics()
                     first = False
+                    add_usage = getattr(self._recorder, "add_tts_usage", None)
+                    if add_usage is not None:
+                        # Billed once per synthesized segment, on first audio.
+                        add_usage(
+                            provider=getattr(self._provider, "name", "tts"),
+                            model=self._model,
+                            voice=self._voice or "",
+                            characters=len(text),
+                        )
                 yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
         except ProviderError as exc:
             logger.warning("TTS provider failure: %s", exc)

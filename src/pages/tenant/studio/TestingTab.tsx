@@ -1,66 +1,57 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { Intent, TraceStep, VoiceBot } from "@/types/domain";
+import type { TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listIntents, listPrompts, listScenarios, runSuite as runSuiteApi } from "@/services/api";
-import { VoiceClient } from "@/services/voiceClient";
+import { listPrompts, listScenarios, runSuite as runSuiteApi, testBotChat } from "@/services/api";
+import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
 import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 
-/* Local simulator: deterministic intent matching against the bot's REAL
-   intents (token overlap with their samples). Replies are clearly labelled
-   as simulator output — live testing needs the runtime engine. */
-const tokens = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2));
+/* Text testing runs each turn through the REAL runtime stack on the backend
+   (TurnRouter routing + the WorkflowEngine executing the bot's saved
+   workflow), so what you see here is what a live call does — only the
+   audio layer (STT/TTS) is out of the loop. */
 
-function matchIntent(input: string, intents: Intent[]): { intent?: string; confidence: number; route?: string } {
-  const inTok = tokens(input);
-  if (inTok.size === 0) return { confidence: 0.3 };
-  let best: { intent?: string; overlap: number; route?: string } = { overlap: 0 };
-  for (const it of intents) {
-    for (const sample of [...it.samples, it.name.replace(/_/g, " ")]) {
-      const sTok = tokens(sample);
-      if (sTok.size === 0) continue;
-      let inter = 0;
-      for (const t of inTok) if (sTok.has(t)) inter++;
-      const overlap = inter / new Set([...inTok, ...sTok]).size;
-      if (overlap > best.overlap) best = { intent: it.name, overlap, route: it.route };
-    }
-  }
-  if (best.overlap < 0.15 || !best.intent) return { confidence: Math.round((0.3 + best.overlap) * 100) / 100 };
-  return { intent: best.intent, route: best.route, confidence: Math.min(0.97, Math.round((0.55 + best.overlap * 0.6) * 100) / 100) };
+/* Readable names for the live-session chips — never raw locale/provider codes. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  hi: "Hindi", en: "English", bn: "Bengali", ta: "Tamil", te: "Telugu",
+  mr: "Marathi", gu: "Gujarati", kn: "Kannada", ml: "Malayalam",
+  pa: "Punjabi", or: "Odia", ur: "Urdu",
+};
+export function languageName(locale?: string): string {
+  if (!locale) return "";
+  return LANGUAGE_NAMES[locale.split("-")[0].toLowerCase()] ?? locale;
 }
-
-function botReply(input: string, turn: number, intents: Intent[]): TraceStep {
-  const m = matchIntent(input, intents);
-  const base = { turn, speaker: "bot" as const, latencyMs: 400, costUsd: 0.004 };
-  if (m.intent) {
-    return {
-      ...base,
-      text: `Simulator: matched intent “${m.intent.replace(/_/g, " ")}”${m.route ? ` → routes to ${m.route}` : ""}. Connect the runtime engine for live responses.`,
-      intent: m.intent,
-      confidence: m.confidence,
-    };
-  }
-  return {
-    ...base,
-    text: "Simulator: no intent matched with enough confidence — this would trigger the fallback prompt.",
-    intent: "fallback",
-    confidence: m.confidence,
-  };
+const PROVIDER_NAMES: Record<string, string> = {
+  sarvam: "Sarvam", elevenlabs: "ElevenLabs", openai: "OpenAI",
+  azure: "Azure", google: "Google", mock: "Mock (dev)",
+};
+export function providerName(code?: string): string {
+  if (!code) return "";
+  return PROVIDER_NAMES[code.toLowerCase()] ?? code;
+}
+/** Voice shown for the current conversation language (per-language voice
+    first, then the bot's configured default voice). */
+export function activeVoice(
+  config: VoiceSessionConfig | null,
+  language?: string,
+): { provider: string; voice: string } | null {
+  if (!config) return null;
+  const forLanguage = language ? config.voices?.[language] : undefined;
+  return forLanguage ?? config.defaultVoice ?? null;
 }
 
 export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
-  const intentsQ = useAsync(() => listIntents(bot.id), [bot.id]);
   const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
   const navigate = useNavigate();
   const { toast } = useApp();
   const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
   const greetingText =
     greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0]?.content
-    ?? `Simulator session for ${bot.name} — type a caller message to test intent detection.`;
+    ?? `Test session for ${bot.name} — type a caller message; it runs through the real routing and workflow engine.`;
   const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -73,6 +64,8 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
+  const [sessionConfig, setSessionConfig] = useState<VoiceSessionConfig | null>(null);
+  const [liveLanguage, setLiveLanguage] = useState<string>("");
 
   /* Tear the session down when leaving the tab */
   useEffect(() => () => { voiceRef.current?.stop(); voiceRef.current = null; }, []);
@@ -91,15 +84,33 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     client?.stop();
     setVoiceActive(false);
     setVoiceStatus("listening");
+    setSessionConfig(null);
+    setLiveLanguage("");
   };
 
   const startVoice = async () => {
     if (voiceConnecting || voiceActive) return;
     setVoiceConnecting(true);
     const client = new VoiceClient({
+      onSessionConfig: (config) => {
+        setSessionConfig(config);
+        setLiveLanguage(config.language ?? "");
+      },
       onTranscript: (text) => appendVoiceStep("user", text),
       onBotText: (text) => appendVoiceStep("bot", text),
-      onEvent: (name) => setVoiceStatus(name === "bot_speaking_started" ? "bot_speaking" : "listening"),
+      onLanguage: (locale) => setLiveLanguage(locale),
+      onEvent: (name, detail) => {
+        if (name === "bot_speaking_started") setVoiceStatus("bot_speaking");
+        else if (name === "bot_speaking_stopped" || name === "interruption") setVoiceStatus("listening");
+        else if (name === "language_unsupported") {
+          const supported = voiceRef.current?.sessionConfig?.languages ?? [];
+          toast(
+            `Only ${supported.map(languageName).join(" and ") || "the configured languages"} are supported` +
+              (detail?.language ? ` — heard ${languageName(String(detail.language))}` : ""),
+            "info",
+          );
+        }
+      },
       onClose: () => {
         if (voiceRef.current) {
           voiceRef.current = null;
@@ -124,23 +135,49 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     }
   };
 
-  const send = () => {
+  /* One conversation per tab mount — the backend keeps workflow state per id. */
+  const chatSessionRef = useRef<string | undefined>(undefined);
+
+  const send = async () => {
     const text = input.trim();
     if (!text || thinking) return;
     const userStep: TraceStep = { turn: steps.length + 2, speaker: "user", text };
     setSteps((s) => [...s, userStep]);
     setInput("");
     setThinking(true);
-    setTimeout(() => {
+    scrollToEnd();
+    const started = performance.now();
+    try {
+      const result = await testBotChat(bot.id, text, chatSessionRef.current);
+      chatSessionRef.current = result.sessionId;
+      const latency = Math.round(performance.now() - started);
       setSteps((s) => {
-        const reply = botReply(text, s.length + 2, intentsQ.data ?? []);
+        const reply: TraceStep = {
+          turn: s.length + 2,
+          speaker: "bot",
+          text: result.reply,
+          intent: result.matchedIntent ?? undefined,
+          confidence: result.matchedIntent ? result.confidence : undefined,
+          route: result.route,
+          workflowName: result.workflow?.name,
+          workflowNodes: result.workflow?.nodeTrace,
+          workflowSlots: result.workflow?.slots,
+          workflowDone: result.workflow?.done,
+          latencyMs: latency,
+        };
         setSelectedTurn(reply.turn);
         return [...s, reply];
       });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Test turn failed", "error");
+      setSteps((s) => [...s, {
+        turn: s.length + 2, speaker: "bot",
+        text: "The test turn failed — check that the platform API is running and try again.",
+      }]);
+    } finally {
       setThinking(false);
-      setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
-    }, 700);
-    setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
+      scrollToEnd();
+    }
   };
 
   const greetingStep: TraceStep = {
@@ -194,6 +231,26 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               )}
             </div>
           </div>
+          {voiceActive && sessionConfig && (
+            <div
+              className="row gap-6"
+              style={{ padding: "6px 16px", borderBottom: "1px solid var(--hairline)", flexWrap: "wrap" }}
+              data-testid="live-session-status"
+            >
+              {liveLanguage && <span className="tag">{languageName(liveLanguage)}</span>}
+              {(() => {
+                const voice = activeVoice(sessionConfig, liveLanguage);
+                return voice ? (
+                  <span className="tag">{providerName(voice.provider)} · {voice.voice}</span>
+                ) : null;
+              })()}
+              {Object.keys(sessionConfig.warnings ?? {}).map((locale) => (
+                <span key={locale} className="chip chip-warning" role="alert">
+                  No compatible {languageName(locale)} voice is configured for this Voice Bot.
+                </span>
+              ))}
+            </div>
+          )}
           <div ref={listRef} className="col grow" style={{ padding: 16, gap: 10, overflowY: "auto" }}>
             {allSteps.map((s) => (
               <button
@@ -245,6 +302,31 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                       )}
                     </span>
                   ) : <span className="t-micro">n/a (scripted prompt)</span>}
+                </TraceRow>
+                <TraceRow icon="workflow" label="Workflow">
+                  {selected.workflowName ? (
+                    <div className="col gap-4" style={{ fontSize: 12 }}>
+                      <span className="row gap-6">
+                        <code>{selected.workflowName}</code>
+                        <span className={`chip ${selected.workflowDone ? "chip-neutral" : "chip-good"}`}>
+                          {selected.workflowDone ? "finished" : "in progress"}
+                        </span>
+                      </span>
+                      {selected.workflowNodes && selected.workflowNodes.length > 0 && (
+                        <span className="t-micro" data-testid="workflow-node-trace">
+                          nodes: {selected.workflowNodes.join(" → ")}
+                        </span>
+                      )}
+                      {selected.workflowSlots && Object.keys(selected.workflowSlots).length > 0 && (
+                        <span className="t-micro" data-testid="workflow-slots">
+                          collected: {Object.entries(selected.workflowSlots)
+                            .map(([k, v]) => `${k}=${String(v)}`).join(", ")}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="t-micro">{selected.route ? `route: ${selected.route}` : "not in a workflow"}</span>
+                  )}
                 </TraceRow>
                 <TraceRow icon="book" label="Knowledge chunks">
                   {selected.chunksUsed?.length ? (

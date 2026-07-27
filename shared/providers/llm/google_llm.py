@@ -138,6 +138,7 @@ class GoogleLLM(LLMProvider):
         max_tokens: int = 512,
     ) -> AsyncIterator[str]:
         self._reject_tools(self.name, tools)
+        self.last_stream_usage = None
         try:
             stream = await asyncio.wait_for(
                 self._client.aio.models.generate_content_stream(
@@ -151,6 +152,17 @@ class GoogleLLM(LLMProvider):
                 delta = getattr(chunk, "text", None)
                 if delta:
                     yield delta
+                usage = getattr(chunk, "usage_metadata", None)
+                if usage is not None:  # cumulative — the last chunk wins
+                    from shared.providers.base import LLMStreamUsage
+
+                    self.last_stream_usage = LLMStreamUsage(
+                        input_tokens=int(getattr(usage, "prompt_token_count", 0) or 0),
+                        output_tokens=int(getattr(usage, "candidates_token_count", 0) or 0),
+                        cached_tokens=int(
+                            getattr(usage, "cached_content_token_count", 0) or 0
+                        ),
+                    )
         except TimeoutError as exc:
             raise ProviderError(
                 self.name, "timeout", f"Request timed out after {self._timeout}s"

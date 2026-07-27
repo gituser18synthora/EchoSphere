@@ -140,6 +140,16 @@ describe("KnowledgeChunks — layout, hidden Uploaded filter, chunk view", () =>
     expect(d.queryByText("Uploaded at")).not.toBeInTheDocument();
   });
 
+  it("downloads the original document through the authorized download service", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.downloadReviewDocument).mockResolvedValue();
+    render(<KnowledgeChunks />);
+    await user.click(await screen.findByText("handbook.pdf"));
+    const drawer = await screen.findByRole("dialog");
+    await user.click(within(drawer).getByRole("button", { name: "Download" }));
+    expect(api.downloadReviewDocument).toHaveBeenCalledWith("kdoc_1", "handbook.pdf");
+  });
+
   it("chunk View shows the complete text, ownership, embedding info and metadata — without an uploaded date", async () => {
     const user = userEvent.setup();
     render(<KnowledgeChunks />);

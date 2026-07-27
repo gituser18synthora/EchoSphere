@@ -190,45 +190,26 @@ describe("PlatformConfig — Add Plan form", () => {
   });
 });
 
-describe("PlatformConfig — Data Region country catalog", () => {
+/* Data Region + Countries management moved to Regional & Currency Settings —
+   see RegionalSettings.test.tsx for the country-catalog coverage. */
+
+describe("PlatformConfig — regional/monetary sections moved out", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearProviderCatalogCache();
     installDefaultMocks();
   });
 
-  async function openAddDataRegion(user: ReturnType<typeof userEvent.setup>) {
+  it("no longer offers Countries, Data Regions, Currencies or Exchange Rates tabs", async () => {
     render(<PlatformConfig />);
-    await user.click(screen.getByText("Data Regions"));
-    await user.click(await screen.findByRole("button", { name: /add data region/i }));
-    await screen.findByRole("dialog", { name: "Add data region" });
-  }
-
-  it("loads active countries from the country master and locks region to Asia", async () => {
-    const user = userEvent.setup();
-    await openAddDataRegion(user);
-    const country = await screen.findByLabelText("Country");
-    await waitFor(() => expect(within(country).getByRole("option", { name: "India (IN / IND)" })).toBeInTheDocument());
-    expect(within(country).getByRole("option", { name: "Nepal (NP / NPL)" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Region")).toHaveValue("Asia");
-    expect(screen.getByLabelText("Region")).toBeDisabled();
-    expect(listMaster).toHaveBeenCalledWith("countries", expect.objectContaining({
-      includeInactive: false, sortBy: "name",
-    }));
-  });
-
-  it("submits the selected numeric country ID with the canonical Asia region", async () => {
-    const user = userEvent.setup();
-    await openAddDataRegion(user);
-    await user.type(screen.getByLabelText("Code"), "np-kathmandu");
-    await user.type(screen.getByLabelText("Name"), "Nepal – Kathmandu");
-    await user.selectOptions(await screen.findByLabelText("Country"), ["28"]);
-    await user.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
-    expect(createMaster.mock.calls[0][0]).toBe("data-regions");
-    expect(createMaster.mock.calls[0][1]).toMatchObject({
-      code: "np-kathmandu", name: "Nepal – Kathmandu", countryId: 28, region: "Asia",
-    });
+    await waitFor(() => expect(listMaster).toHaveBeenCalled());
+    for (const gone of ["Countries", "Data Regions", "Currencies", "Exchange Rates"]) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument();
+    }
+    // The product/AI sections all remain.
+    for (const kept of ["Industries", "Plans", "AI Profiles", "Providers", "Languages", "Voices", "Provider Pricing"]) {
+      expect(screen.getByText(kept)).toBeInTheDocument();
+    }
   });
 });
 
@@ -309,5 +290,544 @@ describe("PlatformConfig — Languages section", () => {
     await screen.findByText("Hindi");
     expect(screen.getByText("Sort order")).toBeInTheDocument();
     expect(screen.queryByText("Updated")).not.toBeInTheDocument();
+  });
+});
+
+describe("PlatformConfig — Providers section", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+  });
+
+  async function openProviders(user: ReturnType<typeof userEvent.setup>) {
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Providers"));
+  }
+
+  it("shows the Order column (sortOrder) instead of Updated", async () => {
+    const user = userEvent.setup();
+    listMaster.mockImplementation((mtype: string) =>
+      Promise.resolve(paged(mtype === "providers" ? [
+        { id: "prov_1", code: "sarvam", name: "Sarvam AI", status: "active", kind: "tts",
+          requiresApiKey: true, secretRef: "env:SARVAM_API_KEY", usageCount: 2, sortOrder: 5,
+          updatedAt: "2026-07-20T10:00:00Z" },
+      ] : []) as never));
+    await openProviders(user);
+    await screen.findByText("Sarvam AI");
+    // Exactly "Order" — never "Sort order" — and no "Updated" column.
+    expect(screen.getByRole("columnheader", { name: "Order" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Updated" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Sort order" })).not.toBeInTheDocument();
+    // The real DB-backed sortOrder value is rendered.
+    const row = screen.getByText("Sarvam AI").closest("tr")!;
+    expect(within(row).getByText("5")).toBeInTheDocument();
+  });
+
+  it("moves a deactivated provider to the bottom after the automatic refetch", async () => {
+    const user = userEvent.setup();
+    const ACTIVE = [
+      { id: "prov_a", code: "alpha", name: "Alpha", status: "active", kind: "llm", sortOrder: 0, usageCount: 0 },
+      { id: "prov_b", code: "beta", name: "Beta", status: "active", kind: "llm", sortOrder: 1, usageCount: 0 },
+    ];
+    // Active-first server ordering: once Alpha is inactive it comes back last.
+    const REORDERED = [
+      { ...ACTIVE[1] },
+      { ...ACTIVE[0], status: "inactive" },
+    ];
+    let deactivated = false;
+    listMaster.mockImplementation((mtype: string) => {
+      if (mtype !== "providers") return Promise.resolve(paged([]) as never);
+      return Promise.resolve(paged(deactivated ? REORDERED : ACTIVE) as never);
+    });
+    vi.mocked(api.setMasterStatus).mockImplementation(() => {
+      deactivated = true;
+      return Promise.resolve({} as never);
+    });
+
+    await openProviders(user);
+    await screen.findByText("Alpha");
+    const names = () => screen.getAllByRole("row").slice(1)
+      .map((r) => within(r).queryByText(/^(Alpha|Beta)$/)?.textContent)
+      .filter(Boolean);
+    expect(names()).toEqual(["Alpha", "Beta"]);
+
+    const alphaRow = screen.getByText("Alpha").closest("tr")!;
+    await user.click(within(alphaRow).getByRole("button", { name: "Deactivate" }));
+    await waitFor(() =>
+      expect(api.setMasterStatus).toHaveBeenCalledWith("providers", "prov_a", "inactive"));
+    // No manual refresh: the list refetched and Alpha dropped below the active Beta.
+    await waitFor(() => expect(names()).toEqual(["Beta", "Alpha"]));
+  });
+
+  it("submits an edited Order value and refetches the list", async () => {
+    const user = userEvent.setup();
+    listMaster.mockImplementation((mtype: string) =>
+      Promise.resolve(paged(mtype === "providers" ? [
+        { id: "prov_1", code: "sarvam", name: "Sarvam AI", status: "active", kind: "tts",
+          requiresApiKey: true, secretRef: "env:SARVAM_API_KEY", usageCount: 0, sortOrder: 5 },
+      ] : []) as never));
+    updateMaster.mockResolvedValue({ id: "prov_1" } as never);
+    await openProviders(user);
+    await screen.findByText("Sarvam AI");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await screen.findByRole("dialog", { name: "Edit provider" });
+    const order = screen.getByLabelText("Sort order");
+    await user.clear(order);
+    await user.type(order, "2");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateMaster).toHaveBeenCalledTimes(1));
+    expect(updateMaster.mock.calls[0][0]).toBe("providers");
+    expect(updateMaster.mock.calls[0][2]).toMatchObject({ sortOrder: 2 });
+  });
+});
+
+describe("PlatformConfig — status-first ordering applies module-wide", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+  });
+
+  // The shared MasterPanel refetches after every status change, so the
+  // backend's status-first order is reflected on ALL tabs — not just providers.
+  it("moves a deactivated industry to the bottom after refetch (non-provider tab)", async () => {
+    const user = userEvent.setup();
+    const ACTIVE = [
+      { id: "ind_a", code: "alpha", name: "Alpha", status: "active", sortOrder: 0, usageCount: 0, description: "" },
+      { id: "ind_b", code: "beta", name: "Beta", status: "active", sortOrder: 1, usageCount: 0, description: "" },
+    ];
+    const REORDERED = [{ ...ACTIVE[1] }, { ...ACTIVE[0], status: "inactive" }];
+    let deactivated = false;
+    listMaster.mockImplementation((mtype: string) => {
+      if (mtype !== "industries") return Promise.resolve(paged([]) as never);
+      return Promise.resolve(paged(deactivated ? REORDERED : ACTIVE) as never);
+    });
+    vi.mocked(api.setMasterStatus).mockImplementation(() => {
+      deactivated = true;
+      return Promise.resolve({} as never);
+    });
+
+    render(<PlatformConfig />); // Industries is the default tab
+    await screen.findByText("Alpha");
+    const names = () => screen.getAllByRole("row").slice(1)
+      .map((r) => within(r).queryByText(/^(Alpha|Beta)$/)?.textContent)
+      .filter(Boolean);
+    expect(names()).toEqual(["Alpha", "Beta"]);
+
+    const alphaRow = screen.getByText("Alpha").closest("tr")!;
+    await user.click(within(alphaRow).getByRole("button", { name: "Deactivate" }));
+    await waitFor(() =>
+      expect(api.setMasterStatus).toHaveBeenCalledWith("industries", "ind_a", "inactive"));
+    await waitFor(() => expect(names()).toEqual(["Beta", "Alpha"]));
+  });
+});
+
+describe("PlatformConfig — Order column replaces Updated (Industries/Plans/AI Profiles)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+  });
+
+  // One row per section, each carrying a real DB-backed sortOrder (7) AND an
+  // updatedAt — proving the table shows Order (not the timestamp) and never a
+  // "Updated" or "Sort order" header. (Data Regions moved to Regional &
+  // Currency Settings — covered in RegionalSettings.test.tsx.)
+  const SECTIONS = [
+    {
+      tab: "Industries", mtype: "industries",
+      row: { id: "ind_1", code: "banking", name: "Banking", description: "Financial services",
+        status: "active", sortOrder: 7, usageCount: 0, updatedAt: "2026-07-20T10:00:00Z" },
+    },
+    {
+      tab: "Plans", mtype: "plans",
+      row: { ...PLAN_ROW, id: "pl_ord", name: "Growth", code: "growth", sortOrder: 7 },
+    },
+    {
+      tab: "AI Profiles", mtype: "ai-profiles",
+      row: { id: "aip_1", code: "balanced", name: "Balanced", costCategory: "medium",
+        llmProvider: "openai", llmModel: "gpt-4o-mini", status: "active", sortOrder: 7,
+        usageCount: 0, updatedAt: "2026-07-20T10:00:00Z" },
+    },
+  ] as const;
+
+  it.each(SECTIONS)("$tab shows the Order column (sortOrder), never Updated or Sort order",
+    async ({ tab, mtype, row }) => {
+      const user = userEvent.setup();
+      listMaster.mockImplementation((mt: string) =>
+        Promise.resolve(paged(mt === mtype ? [row as Record<string, unknown>] : []) as never));
+      render(<PlatformConfig />);
+      if (tab !== "Industries") await user.click(screen.getByText(tab));
+      await screen.findByText(row.name);
+
+      expect(screen.getByRole("columnheader", { name: "Order" })).toBeInTheDocument();
+      expect(screen.queryByRole("columnheader", { name: "Updated" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("columnheader", { name: "Updated At" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("columnheader", { name: "Sort order" })).not.toBeInTheDocument();
+      // The real DB-backed sortOrder value is rendered in the row (not the date).
+      const tr = screen.getByText(row.name).closest("tr")!;
+      expect(within(tr).getByText("7")).toBeInTheDocument();
+      expect(within(tr).queryByText(/2026/)).not.toBeInTheDocument();
+    });
+
+  it.each(SECTIONS)("$tab add form labels the order field 'Order', not 'Sort order'",
+    async ({ tab, mtype, row }) => {
+      const user = userEvent.setup();
+      listMaster.mockImplementation((mt: string) =>
+        Promise.resolve(paged(mt === mtype ? [row as Record<string, unknown>] : []) as never));
+      render(<PlatformConfig />);
+      if (tab !== "Industries") await user.click(screen.getByText(tab));
+      await screen.findByText(row.name);
+      await user.click(await screen.findByRole("button", { name: new RegExp(`add`, "i") }));
+      await screen.findByRole("dialog");
+      expect(screen.getByLabelText("Order")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Sort order")).not.toBeInTheDocument();
+    });
+});
+
+describe("PlatformConfig — Plans table Limits/Flags layout", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+  });
+
+  async function goPlans(user: ReturnType<typeof userEvent.setup>, rows: Record<string, unknown>[]) {
+    listMaster.mockImplementation((mt: string) =>
+      Promise.resolve(paged(mt === "plans" ? rows : []) as never));
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Plans"));
+  }
+
+  it("renders limits as readable key-value metrics (large values formatted, never clipped)", async () => {
+    const user = userEvent.setup();
+    const row = { ...PLAN_ROW, id: "pl_big", name: "Scale", code: "scale",
+      botLimit: 25, minutesIncluded: 500000, seatsIncluded: 100 };
+    await goPlans(user, [row]);
+    const tr = (await screen.findByText("Scale")).closest("tr")!;
+    const limits = tr.querySelector(".plan-limits")!;
+    expect(limits).toBeTruthy();                         // structured, not one raw string
+    expect(limits.querySelectorAll(".limit")).toHaveLength(3);
+    expect(limits.textContent).toContain("25 bots");
+    expect(limits.textContent).toContain("500,000 min"); // locale-formatted, readable
+    expect(limits.textContent).toContain("100 seats");
+  });
+
+  it("gives Limits the widest column and Flags a minimal one", async () => {
+    const user = userEvent.setup();
+    await goPlans(user, [PLAN_ROW]);
+    await screen.findByText("Starter");
+    expect(screen.getByRole("columnheader", { name: "Limits" }).style.width).toBe("280px");
+    expect(screen.getByRole("columnheader", { name: "Flags" }).style.width).toBe("1px");
+  });
+
+  it("renders multiple flags as compact pills that can wrap", async () => {
+    const user = userEvent.setup();
+    const row = { ...PLAN_ROW, id: "pl_flags", name: "Featured", code: "featured",
+      isRecommended: true, isPublic: false };
+    await goPlans(user, [row]);
+    const tr = (await screen.findByText("Featured")).closest("tr")!;
+    const flags = tr.querySelector(".plan-flags")!;
+    expect(flags).toBeTruthy();
+    expect(flags.querySelectorAll(".tag")).toHaveLength(2);
+    expect(flags.textContent).toContain("Recommended");
+    expect(flags.textContent).toContain("Hidden");
+  });
+
+  it("shows the em-dash empty state when a plan has no flags", async () => {
+    const user = userEvent.setup();
+    const row = { ...PLAN_ROW, id: "pl_plain", name: "Basic", code: "basic",
+      isRecommended: false, isPublic: true };
+    await goPlans(user, [row]);
+    const tr = (await screen.findByText("Basic")).closest("tr")!;
+    expect(tr.querySelector(".plan-flags")).toBeFalsy();
+    expect(within(tr).getByText("—")).toBeInTheDocument(); // flags cell empty state
+  });
+
+  it("shows em-dash empty states when a plan has no limit values or flags", async () => {
+    const user = userEvent.setup();
+    const row = { ...PLAN_ROW, id: "pl_blank", name: "Blank", code: "blank",
+      botLimit: null, minutesIncluded: null, seatsIncluded: null,
+      isRecommended: false, isPublic: true };
+    await goPlans(user, [row]);
+    const tr = (await screen.findByText("Blank")).closest("tr")!;
+    expect(tr.querySelector(".plan-limits")).toBeFalsy();
+    expect(within(tr).getAllByText("—")).toHaveLength(2); // limits + flags empty states
+  });
+
+  it("preserves the row order the backend returns (status-first ordering unchanged)", async () => {
+    const user = userEvent.setup();
+    const rows = [
+      { ...PLAN_ROW, id: "pl_act", name: "ActivePlan", code: "act", status: "active", sortOrder: 1 },
+      { ...PLAN_ROW, id: "pl_ina", name: "InactivePlan", code: "ina", status: "inactive", sortOrder: 0 },
+    ];
+    await goPlans(user, [rows[0], rows[1]]);
+    await screen.findByText("ActivePlan");
+    const names = screen.getAllByRole("row").slice(1)
+      .map((r) => within(r).queryByText(/^(ActivePlan|InactivePlan)$/)?.textContent)
+      .filter(Boolean);
+    expect(names).toEqual(["ActivePlan", "InactivePlan"]); // frontend renders backend order as-is
+  });
+});
+
+/* ---------- Pagination keeps the current page across mutations ----------
+   All Platform Configuration tabs share MasterPanel, so the industries and
+   providers coverage below exercises the single implementation used by
+   Industries, Countries, Data Regions, Plans, AI Profiles, Providers,
+   Languages and Voices alike. */
+
+describe("PlatformConfig — pagination keeps the current page across mutations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+  });
+
+  const industry = (i: number, status = "active") => ({
+    id: `ind_${i}`, code: `code_${i}`, name: `Industry ${String(i).padStart(2, "0")}`,
+    status, sortOrder: i, usageCount: 0, description: "",
+  });
+
+  /** Server-faithful industries mock: status-first + sortOrder global ordering
+      applied BEFORE slicing (the backend contract), search filter, real meta. */
+  function installPagedIndustries(count: number, initialStatus: Record<number, string> = {}) {
+    let dataset = Array.from({ length: count }, (_, i) => industry(i + 1, initialStatus[i + 1] ?? "active"));
+    listMaster.mockImplementation(((mtype: string, opts?: { page?: number; pageSize?: number; search?: string }) => {
+      if (mtype !== "industries") return Promise.resolve(paged([]) as never);
+      const page = opts?.page ?? 1;
+      const pageSize = opts?.pageSize ?? 25;
+      const filtered = opts?.search
+        ? dataset.filter((r) => r.name.toLowerCase().includes(opts.search!.toLowerCase()))
+        : dataset;
+      const sorted = [...filtered].sort((a, b) =>
+        (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1) || a.sortOrder - b.sortOrder);
+      return Promise.resolve({
+        items: sorted.slice((page - 1) * pageSize, page * pageSize),
+        meta: { page, pageSize, total: filtered.length, totalPages: Math.max(1, Math.ceil(filtered.length / pageSize)) },
+      } as never);
+    }) as never);
+    return {
+      setStatus: (id: string, status: string) => { dataset = dataset.map((r) => (r.id === id ? { ...r, status } : r)); },
+      remove: (id: string) => { dataset = dataset.filter((r) => r.id !== id); },
+      rename: (id: string, name: string) => { dataset = dataset.map((r) => (r.id === id ? { ...r, name } : r)); },
+    };
+  }
+
+  const rowNames = () => screen.getAllByRole("row").slice(1)
+    .map((r) => within(r).queryByText(/^Industry \d+( renamed)?$/)?.textContent)
+    .filter(Boolean);
+
+  async function goToPage2(user: ReturnType<typeof userEvent.setup>, firstPage2Row: string) {
+    render(<PlatformConfig />); // Industries is the default tab
+    await screen.findByText("Industry 01");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText(firstPage2Row);
+  }
+
+  it("deactivating a record on page 2 keeps page 2 selected and refetches its rows", async () => {
+    const user = userEvent.setup();
+    const ds = installPagedIndustries(30);
+    vi.mocked(api.setMasterStatus).mockImplementation(((_m: string, id: string, status: string) => {
+      ds.setStatus(String(id), status);
+      return Promise.resolve({} as never);
+    }) as never);
+
+    await goToPage2(user, "Industry 26");
+    expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+    expect(rowNames()).toEqual(["Industry 26", "Industry 27", "Industry 28", "Industry 29", "Industry 30"]);
+
+    const row = screen.getByText("Industry 26").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Deactivate" }));
+    await waitFor(() => expect(api.setMasterStatus).toHaveBeenCalledWith("industries", "ind_26", "inactive"));
+
+    // The refetch targets the page the user is on — never page 1 — and the
+    // status-first reorder drops the deactivated row to the page tail.
+    await waitFor(() =>
+      expect(rowNames()).toEqual(["Industry 27", "Industry 28", "Industry 29", "Industry 30", "Industry 26"]));
+    expect(listMaster).toHaveBeenLastCalledWith("industries", expect.objectContaining({ page: 2 }));
+    expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+    expect(screen.queryByText("Industry 01")).not.toBeInTheDocument(); // page-1 rows never bleed in
+  });
+
+  it("activating a record on page 2 keeps page 2 selected and shows the reordered rows", async () => {
+    const user = userEvent.setup();
+    const ds = installPagedIndustries(30, { 26: "inactive" });
+    vi.mocked(api.setMasterStatus).mockImplementation(((_m: string, id: string, status: string) => {
+      ds.setStatus(String(id), status);
+      return Promise.resolve({} as never);
+    }) as never);
+
+    await goToPage2(user, "Industry 27"); // actives first: 27–30, then inactive 26
+    expect(rowNames()).toEqual(["Industry 27", "Industry 28", "Industry 29", "Industry 30", "Industry 26"]);
+
+    const row = screen.getByText("Industry 26").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Activate" }));
+    await waitFor(() => expect(api.setMasterStatus).toHaveBeenCalledWith("industries", "ind_26", "active"));
+
+    await waitFor(() =>
+      expect(rowNames()).toEqual(["Industry 26", "Industry 27", "Industry 28", "Industry 29", "Industry 30"]));
+    expect(listMaster).toHaveBeenLastCalledWith("industries", expect.objectContaining({ page: 2 }));
+    expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+  });
+
+  it("editing a record on page 2 keeps page 2 selected and shows the refetched row", async () => {
+    const user = userEvent.setup();
+    const ds = installPagedIndustries(30);
+    updateMaster.mockImplementation(((_m: string, id: string, payload: Record<string, unknown>) => {
+      ds.rename(String(id), String(payload.name));
+      return Promise.resolve({} as never);
+    }) as never);
+
+    await goToPage2(user, "Industry 26");
+    const row = screen.getByText("Industry 26").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Edit" }));
+    await screen.findByRole("dialog", { name: "Edit industry" });
+    const name = screen.getByLabelText("Name");
+    await user.clear(name);
+    await user.type(name, "Industry 26 renamed");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateMaster).toHaveBeenCalledTimes(1));
+
+    await screen.findByText("Industry 26 renamed");
+    expect(listMaster).toHaveBeenLastCalledWith("industries", expect.objectContaining({ page: 2 }));
+    expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+    expect(screen.queryByText("Industry 01")).not.toBeInTheDocument();
+  });
+
+  it("moves to the nearest valid page when the current page empties", async () => {
+    const user = userEvent.setup();
+    const ds = installPagedIndustries(26); // page 2 holds exactly one row
+    vi.mocked(api.deleteMaster).mockImplementation(((_m: string, id: string) => {
+      ds.remove(String(id));
+      return Promise.resolve({} as never);
+    }) as never);
+
+    await goToPage2(user, "Industry 26");
+    expect(screen.getByText(/page 2 of 2/)).toBeInTheDocument();
+
+    const row = screen.getByText("Industry 26").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete industry?" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(api.deleteMaster).toHaveBeenCalledWith("industries", "ind_26"));
+
+    // Page 2 no longer exists → the panel lands on the highest remaining page.
+    await waitFor(() =>
+      expect(listMaster).toHaveBeenLastCalledWith("industries", expect.objectContaining({ page: 1 })));
+    await screen.findByText("Industry 01");
+    expect(screen.queryByText(/page 2 of/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Industry 26")).not.toBeInTheDocument(); // no stale rows
+  });
+
+  it("search changes reset to page 1", async () => {
+    const user = userEvent.setup();
+    installPagedIndustries(30);
+    await goToPage2(user, "Industry 26");
+
+    await user.type(screen.getByLabelText("Search industries"), "Industry 03");
+    await waitFor(() =>
+      expect(listMaster).toHaveBeenLastCalledWith("industries",
+        expect.objectContaining({ page: 1, search: "Industry 03" })), { timeout: 3000 });
+    await screen.findByText("Industry 03");
+    expect(screen.queryByText(/page 2 of/)).not.toBeInTheDocument();
+  });
+
+  it("filter changes reset to page 1 (providers kind filter)", async () => {
+    const user = userEvent.setup();
+    const providers = Array.from({ length: 30 }, (_, i) => ({
+      id: `prov_${i + 1}`, code: `p${i + 1}`, name: `Provider ${String(i + 1).padStart(2, "0")}`,
+      status: "active", kind: "tts", sortOrder: i + 1, usageCount: 0,
+    }));
+    listMaster.mockImplementation(((mtype: string, opts?: { page?: number; pageSize?: number; kind?: string }) => {
+      if (mtype !== "providers") return Promise.resolve(paged([]) as never);
+      const page = opts?.page ?? 1;
+      const pageSize = opts?.pageSize ?? 25;
+      const filtered = opts?.kind ? providers.filter((p) => p.kind === opts.kind) : providers;
+      return Promise.resolve({
+        items: filtered.slice((page - 1) * pageSize, page * pageSize),
+        meta: { page, pageSize, total: filtered.length, totalPages: Math.max(1, Math.ceil(filtered.length / pageSize)) },
+      } as never);
+    }) as never);
+
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Providers"));
+    await screen.findByText("Provider 01");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText("Provider 26");
+
+    await user.selectOptions(screen.getByLabelText("Filter by provider kind"), ["tts"]);
+    await waitFor(() =>
+      expect(listMaster).toHaveBeenLastCalledWith("providers",
+        expect.objectContaining({ page: 1, kind: "tts" })));
+    await screen.findByText("Provider 01");
+  });
+
+  it("ignores a second click while a status mutation is still in flight", async () => {
+    const user = userEvent.setup();
+    installPagedIndustries(3);
+    let resolveMutation: (() => void) | undefined;
+    vi.mocked(api.setMasterStatus).mockImplementation((() =>
+      new Promise((resolve) => { resolveMutation = () => resolve({} as never); })) as never);
+
+    render(<PlatformConfig />);
+    const row = (await screen.findByText("Industry 01")).closest("tr")!;
+    const button = within(row).getByRole("button", { name: "Deactivate" });
+    await user.click(button);
+    await user.click(button);
+    expect(api.setMasterStatus).toHaveBeenCalledTimes(1);
+    resolveMutation?.();
+    // Let the pending refetch settle inside the test lifecycle.
+    await waitFor(() => expect(listMaster).toHaveBeenLastCalledWith(
+      "industries", expect.objectContaining({ page: 1 })));
+  });
+});
+
+/* ---------- Provider Pricing (Currencies / Exchange Rates moved to
+   Regional & Currency Settings — see RegionalSettings.test.tsx) ---------- */
+
+const PRICING_ROW = {
+  id: "ppr_1", providerCode: "openai", capability: "llm", modelCode: "gpt-4o-mini",
+  component: "tokens", unit: "per_1k_tokens", unitPrice: "0.0006000000",
+  currencyCode: "USD", effectiveFrom: "2026-07-20T00:00:00Z", status: "active",
+  sortOrder: 0, usageCount: 0, name: "openai/gpt-4o-mini · tokens",
+};
+
+describe("Provider pricing configuration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+    listMaster.mockImplementation((mtype: string) => {
+      if (mtype === "provider-pricing") return Promise.resolve(paged([PRICING_ROW]) as never);
+      return Promise.resolve(paged([]) as never);
+    });
+    createMaster.mockResolvedValue({ id: "new" } as never);
+  });
+
+  it("adds a provider price with its billing unit", async () => {
+    const user = userEvent.setup();
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Provider Pricing"));
+    await screen.findByText("openai");
+
+    await user.click(screen.getByRole("button", { name: /add provider price/i }));
+    await screen.findByRole("dialog", { name: "Add provider price" });
+
+    await user.selectOptions(screen.getByLabelText("Capability"), "tts");
+    await user.type(screen.getByLabelText("Provider code"), "sarvam");
+    await user.type(screen.getByLabelText("Model code"), "bulbul:v3");
+    await user.selectOptions(screen.getByLabelText("Component"), "characters");
+    await user.selectOptions(screen.getByLabelText("Pricing unit"), "per_1k_characters");
+    await user.type(screen.getByLabelText("Unit price"), "0.015");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
+    expect(createMaster.mock.calls[0][0]).toBe("provider-pricing");
+    expect(createMaster.mock.calls[0][1]).toMatchObject({
+      capability: "tts", providerCode: "sarvam", modelCode: "bulbul:v3",
+      component: "characters", unit: "per_1k_characters", unitPrice: 0.015,
+      currencyCode: "USD",
+    });
   });
 });

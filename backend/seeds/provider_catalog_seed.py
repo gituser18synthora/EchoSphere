@@ -41,7 +41,9 @@ _SARVAM_STT_COMMON = {
         "help": "Finalize segments after ~0.5s of silence instead of ~1s (faster endpointing).",
     },
     "input_encoding": {
-        "type": "enum", "values": ["pcm_s16le", "wav"], "default": "pcm_s16le",
+        # "wav" is the only encoding the pinned sarvamai SDK (0.1.28) accepts
+        # on the streaming socket — "pcm_s16le" fails per-chunk validation.
+        "type": "enum", "values": ["pcm_s16le", "wav"], "default": "wav",
         "label": "Input encoding", "advanced": True,
         "help": "Wire encoding for microphone/telephony audio sent to Sarvam.",
     },

@@ -28,11 +28,20 @@ class OpenAIEmbeddingProvider:
         self.model = model or settings.embedding_model
         self.dimension = dimension or settings.embedding_dimension
         self.batch_size = batch_size or settings.embedding_batch_size
+        self.provider_code = "openai"
+        # Usage of the most recent embed_documents/embed_query call — read by
+        # metering call sites that hold the tenant context.
+        self.last_usage_tokens = 0
+        self.last_usage_requests = 0
+        self.last_usage_source = "provider"
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         results: list[list[float]] = []
+        self.last_usage_tokens = 0
+        self.last_usage_requests = 0
+        self.last_usage_source = "provider"
         # Real batching: never send an unbounded list in one request.
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
@@ -40,6 +49,14 @@ class OpenAIEmbeddingProvider:
             # the caller decide whether to keep the (meaningless) vector.
             safe_batch = [t if t.strip() else " " for t in batch]
             response = await self._client.embeddings.create(model=self.model, input=safe_batch)
+            usage = getattr(response, "usage", None)
+            self.last_usage_requests += 1
+            if usage is not None and getattr(usage, "total_tokens", None):
+                self.last_usage_tokens += int(usage.total_tokens)
+            else:
+                # Documented fallback: ~4 chars/token when usage is missing.
+                self.last_usage_tokens += sum(len(t) // 4 for t in safe_batch)
+                self.last_usage_source = "estimated"
             vectors = [item.embedding for item in response.data]
             for vec in vectors:
                 if len(vec) != self.dimension:

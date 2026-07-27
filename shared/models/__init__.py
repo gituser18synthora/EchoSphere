@@ -53,6 +53,12 @@ from shared.models.ops_models import (
     TenantIntegration,
     UsageRecord,
 )
+from shared.models.billing_models import (
+    Currency,
+    ExchangeRate,
+    ProviderPricing,
+    UsageEvent,
+)
 
 __all__ = [
     "Base",
@@ -65,4 +71,5 @@ __all__ = [
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
     "Industry", "Country", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
+    "Currency", "ExchangeRate", "ProviderPricing", "UsageEvent",
 ]

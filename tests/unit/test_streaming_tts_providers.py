@@ -290,3 +290,40 @@ class TestElevenLabsProvider:
             await provider.close()
         assert server.connections == 2
         assert "WQAp2s6GVJHv6IkTFqO0" in server.paths[1]
+
+
+class TestCloseCategorization:
+    """WS close → error category: configuration errors must never be treated
+    as transient (no fallback), while exhausted credits must remain
+    fallback-worthy."""
+
+    def test_voice_does_not_exist_is_configuration(self):
+        from shared.providers.tts.streaming import StreamingTTSProvider
+
+        assert StreamingTTSProvider.categorize_close(
+            1008, "A voice with voice_id VG7g… does not exist."
+        ) == "invalid_input"
+
+    def test_paid_plan_gate_is_configuration(self):
+        from shared.providers.tts.streaming import StreamingTTSProvider
+
+        assert StreamingTTSProvider.categorize_close(
+            1008, "Free users cannot use this voice: paid plan required"
+        ) == "invalid_input"
+
+    def test_credits_exhausted_is_fallback_worthy(self):
+        from shared.providers.tts.streaming import StreamingTTSProvider
+
+        assert StreamingTTSProvider.categorize_close(
+            1003, "Credits exhausted. Visit the API Dashboard…"
+        ) == "rate_limit"
+
+    def test_plain_1008_stays_rate_limited(self):
+        from shared.providers.tts.streaming import StreamingTTSProvider
+
+        assert StreamingTTSProvider.categorize_close(1008, "") == "rate_limit"
+
+    def test_auth_still_wins(self):
+        from shared.providers.tts.streaming import StreamingTTSProvider
+
+        assert StreamingTTSProvider.categorize_close(4401, "bad key") == "auth"

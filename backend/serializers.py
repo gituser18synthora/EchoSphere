@@ -20,7 +20,9 @@ from shared.models import (
     ProviderModel,
     ChannelConfig,
     ConversationSession,
+    Currency,
     EntityDef,
+    ExchangeRate,
     Guardrail,
     HealthMetric,
     Intent,
@@ -32,6 +34,7 @@ from shared.models import (
     Plan,
     PlatformAlert,
     Prompt,
+    ProviderPricing,
     Release,
     Role,
     SipTrunk,
@@ -207,6 +210,48 @@ def serialize_provider_model(row: ProviderModel, *, usage: int = 0, names: dict 
         "streaming": row.streaming,
         "paramsSchema": row.params_schema or {},
         "isDefault": row.is_default,
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_currency(row: "Currency", *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "code": row.code,
+        "name": row.name,
+        "symbol": row.symbol,
+        "decimalPlaces": row.decimal_places,
+        "isBase": row.is_base,
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_exchange_rate(row: "ExchangeRate", *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "name": f"{row.base_code} → {row.target_code}",
+        "baseCode": row.base_code,
+        "targetCode": row.target_code,
+        # String — Numeric(18,8) survives the wire without float rounding.
+        "rate": str(row.rate),
+        "effectiveFrom": iso(row.effective_from),
+        "source": row.source,
+        "sortOrder": row.sort_order,
+    }
+
+
+def serialize_provider_pricing(row: "ProviderPricing", *, usage: int = 0, names: dict | None = None) -> dict:
+    return {
+        **_master_common(row, usage=usage, names=names),
+        "name": f"{row.provider_code}/{row.model_code or '—'} · {row.component}",
+        "providerCode": row.provider_code,
+        "capability": row.capability,
+        "modelCode": row.model_code,
+        "component": row.component,
+        "unit": row.unit,
+        "unitPrice": str(row.unit_price),
+        "currencyCode": row.currency_code,
+        "effectiveFrom": iso(row.effective_from),
         "sortOrder": row.sort_order,
     }
 

@@ -8,7 +8,7 @@ never permanently deleted.
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
@@ -23,11 +23,14 @@ from shared.models import (
     AuditLog,
     BotLanguage,
     Country,
+    Currency,
     DataRegion,
+    ExchangeRate,
     Industry,
     Plan,
     ProviderDef,
     ProviderModel,
+    ProviderPricing,
     Subscription,
     SupportedLanguage,
     Tenant,
@@ -36,15 +39,24 @@ from shared.models import (
     VoiceBotSetting,
     VoiceProfile,
 )
+from shared.models.billing_models import (
+    BASE_CURRENCY,
+    PRICING_COMPONENTS,
+    PRICING_UNITS,
+    USAGE_CAPABILITIES,
+)
 from backend.serializers import (
     serialize_ai_profile,
     serialize_country,
+    serialize_currency,
     serialize_data_region,
+    serialize_exchange_rate,
     serialize_industry,
     serialize_language,
     serialize_plan,
     serialize_provider,
     serialize_provider_model,
+    serialize_provider_pricing,
     serialize_tenant,
     serialize_voice,
 )
@@ -164,6 +176,38 @@ def _language_usage(db: Session, row: SupportedLanguage) -> int:
     ) or 0
 
 
+def _currency_usage(db: Session, row: Currency) -> int:
+    """A currency is referenced by exchange rates, provider pricing and plans."""
+    rates = db.scalar(
+        select(func.count()).select_from(ExchangeRate).where(
+            or_(ExchangeRate.base_code == row.code, ExchangeRate.target_code == row.code),
+            ExchangeRate.is_deleted.is_(False),
+        )
+    ) or 0
+    pricing = db.scalar(
+        select(func.count()).select_from(ProviderPricing).where(
+            ProviderPricing.currency_code == row.code,
+            ProviderPricing.is_deleted.is_(False),
+        )
+    ) or 0
+    plans = db.scalar(
+        select(func.count()).select_from(Plan).where(
+            Plan.currency == row.code, Plan.is_deleted.is_(False)
+        )
+    ) or 0
+    return rates + pricing + plans
+
+
+def _exchange_rate_usage(db: Session, row: ExchangeRate) -> int:
+    # Usage events snapshot the rate they used — no live references to protect.
+    return 0
+
+
+def _provider_pricing_usage(db: Session, row: ProviderPricing) -> int:
+    # Usage events snapshot prices at recording time — rows can be superseded.
+    return 0
+
+
 def _voice_usage(db: Session, row: VoiceProfile) -> int:
     bots = db.scalar(
         select(func.count()).select_from(VoiceBot).where(
@@ -227,6 +271,15 @@ _EDITABLE = {
         "provider_voice_id", "speaking_rate", "pitch", "is_default",
         "sort_order", "model_codes", "provider_settings",
     },
+    # is_base is intentionally not editable — USD stays the platform base.
+    "currencies": {"name", "symbol", "decimal_places", "sort_order"},
+    "exchange-rates": {
+        "base_code", "target_code", "rate", "effective_from", "sort_order",
+    },
+    "provider-pricing": {
+        "provider_code", "capability", "model_code", "component", "unit",
+        "unit_price", "currency_code", "effective_from", "sort_order",
+    },
 }
 
 _TYPES: dict[str, dict] = {
@@ -268,10 +321,51 @@ _TYPES: dict[str, dict] = {
         model=VoiceProfile, serializer=serialize_voice, usage=_voice_usage,
         perm="manage_master_data", label="Voice", search=("name", "provider", "accent"),
     ),
+    "currencies": dict(
+        model=Currency, serializer=serialize_currency, usage=_currency_usage,
+        perm="manage_currencies", label="Currency", search=("code", "name", "symbol"),
+    ),
+    "exchange-rates": dict(
+        model=ExchangeRate, serializer=serialize_exchange_rate, usage=_exchange_rate_usage,
+        perm="manage_exchange_rates", label="Exchange Rate",
+        search=("base_code", "target_code", "source"),
+    ),
+    "provider-pricing": dict(
+        model=ProviderPricing, serializer=serialize_provider_pricing,
+        usage=_provider_pricing_usage, perm="manage_pricing", label="Provider Price",
+        search=("provider_code", "model_code", "capability", "component"),
+    ),
 }
 
 # Languages/voices don't share the exact same lifecycle columns.
 _STATUSLESS = {"languages"}  # uses `enabled` instead of `status`
+
+# Types without a user-supplied name column — their display label is derived.
+_NAMELESS = {"exchange-rates", "provider-pricing"}
+
+
+def _row_label(mtype: str, row) -> str:
+    if mtype == "exchange-rates":
+        return f"{row.base_code} → {row.target_code}"
+    if mtype == "provider-pricing":
+        return f"{row.provider_code}/{row.model_code or '—'} · {row.component}"
+    return getattr(row, "name", None) or getattr(row, "display_name", row.id)
+
+
+def _status_priority(model, mtype: str):
+    """Primary ORDER BY key normalizing every lifecycle column to a status
+    group: ``0`` for available records (``status == 'active'`` — or, for the
+    ``enabled``-based types, ``enabled is True``) and ``1`` for every
+    unavailable one (inactive / deactivated / disabled / archived).
+
+    This is what pushes deactivated records to the bottom of *every* master
+    list, regardless of their ``sort_order``. Returns ``None`` for models with
+    no lifecycle column so their ordering is unaffected."""
+    if mtype in _STATUSLESS:
+        enabled = getattr(model, "enabled", None)
+        return case((enabled.is_(True), 0), else_=1) if enabled is not None else None
+    status = getattr(model, "status", None)
+    return case((status == "active", 0), else_=1) if status is not None else None
 
 
 # ── Value validation ──────────────────────────────────────────────────────────
@@ -299,6 +393,9 @@ _NON_NEGATIVE: dict[str, set[str]] = {
     "provider-models": {"sort_order"},
     "languages": {"sort_order"},
     "voices": {"latency_ms", "speaking_rate", "pitch", "sort_order"},
+    "currencies": {"decimal_places", "sort_order"},
+    "exchange-rates": {"sort_order"},   # rate itself must be > 0, checked separately
+    "provider-pricing": {"sort_order"},  # unit_price must be > 0, checked separately
 }
 
 # (provider field, model field, catalog capability) triplets validated together.
@@ -356,10 +453,19 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
 
     if mtype == "plans" and payload.get("currency") is not None:
         code = str(payload["currency"]).strip().upper()
-        if code not in SUPPORTED_CURRENCIES:
+        # DB-driven currency catalog; the static tuple stays as a bootstrap
+        # fallback for databases seeded before the currencies table existed.
+        active_codes = set(
+            db.scalars(
+                select(Currency.code).where(
+                    Currency.status == "active", Currency.is_deleted.is_(False)
+                )
+            )
+        ) or set(SUPPORTED_CURRENCIES)
+        if code not in active_codes:
             errors.append({
                 "field": "currency",
-                "message": f"Unsupported currency. Use one of: {', '.join(SUPPORTED_CURRENCIES)}.",
+                "message": f"Unsupported currency. Use one of: {', '.join(sorted(active_codes))}.",
             })
         else:
             payload["currency"] = code
@@ -476,8 +582,267 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
     if mtype == "voices":
         _validate_voice_payload(db, payload, effective, errors)
 
+    if mtype == "currencies":
+        _validate_currency_payload(db, payload, effective, errors, current)
+
+    if mtype == "exchange-rates":
+        _validate_exchange_rate_payload(db, payload, effective, errors, current)
+
+    if mtype == "provider-pricing":
+        _validate_provider_pricing_payload(db, payload, effective, errors, current)
+
     if errors:
         raise ApiError("Validation failed.", 422, errors=errors)
+
+
+def _parse_effective_from(payload: dict, errors: list[dict]) -> None:
+    """Normalize an incoming effectiveFrom value to a datetime in payload."""
+    from datetime import datetime, timedelta
+
+    if "effective_from" not in payload or payload["effective_from"] is None:
+        return
+    value = payload["effective_from"]
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            value = value.replace(tzinfo=None)
+        except ValueError:
+            errors.append({
+                "field": "effectiveFrom",
+                "message": "Use an ISO date/time, for example 2026-07-24T00:00.",
+            })
+            return
+    if not isinstance(value, datetime):
+        errors.append({"field": "effectiveFrom", "message": "Must be a date/time."})
+        return
+    if value.year < 2000:
+        errors.append({"field": "effectiveFrom", "message": "Effective date is too far in the past."})
+        return
+    if value > datetime.utcnow() + timedelta(days=366):
+        errors.append({
+            "field": "effectiveFrom",
+            "message": "Effective date cannot be more than a year in the future.",
+        })
+        return
+    payload["effective_from"] = value
+
+
+def _positive_decimal(payload: dict, field: str, camel: str, errors: list[dict],
+                      max_value: float) -> None:
+    """Coerce a required-positive decimal field; rejects zero and negatives."""
+    from decimal import Decimal, InvalidOperation
+
+    if field not in payload or payload[field] is None:
+        return
+    try:
+        value = Decimal(str(payload[field]).strip())
+    except (InvalidOperation, ValueError):
+        errors.append({"field": camel, "message": "Must be a number."})
+        return
+    if value <= 0:
+        errors.append({"field": camel, "message": "Must be greater than zero."})
+    elif value > max_value:
+        errors.append({"field": camel, "message": f"Must be at most {max_value}."})
+    else:
+        payload[field] = value
+
+
+def _active_currency(db: Session, code: str) -> Currency | None:
+    return db.scalar(
+        select(Currency).where(
+            Currency.code == code,
+            Currency.status == "active",
+            Currency.is_deleted.is_(False),
+        )
+    )
+
+
+def _validate_currency_payload(db: Session, payload: dict, effective, errors: list[dict],
+                               current) -> None:
+    if current is None:
+        code = str(payload.get("code") or "").strip().upper()
+        if len(code) != 3 or not code.isalpha():
+            errors.append({
+                "field": "code",
+                "message": "Use a 3-letter ISO 4217 code, for example USD.",
+            })
+        else:
+            payload["code"] = code
+            duplicate = db.scalar(select(Currency).where(Currency.code == code))
+            if duplicate is not None:
+                errors.append({"field": "code", "message": f"{code} already exists."})
+        if not str(payload.get("symbol") or "").strip():
+            errors.append({"field": "symbol", "message": "Symbol is required."})
+    if "symbol" in payload and payload["symbol"] is not None:
+        symbol = str(payload["symbol"]).strip()
+        if not symbol or len(symbol) > 8:
+            errors.append({"field": "symbol", "message": "Symbol must be 1-8 characters."})
+        else:
+            payload["symbol"] = symbol
+    places = payload.get("decimal_places")
+    if places is not None and (not isinstance(places, (int, float)) or isinstance(places, bool)
+                               or int(places) != places or not 0 <= int(places) <= 4):
+        errors.append({"field": "decimalPlaces", "message": "Must be a whole number from 0 to 4."})
+
+
+def _validate_exchange_rate_payload(db: Session, payload: dict, effective, errors: list[dict],
+                                    current) -> None:
+    from datetime import datetime
+
+    _parse_effective_from(payload, errors)
+    _positive_decimal(payload, "rate", "rate", errors, max_value=10_000_000)
+
+    for field, camel in (("base_code", "baseCode"), ("target_code", "targetCode")):
+        if field in payload and payload[field] is not None:
+            payload[field] = str(payload[field]).strip().upper()
+
+    base = effective("base_code")
+    target = effective("target_code")
+    if current is None:
+        if not base:
+            errors.append({"field": "baseCode", "message": "Base currency is required."})
+        if not target:
+            errors.append({"field": "targetCode", "message": "Target currency is required."})
+        if payload.get("rate") is None:
+            errors.append({"field": "rate", "message": "Exchange rate is required."})
+    if base and target and base == target:
+        errors.append({
+            "field": "targetCode",
+            "message": "Base and target currencies must differ.",
+        })
+    if base and base != BASE_CURRENCY:
+        errors.append({
+            "field": "baseCode",
+            "message": f"Rates are configured from the platform base currency ({BASE_CURRENCY}).",
+        })
+    for field, camel, code in (("base_code", "baseCode", base), ("target_code", "targetCode", target)):
+        if code and _active_currency(db, code) is None:
+            errors.append({
+                "field": camel,
+                "message": f"'{code}' is not an active currency. Add or activate it first.",
+            })
+    if errors:
+        return
+    # Same pair + same effective timestamp must not exist twice.
+    if base and target:
+        effective_from = payload.get("effective_from") or getattr(current, "effective_from", None)
+        if isinstance(effective_from, datetime):
+            duplicate = db.scalar(
+                select(ExchangeRate).where(
+                    ExchangeRate.base_code == base,
+                    ExchangeRate.target_code == target,
+                    ExchangeRate.effective_from == effective_from,
+                    ExchangeRate.is_deleted.is_(False),
+                )
+            )
+            if duplicate is not None and (current is None or duplicate.id != current.id):
+                errors.append({
+                    "field": "effectiveFrom",
+                    "message": f"A {base} → {target} rate with this effective date already exists.",
+                })
+
+
+def _validate_provider_pricing_payload(db: Session, payload: dict, effective, errors: list[dict],
+                                       current) -> None:
+    from datetime import datetime
+
+    _parse_effective_from(payload, errors)
+    _positive_decimal(payload, "unit_price", "unitPrice", errors, max_value=1_000_000)
+
+    capability = effective("capability")
+    provider_code = effective("provider_code")
+    if current is None:
+        if capability not in USAGE_CAPABILITIES:
+            errors.append({
+                "field": "capability",
+                "message": f"Capability must be one of: {', '.join(USAGE_CAPABILITIES)}.",
+            })
+        if not provider_code:
+            errors.append({"field": "providerCode", "message": "Provider is required."})
+        if payload.get("unit_price") is None:
+            errors.append({"field": "unitPrice", "message": "Unit price is required."})
+    else:
+        for field in ("capability", "provider_code", "model_code", "component"):
+            if field in payload and payload[field] != getattr(current, field):
+                errors.append({
+                    "field": _camel(field),
+                    "message": "Cannot be changed after creation — deactivate this price "
+                               "and create a new one instead.",
+                })
+
+    # AI capabilities must reference a configured provider; telephony providers
+    # live outside the provider_defs catalog (kept as free codes).
+    if capability in ("llm", "embedding", "stt", "tts") and provider_code:
+        provider_row = db.scalar(
+            select(ProviderDef).where(
+                ProviderDef.kind == capability,
+                ProviderDef.code == provider_code,
+                ProviderDef.is_deleted.is_(False),
+            )
+        )
+        if provider_row is None:
+            errors.append({
+                "field": "providerCode",
+                "message": f"'{provider_code}' is not a configured {capability} provider.",
+            })
+
+    component = effective("component")
+    if component is not None or current is None:
+        if component not in PRICING_COMPONENTS:
+            errors.append({
+                "field": "component",
+                "message": f"Component must be one of: {', '.join(PRICING_COMPONENTS)}.",
+            })
+    unit = effective("unit")
+    if unit is not None or current is None:
+        if unit not in PRICING_UNITS:
+            errors.append({
+                "field": "unit",
+                "message": f"Unit must be one of: {', '.join(PRICING_UNITS)}.",
+            })
+
+    currency_code = payload.get("currency_code")
+    if currency_code is not None:
+        currency_code = str(currency_code).strip().upper()
+        payload["currency_code"] = currency_code
+        if currency_code != BASE_CURRENCY:
+            errors.append({
+                "field": "currencyCode",
+                "message": f"Provider pricing is normalized to {BASE_CURRENCY}; display "
+                           "currencies are converted through exchange rates.",
+            })
+        elif _active_currency(db, currency_code) is None:
+            errors.append({
+                "field": "currencyCode",
+                "message": f"'{currency_code}' is not an active currency.",
+            })
+
+    if "model_code" in payload:
+        payload["model_code"] = str(payload["model_code"] or "").strip()
+    elif current is None:
+        payload["model_code"] = ""  # telephony/flat prices don't need a model
+
+    if errors:
+        return
+    if current is None and capability and provider_code:
+        effective_from = payload.get("effective_from")
+        if isinstance(effective_from, datetime):
+            duplicate = db.scalar(
+                select(ProviderPricing).where(
+                    ProviderPricing.provider_code == provider_code,
+                    ProviderPricing.capability == capability,
+                    ProviderPricing.model_code == (payload.get("model_code") or ""),
+                    ProviderPricing.component == component,
+                    ProviderPricing.effective_from == effective_from,
+                    ProviderPricing.is_deleted.is_(False),
+                )
+            )
+            if duplicate is not None:
+                errors.append({
+                    "field": "effectiveFrom",
+                    "message": "A price for this provider/model/component with this "
+                               "effective date already exists.",
+                })
 
 
 def _validate_provider_model_payload(db: Session, payload: dict, effective, errors: list[dict],
@@ -734,11 +1099,27 @@ def list_master(
         # Master lists default to ascending sort order: lower values first.
         col = default_col
         descending = False
-    order = [col.desc() if descending else col.asc()]
-    # Stable secondary sort so equal sort-order values keep a consistent order.
-    name_col = getattr(model, "name", None)
-    if name_col is not None and name_col is not col:
-        order.append(name_col.asc())
+
+    order = []
+    # Every Platform Configuration master list surfaces available records
+    # (active / enabled) before any unavailable one (inactive, deactivated,
+    # disabled, archived), so deactivating an entry drops it to the bottom of
+    # the list immediately and it stays there on reload. Ordering *within* a
+    # status group follows the normal sort-order/name/id rules below. This runs
+    # even when an explicit sortBy is supplied, so the active-first guarantee
+    # holds for search, filtered and paginated responses alike.
+    status_priority = _status_priority(model, mtype)
+    if status_priority is not None:
+        order.append(status_priority.asc())
+
+    order.append(col.desc() if descending else col.asc())
+    # Stable secondary sort so equal primary values keep a deterministic order:
+    # by human-readable label (name / display_name) then the immutable id.
+    label_col = getattr(model, "name", None)
+    if label_col is None:
+        label_col = getattr(model, "display_name", None)
+    if label_col is not None and label_col is not col:
+        order.append(label_col.asc())
     order.append(model.id.asc())
     stmt = stmt.order_by(*order)
 
@@ -797,6 +1178,7 @@ _ID_PREFIX = {
     "industries": "ind", "data-regions": "dr", "plans": "pl",
     "ai-profiles": "aip", "providers": "prov", "provider-models": "pm",
     "languages": "lang", "voices": "vp",
+    "currencies": "cur", "exchange-rates": "fxr", "provider-pricing": "ppr",
 }
 
 
@@ -814,7 +1196,7 @@ def create_master(
     payload = {_camel_to_snake(k): v for k, v in body.model_dump(exclude_unset=True).items()}
 
     name = (payload.get("name") or "").strip()
-    if not name:
+    if not name and mtype not in _NAMELESS:
         raise ApiError("Name is required.", 422, errors=[{"field": "name", "message": "Name is required."}])
     _validate_payload(db, mtype, payload)
 
@@ -825,6 +1207,8 @@ def create_master(
             # Locale codes keep their case (en-IN); column is 15 chars.
             if len(code) > 15:
                 raise ApiError("Language code must be at most 15 characters.", 422)
+        elif mtype == "currencies":
+            code = code.upper()  # ISO 4217 — validated upstream
         elif mtype != "provider-models":
             # Provider model codes are provider wire codes — case preserved.
             code = code.lower()
@@ -853,7 +1237,7 @@ def create_master(
             row.code = code
     if mtype == "provider-models":
         row.display_name = name
-    else:
+    elif mtype not in _NAMELESS:
         row.name = name
     _apply_fields(row, payload, _EDITABLE[mtype], _CLEARABLE.get(mtype, frozenset()))
     if hasattr(row, "created_by"):
@@ -861,10 +1245,11 @@ def create_master(
     db.add(row)
     if mtype == "countries":
         db.flush()  # Numeric auto-increment ID is needed by the audit record.
+    label = name or _row_label(mtype, row)
     record_audit(
         db, user=user, action=f"Created {spec['label'].lower()}",
-        entity_type=f"master:{mtype}", entity_id=str(row.id), target_label=name,
-        new_value={"name": name, "code": getattr(row, "code", None),
+        entity_type=f"master:{mtype}", entity_id=str(row.id), target_label=label,
+        new_value={"name": label, "code": getattr(row, "code", None),
                    "iso2": getattr(row, "iso2", None), "iso3": getattr(row, "iso3", None)},
         request=request,
     )
@@ -928,8 +1313,11 @@ def update_master(
         record_audit(
             db, user=user, action=f"Updated {spec['label'].lower()}",
             entity_type=f"master:{mtype}", entity_id=str(row.id),
-            target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
-            new_value={k: v for k, v in changed.items() if not isinstance(v, (dict, list))} or {"fields": list(changed)},
+            target_label=_row_label(mtype, row),
+            new_value={
+                k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                for k, v in changed.items() if not isinstance(v, (dict, list))
+            } or {"fields": list(changed)},
             request=request,
         )
     db.commit()
@@ -955,6 +1343,11 @@ def set_master_status(
     _guard(mtype, user)
     spec = _spec(mtype)
     row = _get_row(db, mtype, item_id)
+    if mtype == "currencies" and row.is_base and body.status != "active":
+        raise ApiError(
+            "The platform base currency cannot be deactivated.", 422,
+            errors=[{"field": "status", "message": "The platform base currency cannot be deactivated."}],
+        )
     if mtype in _STATUSLESS:
         before = "active" if row.enabled else "inactive"
         row.enabled = body.status == "active"
@@ -967,7 +1360,7 @@ def set_master_status(
     record_audit(
         db, user=user, action=f"{action} {spec['label'].lower()}",
         entity_type=f"master:{mtype}", entity_id=str(row.id),
-        target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
+        target_label=_row_label(mtype, row),
         previous_value={"status": before}, new_value={"status": body.status},
         request=request,
     )
@@ -992,6 +1385,8 @@ def delete_master(
     _guard(mtype, user)
     spec = _spec(mtype)
     row = _get_row(db, mtype, item_id)
+    if mtype == "currencies" and row.is_base:
+        raise ApiError("The platform base currency cannot be deleted.", 409)
     usage = spec["usage"](db, row)
     if usage > 0:
         raise ApiError(
@@ -1012,7 +1407,7 @@ def delete_master(
     record_audit(
         db, user=user, action=f"Archived {spec['label'].lower()}",
         entity_type=f"master:{mtype}", entity_id=str(row.id),
-        target_label=getattr(row, "name", None) or getattr(row, "display_name", row.id),
+        target_label=_row_label(mtype, row),
         request=request,
     )
     db.commit()

@@ -51,8 +51,11 @@ def _daily_usage(db: Session, tenant_id: str | None, start: date, end: date,
             func.coalesce(func.sum(UsageRecord.cost_tts), 0),
             func.coalesce(func.sum(UsageRecord.cost_stt), 0),
             func.coalesce(func.sum(UsageRecord.cost_telephony), 0),
+            func.coalesce(func.sum(UsageRecord.cost_embedding), 0),
         )
+        .join(Tenant, Tenant.id == UsageRecord.tenant_id)
         .where(UsageRecord.date >= start, UsageRecord.date <= end)
+        .where(Tenant.is_deleted.is_(False))
         .group_by(UsageRecord.date)
     )
     if tenant_id is not None:
@@ -67,9 +70,17 @@ def _daily_usage(db: Session, tenant_id: str | None, start: date, end: date,
             "calls": int(row[1]), "contained": int(row[2]), "escalations": int(row[3]),
             "minutes": float(row[4]), "csat": float(row[5]) if row[5] is not None else None,
             "llm": float(row[6]), "tts": float(row[7]), "stt": float(row[8]),
-            "telephony": float(row[9]),
+            "telephony": float(row[9]), "embedding": float(row[10]),
         }
     return out
+
+
+def _ai_cost_sum(daily: dict[date, dict]) -> float:
+    """AI provider spend (LLM + TTS + STT + embeddings), excluding telephony."""
+    return (
+        _sum(daily, "llm") + _sum(daily, "tts") + _sum(daily, "stt")
+        + _sum(daily, "embedding")
+    )
 
 
 def _sum(daily: dict[date, dict], key: str) -> float:
@@ -117,14 +128,14 @@ def tenant_analytics(
     containment = round(total_contained / total_calls * 100, 1) if total_calls else 0.0
     csat_values = [d["csat"] for d in daily.values() if d.get("csat")]
     avg_csat = round(sum(csat_values) / len(csat_values), 1) if csat_values else 0.0
-    ai_cost = _sum(daily, "llm") + _sum(daily, "tts") + _sum(daily, "stt")
+    ai_cost = _ai_cost_sum(daily)
     total_cost = ai_cost + _sum(daily, "telephony")
     cost_per_call = round(total_cost / total_calls, 3) if total_calls else 0.0
 
     prev_calls = int(_sum(prev, "calls"))
     prev_contained = int(_sum(prev, "contained"))
     prev_containment = (prev_contained / prev_calls * 100) if prev_calls else 0
-    prev_ai_cost = _sum(prev, "llm") + _sum(prev, "tts") + _sum(prev, "stt")
+    prev_ai_cost = _ai_cost_sum(prev)
     prev_escalations = int(_sum(prev, "escalations"))
 
     # Sentiment / language / intents from conversation metadata in the window.
@@ -135,6 +146,7 @@ def tenant_analytics(
         ConversationSession.tenant_id == tid,
         ConversationSession.is_deleted.is_(False),
         func.date(ConversationSession.started_at) >= start,
+        func.date(ConversationSession.started_at) <= end,
     )
     if bot_id:
         conv_stmt = conv_stmt.where(ConversationSession.bot_id == bot_id)
@@ -306,7 +318,8 @@ def platform_analytics(
         round(
             daily.get(d, {}).get("llm", 0)
             + daily.get(d, {}).get("tts", 0)
-            + daily.get(d, {}).get("stt", 0),
+            + daily.get(d, {}).get("stt", 0)
+            + daily.get(d, {}).get("embedding", 0),
             2,
         )
         for d in dates
@@ -314,8 +327,14 @@ def platform_analytics(
 
     total_mrr = float(
         db.scalar(
-            select(func.coalesce(func.sum(Subscription.mrr), 0)).where(
-                Subscription.is_deleted.is_(False), Subscription.status == "active"
+            select(func.coalesce(func.sum(Subscription.mrr), 0))
+            .join(Tenant, Tenant.id == Subscription.tenant_id)
+            .join(Plan, Plan.id == Subscription.plan_id)
+            .where(
+                Subscription.is_deleted.is_(False),
+                Subscription.status == "active",
+                Tenant.is_deleted.is_(False),
+                Plan.is_deleted.is_(False),
             )
         ) or 0
     )
@@ -325,16 +344,39 @@ def platform_analytics(
         db.execute(
             select(Plan.code, func.count())
             .join(Subscription, Subscription.plan_id == Plan.id)
-            .where(Subscription.is_deleted.is_(False))
+            .join(Tenant, Tenant.id == Subscription.tenant_id)
+            .where(
+                Subscription.is_deleted.is_(False),
+                Subscription.status == "active",
+                Tenant.is_deleted.is_(False),
+                Plan.is_deleted.is_(False),
+            )
             .group_by(Plan.code)
         ).all()
     )
+    mrr_by_plan = db.execute(
+        select(
+            Plan.name,
+            func.coalesce(func.sum(Subscription.mrr), 0),
+        )
+        .join(Subscription, Subscription.plan_id == Plan.id)
+        .join(Tenant, Tenant.id == Subscription.tenant_id)
+        .where(
+            Subscription.is_deleted.is_(False),
+            Subscription.status == "active",
+            Tenant.is_deleted.is_(False),
+            Plan.is_deleted.is_(False),
+        )
+        .group_by(Plan.id, Plan.name, Plan.sort_order)
+        .order_by(Plan.sort_order.asc(), Plan.name.asc())
+    ).all()
 
     top_tenants = db.execute(
         select(Tenant.name, func.coalesce(func.sum(UsageRecord.calls), 0).label("calls"))
         .join(UsageRecord, UsageRecord.tenant_id == Tenant.id)
         .where(
             UsageRecord.date >= start,
+            UsageRecord.date <= end,
             UsageRecord.bot_id.is_(None),
             Tenant.is_deleted.is_(False),
         )
@@ -361,6 +403,10 @@ def platform_analytics(
             {"label": "Enterprise", "value": plan_counts.get("enterprise", 0)},
             {"label": "Growth", "value": plan_counts.get("growth", 0)},
             {"label": "Starter", "value": plan_counts.get("starter", 0)},
+        ],
+        "mrrByPlan": [
+            {"label": name, "value": float(mrr)}
+            for name, mrr in mrr_by_plan
         ],
         "topTenantsByCalls": [
             {"label": name, "value": int(calls)} for name, calls in top_tenants if calls
@@ -404,8 +450,8 @@ def admin_dashboard(
     )
     calls_30d = int(_sum(daily, "calls"))
     prev_calls = int(_sum(prev, "calls"))
-    ai_cost = _sum(daily, "llm") + _sum(daily, "tts") + _sum(daily, "stt")
-    prev_ai = _sum(prev, "llm") + _sum(prev, "tts") + _sum(prev, "stt")
+    ai_cost = _ai_cost_sum(daily)
+    prev_ai = _ai_cost_sum(prev)
     calls_spark = [daily.get(d, {}).get("calls", 0) for d in dates][-14:]
 
     return ok({

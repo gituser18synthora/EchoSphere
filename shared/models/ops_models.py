@@ -195,6 +195,7 @@ class UsageRecord(Base, TimestampMixin):
     cost_llm: Mapped[float] = mapped_column(Numeric(10, 4), default=0, nullable=False)
     cost_tts: Mapped[float] = mapped_column(Numeric(10, 4), default=0, nullable=False)
     cost_stt: Mapped[float] = mapped_column(Numeric(10, 4), default=0, nullable=False)
+    cost_embedding: Mapped[float] = mapped_column(Numeric(10, 4), default=0, nullable=False)
     cost_telephony: Mapped[float] = mapped_column(Numeric(10, 4), default=0, nullable=False)
 
 

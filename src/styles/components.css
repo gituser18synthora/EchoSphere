@@ -325,6 +325,93 @@
 .table tbody tr:last-child td { border-bottom: none; }
 .table .num { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* Plans table cells — Limits reads as compact key-value metrics that wrap
+   between units (never mid-number); Flags collapse to just their pills. */
+.plan-limits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--ink-2);
+  /* Floors the column's intrinsic width in the auto-layout table so Limits
+     always gets a readable content area (a plain th width hint gets overridden
+     when other columns compete for space); metrics wrap within it. */
+  min-width: 220px;
+}
+.plan-limits .limit { white-space: nowrap; }
+.plan-limits .limit b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.plan-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ============ Voice tab ============ */
+/* Engine sections sit in two columns on desktop and stack on laptop-and-below
+   widths so no section's controls get squeezed. */
+.voice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .voice-grid { grid-template-columns: 1fr; }
+}
+
+/* Per-language voice overrides — one structured card per language: a header
+   line (language, status, actions) over a labelled provider/model/voice grid
+   that wraps column-by-column instead of squeezing. */
+.lang-voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lang-voice-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.lang-voice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lang-voice-lang {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin-right: auto;
+}
+.lang-voice-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lang-voice-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.lang-voice-fields .field-label,
+.lang-voice-fields .mselect-opt-label,
+.lang-voice-fields option { overflow-wrap: anywhere; }
+
 /* ============ Tabs ============ */
 .tabs {
   display: flex;

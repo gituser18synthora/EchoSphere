@@ -165,11 +165,27 @@ class AnthropicLLM(LLMProvider):
         # Streaming feeds the realtime voice path — text deltas only, no tools
         # (matching the openai_llm.py streaming behavior).
         kwargs = self._request_kwargs(messages, system, None, temperature, max_tokens)
+        self.last_stream_usage = None
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for delta in stream.text_stream:
                     if delta:
                         yield delta
+                try:
+                    final = await stream.get_final_message()
+                    usage = getattr(final, "usage", None)
+                    if usage is not None:
+                        from shared.providers.base import LLMStreamUsage
+
+                        self.last_stream_usage = LLMStreamUsage(
+                            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                            cached_tokens=int(
+                                getattr(usage, "cache_read_input_tokens", 0) or 0
+                            ),
+                        )
+                except Exception:  # noqa: BLE001 — usage capture must not break the call
+                    pass
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 — SDK error types are lazy-loaded

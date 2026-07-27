@@ -27,7 +27,7 @@ export default function AdminDashboard() {
           <p className="page-sub">Cross-tenant health, growth and risk — last 30 days</p>
         </div>
         <div className="page-actions">
-          <Button icon="download" onClick={() => navigate("/admin/reports")}>Reports</Button>
+          <Button icon="trend" onClick={() => navigate("/admin/reports")}>Reports</Button>
           <Button variant="primary" icon="rocket" onClick={() => navigate("/admin/onboarding")}>Onboard tenant</Button>
         </div>
       </div>

@@ -15,6 +15,7 @@ import time
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
+from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
 
@@ -34,18 +35,9 @@ _SCRIPT_LANG_MAP = [
 ]
 _COMPILED_SCRIPT_MAP = [(re.compile(pattern), lang) for pattern, lang in _SCRIPT_LANG_MAP]
 
-_SUPPORTED_LANGS = {
-    "hi-IN", "bn-IN", "kn-IN", "ml-IN", "mr-IN",
-    "pa-IN", "raj-IN", "ta-IN", "te-IN",
-    "en-IN", "gu-IN", "or-IN",
-}
-
-# Internal short codes → Sarvam BCP-47 (Odia is "or-IN" everywhere).
-_SHORT_TO_SARVAM = {
-    "en": "en-IN", "hi": "hi-IN", "bn": "bn-IN", "kn": "kn-IN", "ml": "ml-IN",
-    "mr": "mr-IN", "od": "or-IN", "or": "or-IN", "pa": "pa-IN", "ta": "ta-IN",
-    "te": "te-IN", "gu": "gu-IN",
-}
+# Language canonicalization is shared with the WebSocket implementation via
+# shared.providers.languages (SARVAM_SUPPORTED_LOCALES + short_code_to_locale)
+# so REST and streaming can never diverge on locale handling again.
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +67,8 @@ def _detect_language(text: str) -> str:
 
 def _resolve_language(explicit: str | None, text: str) -> str:
     if explicit:
-        code = explicit if "-" in explicit else _SHORT_TO_SARVAM.get(explicit.lower(), "")
-        if code in _SUPPORTED_LANGS:
+        code = short_code_to_locale("sarvam", explicit)
+        if code in SARVAM_SUPPORTED_LOCALES:
             return code
     return _detect_language(text)
 

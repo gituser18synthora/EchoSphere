@@ -13,6 +13,7 @@ import json
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    ErrorFrame,
     Frame,
     InputAudioRawFrame,
     InterruptionFrame,
@@ -55,6 +56,11 @@ class RawPCMSerializer(FrameSerializer):
             return json.dumps({"type": "event", "name": "bot_speaking_stopped"})
         if isinstance(frame, InterruptionFrame):
             return json.dumps({"type": "event", "name": "interruption"})
+        if isinstance(frame, ErrorFrame):
+            # Category-style codes only (e.g. "tts_failure:timeout") — never
+            # provider payloads or anything that could carry secrets.
+            message = str(frame.error or "")[:120]
+            return json.dumps({"type": "error", "message": message})
         return None
 
     async def deserialize(self, data: str | bytes) -> Frame | None:

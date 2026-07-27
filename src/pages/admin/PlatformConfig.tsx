@@ -45,7 +45,7 @@ type Row = Record<string, unknown> & {
 interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider";
+  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider" | "datetime";
   options?: { value: string; label: string }[];
   required?: boolean;
   /** Required only while creating; legacy records can still be edited. */
@@ -61,6 +61,8 @@ interface FieldDef {
   capability?: VoiceCapability;
   /** model fields: the form key holding the selected provider. */
   providerKey?: string;
+  /** Initial value in the add form (overrides the per-type defaults). */
+  defaultValue?: string;
 }
 
 interface TypeSpec {
@@ -109,28 +111,75 @@ const usageCol: Column<Row> = {
   sortValue: (r) => Number(r.usageCount ?? 0),
   render: (r) => <span>{Number(r.usageCount ?? 0)}</span>,
 };
-const updatedCol: Column<Row> = {
-  key: "updatedAt", header: "Updated", sortValue: (r) => String(r.updatedAt ?? ""),
-  render: (r) => <span className="t-micro">{r.updatedAt ? new Date(String(r.updatedAt)).toLocaleDateString() : "—"}{r.updatedBy ? ` · ${r.updatedBy}` : ""}</span>,
-};
 const sortOrderCol: Column<Row> = {
   key: "sortOrder", header: "Sort order", align: "right",
   sortValue: (r) => Number(r.sortOrder ?? 0),
   render: (r) => <span className="t-num">{Number(r.sortOrder ?? 0)}</span>,
 };
+/* Sections that used to show an "Updated" timestamp now surface the DB-backed
+   sort order under the label "Order" instead — active rows sort ahead of
+   inactive ones and, within a status group, by this value ascending (the server
+   returns that order). Audit timestamps stay in the DB, just not in this table. */
+const orderCol: Column<Row> = {
+  key: "sortOrder", header: "Order", align: "right",
+  sortValue: (r) => Number(r.sortOrder ?? 0),
+  render: (r) => <span className="t-num">{Number(r.sortOrder ?? 0)}</span>,
+};
+
+/* ---------- Plans: Limits & Flags cell renderers ---------- */
+
+/** The included limits, as compact key-value metrics. Each metric stays on one
+    line (numbers never split); the row wraps between metrics when the column is
+    narrow. Falls back to the shared em-dash empty state when no limits exist. */
+function PlanLimits({ row }: { row: Row }) {
+  const metrics: { value: number; unit: string }[] = [
+    { key: "botLimit", unit: "bots" },
+    { key: "minutesIncluded", unit: "min" },
+    { key: "seatsIncluded", unit: "seats" },
+  ]
+    .filter((m) => row[m.key] !== null && row[m.key] !== undefined)
+    .map((m) => ({ value: Number(row[m.key]), unit: m.unit }));
+
+  if (metrics.length === 0) return <span className="t-sub">—</span>;
+  return (
+    <div className="plan-limits">
+      {metrics.map((m) => (
+        <span key={m.unit} className="limit"><b>{m.value.toLocaleString()}</b> {m.unit}</span>
+      ))}
+    </div>
+  );
+}
+
+/** Plan flags as compact pills that wrap when both are present; em dash when
+    none, so the column never reserves blank space. */
+function PlanFlags({ row }: { row: Row }) {
+  const flags: string[] = [];
+  if (row.isRecommended) flags.push("Recommended");
+  if (!row.isPublic) flags.push("Hidden");
+  if (flags.length === 0) return <span className="t-sub">—</span>;
+  return (
+    <div className="plan-flags">
+      {flags.map((f) => <span key={f} className="tag">{f}</span>)}
+    </div>
+  );
+}
 
 const PROVIDER_KINDS = ["stt", "tts", "llm", "embedding", "voice"] as const;
 
-const SPECS: TypeSpec[] = [
+/* All master-data section definitions. One authoritative implementation —
+   the sections are split across two Super Admin pages below:
+   - Platform Configuration: product/AI configuration masters.
+   - Regional & Currency Settings: geographic + monetary masters. */
+const ALL_SPECS: TypeSpec[] = [
   {
     mtype: "industries", label: "Industries", singular: "industry",
-    columns: [nameCol, codeCol, { key: "description", header: "Description", render: (r) => <span className="t-sub">{String(r.description ?? "")}</span> }, usageCol, statusCol, updatedCol],
+    columns: [nameCol, codeCol, { key: "description", header: "Description", render: (r) => <span className="t-sub">{String(r.description ?? "")}</span> }, usageCol, statusCol, orderCol],
     fields: [
       text("code", "Code", { required: true, createOnly: true, hint: "Stable identifier, e.g. banking", section: "Identity" }),
       text("name", "Name", { required: true, section: "Identity" }),
       { key: "description", label: "Description", type: "textarea", section: "Identity" },
       text("icon", "Icon", { section: "Presentation" }),
-      num("sortOrder", "Sort order", { section: "Presentation" }),
+      num("sortOrder", "Order", { section: "Presentation" }),
     ],
   },
   {
@@ -142,7 +191,7 @@ const SPECS: TypeSpec[] = [
       { key: "iso2", header: "ISO2", sortValue: (r) => String(r.iso2 ?? "") },
       { key: "iso3", header: "ISO3", sortValue: (r) => String(r.iso3 ?? "") },
       { key: "region", header: "Region", render: () => <span className="tag">Asia</span> },
-      usageCol, statusCol, sortOrderCol,
+      usageCol, statusCol, orderCol,
     ],
     fields: [
       text("name", "Country name", { required: true, section: "Identity" }),
@@ -150,7 +199,7 @@ const SPECS: TypeSpec[] = [
       text("iso3", "ISO3", { required: true, createOnly: true, hint: "3-letter ISO code, e.g. IND", section: "Identity" }),
       { key: "region", label: "Region", type: "select", readOnly: true, section: "Location",
         hint: "The current rollout supports Asia only.", options: [{ value: "Asia", label: "Asia" }] },
-      num("sortOrder", "Sort order", { section: "Presentation" }),
+      num("sortOrder", "Order", { section: "Presentation" }),
     ],
   },
   {
@@ -164,7 +213,7 @@ const SPECS: TypeSpec[] = [
           ? <StatusChip status="active" label="Deployed" />
           : <span className="tag" title="Configured operational region — infrastructure is not deployed here yet">Configured only</span>,
       },
-      usageCol, statusCol, updatedCol,
+      usageCol, statusCol, orderCol,
     ],
     fields: [
       text("code", "Code", { required: true, createOnly: true, hint: "e.g. in-mumbai", section: "Identity" }),
@@ -181,7 +230,7 @@ const SPECS: TypeSpec[] = [
       text("transcriptRegion", "Transcript region", { section: "Service regions" }),
       { key: "infrastructureReady", label: "Infrastructure deployed", type: "toggle", section: "Deployment",
         hint: "Only enable when infrastructure actually runs in this region — the UI distinguishes configured vs deployed regions." },
-      num("sortOrder", "Sort order", { section: "Deployment" }),
+      num("sortOrder", "Order", { section: "Deployment" }),
     ],
   },
   {
@@ -189,9 +238,13 @@ const SPECS: TypeSpec[] = [
     columns: [
       nameCol, codeCol,
       { key: "priceMonthly", header: "Monthly", align: "right", sortValue: (r) => Number(r.priceMonthly ?? 0), render: (r) => <span>{currencySymbol(r.currency)}{Number(r.priceMonthly ?? 0).toLocaleString()} {String(r.currency ?? DEFAULT_CURRENCY)}</span> },
-      { key: "limits", header: "Limits", render: (r) => <span className="t-micro">{Number(r.botLimit ?? 0)} bots · {Number(r.minutesIncluded ?? 0).toLocaleString()} min · {Number(r.seatsIncluded ?? 0)} seats</span> },
-      { key: "isRecommended", header: "Flags", render: (r) => <span className="row gap-6">{Boolean(r.isRecommended) && <span className="tag">Recommended</span>}{!r.isPublic && <span className="tag">Hidden</span>}</span> },
-      usageCol, statusCol, updatedCol,
+      // Limits get the widest content area; each metric is a nowrap unit so
+      // values never split mid-number — the group wraps cleanly between metrics.
+      { key: "limits", header: "Limits", width: 280, render: (r) => <PlanLimits row={r} /> },
+      // Flags collapse to just the width their pills need (width: 1 lets the
+      // auto table layout shrink the column to its content); empty → em dash.
+      { key: "isRecommended", header: "Flags", width: 1, render: (r) => <PlanFlags row={r} /> },
+      usageCol, statusCol, orderCol,
     ],
     fields: [
       text("code", "Code", { required: true, createOnly: true, section: "Basics" }),
@@ -216,7 +269,7 @@ const SPECS: TypeSpec[] = [
       num("analyticsRetentionDays", "Analytics retention (days)", { section: "Data retention" }),
       { key: "isPublic", label: "Visible in onboarding", type: "toggle", section: "Presentation" },
       { key: "isRecommended", label: "Recommended", type: "toggle", section: "Presentation" },
-      num("sortOrder", "Sort order", { section: "Presentation" }),
+      num("sortOrder", "Order", { section: "Presentation" }),
     ],
   },
   {
@@ -225,7 +278,7 @@ const SPECS: TypeSpec[] = [
       nameCol, codeCol,
       { key: "models", header: "Stack", render: (r) => <span className="t-micro">{[r.llmProvider && `LLM ${r.llmProvider}/${r.llmModel ?? ""}`, r.sttProvider && `STT ${r.sttProvider}`, r.ttsProvider && `TTS ${r.ttsProvider}`].filter(Boolean).join(" · ") || "Custom"}</span> },
       { key: "costCategory", header: "Cost", render: (r) => <span className="tag">{String(r.costCategory ?? "")}</span> },
-      usageCol, statusCol, updatedCol,
+      usageCol, statusCol, orderCol,
     ],
     fields: [
       text("code", "Code", { required: true, createOnly: true, section: "Basics" }),
@@ -250,7 +303,7 @@ const SPECS: TypeSpec[] = [
       { key: "costCategory", label: "Cost category", type: "select", section: "Presentation", options: [
         { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" },
       ]},
-      num("sortOrder", "Sort order", { section: "Presentation" }),
+      num("sortOrder", "Order", { section: "Presentation" }),
     ],
   },
   {
@@ -259,7 +312,7 @@ const SPECS: TypeSpec[] = [
       nameCol, codeCol,
       { key: "kind", header: "Kind", render: (r) => <span className="tag">{String(r.kind ?? "").toUpperCase()}</span> },
       { key: "requiresApiKey", header: "API key", render: (r) => <span className="t-micro">{r.requiresApiKey ? String(r.secretRef ?? "required") : "not required"}</span> },
-      usageCol, statusCol, updatedCol,
+      usageCol, statusCol, orderCol,
     ],
     fields: [
       { key: "kind", label: "Kind", type: "select", required: true, createOnly: true, section: "Identity",
@@ -326,7 +379,115 @@ const SPECS: TypeSpec[] = [
     // the selected TTS provider's catalog schema), not the generic editor.
     fields: [],
   },
+  {
+    mtype: "currencies", label: "Currencies", singular: "currency",
+    columns: [
+      { ...nameCol, header: "Currency", render: (r) => (
+        <span className="row gap-8" style={{ alignItems: "baseline" }}>
+          <span className="t-strong">{String(r.name ?? "")}</span>
+          {Boolean(r.isBase) && <span className="tag" title="Platform base currency — all provider costs are stored in it">Base</span>}
+        </span>
+      ) },
+      codeCol,
+      { key: "symbol", header: "Symbol", render: (r) => <span className="t-strong">{String(r.symbol ?? "")}</span> },
+      usageCol, statusCol, orderCol,
+    ],
+    fields: [
+      text("code", "Code", { required: true, createOnly: true, hint: "ISO 4217, e.g. INR", section: "Identity" }),
+      text("name", "Name", { required: true, section: "Identity" }),
+      text("symbol", "Symbol", { required: true, hint: "e.g. ₹", section: "Identity" }),
+      num("decimalPlaces", "Decimal places", { hint: "0–4; most currencies use 2.", section: "Presentation", defaultValue: "2" }),
+      num("sortOrder", "Order", { section: "Presentation" }),
+    ],
+  },
+  {
+    mtype: "exchange-rates", label: "Exchange Rates", singular: "exchange rate",
+    columns: [
+      { key: "baseCode", header: "From", sortValue: (r) => String(r.baseCode ?? ""),
+        render: (r) => <span className="t-strong">{String(r.baseCode ?? "")}</span> },
+      { key: "targetCode", header: "To", sortValue: (r) => String(r.targetCode ?? ""),
+        render: (r) => <span className="t-strong">{String(r.targetCode ?? "")}</span> },
+      { key: "rate", header: "Rate", align: "right", sortValue: (r) => Number(r.rate ?? 0),
+        render: (r) => <span className="t-num">{Number(r.rate ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}</span> },
+      { key: "effectiveFrom", header: "Effective From", sortValue: (r) => String(r.effectiveFrom ?? ""),
+        render: (r) => <span className="t-micro">{r.effectiveFrom ? new Date(String(r.effectiveFrom)).toLocaleString() : "—"}</span> },
+      statusCol, orderCol,
+    ],
+    fields: [
+      { key: "baseCode", label: "Base currency", type: "currency", createOnly: true, section: "Pair",
+        hint: "Rates are configured from the platform base currency (USD)." },
+      { key: "targetCode", label: "Target currency", type: "currency", createOnly: true,
+        requiredOnCreate: true, section: "Pair", defaultValue: "INR" },
+      num("rate", "Exchange rate", { required: true, step: 0.0001, section: "Rate",
+        hint: "1 unit of the base currency in the target currency, e.g. 86.50." }),
+      { key: "effectiveFrom", label: "Effective from", type: "datetime", section: "Rate",
+        hint: "UTC. Leave empty to take effect immediately." },
+      num("sortOrder", "Order", { section: "Presentation" }),
+    ],
+  },
+  {
+    mtype: "provider-pricing", label: "Provider Pricing", singular: "provider price",
+    columns: [
+      { key: "providerCode", header: "Provider", sortValue: (r) => String(r.providerCode ?? ""),
+        render: (r) => <span className="t-strong">{String(r.providerCode ?? "")}</span> },
+      { key: "modelCode", header: "Model", render: (r) => <span className="t-micro">{String(r.modelCode || "—")}</span> },
+      { key: "capability", header: "Capability", render: (r) => <span className="tag">{String(r.capability ?? "").toUpperCase()}</span> },
+      { key: "component", header: "Component", render: (r) => <span className="t-micro">{String(r.component ?? "")}</span> },
+      { key: "unitPrice", header: "Price", align: "right", sortValue: (r) => Number(r.unitPrice ?? 0),
+        render: (r) => <span className="t-num">{currencySymbol(r.currencyCode) || String(r.currencyCode ?? "")}{Number(r.unitPrice ?? 0).toLocaleString(undefined, { maximumFractionDigits: 10 })} <span className="t-micro">{String(r.unit ?? "").replaceAll("_", " ")}</span></span> },
+      statusCol, orderCol,
+    ],
+    fields: [
+      { key: "capability", label: "Capability", type: "select", required: true, createOnly: true, section: "Scope",
+        options: ["llm", "embedding", "stt", "tts", "telephony"].map((c) => ({ value: c, label: c.toUpperCase() })) },
+      text("providerCode", "Provider code", { required: true, createOnly: true, section: "Scope",
+        hint: "Catalog code, e.g. openai, sarvam, elevenlabs." }),
+      text("modelCode", "Model code", { createOnly: true, section: "Scope",
+        hint: "Provider wire code, e.g. gpt-4o-mini or bulbul:v3. Leave empty for flat prices." }),
+      { key: "component", label: "Component", type: "select", required: true, createOnly: true, section: "Billing unit",
+        options: [
+          { value: "input_tokens", label: "Input tokens" },
+          { value: "output_tokens", label: "Output tokens" },
+          { value: "cached_input_tokens", label: "Cached input tokens" },
+          { value: "tokens", label: "Tokens (blended)" },
+          { value: "characters", label: "Characters" },
+          { value: "audio_seconds", label: "Audio duration" },
+          { value: "call_seconds", label: "Call duration" },
+          { value: "requests", label: "Requests" },
+        ] },
+      { key: "unit", label: "Pricing unit", type: "select", required: true, section: "Billing unit",
+        options: [
+          { value: "per_token", label: "Per token" },
+          { value: "per_1k_tokens", label: "Per 1K tokens" },
+          { value: "per_1m_tokens", label: "Per 1M tokens" },
+          { value: "per_character", label: "Per character" },
+          { value: "per_1k_characters", label: "Per 1K characters" },
+          { value: "per_second", label: "Per second" },
+          { value: "per_minute", label: "Per minute" },
+          { value: "per_request", label: "Per request" },
+        ] },
+      num("unitPrice", "Unit price", { required: true, step: 0.000001, section: "Billing unit",
+        hint: "Native provider price for one pricing unit." }),
+      { key: "currencyCode", label: "Price currency", type: "currency", readOnly: true, section: "Billing unit",
+        hint: "Provider pricing is normalized to USD; display currencies convert via exchange rates." },
+      { key: "effectiveFrom", label: "Effective from", type: "datetime", section: "Billing unit",
+        hint: "UTC. Leave empty to take effect immediately." },
+      num("sortOrder", "Order", { section: "Presentation" }),
+    ],
+  },
 ];
+
+/* Geographic + monetary masters live under Regional & Currency Settings;
+   everything else stays under Platform Configuration. */
+const REGIONAL_MTYPES: readonly MasterType[] = [
+  "countries", "data-regions", "currencies", "exchange-rates",
+];
+export const REGIONAL_SPECS: TypeSpec[] = REGIONAL_MTYPES.map(
+  (mtype) => ALL_SPECS.find((s) => s.mtype === mtype)!,
+);
+export const PLATFORM_SPECS: TypeSpec[] = ALL_SPECS.filter(
+  (s) => !REGIONAL_MTYPES.includes(s.mtype),
+);
 
 /* ---------- Form state helpers ---------- */
 
@@ -334,7 +495,8 @@ function buildInitialForm(spec: TypeSpec): Record<string, unknown> {
   if (spec.mtype === "voices") return buildVoiceForm(null);
   const initial: Record<string, unknown> = {};
   for (const f of spec.fields) {
-    initial[f.key] = f.type === "toggle" ? false
+    initial[f.key] = f.defaultValue !== undefined ? f.defaultValue
+      : f.type === "toggle" ? false
       : f.type === "currency" ? DEFAULT_CURRENCY
       : f.key === "region" && (spec.mtype === "countries" || spec.mtype === "data-regions") ? "Asia"
       : "";
@@ -349,6 +511,8 @@ function buildFormFromRow(spec: TypeSpec, row: Row): Record<string, unknown> {
     const value = row[f.key];
     form[f.key] = f.type === "toggle" ? Boolean(value)
       : f.type === "currency" ? String(value ?? DEFAULT_CURRENCY)
+      // datetime-local inputs take "YYYY-MM-DDTHH:mm".
+      : f.type === "datetime" ? String(value ?? "").slice(0, 16)
       : value ?? "";
   }
   return form;
@@ -577,6 +741,13 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
     if (f.type === "textarea") {
       return (
         <textarea className="textarea" rows={2} value={String(form[f.key] ?? "")} {...common}
+          onChange={(e) => set(f.key, e.target.value)} />
+      );
+    }
+    if (f.type === "datetime") {
+      return (
+        <input className="input" type="datetime-local" value={String(form[f.key] ?? "")} {...common}
+          aria-invalid={Boolean(fieldErrors[f.key]) || undefined}
           onChange={(e) => set(f.key, e.target.value)} />
       );
     }
@@ -1124,7 +1295,12 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
     return () => clearTimeout(timer);
   }, [search]);
 
+  /* Monotonic request id — a response from a superseded request (page changed,
+     filter changed, page clamped) must never overwrite newer rows. */
+  const loadSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setError(null);
     try {
       const result = await listMaster<Row>(spec.mtype, {
@@ -1134,9 +1310,21 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         gender: spec.voiceFilters ? voiceFilters.gender || undefined : undefined,
         status: spec.voiceFilters ? voiceFilters.status || undefined : undefined,
       });
+      if (seq !== loadSeq.current) return;
+      const totalCount = result.meta?.total ?? result.items.length;
+      const lastPage = Math.max(1, Math.ceil(totalCount / pageSize));
+      if (page > lastPage) {
+        /* The current page no longer exists (the last row was archived, or a
+           status filter dropped it) — move to the nearest valid page and let
+           the effect refetch. Current rows stay visible until it lands. */
+        setTotal(totalCount);
+        setPage(lastPage);
+        return;
+      }
       setRows(result.items);
-      setTotal(result.meta?.total ?? result.items.length);
+      setTotal(totalCount);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError(e instanceof Error ? e.message : "Failed to load.");
       setRows([]);
     }
@@ -1144,7 +1332,17 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
 
   useEffect(() => { void load(); }, [load]);
 
-  const doStatus = async (row: Row, status: "active" | "inactive" | "archived") => {
+  /* One mutation at a time — a double-click must never submit twice. */
+  const mutating = useRef(false);
+
+  /* Every mutation handler is a useCallback over the *current* `load` (whose
+     closure holds the current page, search and filters) and feeds the columns
+     memo below. Previously the memoized action buttons kept the first render's
+     handlers, so a mutation on page 2 refetched page 1's unfiltered data while
+     the pagination control still said page 2. */
+  const doStatus = useCallback(async (row: Row, status: "active" | "inactive" | "archived") => {
+    if (mutating.current) return;
+    mutating.current = true;
     setActionError(null);
     try {
       await setMasterStatus(spec.mtype, row.id, status);
@@ -1152,10 +1350,14 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
       void load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      mutating.current = false;
     }
-  };
+  }, [spec.mtype, spec.singular, toast, load]);
 
-  const doDelete = async (row: Row) => {
+  const doDelete = useCallback(async (row: Row) => {
+    if (mutating.current) return;
+    mutating.current = true;
     setActionError(null);
     try {
       await deleteMaster(spec.mtype, row.id);
@@ -1165,11 +1367,14 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
       // Referenced records return a clear 409 message from the backend.
       setActionError(e instanceof Error ? e.message : "Delete failed.");
     } finally {
+      mutating.current = false;
       setConfirmDelete(null);
     }
-  };
+  }, [spec.mtype, spec.singular, toast, load]);
 
-  const doDuplicate = async (row: Row) => {
+  const doDuplicate = useCallback(async (row: Row) => {
+    if (mutating.current) return;
+    mutating.current = true;
     setActionError(null);
     try {
       await duplicatePlan(String(row.id));
@@ -1177,18 +1382,20 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
       void load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Duplicate failed.");
+    } finally {
+      mutating.current = false;
     }
-  };
+  }, [toast, load]);
 
   const openAdd = () => {
     if (!addDraft) onAddDraftChange(() => buildInitialForm(spec));
     setEditing("new");
   };
 
-  const openEdit = (row: Row) => {
+  const openEdit = useCallback((row: Row) => {
     setEditForm(buildFormFromRow(spec, row)); // fresh per row — edits never leak between records
     setEditing(row);
-  };
+  }, [spec]);
 
   const columns = useMemo<Column<Row>[]>(() => [
     ...spec.columns,
@@ -1216,7 +1423,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         );
       },
     },
-  ], [spec, canManage]);
+  ], [spec, canManage, openEdit, doStatus, doDuplicate]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const filtersActive = Boolean(debouncedSearch) || (spec.voiceFilters && Object.values(voiceFilters).some(Boolean));
@@ -1318,9 +1525,17 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
 
 /* ---------- Page ---------- */
 
-export default function PlatformConfig() {
-  const [tab, setTab] = useState(SPECS[0].mtype);
-  const spec = SPECS.find((s) => s.mtype === tab) ?? SPECS[0];
+/** Shared master-data page shell: title, tab strip and the generic
+    MasterPanel. The tab is controlled by the caller (page state for
+    Platform Configuration, the URL for Regional & Currency Settings). */
+export function MasterDataPage({ title, sub, specs, tab, onTabChange }: {
+  title: string;
+  sub: string;
+  specs: TypeSpec[];
+  tab: MasterType;
+  onTabChange: (tab: MasterType) => void;
+}) {
+  const spec = specs.find((s) => s.mtype === tab) ?? specs[0];
   /* Add-form drafts per master type — kept at page level so closing the modal
      or switching tabs never discards typed data. Cleared on save or Reset. */
   const drafts = useRef<Record<string, Record<string, unknown> | null>>({});
@@ -1328,17 +1543,13 @@ export default function PlatformConfig() {
   return (
     <div className="col gap-16">
       <div>
-        <h1 className="page-title">Platform Configuration</h1>
-        <p className="t-sub">
-          Master data powering tenant onboarding and bot configuration. Active values appear
-          immediately in onboarding; deactivated values are hidden for new tenants while existing
-          tenants keep their historical selection.
-        </p>
+        <h1 className="page-title">{title}</h1>
+        <p className="t-sub">{sub}</p>
       </div>
       <Tabs
-        tabs={SPECS.map((s) => ({ id: s.mtype, label: s.label }))}
-        active={tab}
-        onChange={(id) => setTab(id as MasterType)}
+        tabs={specs.map((s) => ({ id: s.mtype, label: s.label }))}
+        active={spec.mtype}
+        onChange={(id) => onTabChange(id as MasterType)}
       />
       <MasterPanel
         key={spec.mtype}
@@ -1350,5 +1561,20 @@ export default function PlatformConfig() {
         }}
       />
     </div>
+  );
+}
+
+export default function PlatformConfig() {
+  const [tab, setTab] = useState<MasterType>(PLATFORM_SPECS[0].mtype);
+  return (
+    <MasterDataPage
+      title="Platform Configuration"
+      sub="Master data powering tenant onboarding and bot configuration. Active values appear
+        immediately in onboarding; deactivated values are hidden for new tenants while existing
+        tenants keep their historical selection."
+      specs={PLATFORM_SPECS}
+      tab={tab}
+      onTabChange={setTab}
+    />
   );
 }

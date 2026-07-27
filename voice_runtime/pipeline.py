@@ -40,7 +40,29 @@ from voice_runtime.recording import SessionRecorder
 logger = logging.getLogger(__name__)
 
 
-def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
+def _sarvam_stream_encodings() -> set[str]:
+    """Audio encodings the installed sarvamai SDK accepts for streaming STT.
+
+    sarvamai 0.1.28 pins AudioData.encoding to Literal["audio/wav"]; newer
+    SDKs may widen it. Introspecting keeps us honest either way — sending an
+    unsupported value fails per-chunk validation and silently kills STT.
+    """
+    try:
+        import typing
+
+        from sarvamai.requests.audio_data import AudioDataParams
+
+        hints = typing.get_type_hints(AudioDataParams)
+        values = set(typing.get_args(hints["encoding"]))
+        if values:
+            return values
+    except Exception:  # noqa: BLE001 — introspection must never break calls
+        pass
+    return {"audio/wav"}
+
+
+def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
+                      recorder: SessionRecorder | None = None):
     """STT service from bot config: Sarvam realtime WS or segmented fallback."""
     stt_conf = config.stt or {}
     provider = stt_conf.get("provider") or "sarvam"
@@ -65,13 +87,23 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
             vad_signals=settings_kwargs.get("vad_signals", False) or None,
             high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity") or None,
         )
+        codec = settings_kwargs.get("input_encoding", "wav")
+        if codec not in ("wav", "pcm_s16le"):
+            codec = "wav"
+        if f"audio/{codec}" not in _sarvam_stream_encodings():
+            # A codec the installed sarvamai SDK rejects would fail EVERY audio
+            # chunk (pydantic Literal validation) and the call would produce no
+            # transcripts at all — clamp to wav (raw PCM16 bytes either way).
+            logger.warning(
+                "sarvam-stt: input_encoding '%s' not supported by the installed "
+                "sarvamai SDK; using 'wav'", codec,
+            )
+            codec = "wav"
         return SarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
             sample_rate=sample_rate,
-            input_audio_codec=settings_kwargs.get("input_encoding", "wav")
-            if settings_kwargs.get("input_encoding") in ("wav", "pcm_s16le")
-            else "wav",
+            input_audio_codec=codec,
             settings=service_settings,
             keepalive_timeout=8.0,
         )
@@ -85,7 +117,11 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000):
             extra=stt_conf.get("extra", {}),
         )
     )
-    return EchoSTTService(stt_provider, language=stt_conf.get("language") or config.language)
+    return EchoSTTService(
+        stt_provider,
+        language=stt_conf.get("language") or config.language,
+        recorder=recorder,
+    )
 
 
 def build_tts_service(
@@ -123,6 +159,8 @@ def build_tts_service(
         language=config.language,
         speed=config.speed,
         sample_rate=sample_rate,
+        recorder=recorder,
+        model=tts_conf.get("model") or "",
     )
 
 
@@ -152,9 +190,10 @@ def build_voice_pipeline(
     stt_sample_rate: int = 16000,
     use_vad: bool = True,
     idle_timeout_secs: float | None = None,
+    client_info: dict | None = None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
-    stt = build_stt_service(config, sample_rate=stt_sample_rate)
+    stt = build_stt_service(config, sample_rate=stt_sample_rate, recorder=recorder)
     tts = build_tts_service(config, recorder=recorder, sample_rate=tts_sample_rate)
     llm_provider = build_llm_provider(config)
 
@@ -164,6 +203,7 @@ def build_voice_pipeline(
         recorder=recorder,
         knowledge_service=knowledge_service,
         workflow_engine=workflow_engine,
+        client_info=client_info,
     )
 
     processors = [transport.input()]

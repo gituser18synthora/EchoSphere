@@ -201,6 +201,30 @@ async def _run_call(
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
         stt_sample_rate = 16000
 
+    # Session parameters the browser test client needs BEFORE any audio:
+    # the actual output sample rate (never assume a rate client-side) plus
+    # readable voice/language info and configuration warnings for the UI.
+    tts_conf = config.tts or {}
+    voices = {
+        locale: {
+            "provider": engine.get("provider", ""),
+            "voice": engine.get("voice_name") or engine.get("voice", ""),
+        }
+        for locale, engine in (tts_conf.get("language_map") or {}).items()
+    }
+    client_info = {
+        "botName": config.bot_name,
+        "sampleRate": tts_sample_rate,
+        "language": config.language,
+        "languages": config.languages or [config.language],
+        "voices": voices,
+        "defaultVoice": {
+            "provider": tts_conf.get("provider", ""),
+            "voice": tts_conf.get("voice_name") or tts_conf.get("voice", ""),
+        },
+        "warnings": config.language_warnings or {},
+    }
+
     try:
         worker, brain = build_voice_pipeline(
             transport=transport,
@@ -211,6 +235,7 @@ async def _run_call(
             tts_sample_rate=tts_sample_rate,
             stt_sample_rate=stt_sample_rate,
             idle_timeout_secs=float(config.silence_timeout) * 4,
+            client_info=client_info,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)

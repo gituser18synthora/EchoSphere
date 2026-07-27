@@ -1,9 +1,13 @@
-"""Appointment-booking LangGraph workflow: slot filling, retries, confirmation."""
+"""LangGraph workflows: slot filling, retries, confirmation (appointment
+booking and the mPokket payment-collection MOP flow)."""
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from shared.orchestration.workflow_engine import WorkflowEngine, build_appointment_graph
+from shared.orchestration.workflow_engine import (
+    WorkflowEngine,
+    build_appointment_graph,
+)
 
 
 @pytest.fixture()
@@ -55,6 +59,75 @@ class TestRetriesAndHandoff:
         reply, done = await turn(engine, session, "eh")  # third failure → handoff
         assert done
         assert "colleague" in reply.lower() or "connect" in reply.lower()
+
+
+async def pay_turn(engine: WorkflowEngine, session: str, text: str):
+    return await engine.handle_turn(
+        session_id=session, tenant_id="tn_22a809aecf66", bot_id="bot_47e52822c803",
+        workflow_name="payment_collection", user_text=text,
+    )
+
+
+class TestPaymentCollection:
+    async def test_full_flow_with_summary_before_confirmation(self, engine):
+        session = "pay-happy"
+        reply, done = await pay_turn(engine, session, "mujhe payment karna hai")
+        assert "poora" in reply.lower() and not done  # asks full vs partial
+        reply, done = await pay_turn(engine, session, "poora amount")
+        assert "debit card ya upi" in reply.lower() and not done  # script MOP question
+        reply, done = await pay_turn(engine, session, "UPI se")
+        # The summary must be spoken before the yes/no is interpreted.
+        assert "confirm" in reply.lower() and "upi" in reply.lower() and not done
+        reply, done = await pay_turn(engine, session, "haan sahi hai")
+        assert done
+        # Guidance only — the bot must never claim the payment completed.
+        assert "complete kar dijiye" in reply.lower()
+        assert "shubh ho" in reply.lower()  # script closing line
+
+    async def test_upfront_details_skip_questions(self, engine):
+        session = "pay-upfront"
+        reply, done = await pay_turn(engine, session, "main poora payment UPI se karna chahta hun")
+        assert "confirm" in reply.lower() and not done
+        reply, done = await pay_turn(engine, session, "bilkul sahi")
+        assert done and "upi" in reply.lower()
+
+    async def test_upi_reply_mentions_script_benefits(self, engine):
+        session = "pay-benefit"
+        await pay_turn(engine, session, "poora payment UPI se")
+        reply, done = await pay_turn(engine, session, "haan")
+        assert done and ("cashback" in reply.lower() or "discount" in reply.lower())
+
+    async def test_debit_card_reply_has_no_upi_benefits(self, engine):
+        session = "pay-card"
+        await pay_turn(engine, session, "poora payment debit card se karunga")
+        reply, done = await pay_turn(engine, session, "haan")
+        assert done and "cashback" not in reply.lower()
+
+    async def test_devanagari_flow(self, engine):
+        """Saaras transcribes Hindi speech in Devanagari — slots must fill."""
+        session = "pay-hindi"
+        reply, done = await pay_turn(engine, session, "मुझे पेमेंट करना है")
+        assert not done
+        reply, done = await pay_turn(engine, session, "पूरा अमाउंट यूपीआई से")
+        assert "confirm" in reply.lower() and not done
+        reply, done = await pay_turn(engine, session, "हाँ सही है")
+        assert done and "shubh ho" in reply.lower()
+
+    async def test_rejection_restarts_collection(self, engine):
+        session = "pay-restart"
+        await pay_turn(engine, session, "partial payment UPI se")
+        reply, done = await pay_turn(engine, session, "nahi galat hai")
+        assert not done and "poora" in reply.lower()  # back to first question
+
+    async def test_repeated_confusion_hands_off_with_simpler_retry(self, engine):
+        session = "pay-handoff"
+        await pay_turn(engine, session, "payment")
+        reply, done = await pay_turn(engine, session, "kya?")  # retry 1 → simpler wording
+        assert "kripya boliye" in reply.lower() and not done
+        reply, done = await pay_turn(engine, session, "hmm")  # retry 2
+        assert not done
+        reply, done = await pay_turn(engine, session, "pata nahi")  # → handoff
+        assert done and "agent" in reply.lower()
 
 
 class TestStatePersistence:

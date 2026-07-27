@@ -219,3 +219,89 @@ class TestStreamingWsSpeaker:
     def test_ws_unknown_speaker_not_rewritten(self):
         provider = SarvamWebSocketTTSProvider(self._settings(voice="anushka"))
         assert provider._build_config()["speaker"] == "anushka"
+
+
+class TestStreamingWsLanguage:
+    """Regression: the WS config used to pass bare/unsupported language codes
+    straight to Sarvam ("en" from a bot without a language_voice_map default),
+    which the API 422-rejects — every call produced zero TTS audio. Both
+    implementations now share the canonical locale mapping."""
+
+    def _settings(self, **kw) -> TTSStreamSettings:
+        base = dict(provider="sarvam", model="bulbul:v3", voice="shubh",
+                    language="en-IN", sample_rate=16000, api_key="unit-test-key")
+        base.update(kw)
+        return TTSStreamSettings(**base)
+
+    def test_bare_iso_code_expands_to_full_locale(self):
+        config = SarvamWebSocketTTSProvider(self._settings(language="en"))._build_config()
+        assert config["target_language_code"] == "en-IN"
+
+    def test_full_supported_locale_passes_through(self):
+        config = SarvamWebSocketTTSProvider(self._settings(language="hi-IN"))._build_config()
+        assert config["target_language_code"] == "hi-IN"
+
+    def test_odia_platform_code_maps_to_wire_alias(self):
+        config = SarvamWebSocketTTSProvider(self._settings(language="or-IN"))._build_config()
+        assert config["target_language_code"] == "od-IN"
+
+    def test_unsupported_locale_normalized_to_en_in_with_warning(self, caplog):
+        with caplog.at_level("WARNING"):
+            config = SarvamWebSocketTTSProvider(self._settings(language="en-US"))._build_config()
+        assert config["target_language_code"] == "en-IN"
+        assert any("not supported" in r.message for r in caplog.records)
+
+    def test_empty_language_defaults_to_en_in(self):
+        config = SarvamWebSocketTTSProvider(self._settings(language=""))._build_config()
+        assert config["target_language_code"] == "en-IN"
+
+
+class TestCanonicalLanguageMapping:
+    """shared.providers.languages is the single locale mapping for REST + WS."""
+
+    def test_to_provider_language_expands_bare_codes_for_sarvam(self):
+        from shared.providers.languages import to_provider_language
+
+        assert to_provider_language("sarvam", "en") == "en-IN"
+        assert to_provider_language("sarvam", "hi") == "hi-IN"
+        # Bare Odia goes through the locale table then the wire alias.
+        assert to_provider_language("sarvam", "or") == "od-IN"
+        # Full locales are unchanged; other providers keep bare codes.
+        assert to_provider_language("sarvam", "ta-IN") == "ta-IN"
+        assert to_provider_language("elevenlabs", "en") == "en"
+
+    def test_model_constrained_lookup_accepts_bare_codes(self):
+        from shared.providers.languages import to_provider_language
+
+        assert to_provider_language("sarvam", "en", ["en-IN", "hi-IN"]) == "en-IN"
+        assert to_provider_language("sarvam", "fr", ["en-IN", "hi-IN"]) is None
+
+    def test_rest_resolve_language_uses_shared_table(self):
+        from shared.providers.tts.sarvam import _resolve_language
+
+        assert _resolve_language("en", "Hello") == "en-IN"
+        assert _resolve_language("en-IN", "Hello") == "en-IN"
+        # Unsupported explicit codes fall back to script detection (Latin → en-IN).
+        assert _resolve_language("en-US", "Hello") == "en-IN"
+        assert _resolve_language(None, "नमस्ते") == "hi-IN"
+
+
+class TestWsCloseCategorization:
+    """Sarvam config rejections carry code 422 — they are configuration errors
+    (never transient) so they surface instead of triggering engine fallback."""
+
+    def test_invalid_input_codes(self):
+        cat = SarvamWebSocketTTSProvider.categorize_close
+        assert cat(422, "Input parameters has to be a valid dictionary") == "invalid_input"
+        assert cat(400, "") == "invalid_input"
+        assert cat(1007, "") == "invalid_input"
+        assert cat(None, "unsupported speaker") == "invalid_input"
+        assert "invalid_input" not in TRANSIENT_ERROR_CATEGORIES
+
+    def test_existing_categories_unchanged(self):
+        cat = SarvamWebSocketTTSProvider.categorize_close
+        assert cat(401, "") == "auth"
+        assert cat(429, "") == "rate_limit"
+        assert cat(None, "read timeout") == "timeout"
+        assert cat(None, "") == "upstream"
+        assert cat(1011, "internal error") == "upstream"

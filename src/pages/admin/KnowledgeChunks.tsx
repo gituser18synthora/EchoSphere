@@ -245,6 +245,18 @@ function DocumentsPanel({
     catch (e) { toast(e instanceof Error ? e.message : "Action failed", "error"); }
     finally { setBusyId(null); }
   };
+  const downloadOriginal = async (document: ReviewDocument) => {
+    if (busyId === document.documentId) return;
+    setBusyId(document.documentId);
+    try {
+      await api.downloadReviewDocument(document.documentId, document.fileName);
+      toast(`Downloaded ${document.fileName}`, "good");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Download failed", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const setF = (patch: Partial<DocFilters>) => setFilters((f) => ({ ...f, ...patch }));
   const reset = () => { setFilters(EMPTY_DOC_FILTERS); setSearchRaw(""); };
@@ -301,9 +313,10 @@ function DocumentsPanel({
             onClick: () => runAction("Reindex queued", d.documentId, () => api.reindexReviewDocument(d.documentId)),
           },
           {
-            label: "Download original", icon: "download", disabled: d.isDeleted,
-            onClick: () => api.downloadReviewDocument(d.documentId, d.fileName)
-              .catch((e) => toast(e instanceof Error ? e.message : "Download failed", "error")),
+            label: busyId === d.documentId ? "Downloading original…" : "Download original",
+            icon: "download",
+            disabled: d.isDeleted || busyId === d.documentId,
+            onClick: () => void downloadOriginal(d),
           },
           "sep",
           {
@@ -805,7 +818,20 @@ function DocumentDetailDrawer({
 }) {
   const { toast } = useApp();
   const q = useAsync(() => api.getReviewDocument(documentId), [documentId]);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const d = q.data;
+  const downloadOriginal = async () => {
+    if (!d || downloadBusy) return;
+    setDownloadBusy(true);
+    try {
+      await api.downloadReviewDocument(d.documentId, d.fileName);
+      toast(`Downloaded ${d.fileName}`, "good");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Download failed", "error");
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
   const rows: [string, React.ReactNode][] = d ? [
     ["Document ID", d.documentId],
     ["Tenant", `${d.tenantName ?? "—"}${d.tenantCode ? ` (${d.tenantCode})` : ""}`],
@@ -833,8 +859,13 @@ function DocumentDetailDrawer({
         <div className="row gap-8">
           <Button variant="primary" icon="database" onClick={() => onReviewChunks(d)}>Review chunks</Button>
           <Button variant="secondary" icon="search" onClick={() => onTestRetrieval(d)}>Test retrieval</Button>
-          <Button variant="secondary" icon="download" disabled={!d.hasOriginalFile}
-            onClick={() => api.downloadReviewDocument(d.documentId, d.fileName).catch((e) => toast(e instanceof Error ? e.message : "Download failed", "error"))}>
+          <Button
+            variant="secondary"
+            icon="download"
+            busy={downloadBusy}
+            disabled={!d.hasOriginalFile}
+            onClick={() => void downloadOriginal()}
+          >
             Download
           </Button>
         </div>

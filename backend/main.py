@@ -103,6 +103,7 @@ def create_app() -> FastAPI:
         catalog,
         channels,
         conversations,
+        exports,
         integrations,
         intents,
         knowledge,
@@ -113,9 +114,11 @@ def create_app() -> FastAPI:
         prompts,
         providers,
         releases,
+        reports,
         telephony,
         tenants,
         testing,
+        usage,
         users,
         voice_sessions,
         workflows,
@@ -125,8 +128,8 @@ def create_app() -> FastAPI:
     for module in (
         auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
         knowledge_review, prompts, intents, apis, workflows, channels, testing, releases,
-        conversations, platform, integrations, audit, analytics, voice_sessions, telephony,
-        master_data, providers,
+        conversations, exports, platform, integrations, audit, analytics, reports, voice_sessions, telephony,
+        master_data, providers, usage,
     ):
         app.include_router(module.router, prefix=prefix)
 

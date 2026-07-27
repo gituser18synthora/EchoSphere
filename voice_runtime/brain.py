@@ -12,6 +12,7 @@ and cancels all in-flight work the instant the caller barges in
 import asyncio
 import json
 import logging
+import re
 import time
 
 from pipecat.frames.frames import (
@@ -44,6 +45,50 @@ _HISTORY_MAX_TURNS = 20
 # nudge the TTS to start rendering what we have.
 _LLM_PAUSE_FLUSH_SECONDS = 0.6
 
+# ── conversation-language following ─────────────────────────────────────────
+# The conversation follows the caller's CURRENT language (per meaningful
+# utterance), while the bot's default language is only the starting point.
+# Switches are stabilized so a single borrowed word never flips the language:
+# the utterance must be long enough AND its dominant script must agree with
+# the language the STT detected.
+_MIN_SWITCH_WORDS = 2
+_DEVANAGARI_CHARS = re.compile(r"[ऀ-ॿ]")
+_LATIN_CHARS = re.compile(r"[A-Za-z]")
+
+_LANGUAGE_LABELS = {
+    "hi": "Hindi", "en": "English", "bn": "Bengali", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "gu": "Gujarati", "kn": "Kannada",
+    "ml": "Malayalam", "pa": "Punjabi", "or": "Odia", "ur": "Urdu",
+}
+
+
+def language_label(locale: str | None) -> str:
+    """Readable language name for a platform locale ("hi-IN" → "Hindi")."""
+    if not locale:
+        return ""
+    return _LANGUAGE_LABELS.get(locale.split("-")[0].lower(), locale)
+
+
+def script_supports_language(text: str, locale: str) -> bool:
+    """Whether an utterance's dominant script is consistent with a locale.
+
+    Hindi speech is transcribed in Devanagari (borrowed English words stay
+    Latin, so code-mixed text still counts as Hindi when Devanagari holds a
+    meaningful share). English must be clearly Latin-dominant. Languages we
+    have no script heuristic for pass through on the STT's word alone.
+    """
+    dev = len(_DEVANAGARI_CHARS.findall(text))
+    lat = len(_LATIN_CHARS.findall(text))
+    total = dev + lat
+    if total == 0:
+        return False
+    base = locale.split("-")[0].lower()
+    if base == "hi":
+        return dev / total >= 0.4
+    if base == "en":
+        return lat / total >= 0.7
+    return True
+
 
 class ConversationBrain(FrameProcessor):
     def __init__(
@@ -54,6 +99,7 @@ class ConversationBrain(FrameProcessor):
         recorder: SessionRecorder,
         knowledge_service=None,
         workflow_engine=None,
+        client_info: dict | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -61,6 +107,7 @@ class ConversationBrain(FrameProcessor):
         self._recorder = recorder
         self._knowledge = knowledge_service
         self._workflows = workflow_engine
+        self._client_info = client_info
         self._router = TurnRouter(
             intents=config.intents,
             has_knowledge_bases=bool(config.kb_ids),
@@ -90,7 +137,7 @@ class ConversationBrain(FrameProcessor):
             await self.push_frame(frame, direction)
             if self._pending_greeting:
                 self._pending_greeting = False
-                self._generation = self.create_task(self._say(self._config.greeting))
+                self._generation = self.create_task(self._open_session())
             return
 
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
@@ -106,22 +153,65 @@ class ConversationBrain(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
+    def _supported_languages(self) -> list[str]:
+        return self._config.languages or [self._config.language]
+
+    def _match_supported(self, detected: str) -> str | None:
+        """Map a detected code onto the bot's configured locale set."""
+        supported = self._supported_languages()
+        if detected in supported:
+            return detected
+        base = detected.split("-")[0].lower()
+        for locale in supported:
+            if locale.split("-")[0].lower() == base:
+                return locale
+        return None
+
     async def _maybe_switch_language(self, frame: TranscriptionFrame) -> None:
-        """Follow the caller's detected language for the per-language voice map."""
+        """Follow the caller's CURRENT language, with stability rules.
+
+        A switch happens only when the STT-detected language (a) maps onto a
+        language this bot is configured for, (b) belongs to a meaningful
+        utterance (not a single borrowed word / filler), and (c) agrees with
+        the utterance's dominant script. Conversation history, intent state
+        and the session itself are untouched by a switch.
+        """
         raw = getattr(frame, "language", None)
         if not raw:
             return
         detected = to_platform_language(
             self._config.stt.get("provider", ""), getattr(raw, "value", str(raw))
         )
-        if detected and detected != self._conversation_language:
+        if not detected:
+            return
+        target = self._match_supported(detected)
+        if target is None:
+            # Unsupported language: keep the conversation language, tell the
+            # client clearly instead of silently continuing (or crashing).
             self._recorder.add_event(
-                "language_detected",
-                language=detected,
-                previous=self._conversation_language,
+                "language_unsupported", language=detected,
+                current=self._conversation_language,
             )
-            self._conversation_language = detected
-            await self.push_frame(SwitchVoiceLanguageFrame(language=detected))
+            await self._notify_client({
+                "type": "event", "name": "language_unsupported",
+                "language": detected,
+            })
+            return
+        if target == self._conversation_language:
+            return
+        text = (frame.text or "").strip()
+        if len(text.split()) < _MIN_SWITCH_WORDS:
+            return  # too short to re-decide the conversation language
+        if not script_supports_language(text, target):
+            return  # a borrowed word or mixed utterance — don't oscillate
+        self._recorder.add_event(
+            "language_detected",
+            language=target,
+            previous=self._conversation_language,
+        )
+        self._conversation_language = target
+        await self.push_frame(SwitchVoiceLanguageFrame(language=target))
+        await self._notify_client({"type": "language", "language": target})
 
     async def _cancel_generation(self, reason: str) -> None:
         if self._generation is not None and not self._generation.done():
@@ -214,10 +304,29 @@ class ConversationBrain(FrameProcessor):
 
     # ── generation ────────────────────────────────────────────────────────
 
+    def _language_instruction(self) -> str:
+        """Per-turn system-prompt suffix binding the reply to the caller's
+        CURRENT language. Only the reply language changes — the role, business
+        rules, safety rules and conversation state are explicitly preserved."""
+        label = language_label(self._conversation_language)
+        if not label:
+            return ""
+        return (
+            f"\n\n# Current conversation language\n"
+            f"The caller is currently speaking {label}. Reply ONLY in {label}"
+            + (
+                " (natural spoken Hindi; everyday English loan-words are fine)"
+                if label == "Hindi" else ""
+            )
+            + ". If the caller switches language, follow them from the next "
+            "turn. This changes the reply language only — never the rules, "
+            "role, or facts above."
+        )
+
     async def _generate_reply(
         self, text: str, decision: RouteDecision, started: float
     ) -> None:
-        system = self._config.system_prompt
+        system = self._config.system_prompt + self._language_instruction()
         kb_sources: list[dict] = []
         retrieval_ms = 0.0
 
@@ -279,11 +388,11 @@ class ConversationBrain(FrameProcessor):
             await self.push_frame(LLMFullResponseEndFrame())
 
         reply = "".join(reply_parts).strip()
+        self._record_llm_usage(reply)
         if reply:
             await self._notify_client({"type": "bot_text", "text": reply})
             self._last_bot_reply = reply
             self._history.append({"role": "assistant", "content": reply})
-            self._recorder.usage["llm_output_tokens"] += len(reply) // 4
             self._recorder.add_turn(
                 TurnRecord(
                     role="bot",
@@ -298,6 +407,26 @@ class ConversationBrain(FrameProcessor):
                     },
                 )
             )
+
+    def _record_llm_usage(self, reply: str) -> None:
+        """Fold one LLM generation into the call's usage counters.
+
+        Provider-reported streaming usage is the source of truth; when a
+        provider doesn't report it, the documented fallback estimates output
+        tokens at ~4 chars/token and flags the call as estimated.
+        """
+        usage = self._recorder.usage
+        usage["llm_requests"] = usage.get("llm_requests", 0) + 1
+        reported = getattr(self._llm, "last_stream_usage", None)
+        if reported is not None:
+            usage["llm_input_tokens"] += reported.input_tokens
+            usage["llm_output_tokens"] += reported.output_tokens
+            usage["llm_cached_tokens"] = (
+                usage.get("llm_cached_tokens", 0) + reported.cached_tokens
+            )
+        elif reply:
+            usage["llm_output_tokens"] += len(reply) // 4
+            usage["llm_usage_estimated"] = 1
 
     async def _stream_llm_tokens(
         self, reply_parts: list[str], system: str, started: float
@@ -361,8 +490,20 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(TextFrame(text))
         await self.push_frame(LLMFullResponseEndFrame())
 
+    async def _open_session(self) -> None:
+        """Announce the session parameters to the client, then greet.
+
+        The session_config message MUST precede any audio: the browser client
+        uses it to build its playback pipeline at the rate the worker actually
+        streams (a hardcoded client rate plays 16 kHz audio at 24 kHz — fast,
+        pitch-shifted and full of scheduling gaps).
+        """
+        if self._client_info:
+            await self._notify_client({"type": "session_config", **self._client_info})
+        await self._say(self._config.greeting)
+
     async def speak_greeting(self) -> None:
         if not self._pipeline_started:
             self._pending_greeting = True
             return
-        await self._say(self._config.greeting)
+        await self._open_session()

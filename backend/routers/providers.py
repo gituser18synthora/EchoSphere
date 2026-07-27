@@ -453,6 +453,22 @@ async def tts_preview(
                    "textChars": len(body.text)},
         request=request,
     )
+    if body.provider != "mock" and user.tenant_id:
+        # Previews synthesize real audio — billable characters for the tenant.
+        # Platform-admin previews (no tenant) are internal and not tenant-billed.
+        from shared.billing.metering import record_usage_event
+
+        record_usage_event(
+            db,
+            tenant_id=user.tenant_id,
+            capability="tts",
+            provider_code=body.provider,
+            model_code=body.model,
+            voice_code=body.voice,
+            characters=len(body.text),
+            usage_metadata={"kind": "tts_preview"},
+            commit=False,
+        )
     db.commit()
     if not pcm:
         raise ApiError("The provider returned no audio.", 502)

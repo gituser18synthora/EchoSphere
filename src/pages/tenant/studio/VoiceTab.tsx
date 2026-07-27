@@ -13,12 +13,12 @@ import type {
 import { useAsync } from "@/hooks/useAsync";
 import {
   generateTtsPreview, getModelLanguages, getProviderCatalog, getVoiceSettings,
-  listProviderModels, listProviderVoices, saveVoiceSettings, testProviderConnection,
-  validateVoiceConfig,
+  listLanguages, listProviderModels, listProviderVoices, saveVoiceSettings,
+  testProviderConnection, validateVoiceConfig,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import {
-  Button, Callout, CardSkeleton, ErrorState, Field, Modal, SearchableSelect,
+  Button, Callout, CardSkeleton, ErrorState, Field, Modal, SearchableSelect, StatusChip,
   type SearchableSelectOption,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
@@ -41,10 +41,14 @@ function findVoice(voices: VoiceOption[] | undefined, id: string): VoiceOption |
   return voices?.find((v) => v.id === id || v.providerVoiceId === id);
 }
 
-/** Ensure the current value is always rendered, even when it fell out of the catalog. */
+/** Ensure the current value is always rendered, even when it fell out of the
+    catalog — as an explicit unavailable entry that cannot be re-selected. */
 function withCurrent(options: SearchableSelectOption[], value: string): SearchableSelectOption[] {
   if (!value || options.some((o) => o.value === value)) return options;
-  return [{ value, label: value, sub: "not in catalog for this selection" }, ...options];
+  return [
+    { value, label: `${value} (unavailable)`, sub: "not in the catalog for this selection — pick a replacement", disabled: true },
+    ...options,
+  ];
 }
 
 /* ---------- engine state ---------- */
@@ -69,6 +73,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
 
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
   const catalogQ = useAsync(() => getProviderCatalog(), []);
+  /* Readable language names for the per-language section — locale codes stay
+     the internal values. Disabled languages are included so a bot that still
+     references one keeps its readable name (flagged in the row instead).
+     A failed load silently falls back to the codes. */
+  const languagesQ = useAsync(() => listLanguages(true).catch(() => []), []);
 
   const [tuning, setTuning] = useState<VoiceTuning>({ speed: 1, pauseMs: 350, empathy: 50, energy: 50 });
   const [stt, setStt] = useState<SttState>({ provider: "", model: "", language: "", settings: {} });
@@ -234,6 +243,12 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [langMap, bot.languages, cacheTick]);
 
+  const langCatalog = useMemo(() => {
+    const map: Record<string, { name: string; enabled: boolean }> = {};
+    for (const l of languagesQ.data ?? []) map[l.code] = { name: l.name, enabled: l.enabled };
+    return map;
+  }, [languagesQ.data]);
+
   if (settingsQ.error) return <ErrorState message={settingsQ.error} onRetry={settingsQ.reload} />;
   if (catalogQ.error) return <ErrorState message={catalogQ.error} onRetry={catalogQ.reload} />;
   if (settingsQ.loading || catalogQ.loading) {
@@ -315,6 +330,40 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
       if (!cur || typeof cur === "string") return m;
       return { ...m, [locale]: { ...cur, ...patch } };
     });
+
+  /* A model change keeps the voice only when it verifiably supports the new
+     model and this language — an incompatible pair is never left staged. */
+  const setRowModel = (locale: string, model: string) =>
+    setLangMap((m) => {
+      const cur = m[locale];
+      if (!cur || typeof cur === "string") return m;
+      const v = cur.voice ? findVoice(voicesRef.current[cur.provider], cur.voice) : undefined;
+      const keepVoice = Boolean(v && voiceSupportsModel(v, model) && voiceSupportsLanguage(v, locale));
+      return { ...m, [locale]: { ...cur, model, voice: keepVoice ? cur.voice : "" } };
+    });
+
+  const clearRow = (locale: string) =>
+    setLangMap((m) => { const next = { ...m }; delete next[locale]; return next; });
+
+  const langLabel = (code: string) => langCatalog[code]?.name ?? code;
+
+  /* Per-row status — shown as an icon+text chip (never color alone). */
+  const rowStatus = (locale: string): { chip: string; label: string; message?: string } => {
+    const entry = langMap[locale];
+    if (!entry) return { chip: "available", label: "Inherits default" };
+    if (typeof entry === "string") return { chip: "warning", label: "Legacy" };
+    if (entry.provider && !ttsProviders.some((p) => p.code === entry.provider)) {
+      return { chip: "error", label: "Unavailable", message: `Provider "${entry.provider}" is no longer available — select an active provider before saving.` };
+    }
+    const issue = mappingIssues.find((i) => i.locale === locale);
+    if (issue) return { chip: "error", label: "Unavailable", message: issue.message };
+    const models = modelsRef.current[`tts:${entry.provider}`];
+    if (entry.model && models && !models.some((m) => m.code === entry.model)) {
+      return { chip: "error", label: "Unavailable", message: `Model "${entry.model}" is no longer available for ${entry.provider} — select an active model before saving.` };
+    }
+    if (!entry.model || !entry.voice) return { chip: "warning", label: "Incomplete" };
+    return { chip: "active", label: "Active" };
+  };
 
   /* ---- voice option builders ---- */
 
@@ -417,9 +466,18 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const llmSchema = modelInfo("llm", llm.provider, llm.model)?.paramsSchema;
   const ttsSchema = modelInfo("tts", tts.provider, tts.model)?.paramsSchema;
 
+  /* What an inheriting language actually uses — the primary TTS engine. */
+  const primaryEngineSummary = tts.provider
+    ? [
+        ttsProviders.find((p) => p.code === tts.provider)?.name ?? tts.provider,
+        modelInfo("tts", tts.provider, tts.model)?.displayName ?? tts.model,
+        tts.voice ? (findVoice(voicesRef.current[tts.provider], tts.voice)?.name ?? tts.voice) : "",
+      ].filter(Boolean).join(" · ")
+    : "the platform default engine";
+
   return (
     <div className="col gap-16">
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
+      <div className="voice-grid">
         {/* ── left column: engines ── */}
         <div className="col gap-16">
           {/* 1 — Speech-to-Text */}
@@ -571,76 +629,135 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                 })}
               >
                 <option value="">Not set</option>
-                {bot.languages.map((l) => <option key={l} value={l}>{l}</option>)}
+                {bot.languages.map((l) => <option key={l} value={l}>{langLabel(l)} ({l})</option>)}
               </select>
             </Field>
 
-            <div className="col gap-12">
-              {bot.languages.map((locale) => {
-                const entry = langMap[locale];
-                const override = entry && typeof entry === "object" ? entry : null;
-                const legacy = typeof entry === "string" && entry ? entry : null;
-                const rowModels = override ? modelsFor("tts", override.provider) : [];
-                return (
-                  <div key={locale} className="col gap-4">
-                    <div
-                      className="grid"
-                      style={{ gridTemplateColumns: "72px 1fr 1fr 1.3fr auto", gap: 8, alignItems: "center" }}
-                    >
-                      <span className="tag" title={locale}>{locale}</span>
-                      <select
-                        className="select" value={override?.provider ?? ""}
-                        aria-label={`Voice provider for ${locale}`}
-                        onChange={(e) => void setRowProvider(locale, e.target.value)}
-                      >
-                        <option value="">Inherit default</option>
-                        {ttsProviders.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
-                      </select>
-                      <select
-                        className="select" value={override?.model ?? ""}
-                        aria-label={`Voice model for ${locale}`}
-                        disabled={!override}
-                        onChange={(e) => setRowField(locale, { model: e.target.value, voice: override?.voice ?? "" })}
-                      >
-                        <option value="">{override ? "Select model" : "—"}</option>
-                        {override?.model && !rowModels.some((m) => m.code === override.model) && (
-                          <option value={override.model}>{override.model}</option>
-                        )}
-                        {rowModels.map((m) => (
-                          <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
-                        ))}
-                      </select>
-                      <SearchableSelect
-                        options={override ? withCurrent(voiceSelectOptions(override.provider, override.model, locale), override.voice) : []}
-                        value={override?.voice ?? ""}
-                        onChange={(v) => setRowField(locale, { voice: v })}
-                        placeholder={override ? "Select voice…" : "Inherited"}
-                        searchPlaceholder="Search voices…"
-                        disabled={!override}
-                        ariaLabel={`Voice for ${locale}`}
-                      />
-                      <button
-                        className="btn-icon" type="button"
-                        aria-label={`Preview voice for ${locale}`}
-                        disabled={!canManage || !override?.provider || !override.model || !override.voice}
-                        title={noPermTitle ?? (override?.voice ? "Preview this voice" : "Pick a voice to preview")}
-                        onClick={() => override && setPreview({
-                          provider: override.provider, model: override.model, voice: override.voice,
-                          language: locale, params: override.params,
-                        })}
-                      >
-                        <Icon name="play" size={13} />
-                      </button>
-                    </div>
-                    {legacy && (
-                      <span className="t-micro">
-                        Legacy voice reference <code>{legacy}</code> — pick a provider to convert this override, or leave as-is.
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            {bot.languages.length === 0 ? (
+              <p className="t-sub" style={{ margin: 0 }}>
+                This bot has no languages yet — add languages in the Overview tab to configure per-language voices.
+              </p>
+            ) : (
+              <ul className="lang-voice-list" aria-label="Per-language voice overrides">
+                {bot.languages.map((locale) => {
+                  const entry = langMap[locale];
+                  const override = entry && typeof entry === "object" ? entry : null;
+                  const legacy = typeof entry === "string" && entry ? entry : null;
+                  const rowModels = override ? modelsFor("tts", override.provider) : [];
+                  const rowModelsLoaded = override ? modelsRef.current[`tts:${override.provider}`] !== undefined : false;
+                  const providerKnown = !override || ttsProviders.some((p) => p.code === override.provider);
+                  const modelKnown = !override?.model || rowModels.some((m) => m.code === override.model);
+                  const status = rowStatus(locale);
+                  const paramsSummary = override?.params && Object.keys(override.params).length > 0
+                    ? Object.entries(override.params).map(([k, v]) => `${k}: ${String(v)}`).join(" · ")
+                    : null;
+                  return (
+                    <li key={locale} className="lang-voice-row">
+                      <div className="lang-voice-head">
+                        <div className="lang-voice-lang">
+                          <span className="t-strong" style={{ fontSize: 13 }}>{langLabel(locale)}</span>
+                          <span className="t-micro">
+                            {locale}
+                            {locale === defaultLocale ? " · default language" : ""}
+                            {langCatalog[locale] && !langCatalog[locale].enabled ? " · disabled on platform" : ""}
+                          </span>
+                        </div>
+                        <StatusChip status={status.chip} label={status.label} />
+                        <div className="lang-voice-actions">
+                          <Button
+                            size="sm" icon="play"
+                            disabled={!canManage || !override?.provider || !override.model || !override.voice}
+                            title={noPermTitle ?? (override?.voice ? "Generate a real audio preview" : "Pick a provider, model and voice to preview")}
+                            aria-label={`Preview voice for ${langLabel(locale)}`}
+                            onClick={() => override && setPreview({
+                              provider: override.provider, model: override.model, voice: override.voice,
+                              language: locale, params: override.params,
+                            })}
+                          >
+                            Preview
+                          </Button>
+                          <Button
+                            size="sm" variant="ghost" icon="undo"
+                            disabled={!canManage || (!override && !legacy)}
+                            title={noPermTitle ?? "Remove this override — the language falls back to the default engine"}
+                            aria-label={`Reset voice override for ${langLabel(locale)}`}
+                            onClick={() => clearRow(locale)}
+                          >
+                            Reset
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="lang-voice-fields">
+                        <Field label="Provider" plain>
+                          <select
+                            className="select" value={override?.provider ?? ""}
+                            aria-label={`Voice provider for ${locale}`}
+                            onChange={(e) => void setRowProvider(locale, e.target.value)}
+                          >
+                            <option value="">Inherit default</option>
+                            {override && !providerKnown && (
+                              <option value={override.provider} disabled>{override.provider} (unavailable)</option>
+                            )}
+                            {ttsProviders.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="Model" plain>
+                          <select
+                            className="select" value={override?.model ?? ""}
+                            aria-label={`Voice model for ${locale}`}
+                            disabled={!override}
+                            onChange={(e) => setRowModel(locale, e.target.value)}
+                          >
+                            <option value="">{override ? "Select model" : "—"}</option>
+                            {override?.model && !modelKnown && (
+                              /* Until the catalog answers, the saved value stays selectable-as-is;
+                                 once loaded and absent it is pinned as an unavailable entry. */
+                              <option value={override.model} disabled={rowModelsLoaded}>
+                                {override.model}{rowModelsLoaded ? " (unavailable)" : ""}
+                              </option>
+                            )}
+                            {rowModels.map((m) => (
+                              <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="Voice" plain>
+                          <SearchableSelect
+                            options={override ? withCurrent(voiceSelectOptions(override.provider, override.model, locale), override.voice) : []}
+                            value={override?.voice ?? ""}
+                            onChange={(v) => setRowField(locale, { voice: v })}
+                            placeholder={override ? (voicesRef.current[override.provider] ? "Select voice…" : "Loading voices…") : "Inherited"}
+                            searchPlaceholder="Search voices…"
+                            disabled={!override}
+                            ariaLabel={`Voice for ${locale}`}
+                          />
+                        </Field>
+                      </div>
+
+                      {!override && !legacy && (
+                        <span className="t-micro">Uses {primaryEngineSummary}.</span>
+                      )}
+                      {paramsSummary && (
+                        <span className="t-micro" title="Provider-specific synthesis settings stored with this override">
+                          Settings: {paramsSummary}
+                        </span>
+                      )}
+                      {legacy && (
+                        <span className="t-micro">
+                          Legacy voice reference <code>{legacy}</code> — pick a provider to convert this override, or Reset to remove it.
+                        </span>
+                      )}
+                      {status.message && (
+                        <span className="field-error" role="alert">
+                          <Icon name="alert" size={12} />{status.message}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             <CleanupCallout
               items={mappingIssues.map((i) => i.message)}
               onApply={() => setLangMap((m) => {

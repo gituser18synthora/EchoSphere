@@ -15,7 +15,7 @@ export const flags = {
   knowledgeConnectors: false,
   /** Per-conversation cost visibility for tenant admins */
   tenantCostVisibility: true,
-  /** CSV/PDF export generation */
+  /** Optional queued delivery for future exports too large for synchronous responses. */
   exportGeneration: false,
 } as const;
 

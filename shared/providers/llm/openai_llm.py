@@ -9,7 +9,13 @@ from collections.abc import AsyncIterator
 from openai import AsyncOpenAI
 
 from shared.config import get_settings
-from shared.providers.base import LLMProvider, LLMResult, ProviderConfig, ProviderError
+from shared.providers.base import (
+    LLMProvider,
+    LLMResult,
+    LLMStreamUsage,
+    ProviderConfig,
+    ProviderError,
+)
 
 
 class OpenAILLM(LLMProvider):
@@ -81,6 +87,7 @@ class OpenAILLM(LLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 512,
     ) -> AsyncIterator[str]:
+        self.last_stream_usage = None
         try:
             stream = await self._client.chat.completions.create(
                 model=self._model,
@@ -88,9 +95,24 @@ class OpenAILLM(LLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                # Final chunk carries provider-reported token usage — the
+                # billing source of truth for the streaming voice path.
+                stream_options={"include_usage": True},
             )
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    prompt_details = getattr(usage, "prompt_tokens_details", None)
+                    completion_details = getattr(usage, "completion_tokens_details", None)
+                    self.last_stream_usage = LLMStreamUsage(
+                        input_tokens=int(usage.prompt_tokens or 0),
+                        output_tokens=int(usage.completion_tokens or 0),
+                        cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
+                        reasoning_tokens=int(
+                            getattr(completion_details, "reasoning_tokens", 0) or 0
+                        ),
+                    )
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(self.name, "upstream", str(exc)[:200]) from exc

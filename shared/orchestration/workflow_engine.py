@@ -33,10 +33,16 @@ class WorkflowState(TypedDict, total=False):
     user_text: str
     slots: dict[str, str]
     pending_slot: str | None
+    just_filled: bool
     reply: str
     status: str  # collecting | confirming | executing | done | error | handoff
     retries: int
     audit: list[dict]
+    # Definition-interpreter fields (DB-authored graphs):
+    current_node: str | None
+    awaiting: str | None
+    node_retries: dict[str, int]
+    trace: list[str]  # node ids visited THIS turn (reset every turn)
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -177,11 +183,633 @@ def build_appointment_graph(checkpointer) -> Any:
     return graph.compile(checkpointer=checkpointer)
 
 
+# ── payment collection: MOP (mode-of-payment) slot-filling workflow ─────────
+#
+# Built for inbound loan-repayment support (mPokket POC). The flow mirrors the
+# approved call script: payment type (full/partial) → MOP confirmation
+# ("Debit Card ya UPI?") → summary confirmation → next-step guidance and the
+# script's closing line. No payment integration exists, so the execute step
+# records a payment COMMITMENT and instructs the caller — it never claims a
+# payment was completed. Replies are Hinglish, matching the source script.
+
+_PAY_SLOTS: list[tuple[str, str, str, dict[str, str]]] = [
+    # (slot key, question, simpler retry question, {canonical: pattern})
+    # Patterns cover Roman Hinglish AND Devanagari — Sarvam Saaras transcribes
+    # Hindi speech in Devanagari script, Hinglish/English in Latin script.
+    # NOTE: Devanagari alternatives sit OUTSIDE the \b group — Python's \b is
+    # \w-based and Devanagari matras are not word characters, so a trailing \b
+    # after a matra-final word (e.g. "पूरा") can never match.
+    (
+        "payment_type",
+        "Kya aap apna overdue amount poora pay karna chahenge, ya partial payment karenge?",
+        "Kripya boliye – poora payment ya partial?",
+        {
+            "full": r"\b(full|poora|pura|puri|complete|whole|saara|sara)\b"
+                    r"|पूरा|पूरी|सारा|पूर्ण",
+            "partial": r"\b(partial|part|aadha|adha|half|thoda|kuch|installment|instalment)\b"
+                       r"|आधा|आधी|थोड़ा|थोड़ी|किस्त",
+        },
+    ),
+    (
+        "payment_method",
+        "Kaunse madhyam se aapka payment hoga – Debit Card ya UPI?",
+        "Kripya boliye – Debit Card ya UPI?",
+        {
+            "Debit Card": r"\b(debit|card|atm)\b|डेबिट|कार्ड|एटीएम",
+            "UPI": r"\b(upi|bhim|paytm|g ?pay|google ?pay|phone ?pe|qr)\b"
+                   r"|यूपीआई|यू ?पी ?आई|भीम|पेटीएम|फोन ?पे|गूगल ?पे",
+        },
+    ),
+]
+
+_PAY_YES = re.compile(
+    r"\b(yes|yeah|correct|confirm|right|sure|ok(ay)?|haan|han ?ji|ji haan|ji|"
+    r"bilkul|theek|sahi|zaroor|kar do|karo)\b"
+    r"|हाँ|हां|जी|सही|ठीक|बिल्कुल|ज़रूर|जरूर", re.I,
+)
+_PAY_NO = re.compile(
+    r"\b(no|nope|wrong|change|cancel|nahi|nahin|galat|badal)\b|नहीं|नही|गलत|बदल", re.I
+)
+
+
+def _pay_extract_slot(state: WorkflowState) -> WorkflowState:
+    slots = dict(state.get("slots") or {})
+    text = (state.get("user_text") or "").strip()
+    pending = state.get("pending_slot")
+    retries = state.get("retries", 0)
+
+    just_filled = False
+    if text:
+        # Callers often volunteer several details in one utterance ("main UPI
+        # se poora pay karunga") — fill every open slot the turn mentions.
+        for key, _q, _rq, patterns in _PAY_SLOTS:
+            if key in slots:
+                continue
+            for canonical, pattern in patterns.items():
+                if re.search(pattern, text, re.I):
+                    slots[key] = canonical
+                    just_filled = True
+                    break
+        if pending:
+            retries = 0 if pending in slots else retries + 1
+
+    next_slot = next((key for key, _, _, _ in _PAY_SLOTS if key not in slots), None)
+    status = "collecting" if next_slot else "confirming"
+    if retries > _MAX_SLOT_RETRIES:
+        status = "handoff"
+    return {
+        **state,
+        "slots": slots,
+        "pending_slot": next_slot,
+        "just_filled": just_filled,
+        "retries": retries,
+        "status": status,
+    }
+
+
+def _pay_ask_or_confirm(state: WorkflowState) -> WorkflowState:
+    status = state.get("status")
+    if status == "handoff":
+        return {
+            **state,
+            "reply": "Mujhe aapki baat samajhne mein dikkat ho rahi hai. Main aapko "
+                     "hamare ek agent se connect kar rahi hoon, kripya line par bane rahiye.",
+        }
+    if status == "collecting":
+        pending = state.get("pending_slot")
+        slot = next((s for s in _PAY_SLOTS if s[0] == pending), None)
+        if slot is None:
+            return {**state, "reply": "Kripya dobara boliye?"}
+        # Retries use the simpler wording, never the same sentence again.
+        question = slot[2] if state.get("retries", 0) > 0 else slot[1]
+        prefix = "Maaf kijiye, main samajh nahi paayi. " if state.get("retries", 0) > 0 else ""
+        return {**state, "reply": f"{prefix}{question}"}
+    slots = state.get("slots", {})
+    type_txt = "poora amount" if slots.get("payment_type") == "full" else "partial payment"
+    return {
+        **state,
+        "reply": f"Main confirm kar leti hoon – aap {type_txt} "
+                 f"{slots.get('payment_method')} ke through pay karenge. Kya yeh sahi hai?",
+    }
+
+
+def _pay_handle_confirmation(state: WorkflowState) -> WorkflowState:
+    text = state.get("user_text", "")
+    if _PAY_NO.search(text):
+        return {
+            **state,
+            "slots": {},
+            "pending_slot": _PAY_SLOTS[0][0],
+            "retries": 0,
+            "status": "collecting",
+            "reply": f"Koi baat nahi, dobara shuru karte hain. {_PAY_SLOTS[0][1]}",
+        }
+    if _PAY_YES.search(text):
+        return {**state, "status": "executing"}
+    return {
+        **state,
+        "reply": "Kripya haan boliye confirm karne ke liye, ya nahi boliye badalne ke liye.",
+    }
+
+
+def _pay_execute(state: WorkflowState) -> WorkflowState:
+    """Record the payment commitment (no payment API exists — never claim
+    completion) and give the script's next-step guidance and closing line."""
+    audit = list(state.get("audit") or [])
+    audit.append(
+        {
+            "action": "payment_commitment_recorded",
+            "tenant_id": state.get("tenant_id"),
+            "bot_id": state.get("bot_id"),
+            "session_id": state.get("session_id"),
+            "slots": state.get("slots"),
+        }
+    )
+    slots = state.get("slots", {})
+    method = slots.get("payment_method", "UPI")
+    benefit = (
+        " BHIM UPI ya Paytm UPI se payment karne par aapko discount ya cashback "
+        "milne ke chances hain."
+        if method == "UPI"
+        else ""
+    )
+    return {
+        **state,
+        "status": "done",
+        "audit": audit,
+        "reply": (
+            "Dhanyavaad! Kripya mPokket app kholkar "
+            f"{method} ke through apna payment abhi complete kar dijiye.{benefit} "
+            "Payment complete hote hi aapka profile update ho jayega aur extra "
+            "penalty charges nahi lagenge. Main call par kabhi card number, PIN "
+            "ya OTP nahi maangti — yeh details kisi ke saath share na karein. "
+            "mPokket mein samay dene ke liye dhanyavaad, aapka din shubh ho!"
+        ),
+    }
+
+
+def _pay_route_after_extract(state: WorkflowState) -> str:
+    """Unlike the reference flow, the turn that completes the slots always
+    gets the spoken summary first — only a turn that filled nothing while in
+    'confirming' is treated as the caller's answer to that summary."""
+    status = state.get("status")
+    if status == "handoff":
+        return "respond"
+    if status == "confirming" and state.get("user_text") and not state.get("just_filled"):
+        return "confirm"
+    return "respond"
+
+
+def build_payment_collection_graph(checkpointer) -> Any:
+    graph = StateGraph(WorkflowState)
+    graph.add_node("extract", _pay_extract_slot)
+    graph.add_node("respond", _pay_ask_or_confirm)
+    graph.add_node("confirm", _pay_handle_confirmation)
+    graph.add_node("execute", _pay_execute)
+
+    graph.set_entry_point("extract")
+    graph.add_conditional_edges("extract", _pay_route_after_extract,
+                                {"respond": "respond", "confirm": "confirm"})
+    graph.add_edge("respond", END)
+    graph.add_conditional_edges("confirm", _route_after_confirm,
+                                {"execute": "execute", "end": END})
+    graph.add_edge("execute", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
 _GRAPH_BUILDERS = {
     "appointment_booking": build_appointment_graph,
     # Alias used by demo intents ("book appointment" → workflow:appointment).
     "appointment": build_appointment_graph,
+    # Inbound loan-repayment MOP flow (mPokket POC).
+    "payment_collection": build_payment_collection_graph,
 }
+
+
+# ── generic definition interpreter: DB-authored node/edge graphs ─────────────
+#
+# Workflows designed in the Studio builder (Workflow.nodes/edges JSON) execute
+# here. An intent route "workflow:<name>" is resolved against the bot's saved
+# workflows first (by id, slugified name, or exact name); the hardcoded
+# builders above remain as fallbacks so the reference flows keep working.
+#
+# Node kinds: start, message (speak & continue), ask (collect a variable via
+# entity extraction), intent (branch on the caller's next utterance using edge
+# labels), condition (branch on a collected variable), api (audited action —
+# executed via the configured connection where wired, otherwise recorded and
+# routed through its success edge), knowledge (answer from the tenant KB),
+# handover (escalate & finish), end (finish). Unknown kinds pass through.
+
+_MAX_NODE_STEPS = 30
+_MAX_ASK_RETRIES = 2
+_ELSE_LABELS = ("else", "other", "default", "fallback", "no match", "otherwise")
+
+
+def slugify_workflow_name(name: str) -> str:
+    """"Payment plan journey" → payment_plan_journey (route-string form)."""
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", (name or "").lower())).strip("_")
+
+
+def load_workflow_definition(
+    tenant_id: str, bot_id: str, workflow_name: str
+) -> dict | None:
+    """Latest saved workflow for the bot whose id/name matches the route name.
+
+    Sync (called via to_thread). Returns None when no stored workflow matches —
+    the caller then falls back to the hardcoded reference builders.
+    """
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import Workflow
+
+    target = (workflow_name or "").strip().lower()
+    if not target:
+        return None
+    session = get_sessionmaker()()
+    try:
+        rows = (
+            session.execute(
+                select(Workflow)
+                .where(
+                    Workflow.tenant_id == tenant_id,
+                    Workflow.bot_id == bot_id,
+                    Workflow.is_deleted.is_(False),
+                )
+                .order_by(Workflow.version.desc())
+            )
+            .scalars()
+            .all()
+        )
+        for w in rows:
+            if not w.nodes:
+                continue
+            if (
+                w.id == workflow_name
+                or slugify_workflow_name(w.name) == target
+                or (w.name or "").strip().lower() == target
+            ):
+                return {
+                    "id": w.id,
+                    "version": w.version,
+                    "name": w.name,
+                    "nodes": w.nodes or [],
+                    "edges": w.edges or [],
+                }
+        return None
+    finally:
+        session.close()
+
+
+def _node_config(node: dict) -> dict:
+    config = node.get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
+    config = _node_config(node)
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(node.get("label") or "").strip() if fallback_label else ""
+
+
+def _edge_tokens(label: str) -> list[str]:
+    return [t.strip().lower() for t in re.split(r"[/,|]", label or "") if t.strip()]
+
+
+def _pick_edge_by_flag(out_edges: list[dict], result: bool) -> dict | None:
+    """condition branching: true/yes edge vs false/no edge, positional fallback."""
+    truthy, falsy = ("true", "yes"), ("false", "no")
+    wanted = truthy if result else falsy
+    for edge in out_edges:
+        if any(t in wanted for t in _edge_tokens(edge.get("label", ""))):
+            return edge
+    if len(out_edges) >= 2:
+        return out_edges[0] if result else out_edges[1]
+    return out_edges[0] if out_edges else None
+
+
+def _evaluate_condition(config: dict, slots: dict) -> bool:
+    variable = str(config.get("variable") or "")
+    operator = str(config.get("operator") or "exists").lower()
+    expected = config.get("value")
+    actual = slots.get(variable)
+    if operator in ("exists", "filled"):
+        return actual is not None and str(actual).strip() != ""
+    if actual is None:
+        return False
+    actual_s, expected_s = str(actual).strip().lower(), str(expected or "").strip().lower()
+    if operator in ("equals", "eq", "is"):
+        return actual_s == expected_s
+    if operator in ("not_equals", "ne", "not"):
+        return actual_s != expected_s
+    if operator == "contains":
+        return expected_s in actual_s
+    try:
+        actual_n, expected_n = float(actual_s), float(expected_s)
+    except (TypeError, ValueError):
+        return False
+    if operator in ("gte", ">="):
+        return actual_n >= expected_n
+    if operator in ("lte", "<="):
+        return actual_n <= expected_n
+    if operator in ("gt", ">"):
+        return actual_n > expected_n
+    if operator in ("lt", "<"):
+        return actual_n < expected_n
+    return False
+
+
+async def _knowledge_answer(state: WorkflowState, node: dict, slots: dict) -> str | None:
+    """Answer a knowledge node from the tenant's KB; None when unanswerable."""
+    config = _node_config(node)
+    query = str(config.get("query") or "").strip()
+    if query:
+        try:
+            query = query.format_map({**slots})
+        except (KeyError, ValueError):
+            pass
+    query = query or (state.get("user_text") or "").strip()
+    if not query:
+        return None
+    try:
+        from shared.knowledge.schemas import RetrievalRequest
+        from shared.knowledge.service import get_knowledge_service
+
+        result = await get_knowledge_service().search(
+            RetrievalRequest(
+                tenant_id=state.get("tenant_id", ""),
+                bot_id=state.get("bot_id"),
+                query=query,
+            )
+        )
+        if result.answerable and result.sources:
+            return result.sources[0].text[:400]
+    except Exception:  # noqa: BLE001 — a KB hiccup must not kill the flow
+        logger.exception("workflow knowledge node retrieval failed")
+    return None
+
+
+def _ask_entity(node: dict, variable: str) -> dict:
+    """Entity descriptor for an ask node, feeding the shared entity extractor."""
+    config = _node_config(node)
+    entity = config.get("entity")
+    if isinstance(entity, dict) and entity:
+        return {"name": variable, **entity}
+    return {
+        "name": variable,
+        "dataType": str(config.get("entityType") or config.get("dataType") or "text"),
+        "regexPattern": config.get("pattern"),
+        "allowedValues": config.get("allowedValues"),
+        "synonyms": config.get("synonyms"),
+    }
+
+
+def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
+    from shared.orchestration.entity_extractor import extract_entity
+
+    entity = _ask_entity(node, variable)
+    data_type = str(entity.get("dataType") or "text")
+    has_matcher = bool(
+        entity.get("regexPattern") or entity.get("allowedValues") or entity.get("synonyms")
+    )
+    if data_type == "text" and not has_matcher:
+        # Free-text answer: take the utterance as-is.
+        return text.strip() or None
+    extracted = extract_entity(text, entity)
+    if not extracted.get("matched"):
+        return None
+    return str(extracted.get("value") or extracted.get("maskedValue") or "").strip() or None
+
+
+def build_definition_graph(definition: dict, checkpointer) -> Any:
+    """Compile a saved node/edge document into a single-step LangGraph.
+
+    One LangGraph node advances the interpreter until the flow needs caller
+    input (ask/intent) or terminates — LangGraph supplies the per-thread
+    checkpointing so slots and the current position survive across turns
+    (and across worker restarts when Postgres is available).
+    """
+    nodes_by_id: dict[str, dict] = {
+        str(n.get("id")): n for n in definition.get("nodes") or [] if n.get("id")
+    }
+    edges_from: dict[str, list[dict]] = {}
+    for edge in definition.get("edges") or []:
+        src = str(edge.get("from") or "")
+        if src and str(edge.get("to") or "") in nodes_by_id:
+            edges_from.setdefault(src, []).append(edge)
+
+    start_node = next(
+        (n for n in (definition.get("nodes") or []) if n.get("kind") == "start"), None
+    ) or next(iter((definition.get("nodes") or [])), None)
+
+    def _next_of(node_id: str) -> str | None:
+        out = edges_from.get(node_id) or []
+        return str(out[0].get("to")) if out else None
+
+    def _question(node: dict, retrying: bool) -> str:
+        base = _node_text(node, "question", "prompt", "text")
+        prefix = "Sorry, I didn't catch that. " if retrying else ""
+        return f"{prefix}{base}" if base else "Could you tell me a bit more?"
+
+    async def _step(state: WorkflowState) -> WorkflowState:
+        slots = dict(state.get("slots") or {})
+        node_retries = dict(state.get("node_retries") or {})
+        audit = list(state.get("audit") or [])
+        trace: list[str] = []
+        replies: list[str] = []
+        status = "collecting"
+        text = (state.get("user_text") or "").strip()
+        current = state.get("current_node")
+        awaiting = state.get("awaiting")
+
+        if current not in nodes_by_id:
+            current = str(start_node.get("id")) if start_node else None
+            awaiting = None
+
+        # 1. Feed the caller's utterance to the node that was waiting for it.
+        if awaiting and awaiting in nodes_by_id:
+            node = nodes_by_id[awaiting]
+            kind = node.get("kind")
+            trace.append(awaiting)
+            if not text:
+                replies.append(_question(node, retrying=False))
+                current = None  # stay awaiting
+            elif kind == "ask":
+                config = _node_config(node)
+                variable = str(config.get("variable") or node.get("id"))
+                value = _extract_ask_value(node, variable, text)
+                if value is not None:
+                    slots[variable] = value
+                    node_retries.pop(awaiting, None)
+                    audit.append({"action": "slot_filled", "node": awaiting,
+                                  "variable": variable})
+                    current, awaiting = _next_of(awaiting), None
+                else:
+                    retries = node_retries.get(awaiting, 0) + 1
+                    node_retries[awaiting] = retries
+                    if retries > _MAX_ASK_RETRIES:
+                        fallback = next(
+                            (e for e in edges_from.get(awaiting, [])
+                             if any(t in ("fallback", "handoff")
+                                    for t in _edge_tokens(e.get("label", "")))),
+                            None,
+                        )
+                        if fallback is not None:
+                            current, awaiting = str(fallback.get("to")), None
+                        else:
+                            status = "handoff"
+                            replies.append(
+                                "I'm having trouble capturing that. Let me connect "
+                                "you with an agent."
+                            )
+                            current, awaiting = None, None
+                    else:
+                        replies.append(_question(node, retrying=True))
+                        current = None  # stay awaiting
+            elif kind == "intent":
+                lowered = text.lower()
+                out_edges = edges_from.get(awaiting, [])
+                chosen = next(
+                    (e for e in out_edges
+                     if any(t and t in lowered for t in _edge_tokens(e.get("label", "")))),
+                    None,
+                ) or next(
+                    (e for e in out_edges
+                     if any(t in _ELSE_LABELS for t in _edge_tokens(e.get("label", "")))),
+                    None,
+                )
+                if chosen is None:
+                    retries = node_retries.get(awaiting, 0) + 1
+                    node_retries[awaiting] = retries
+                    if retries > 1 and out_edges:
+                        chosen = out_edges[0]
+                    else:
+                        replies.append(_question(node, retrying=True))
+                        current = None
+                if chosen is not None:
+                    audit.append({"action": "intent_branch", "node": awaiting,
+                                  "edge": chosen.get("label") or chosen.get("id")})
+                    node_retries.pop(awaiting, None)
+                    current, awaiting = str(chosen.get("to")), None
+            else:  # a stale awaiting pointer — resume from that node
+                awaiting = None
+
+        # 2. Walk the graph until we need input or the flow terminates.
+        steps = 0
+        while current and current in nodes_by_id and steps < _MAX_NODE_STEPS:
+            steps += 1
+            node = nodes_by_id[current]
+            kind = node.get("kind")
+            if not trace or trace[-1] != current:
+                trace.append(current)
+
+            if kind == "message":
+                spoken = _node_text(node, "text", "message")
+                if spoken:
+                    replies.append(spoken)
+                current = _next_of(current)
+            elif kind == "ask":
+                replies.append(_question(node, retrying=False))
+                awaiting, current = current, None
+            elif kind == "intent":
+                prompt = _node_text(node, "prompt", "question", "text",
+                                    fallback_label=False)
+                replies.append(prompt or "How can I help you today?")
+                awaiting, current = current, None
+            elif kind == "condition":
+                result = _evaluate_condition(_node_config(node), slots)
+                edge = _pick_edge_by_flag(edges_from.get(current, []), result)
+                audit.append({"action": "condition", "node": current,
+                              "result": result,
+                              "edge": (edge or {}).get("label") or (edge or {}).get("id")})
+                current = str(edge.get("to")) if edge else None
+            elif kind == "api":
+                config = _node_config(node)
+                # No live API executor is wired into the voice runtime yet —
+                # the action is recorded (audited) and the flow follows the
+                # success edge, so journeys keep their shape.
+                audit.append({"action": "api_call_recorded",
+                              "node": current,
+                              "name": config.get("name") or node.get("label")})
+                spoken = _node_text(node, "text", fallback_label=False)
+                if spoken:
+                    replies.append(spoken)
+                out_edges = edges_from.get(current, [])
+                success = next(
+                    (e for e in out_edges
+                     if any(t in ("success", "ok", "done")
+                            for t in _edge_tokens(e.get("label", "")))),
+                    out_edges[0] if out_edges else None,
+                )
+                current = str(success.get("to")) if success else None
+            elif kind == "knowledge":
+                answer = await _knowledge_answer(state, node, slots)
+                answered = answer is not None
+                replies.append(
+                    answer
+                    or _node_text(node, "fallbackText", fallback_label=False)
+                    or "I couldn't find that in the information I have."
+                )
+                audit.append({"action": "knowledge", "node": current,
+                              "answered": answered})
+                out_edges = edges_from.get(current, [])
+                wanted = ("answered", "found") if answered else ("no answer", "not found", "fallback")
+                edge = next(
+                    (e for e in out_edges
+                     if any(t in wanted for t in _edge_tokens(e.get("label", "")))),
+                    out_edges[0] if out_edges else None,
+                )
+                current = str(edge.get("to")) if edge else None
+            elif kind == "handover":
+                spoken = _node_text(node, "text", fallback_label=False) or (
+                    "Let me connect you with a colleague who can help. "
+                    "Please stay on the line."
+                )
+                replies.append(spoken)
+                audit.append({"action": "handover", "node": current,
+                              "queue": _node_config(node).get("queue")})
+                status = "handoff"
+                current = None
+            elif kind == "end":
+                spoken = _node_text(node, "text", fallback_label=False)
+                if spoken:
+                    replies.append(spoken)
+                status = "done"
+                current = None
+            else:  # start / unknown kinds pass through
+                current = _next_of(current)
+                if current is None and kind not in ("start",):
+                    status = "done"
+
+            if current is None and awaiting is None and status == "collecting":
+                status = "done"
+
+        if steps >= _MAX_NODE_STEPS:
+            logger.warning("workflow definition %s exceeded step budget", definition.get("id"))
+            status = "error"
+            replies.append("Something went wrong with this flow. Let me connect you with an agent.")
+
+        return {
+            **state,
+            "slots": slots,
+            "node_retries": node_retries,
+            "audit": audit,
+            "trace": trace,
+            "current_node": awaiting or current,
+            "awaiting": awaiting,
+            "status": status if not awaiting else "collecting",
+            "reply": " ".join(r for r in replies if r).strip()
+                     or "Is there anything else I can help you with?",
+        }
+
+    graph = StateGraph(WorkflowState)
+    graph.add_node("step", _step)
+    graph.set_entry_point("step")
+    graph.add_edge("step", END)
+    return graph.compile(checkpointer=checkpointer)
 
 
 class WorkflowEngine:
@@ -218,11 +846,20 @@ class WorkflowEngine:
                 self._checkpointer = MemorySaver()
         return self._checkpointer
 
-    async def _get_graph(self, workflow_name: str):
-        builder = _GRAPH_BUILDERS.get(workflow_name) or _GRAPH_BUILDERS["appointment_booking"]
+    async def _get_builder_graph(self, workflow_name: str):
+        builder = _GRAPH_BUILDERS[workflow_name]
         key = builder.__name__
         if key not in self._graphs:
             self._graphs[key] = builder(await self._get_checkpointer())
+        return self._graphs[key]
+
+    async def _get_definition_graph(self, definition: dict):
+        # Keyed by id+version: a saved edit compiles a fresh graph immediately.
+        key = f"def:{definition['id']}:v{definition['version']}"
+        if key not in self._graphs:
+            self._graphs[key] = build_definition_graph(
+                definition, await self._get_checkpointer()
+            )
         return self._graphs[key]
 
     async def handle_turn(
@@ -236,7 +873,59 @@ class WorkflowEngine:
         timeout_seconds: float = 10.0,
     ) -> tuple[str, bool]:
         """Advance the workflow one turn. Returns (reply, finished)."""
-        graph = await self._get_graph(workflow_name)
+        result = await self.handle_turn_detailed(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            bot_id=bot_id,
+            workflow_name=workflow_name,
+            user_text=user_text,
+            timeout_seconds=timeout_seconds,
+        )
+        return result["reply"], result["done"]
+
+    async def handle_turn_detailed(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        bot_id: str,
+        workflow_name: str,
+        user_text: str,
+        timeout_seconds: float = 10.0,
+    ) -> dict:
+        """Advance one turn and return the full execution detail.
+
+        Resolution order: the bot's SAVED workflow definitions (matched by id,
+        slugified name or exact name) run first; the hardcoded reference
+        builders remain as fallbacks; an unknown name ends the flow with a
+        clear reply instead of silently running an unrelated graph.
+        """
+        definition: dict | None = None
+        try:
+            definition = await asyncio.to_thread(
+                load_workflow_definition, tenant_id, bot_id, workflow_name
+            )
+        except Exception:  # noqa: BLE001 — control-plane DB down ≠ dead call
+            logger.exception("workflow definition lookup failed for %s", workflow_name)
+
+        if definition is not None:
+            graph = await self._get_definition_graph(definition)
+            source = "definition"
+        elif workflow_name in _GRAPH_BUILDERS:
+            graph = await self._get_builder_graph(workflow_name)
+            source = "builtin"
+        else:
+            logger.warning(
+                "unknown workflow '%s' for bot %s — no saved definition or builder",
+                workflow_name, bot_id,
+            )
+            return {
+                "reply": "I'm sorry — I can't start that flow right now. "
+                         "Let me connect you with an agent.",
+                "done": True, "status": "error", "source": "missing",
+                "workflowId": None, "trace": [], "slots": {},
+            }
+
         thread = {"configurable": {"thread_id": f"{session_id}:{workflow_name}"}}
         try:
             state = await asyncio.wait_for(
@@ -254,13 +943,23 @@ class WorkflowEngine:
             )
         except TimeoutError:
             logger.error("workflow %s timed out for %s", workflow_name, session_id)
-            return (
-                "I'm sorry, that took longer than expected. Let me connect you with an agent.",
-                True,
-            )
+            return {
+                "reply": "I'm sorry, that took longer than expected. "
+                         "Let me connect you with an agent.",
+                "done": True, "status": "error", "source": source,
+                "workflowId": (definition or {}).get("id"), "trace": [], "slots": {},
+            }
         status = state.get("status", "collecting")
         done = status in ("done", "handoff", "error")
-        return state.get("reply", "Could you repeat that?"), done
+        return {
+            "reply": state.get("reply", "Could you repeat that?"),
+            "done": done,
+            "status": status,
+            "source": source,
+            "workflowId": (definition or {}).get("id"),
+            "trace": list(state.get("trace") or []),
+            "slots": dict(state.get("slots") or {}),
+        }
 
     async def aclose(self) -> None:
         if self._saver_cm is not None:

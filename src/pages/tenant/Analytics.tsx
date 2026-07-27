@@ -1,17 +1,38 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { getTenantAnalytics } from "@/services/api";
-import { Button, CardSkeleton, ErrorState, KpiCard } from "@/components/ui";
+import { getTenantAnalytics, getUsageSummary, type UsageSummary } from "@/services/api";
+import { CardSkeleton, ErrorState, KpiCard } from "@/components/ui";
 import { ChartCard, Donut, HBarList, Legend, LineChart, fmtNum } from "@/components/charts";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { ReportExportControls } from "@/components/ReportExportControls";
+import { CurrencySelect, useDisplayCurrency } from "@/components/CurrencyDisplay";
+import type { ReportType } from "@/services/reportDownload";
+
+const CAPABILITY_LABELS: [key: string, label: string][] = [
+  ["llm", "LLM"], ["embedding", "Embeddings"], ["stt", "Speech to text"],
+  ["tts", "Text to speech"], ["telephony", "Telephony"],
+];
+
+function usageQuantity(summary: UsageSummary, key: string): string {
+  const u = summary.capabilities[key];
+  if (!u) return "—";
+  if (key === "llm") return `${(u.totalTokens || u.inputTokens + u.outputTokens).toLocaleString()} tokens`;
+  if (key === "embedding") return `${u.totalTokens.toLocaleString()} tokens`;
+  if (key === "stt") return `${(u.audioSeconds / 60).toFixed(1)} min`;
+  if (key === "tts") return `${u.characters.toLocaleString()} chars`;
+  return `${(u.audioSeconds / 60).toFixed(1)} min`;
+}
 
 export default function Analytics() {
   const [range, setRange] = useState(30);
+  const [reportType, setReportType] = useState<ReportType>("usage");
   const a = useAsync(() => getTenantAnalytics(range), [range]);
+  const usage = useAsync(() => getUsageSummary(range), [range]);
+  const money = useDisplayCurrency();
   const navigate = useNavigate();
-  const { user, toast } = useApp();
+  const { user } = useApp();
 
   if (a.error) return <ErrorState message={a.error} onRetry={a.reload} />;
 
@@ -26,7 +47,20 @@ export default function Analytics() {
           <div className="segmented" role="group" aria-label="Date range">
             {[7, 30, 90].map((d) => <button key={d} aria-pressed={range === d} onClick={() => setRange(d)}>{d}d</button>)}
           </div>
-          <Button icon="download" onClick={() => toast("Export queued — backend job API pending (TODO_BACKEND #6)", "info")}>Export</Button>
+          <label className="row gap-6">
+            <span className="t-micro">Report</span>
+            <select
+              className="select"
+              aria-label="Report type"
+              value={reportType}
+              onChange={(event) => setReportType(event.target.value as ReportType)}
+              style={{ minWidth: 112 }}
+            >
+              <option value="usage">Usage</option>
+              <option value="ai_cost">AI Cost</option>
+            </select>
+          </label>
+          <ReportExportControls reportType={reportType} filters={{ days: range }} />
         </div>
       </div>
 
@@ -35,6 +69,77 @@ export default function Analytics() {
           ? Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
           : a.data.kpis.map((k) => <KpiCard key={k.label} {...k} />)}
       </div>
+
+      {usage.data && (
+        <div className="card mt-16">
+          <div className="card-header">
+            <div className="col gap-2">
+              <span className="card-title">AI &amp; API usage</span>
+              <span className="t-micro">
+                Current period · last {usage.data.period.days} days · costs stored in {usage.data.baseCurrency}
+              </span>
+            </div>
+            <label className="row gap-6">
+              <span className="t-micro">Display currency</span>
+              <CurrencySelect state={money} />
+            </label>
+          </div>
+          <div className="grid grid-6" style={{ padding: 16, gap: 10 }}>
+            {CAPABILITY_LABELS.map(([key, label]) => (
+              <div key={key} className="col gap-2 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+                <span className="t-micro">{label}</span>
+                <span className="t-strong">{usageQuantity(usage.data!, key)}</span>
+                <span className="t-sub" style={{ fontSize: 12 }}>
+                  {money.dual(usage.data!.capabilities[key]?.costUsd ?? 0, { precise: true })}
+                </span>
+              </div>
+            ))}
+            <div className="col gap-2 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <span className="t-micro">Total AI/API cost</span>
+              <span className="t-strong">{money.dual(usage.data.totalCostUsd, { precise: true })}</span>
+              {usage.data.missingPriceEvents > 0 && (
+                <span className="t-micro" style={{ color: "var(--warning, #b7791f)" }}>
+                  Pricing unavailable for {usage.data.missingPriceEvents} event{usage.data.missingPriceEvents === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+          </div>
+          {usage.data.byProviderModel.length > 0 && (
+            <div style={{ padding: "0 16px 16px" }}>
+              <table className="table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Capability</th><th>Provider</th><th>Model</th>
+                    <th style={{ textAlign: "right" }}>Requests</th>
+                    <th style={{ textAlign: "right" }}>Usage</th>
+                    <th style={{ textAlign: "right" }}>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usage.data.byProviderModel.map((row) => (
+                    <tr key={`${row.capability}:${row.provider}:${row.model}`}>
+                      <td><span className="tag">{row.capability.toUpperCase()}</span></td>
+                      <td>{row.provider}</td>
+                      <td className="t-micro">{row.model || "—"}</td>
+                      <td style={{ textAlign: "right" }} className="t-num">{row.requests.toLocaleString()}</td>
+                      <td style={{ textAlign: "right" }} className="t-micro">
+                        {row.totalTokens > 0 ? `${row.totalTokens.toLocaleString()} tokens`
+                          : row.characters > 0 ? `${row.characters.toLocaleString()} chars`
+                          : row.audioSeconds > 0 ? `${(row.audioSeconds / 60).toFixed(1)} min` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right" }} className="t-num">
+                        {row.missingPriceEvents > 0 && row.costUsd === 0
+                          ? <span className="t-micro" title="No provider price configured">Pricing unavailable</span>
+                          : money.dual(row.costUsd, { precise: true })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {a.data && (
         <>

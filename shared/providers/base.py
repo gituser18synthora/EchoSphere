@@ -67,6 +67,23 @@ class LLMResult:
 
 
 @dataclass
+class LLMStreamUsage:
+    """Provider-reported token usage for one completed stream() call.
+
+    Adapters set `last_stream_usage` when the provider reports usage on the
+    streaming API; callers that need billing-grade numbers read it right
+    after the stream ends (one generation at a time per provider instance —
+    the realtime voice path never runs concurrent generations on one call).
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    source: str = "provider"  # provider | estimated
+
+
+@dataclass
 class TTSResult:
     audio: bytes  # PCM 16-bit mono
     sample_rate: int = 16000
@@ -107,6 +124,9 @@ class TTSProvider(ABC):
 
 class LLMProvider(ABC):
     name: str = "llm"
+    # Usage reported by the provider for the most recent completed stream();
+    # None when the stream failed or the provider doesn't report usage.
+    last_stream_usage: LLMStreamUsage | None = None
 
     @abstractmethod
     async def generate(

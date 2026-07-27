@@ -146,8 +146,26 @@ class StreamingTTSProvider(ABC):
         reason = (reason or "").lower()
         if code in (401, 403, 4401, 4403) or "auth" in reason or "key" in reason:
             return "auth"
-        if code == 429 or code == 1008 or "rate" in reason or "quota" in reason:
+        # Account/configuration rejections hidden behind generic close codes:
+        # ElevenLabs closes with 1008 for "voice_id does not exist" and for
+        # paid-plan-gated voices. These are configuration errors — surfacing
+        # them beats burning the one fallback attempt on a retry that cannot
+        # succeed.
+        if ("does not exist" in reason or "not found" in reason
+                or "payment" in reason or "paid plan" in reason
+                or "permission" in reason):
+            return "invalid_input"
+        # Exhausted credits/quota (Sarvam closes 1003 with "Credits exhausted")
+        # ARE fallback-worthy: the configured secondary engine can still speak.
+        if (code == 429 or code == 1008 or "rate" in reason or "quota" in reason
+                or "credit" in reason):
             return "rate_limit"
+        # Request/configuration rejections (Sarvam sends {"code": 422} error
+        # messages for a bad config payload; 1003/1007 are the WS unsupported-
+        # data close codes). These are NOT transient: they must surface as
+        # configuration errors instead of triggering engine fallback.
+        if code in (400, 422, 1003, 1007, 4400, 4422) or "invalid" in reason or "unsupported" in reason:
+            return "invalid_input"
         if "timeout" in reason:
             return "timeout"
         return "upstream"

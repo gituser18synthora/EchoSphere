@@ -193,6 +193,8 @@ embedding provider — no external API keys required. See
 ## Backend gaps
 
 Capabilities still without a backend (recording playback, voice sample
-synthesis, scheduled publish, knowledge connector OAuth, CSV export jobs,
-live call feed) remain behind feature flags in `src/services/flags.ts` —
-see `TODO_BACKEND.md`.
+synthesis, scheduled publish, knowledge connector OAuth and live call feed)
+remain behind feature flags in `src/services/flags.ts` — see
+`TODO_BACKEND.md`. Analytics, subscriptions, invoices and tenant conversations
+use authorized CSV/XLSX downloads; invoice summaries and original knowledge
+documents preserve their native PDF/original formats.
