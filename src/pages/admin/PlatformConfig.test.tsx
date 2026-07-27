@@ -789,9 +789,23 @@ describe("PlatformConfig — pagination keeps the current page across mutations"
 const PRICING_ROW = {
   id: "ppr_1", providerCode: "openai", capability: "llm", modelCode: "gpt-4o-mini",
   component: "tokens", unit: "per_1k_tokens", unitPrice: "0.0006000000",
-  currencyCode: "USD", effectiveFrom: "2026-07-20T00:00:00Z", status: "active",
-  sortOrder: 0, usageCount: 0, name: "openai/gpt-4o-mini · tokens",
+  sellingPrice: null, currencyCode: "USD", effectiveFrom: "2026-07-20T00:00:00Z",
+  status: "active", sortOrder: 0, usageCount: 0, name: "openai/gpt-4o-mini · tokens",
 };
+
+const PRICING_ROW_INR = {
+  id: "ppr_2", providerCode: "sarvam", capability: "stt", modelCode: "saarika:v2.5",
+  component: "audio_seconds", unit: "per_hour", unitPrice: "30.0000000000",
+  sellingPrice: "45.0000000000", currencyCode: "INR",
+  effectiveFrom: "2026-07-20T00:00:00Z", status: "active",
+  sortOrder: 0, usageCount: 0, name: "sarvam/saarika:v2.5 · audio_seconds",
+};
+
+const PRICING_PROVIDERS = [
+  { id: "prov_1", code: "sarvam", name: "Sarvam AI", status: "active", kind: "tts" },
+  { id: "prov_2", code: "elevenlabs", name: "ElevenLabs", status: "active", kind: "tts" },
+  { id: "prov_3", code: "deepgram", name: "Deepgram", status: "inactive", kind: "stt" },
+];
 
 describe("Provider pricing configuration", () => {
   beforeEach(() => {
@@ -799,35 +813,135 @@ describe("Provider pricing configuration", () => {
     clearProviderCatalogCache();
     installDefaultMocks();
     listMaster.mockImplementation((mtype: string) => {
-      if (mtype === "provider-pricing") return Promise.resolve(paged([PRICING_ROW]) as never);
+      if (mtype === "provider-pricing") {
+        return Promise.resolve(paged([PRICING_ROW, PRICING_ROW_INR]) as never);
+      }
+      if (mtype === "providers") return Promise.resolve(paged(PRICING_PROVIDERS) as never);
+      if (mtype === "provider-models") {
+        return Promise.resolve(paged([
+          { id: "pm_1", code: "bulbul:v3", name: "Bulbul v3 (streaming)", status: "active" },
+          { id: "pm_2", code: "bulbul:v2", name: "Bulbul v2 (legacy)", status: "inactive" },
+        ]) as never);
+      }
       return Promise.resolve(paged([]) as never);
     });
     createMaster.mockResolvedValue({ id: "new" } as never);
   });
 
-  it("adds a provider price with its billing unit", async () => {
-    const user = userEvent.setup();
+  async function openPricingTab(user: ReturnType<typeof userEvent.setup>) {
     render(<PlatformConfig />);
     await user.click(screen.getByText("Provider Pricing"));
     await screen.findByText("openai");
+  }
 
+  it("renders human-readable units and the tenant price column", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+    expect(screen.getByRole("columnheader", { name: /provider cost/i })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /tenant price/i })).toBeInTheDocument();
+    // $0.0006 per 1K tokens — the unit is spelled out, never a raw code.
+    expect(screen.getByText("per 1K tokens")).toBeInTheDocument();
+    expect(screen.queryByText("per_1k_tokens")).not.toBeInTheDocument();
+    // INR per-hour row shows both the provider cost and the selling price.
+    expect(screen.getAllByText("per hour")).toHaveLength(2);
+  });
+
+  it("adds a price through capability-driven provider/model selects", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
     await user.click(screen.getByRole("button", { name: /add provider price/i }));
-    await screen.findByRole("dialog", { name: "Add provider price" });
+    const dialog = await screen.findByRole("dialog", { name: "Add provider price" });
+    const form = within(dialog);
 
-    await user.selectOptions(screen.getByLabelText("Capability"), "tts");
-    await user.type(screen.getByLabelText("Provider code"), "sarvam");
-    await user.type(screen.getByLabelText("Model code"), "bulbul:v3");
-    await user.selectOptions(screen.getByLabelText("Component"), "characters");
-    await user.selectOptions(screen.getByLabelText("Pricing unit"), "per_1k_characters");
-    await user.type(screen.getByLabelText("Unit price"), "0.015");
-    await user.click(screen.getByRole("button", { name: "Create" }));
+    await user.selectOptions(form.getByLabelText("Capability"), "tts");
+    const providerSelect = form.getByLabelText("Provider");
+    await waitFor(() => expect(providerSelect).toBeEnabled());
+    await user.selectOptions(providerSelect, "sarvam");
+    const modelSelect = form.getByLabelText("Model");
+    await waitFor(() => expect(modelSelect).toBeEnabled());
+    // Governance-inactive catalog models stay priceable, labelled as inactive.
+    expect(within(modelSelect).getByRole("option", { name: /Bulbul v2 \(legacy\) \(inactive\)/ })).toBeInTheDocument();
+    await user.selectOptions(modelSelect, "bulbul:v3");
+
+    await user.selectOptions(form.getByLabelText("Component"), "characters");
+    await user.selectOptions(form.getByLabelText("Pricing unit"), "per_1k_characters");
+    await user.type(form.getByLabelText("Provider cost"), "3");
+    await user.type(form.getByLabelText("Tenant price"), "4.5");
+    await user.selectOptions(form.getByLabelText("Price currency"), "INR");
+    await user.click(form.getByRole("button", { name: "Create" }));
 
     await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
     expect(createMaster.mock.calls[0][0]).toBe("provider-pricing");
     expect(createMaster.mock.calls[0][1]).toMatchObject({
       capability: "tts", providerCode: "sarvam", modelCode: "bulbul:v3",
-      component: "characters", unit: "per_1k_characters", unitPrice: 0.015,
-      currencyCode: "USD",
+      component: "characters", unit: "per_1k_characters",
+      unitPrice: 3, sellingPrice: 4.5, currencyCode: "INR",
     });
+  });
+
+  it("offers the per-1M-characters and per-hour units", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+    await user.click(screen.getByRole("button", { name: /add provider price/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Add provider price" });
+    const unit = within(dialog).getByLabelText("Pricing unit");
+    const labels = within(unit).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toContain("per 1M characters");
+    expect(labels).toContain("per hour");
+    expect(labels).toContain("per minute");
+  });
+
+  it("a capability change clears the dependent provider/model selections", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+    await user.click(screen.getByRole("button", { name: /add provider price/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Add provider price" });
+    const form = within(dialog);
+
+    await user.selectOptions(form.getByLabelText("Capability"), "tts");
+    const providerSelect = form.getByLabelText("Provider");
+    await waitFor(() => expect(providerSelect).toBeEnabled());
+    await user.selectOptions(providerSelect, "sarvam");
+    expect(providerSelect).toHaveValue("sarvam");
+
+    await user.selectOptions(form.getByLabelText("Capability"), "stt");
+    await waitFor(() => expect(form.getByLabelText("Provider")).not.toHaveValue("sarvam"));
+  });
+
+  it("telephony providers stay free-form codes", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+    await user.click(screen.getByRole("button", { name: /add provider price/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Add provider price" });
+    const form = within(dialog);
+    await user.selectOptions(form.getByLabelText("Capability"), "telephony");
+    const provider = form.getByLabelText("Provider");
+    expect(provider.tagName).toBe("INPUT");
+    await user.type(provider, "twilio");
+    expect(provider).toHaveValue("twilio");
+  });
+
+  it("filters the list by capability and provider server-side", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+
+    await user.selectOptions(screen.getByLabelText("Filter prices by capability"), "stt");
+    await waitFor(() => {
+      const call = listMaster.mock.calls.filter(([m]) => m === "provider-pricing").at(-1);
+      expect(call?.[1]).toMatchObject({ capability: "stt" });
+    });
+
+    // With STT selected only STT-capable providers are offered.
+    const providerFilter = screen.getByLabelText("Filter prices by provider");
+    const names = within(providerFilter).getAllByRole("option").map((o) => o.textContent);
+    expect(names).toContain("Deepgram");
+    expect(names).not.toContain("ElevenLabs");
+
+    await user.selectOptions(providerFilter, "deepgram");
+    await waitFor(() => {
+      const call = listMaster.mock.calls.filter(([m]) => m === "provider-pricing").at(-1);
+      expect(call?.[1]).toMatchObject({ capability: "stt", provider: "deepgram" });
+    });
+    expect(screen.getByText("2 filters active")).toBeInTheDocument();
   });
 });

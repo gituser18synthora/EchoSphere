@@ -15,6 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from shared.billing.currency import effective_rate
 from shared.models.billing_models import BASE_CURRENCY, ProviderPricing
 
 # Raw quantity -> priced unit divisor / multiplier.
@@ -26,8 +27,10 @@ _UNIT_DIVISORS: dict[str, Decimal] = {
     "per_1m_tokens": Decimal(1_000_000),
     "per_character": Decimal(1),
     "per_1k_characters": Decimal(1000),
+    "per_1m_characters": Decimal(1_000_000),
     "per_second": Decimal(1),
     "per_minute": Decimal(60),
+    "per_hour": Decimal(3600),
     "per_request": Decimal(1),
 }
 
@@ -44,9 +47,17 @@ class PricedComponent:
     component: str
     quantity: Decimal
     unit: str
+    # Native provider price/currency as configured (Sarvam quotes INR).
     unit_price: Decimal
     currency: str
+    # Cost is always in USD; non-USD rows convert through fx_rate (USD->native).
     cost: Decimal
+    # The exact provider_pricing row used — auditors can reproduce the math.
+    price_id: str | None = None
+    # Platform selling price and the resulting tenant charge (0 = no markup).
+    selling_price: Decimal | None = None
+    charge: Decimal = Decimal(0)
+    fx_rate: Decimal | None = None
 
 
 def quantities_for(
@@ -147,14 +158,20 @@ def compute_cost(
     """Cost the usage quantities against configured pricing.
 
     Returns (total_cost_usd, priced components, components with no price).
-    Prices in a non-USD native currency are intentionally rejected for now:
-    provider pricing is normalized to USD before display conversions.
+    Each priced component also carries the tenant charge derived from the
+    row's optional selling price — total charge is the sum of `c.charge`.
+
+    Prices are stored in the provider's native currency (Sarvam publishes
+    INR-only rates). Non-USD rows convert to USD through the exchange rate
+    in force at `as_of`; with no configured rate the component is treated
+    as unpriced — a cost is never fabricated from a guessed rate.
     """
     as_of = as_of or datetime.utcnow()
     prices = _active_prices(db, provider_code, capability, model_code, as_of)
     priced: list[PricedComponent] = []
     missing: list[str] = []
     total = Decimal(0)
+    fx_cache: dict[str, Decimal | None] = {}
     for component, quantity in quantities.items():
         if quantity <= 0:
             continue
@@ -166,23 +183,44 @@ def compute_cost(
             if component != "requests" or not priced:
                 missing.append(component)
             continue
-        if (row.currency_code or BASE_CURRENCY) != BASE_CURRENCY:
-            missing.append(component)
-            continue
+        currency = row.currency_code or BASE_CURRENCY
+        fx_rate: Decimal | None = None
+        if currency != BASE_CURRENCY:
+            if currency not in fx_cache:
+                fx_cache[currency] = effective_rate(db, currency, as_of=as_of)
+            fx_rate = fx_cache[currency]
+            if fx_rate is None or fx_rate <= 0:
+                missing.append(component)
+                continue
         divisor = _UNIT_DIVISORS.get(row.unit)
         if divisor is None:
             missing.append(component)
             continue
+
+        def _to_usd(price_native: Decimal) -> Decimal:
+            amount = quantity / divisor * price_native
+            if fx_rate is not None:
+                amount = amount / fx_rate  # fx_rate is USD -> native
+            return amount.quantize(_COST_QUANT, ROUND_HALF_UP)
+
         unit_price = Decimal(str(row.unit_price))
-        cost = (quantity / divisor * unit_price).quantize(_COST_QUANT, ROUND_HALF_UP)
+        cost = _to_usd(unit_price)
+        selling_price = (
+            Decimal(str(row.selling_price)) if row.selling_price is not None else None
+        )
+        charge = _to_usd(selling_price) if selling_price is not None else Decimal(0)
         priced.append(
             PricedComponent(
                 component=component,
                 quantity=quantity,
                 unit=row.unit,
                 unit_price=unit_price,
-                currency=BASE_CURRENCY,
+                currency=currency,
                 cost=cost,
+                price_id=row.id,
+                selling_price=selling_price,
+                charge=charge,
+                fx_rate=fx_rate,
             )
         )
         total += cost

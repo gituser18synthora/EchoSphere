@@ -278,7 +278,8 @@ _EDITABLE = {
     },
     "provider-pricing": {
         "provider_code", "capability", "model_code", "component", "unit",
-        "unit_price", "currency_code", "effective_from", "sort_order",
+        "unit_price", "selling_price", "currency_code", "effective_from",
+        "sort_order",
     },
 }
 
@@ -411,6 +412,8 @@ _AI_PROFILE_STACK = (
 _CLEARABLE: dict[str, set[str]] = {
     "ai-profiles": {f for pair in _AI_PROFILE_STACK for f in pair[:2]} | {"default_voice"},
     "voices": {"locale", "provider_voice_id", "accent"},
+    # Clearing the selling price returns the row to cost-only (no markup).
+    "provider-pricing": {"selling_price"},
 }
 
 
@@ -748,6 +751,12 @@ def _validate_provider_pricing_payload(db: Session, payload: dict, effective, er
 
     _parse_effective_from(payload, errors)
     _positive_decimal(payload, "unit_price", "unitPrice", errors, max_value=1_000_000)
+    # Optional platform selling price; an explicit "" clears the markup.
+    if str(payload.get("selling_price") or "").strip() == "":
+        if "selling_price" in payload:
+            payload["selling_price"] = None
+    else:
+        _positive_decimal(payload, "selling_price", "sellingPrice", errors, max_value=1_000_000)
 
     capability = effective("capability")
     provider_code = effective("provider_code")
@@ -785,6 +794,30 @@ def _validate_provider_pricing_payload(db: Session, payload: dict, effective, er
                 "field": "providerCode",
                 "message": f"'{provider_code}' is not a configured {capability} provider.",
             })
+        else:
+            # Model-level prices must match a catalog model of that provider
+            # and capability. Governance-inactive models stay priceable —
+            # their historical usage still needs costing.
+            model_code = str(
+                payload.get("model_code")
+                if "model_code" in payload
+                else getattr(current, "model_code", "") or ""
+            ).strip()
+            if model_code:
+                model_row = db.scalar(
+                    select(ProviderModel).where(
+                        ProviderModel.capability == capability,
+                        ProviderModel.provider_code == provider_code,
+                        ProviderModel.code == model_code,
+                        ProviderModel.is_deleted.is_(False),
+                    )
+                )
+                if model_row is None:
+                    errors.append({
+                        "field": "modelCode",
+                        "message": f"Model '{model_code}' is not a configured "
+                                   f"{capability} model of provider '{provider_code}'.",
+                    })
 
     component = effective("component")
     if component is not None or current is None:
@@ -805,17 +838,24 @@ def _validate_provider_pricing_payload(db: Session, payload: dict, effective, er
     if currency_code is not None:
         currency_code = str(currency_code).strip().upper()
         payload["currency_code"] = currency_code
-        if currency_code != BASE_CURRENCY:
-            errors.append({
-                "field": "currencyCode",
-                "message": f"Provider pricing is normalized to {BASE_CURRENCY}; display "
-                           "currencies are converted through exchange rates.",
-            })
-        elif _active_currency(db, currency_code) is None:
+        if _active_currency(db, currency_code) is None:
             errors.append({
                 "field": "currencyCode",
                 "message": f"'{currency_code}' is not an active currency.",
             })
+        elif currency_code != BASE_CURRENCY:
+            # Native non-USD prices (e.g. Sarvam's INR rates) cost through the
+            # USD->currency exchange rate at usage time — require one up front
+            # so events never silently land as missing_price.
+            from shared.billing.currency import effective_rate
+
+            if effective_rate(db, currency_code) is None:
+                errors.append({
+                    "field": "currencyCode",
+                    "message": f"No {BASE_CURRENCY}→{currency_code} exchange rate is "
+                               "configured. Add one under Regional & Currency Settings "
+                               "before pricing in this currency.",
+                })
 
     if "model_code" in payload:
         payload["model_code"] = str(payload["model_code"] or "").strip()
@@ -1029,8 +1069,8 @@ def _user_names(db: Session, rows: list) -> dict[str, str]:
 def list_master(
     mtype: str,
     kind: str | None = Query(None),  # providers only
-    capability: str | None = Query(None),  # provider-models only
-    provider: str | None = Query(None),  # voices + provider-models
+    capability: str | None = Query(None),  # provider-models + provider-pricing
+    provider: str | None = Query(None),  # voices + provider-models + provider-pricing
     gender: str | None = Query(None),  # voices only
     language: str | None = Query(None),  # voices only (locale prefix or languages[])
     status_filter: str | None = Query(None, alias="status", pattern="^(active|inactive|archived)$"),
@@ -1053,6 +1093,11 @@ def list_master(
             stmt = stmt.where(ProviderModel.capability == capability)
         if provider:
             stmt = stmt.where(ProviderModel.provider_code == provider)
+    if mtype == "provider-pricing":
+        if capability:
+            stmt = stmt.where(ProviderPricing.capability == capability)
+        if provider:
+            stmt = stmt.where(ProviderPricing.provider_code == provider)
     if mtype == "voices":
         if provider:
             stmt = stmt.where(VoiceProfile.provider == provider)

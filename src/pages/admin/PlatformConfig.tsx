@@ -59,10 +59,15 @@ interface FieldDef {
   section?: string;
   /** provider/model fields: which catalog capability they configure. */
   capability?: VoiceCapability;
+  /** provider/model fields whose capability is itself a form value (pricing):
+      the form key holding the selected capability. */
+  capabilityKey?: string;
   /** model fields: the form key holding the selected provider. */
   providerKey?: string;
   /** Initial value in the add form (overrides the per-type defaults). */
   defaultValue?: string;
+  /** An explicit empty value is submitted on edit to clear the column. */
+  clearable?: boolean;
 }
 
 interface TypeSpec {
@@ -73,6 +78,7 @@ interface TypeSpec {
   fields: FieldDef[];
   kindFilter?: boolean;
   voiceFilters?: boolean;
+  pricingFilters?: boolean;
 }
 
 const text = (key: string, label: string, opts: Partial<FieldDef> = {}): FieldDef =>
@@ -93,6 +99,38 @@ const DEFAULT_CURRENCY = "USD";
 
 const currencySymbol = (code: unknown): string =>
   CURRENCIES.find((c) => c.code === String(code ?? ""))?.symbol ?? "";
+
+/* Human labels for pricing units — must cover the backend PRICING_UNITS. The
+   unit is part of the price ("$0.006 per minute" vs "per 1M characters"), so
+   it is always rendered next to the amount, never as a bare code. */
+const PRICING_UNITS = [
+  { value: "per_token", label: "per token" },
+  { value: "per_1k_tokens", label: "per 1K tokens" },
+  { value: "per_1m_tokens", label: "per 1M tokens" },
+  { value: "per_character", label: "per character" },
+  { value: "per_1k_characters", label: "per 1K characters" },
+  { value: "per_1m_characters", label: "per 1M characters" },
+  { value: "per_second", label: "per second" },
+  { value: "per_minute", label: "per minute" },
+  { value: "per_hour", label: "per hour" },
+  { value: "per_request", label: "per request" },
+] as const;
+
+const unitLabel = (unit: unknown): string =>
+  PRICING_UNITS.find((u) => u.value === String(unit ?? ""))?.label
+    ?? String(unit ?? "").replaceAll("_", " ");
+
+/** "$0.006 per minute" — amount with its currency symbol and unit. */
+function PriceCell({ amount, currency, unit }: { amount: unknown; currency: unknown; unit: unknown }) {
+  if (amount === null || amount === undefined || amount === "") return <span className="t-sub">—</span>;
+  return (
+    <span className="t-num">
+      {currencySymbol(currency) || String(currency ?? "")}
+      {Number(amount).toLocaleString(undefined, { maximumFractionDigits: 10 })}{" "}
+      <span className="t-micro">{unitLabel(unit)}</span>
+    </span>
+  );
+}
 
 const nameCol: Column<Row> = {
   key: "name", header: "Name", sortValue: (r) => String(r.name ?? ""),
@@ -427,23 +465,28 @@ const ALL_SPECS: TypeSpec[] = [
   },
   {
     mtype: "provider-pricing", label: "Provider Pricing", singular: "provider price",
+    pricingFilters: true,
     columns: [
       { key: "providerCode", header: "Provider", sortValue: (r) => String(r.providerCode ?? ""),
         render: (r) => <span className="t-strong">{String(r.providerCode ?? "")}</span> },
       { key: "modelCode", header: "Model", render: (r) => <span className="t-micro">{String(r.modelCode || "—")}</span> },
       { key: "capability", header: "Capability", render: (r) => <span className="tag">{String(r.capability ?? "").toUpperCase()}</span> },
       { key: "component", header: "Component", render: (r) => <span className="t-micro">{String(r.component ?? "")}</span> },
-      { key: "unitPrice", header: "Price", align: "right", sortValue: (r) => Number(r.unitPrice ?? 0),
-        render: (r) => <span className="t-num">{currencySymbol(r.currencyCode) || String(r.currencyCode ?? "")}{Number(r.unitPrice ?? 0).toLocaleString(undefined, { maximumFractionDigits: 10 })} <span className="t-micro">{String(r.unit ?? "").replaceAll("_", " ")}</span></span> },
+      { key: "unitPrice", header: "Provider cost", align: "right", sortValue: (r) => Number(r.unitPrice ?? 0),
+        render: (r) => <PriceCell amount={r.unitPrice} currency={r.currencyCode} unit={r.unit} /> },
+      { key: "sellingPrice", header: "Tenant price", align: "right", sortValue: (r) => Number(r.sellingPrice ?? 0),
+        render: (r) => <PriceCell amount={r.sellingPrice ?? null} currency={r.currencyCode} unit={r.unit} /> },
       statusCol, orderCol,
     ],
     fields: [
       { key: "capability", label: "Capability", type: "select", required: true, createOnly: true, section: "Scope",
         options: ["llm", "embedding", "stt", "tts", "telephony"].map((c) => ({ value: c, label: c.toUpperCase() })) },
-      text("providerCode", "Provider code", { required: true, createOnly: true, section: "Scope",
-        hint: "Catalog code, e.g. openai, sarvam, elevenlabs." }),
-      text("modelCode", "Model code", { createOnly: true, section: "Scope",
-        hint: "Provider wire code, e.g. gpt-4o-mini or bulbul:v3. Leave empty for flat prices." }),
+      { key: "providerCode", label: "Provider", type: "provider", required: true, createOnly: true,
+        section: "Scope", capabilityKey: "capability",
+        hint: "Configured provider for the selected capability (telephony providers are free-form codes)." },
+      { key: "modelCode", label: "Model", type: "model", createOnly: true, section: "Scope",
+        capabilityKey: "capability", providerKey: "providerCode",
+        hint: "Catalog model the price applies to. Leave empty for flat provider-level prices." },
       { key: "component", label: "Component", type: "select", required: true, createOnly: true, section: "Billing unit",
         options: [
           { value: "input_tokens", label: "Input tokens" },
@@ -456,20 +499,13 @@ const ALL_SPECS: TypeSpec[] = [
           { value: "requests", label: "Requests" },
         ] },
       { key: "unit", label: "Pricing unit", type: "select", required: true, section: "Billing unit",
-        options: [
-          { value: "per_token", label: "Per token" },
-          { value: "per_1k_tokens", label: "Per 1K tokens" },
-          { value: "per_1m_tokens", label: "Per 1M tokens" },
-          { value: "per_character", label: "Per character" },
-          { value: "per_1k_characters", label: "Per 1K characters" },
-          { value: "per_second", label: "Per second" },
-          { value: "per_minute", label: "Per minute" },
-          { value: "per_request", label: "Per request" },
-        ] },
-      num("unitPrice", "Unit price", { required: true, step: 0.000001, section: "Billing unit",
-        hint: "Native provider price for one pricing unit." }),
-      { key: "currencyCode", label: "Price currency", type: "currency", readOnly: true, section: "Billing unit",
-        hint: "Provider pricing is normalized to USD; display currencies convert via exchange rates." },
+        options: PRICING_UNITS.map((u) => ({ value: u.value, label: u.label })) },
+      num("unitPrice", "Provider cost", { required: true, step: 0.000001, section: "Billing unit",
+        hint: "What the provider charges for one pricing unit (USD)." }),
+      num("sellingPrice", "Tenant price", { step: 0.000001, section: "Billing unit", clearable: true,
+        hint: "Optional platform selling price per unit charged to tenants. Leave empty for cost-only tracking." }),
+      { key: "currencyCode", label: "Price currency", type: "currency", section: "Billing unit",
+        hint: "The provider's native price currency (Sarvam quotes INR). Non-USD prices convert to USD through the configured exchange rate when usage is costed." },
       { key: "effectiveFrom", label: "Effective from", type: "datetime", section: "Billing unit",
         hint: "UTC. Leave empty to take effect immediately." },
       num("sortOrder", "Order", { section: "Presentation" }),
@@ -599,9 +635,11 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
 
   const set = (key: string, value: unknown, extra: FormPatch = {}) => {
     const patch: FormPatch = { ...extra, [key]: value };
-    // A provider change invalidates its dependent model selection.
+    // A provider change invalidates its dependent model selection; a
+    // capability change invalidates both downstream selections (pricing).
     for (const f of spec.fields) {
       if (f.type === "model" && f.providerKey === key && form[f.key]) patch[f.key] = "";
+      if (f.capabilityKey === key && form[f.key]) patch[f.key] = "";
     }
     onChange(patch);
     // Stale API/client validation for this field is cleared as soon as it changes.
@@ -637,9 +675,9 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
         if (row && f.createOnly) continue;
         let value = form[f.key];
         if (f.type === "number") value = value === "" || value === null ? undefined : Number(value);
-        // Provider/model fields submit explicitly on edit so an emptied model
-        // clears the stored value instead of being silently skipped.
-        const clearable = f.type === "provider" || f.type === "model";
+        // Provider/model and explicitly clearable fields submit on edit so an
+        // emptied value clears the stored column instead of being skipped.
+        const clearable = f.type === "provider" || f.type === "model" || Boolean(f.clearable);
         if ((value === "" && !(row && clearable)) || value === undefined) continue;
         payload[f.key] = value;
       }
@@ -708,6 +746,35 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
             </option>
           ))}
         </select>
+      );
+    }
+    if ((f.type === "provider" || f.type === "model") && f.capabilityKey) {
+      /* Pricing scope: the capability is a form value. AI capabilities offer
+         the full catalog (including governance-inactive rows — their history
+         still needs pricing); telephony providers stay free-form codes. */
+      const cap = String(form[f.capabilityKey] ?? "");
+      const isAiCap = cap === "stt" || cap === "tts" || cap === "llm" || cap === "embedding";
+      if (!isAiCap) {
+        return (
+          <input className="input" type="text" value={String(form[f.key] ?? "")} {...common}
+            placeholder={cap ? "Free-form code" : "Select a capability first"}
+            disabled={locked || !cap}
+            aria-invalid={Boolean(fieldErrors[f.key]) || undefined}
+            onChange={(e) => set(f.key, e.target.value)} />
+        );
+      }
+      if (f.type === "provider") {
+        return (
+          <MasterCatalogSelect mtype="providers" capability={cap} label={f.label}
+            value={String(form[f.key] ?? "")} disabled={locked}
+            onChange={(code) => set(f.key, code)} />
+        );
+      }
+      return (
+        <MasterCatalogSelect mtype="provider-models" capability={cap} label={f.label}
+          provider={String(form[f.providerKey ?? ""] ?? "")}
+          value={String(form[f.key] ?? "")} disabled={locked}
+          onChange={(code) => set(f.key, code)} />
       );
     }
     if (f.type === "provider" && f.capability) {
@@ -1206,6 +1273,134 @@ function VoiceProviderSelect({ value, onChange, disabled, label }: {
   );
 }
 
+/* ---------- Pricing: master-data-backed provider/model selects ---------- */
+
+/** Provider/model options for pricing come from the master-data lists, not
+    the runtime catalog: Super Admin also prices governance-inactive rows
+    (their recorded usage still needs costing), which /providers/catalog
+    deliberately hides. */
+function MasterCatalogSelect({ mtype, capability, provider, value, onChange, disabled, label }: {
+  mtype: "providers" | "provider-models";
+  capability: string;
+  /** provider-models only: the provider whose models are listed. */
+  provider?: string;
+  value: string;
+  onChange: (code: string) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  const [options, setOptions] = useState<{ code: string; name: string; status: string }[] | null>(null);
+  const needsProvider = mtype === "provider-models";
+  useEffect(() => {
+    let alive = true;
+    if (needsProvider && !provider) { setOptions([]); return () => { alive = false; }; }
+    setOptions(null);
+    listMaster<Row>(mtype, {
+      pageSize: 100,
+      kind: mtype === "providers" ? capability : undefined,
+      capability: mtype === "provider-models" ? capability : undefined,
+      provider: mtype === "provider-models" ? provider : undefined,
+    })
+      .then((r) => {
+        if (!alive) return;
+        setOptions(r.items.map((p) => ({
+          code: String(p.code ?? ""), name: String(p.name ?? p.code ?? ""),
+          status: String(p.status ?? "active"),
+        })));
+      })
+      .catch(() => { if (alive) setOptions([]); });
+    return () => { alive = false; };
+  }, [mtype, capability, provider, needsProvider]);
+
+  const loading = options === null;
+  const known = (options ?? []).some((o) => o.code === value);
+  return (
+    <select className="select" value={value} aria-label={label}
+      disabled={disabled || loading || (needsProvider && !provider)}
+      title={needsProvider && !provider ? "Select a provider first" : undefined}
+      onChange={(e) => onChange(e.target.value)}>
+      <option value="">
+        {needsProvider && !provider ? "Select a provider first" : loading ? "Loading…" : "—"}
+      </option>
+      {value && !loading && !known && <option value={value}>{value} (not in catalog)</option>}
+      {(options ?? []).map((o) => (
+        <option key={o.code} value={o.code}>
+          {o.name}{o.status !== "active" ? " (inactive)" : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/* ---------- Pricing filter bar ---------- */
+
+interface PricingFilterState {
+  provider: string;
+  capability: string;
+}
+
+const EMPTY_PRICING_FILTERS: PricingFilterState = { provider: "", capability: "" };
+
+function PricingFilters({ value, onChange }: {
+  value: PricingFilterState;
+  onChange: (next: PricingFilterState) => void;
+}) {
+  const [providers, setProviders] = useState<{ code: string; name: string; kind: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    listMaster<Row>("providers", { pageSize: 100 })
+      .then((r) => {
+        if (!alive) return;
+        setProviders(r.items.map((p) => ({
+          code: String(p.code ?? ""), name: String(p.name ?? p.code ?? ""), kind: String(p.kind ?? ""),
+        })));
+      })
+      .catch(() => { if (alive) setProviders([]); });
+    return () => { alive = false; };
+  }, []);
+
+  /* One entry per code; scoped to the chosen capability when one is set. */
+  const options = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const p of providers) {
+      if (value.capability && p.kind !== value.capability) continue;
+      if (!seen.has(p.code)) seen.set(p.code, p.name);
+    }
+    return [...seen.entries()].map(([code, name]) => ({ code, name }));
+  }, [providers, value.capability]);
+
+  const active = Object.values(value).filter(Boolean).length;
+  return (
+    <>
+      <select className="select" style={{ width: 160 }} value={value.capability}
+        aria-label="Filter prices by capability"
+        onChange={(e) => onChange({ ...value, capability: e.target.value, provider: "" })}>
+        <option value="">All capabilities</option>
+        {["stt", "tts", "llm", "embedding", "telephony"].map((c) => (
+          <option key={c} value={c}>{c.toUpperCase()}</option>
+        ))}
+      </select>
+      <select className="select" style={{ width: 170 }} value={value.provider}
+        aria-label="Filter prices by provider"
+        onChange={(e) => onChange({ ...value, provider: e.target.value })}>
+        <option value="">All providers</option>
+        {value.provider && !options.some((o) => o.code === value.provider) && (
+          <option value={value.provider}>{value.provider}</option>
+        )}
+        {options.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
+      </select>
+      {active > 0 && (
+        <span className="row gap-6" style={{ alignItems: "center" }}>
+          <span className="tag">{active} filter{active === 1 ? "" : "s"} active</span>
+          <Button size="sm" variant="ghost" icon="x" onClick={() => onChange(EMPTY_PRICING_FILTERS)}>
+            Clear filters
+          </Button>
+        </span>
+      )}
+    </>
+  );
+}
+
 /* ---------- Voice filter bar ---------- */
 
 interface VoiceFilterState {
@@ -1279,6 +1474,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [kind, setKind] = useState("");
   const [voiceFilters, setVoiceFilters] = useState<VoiceFilterState>(EMPTY_VOICE_FILTERS);
+  const [pricingFilters, setPricingFilters] = useState<PricingFilterState>(EMPTY_PRICING_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Row | null | "new">(null);
   const [editForm, setEditForm] = useState<Record<string, unknown> | null>(null);
@@ -1306,9 +1502,11 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
       const result = await listMaster<Row>(spec.mtype, {
         search: debouncedSearch || undefined, page, pageSize,
         kind: spec.kindFilter && kind ? kind : undefined,
-        provider: spec.voiceFilters ? voiceFilters.provider || undefined : undefined,
+        provider: spec.voiceFilters ? voiceFilters.provider || undefined
+          : spec.pricingFilters ? pricingFilters.provider || undefined : undefined,
         gender: spec.voiceFilters ? voiceFilters.gender || undefined : undefined,
         status: spec.voiceFilters ? voiceFilters.status || undefined : undefined,
+        capability: spec.pricingFilters ? pricingFilters.capability || undefined : undefined,
       });
       if (seq !== loadSeq.current) return;
       const totalCount = result.meta?.total ?? result.items.length;
@@ -1328,7 +1526,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
       setError(e instanceof Error ? e.message : "Failed to load.");
       setRows([]);
     }
-  }, [spec.mtype, spec.kindFilter, spec.voiceFilters, debouncedSearch, page, kind, voiceFilters]);
+  }, [spec.mtype, spec.kindFilter, spec.voiceFilters, spec.pricingFilters, debouncedSearch, page, kind, voiceFilters, pricingFilters]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -1426,7 +1624,9 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
   ], [spec, canManage, openEdit, doStatus, doDuplicate]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const filtersActive = Boolean(debouncedSearch) || (spec.voiceFilters && Object.values(voiceFilters).some(Boolean));
+  const filtersActive = Boolean(debouncedSearch)
+    || (spec.voiceFilters && Object.values(voiceFilters).some(Boolean))
+    || (spec.pricingFilters && Object.values(pricingFilters).some(Boolean));
 
   const isAdd = editing === "new";
   const editorForm = isAdd ? (addDraft ?? buildInitialForm(spec)) : editForm;
@@ -1449,6 +1649,9 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         )}
         {spec.voiceFilters && (
           <VoiceFilters value={voiceFilters} onChange={(next) => { setVoiceFilters(next); setPage(1); }} />
+        )}
+        {spec.pricingFilters && (
+          <PricingFilters value={pricingFilters} onChange={(next) => { setPricingFilters(next); setPage(1); }} />
         )}
         <div className="grow" />
         <Button variant="primary" icon="plus" disabled={!canManage}

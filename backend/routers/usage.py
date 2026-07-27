@@ -17,6 +17,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from backend.core.deps import (
+    assert_tenant_access,
     get_current_user,
     require_super_admin,
     resolve_tenant_id,
@@ -45,6 +46,7 @@ _QUANTITY_COLUMNS = (
     func.coalesce(func.sum(UsageEvent.characters), 0).label("characters"),
     func.coalesce(func.sum(UsageEvent.audio_seconds), 0).label("audio_seconds"),
     func.coalesce(func.sum(UsageEvent.cost_usd), 0).label("cost_usd"),
+    func.coalesce(func.sum(UsageEvent.charge_usd), 0).label("charge_usd"),
     func.sum(
         case((UsageEvent.pricing_status == "missing_price", 1), else_=0)
     ).label("missing_price_events"),
@@ -61,6 +63,7 @@ def _row_payload(row) -> dict:
         "characters": int(row.characters),
         "audioSeconds": float(row.audio_seconds),
         "costUsd": float(row.cost_usd),
+        "chargeUsd": float(row.charge_usd),
         "missingPriceEvents": int(row.missing_price_events or 0),
     }
 
@@ -114,7 +117,7 @@ def usage_summary(
         capabilities.setdefault(cap, {
             "requests": 0, "inputTokens": 0, "outputTokens": 0, "cachedTokens": 0,
             "totalTokens": 0, "characters": 0, "audioSeconds": 0.0, "costUsd": 0.0,
-            "missingPriceEvents": 0,
+            "chargeUsd": 0.0, "missingPriceEvents": 0,
         })
 
     total_usd = sum(Decimal(str(row.cost_usd)) for row in by_capability) or Decimal(0)
@@ -200,6 +203,74 @@ def platform_usage(
                 **_row_payload(row),
             }
             for row in by_provider_model
+        ],
+    })
+
+
+@router.get("/usage/sessions/{session_id}")
+def session_usage(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Per-call cost breakdown: every usage event of one voice session.
+
+    STT and TTS stay separately auditable (quantities, unit, rate, pricing
+    snapshot per event); the aggregate answers "what did this call cost" —
+    aiVoiceCostUsd is the STT + TTS subtotal.
+    """
+    events = db.execute(
+        select(UsageEvent)
+        .where(UsageEvent.session_id == session_id)
+        .order_by(UsageEvent.occurred_at, UsageEvent.id)
+    ).scalars().all()
+    if not events:
+        from shared.errors import NotFoundError
+
+        raise NotFoundError("Session usage")
+    assert_tenant_access(user, events[0].tenant_id)
+
+    by_capability: dict[str, Decimal] = {}
+    total_cost = Decimal(0)
+    total_charge = Decimal(0)
+    for event in events:
+        cost = Decimal(str(event.cost_usd))
+        by_capability[event.capability] = by_capability.get(event.capability, Decimal(0)) + cost
+        total_cost += cost
+        total_charge += Decimal(str(event.charge_usd))
+
+    ai_voice = by_capability.get("stt", Decimal(0)) + by_capability.get("tts", Decimal(0))
+    return ok({
+        "sessionId": session_id,
+        "tenantId": events[0].tenant_id,
+        "botId": events[0].bot_id,
+        "baseCurrency": BASE_CURRENCY,
+        "totalCostUsd": float(total_cost),
+        "totalChargeUsd": float(total_charge),
+        "aiVoiceCostUsd": float(ai_voice),
+        "costByCapability": {cap: float(v) for cap, v in by_capability.items()},
+        "totalCostConverted": _converted(db, total_cost),
+        "events": [
+            {
+                "id": event.id,
+                "capability": event.capability,
+                "provider": event.provider_code,
+                "model": event.model_code or "",
+                "voice": event.voice_code or "",
+                "occurredAt": event.occurred_at.isoformat() + "Z",
+                "requests": event.requests,
+                "inputTokens": event.input_tokens,
+                "outputTokens": event.output_tokens,
+                "totalTokens": event.total_tokens,
+                "characters": event.characters,
+                "audioSeconds": float(event.audio_seconds),
+                "usageSource": event.usage_source,
+                "pricingStatus": event.pricing_status,
+                "pricingSnapshot": event.pricing_snapshot,
+                "costUsd": float(event.cost_usd),
+                "chargeUsd": float(event.charge_usd),
+            }
+            for event in events
         ],
     })
 

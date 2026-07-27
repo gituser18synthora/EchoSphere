@@ -357,18 +357,45 @@ CURRENCIES = [
     ("AED", "UAE Dirham", "د.إ", 2, False),  # already a supported plan currency
 ]
 
-# Provider prices carried over from the existing approved-model registry
-# (MODELS above) — the only real prices the platform already had. Blended
-# per-1k-token rates; Super Admin refines these (e.g. input/output split)
-# under Platform Configuration → Provider Pricing. STT/TTS prices are NOT
-# invented here — they surface as "Pricing unavailable" until configured.
+# Provider prices. LLM/embedding rows are carried over from the existing
+# approved-model registry (MODELS above). STT/TTS rows were verified against
+# the providers' official pricing pages on 2026-07-27:
+# - Sarvam (sarvam.ai/api-pricing, INR only, no official USD price):
+#   STT (saarika:v2.5) and STT-Translate (saaras:v3) ₹30/hour of audio,
+#   charged per second rounded up; TTS bulbul:v3 ₹30 per 10K characters
+#   ("beta pricing") = ₹3 per 1K; bulbul:v2 ₹15/10K = ₹1.5 per 1K.
+#   INR prices convert to USD via the Super-Admin-managed exchange rate at
+#   usage time — rates are never hardcoded here.
+# - OpenAI (developers.openai.com/api/docs/models/whisper-1):
+#   whisper-1 $0.006 per minute.
+# - Deepgram (deepgram.com/pricing): nova-3 streaming pay-as-you-go
+#   $0.0058/min multilingual (mono-English is $0.0048/min — the platform is
+#   multilingual, so the multilingual rate applies); nova-2 streaming
+#   $0.35/hour (FAQ: "unchanged rates for existing deployments"); true
+#   per-second billing, no round-up.
+# - ElevenLabs (elevenlabs.io/pricing/api): Flash/Turbo v2.5 API usage
+#   $0.05 per 1K characters, billed in USD.
+# Super Admin updates these under Platform Configuration → Provider Pricing;
+# usage events snapshot the price they were costed with, so historical costs
+# never change.
 PROVIDER_PRICING = [
-    # (provider_code, capability, model_code, component, unit, unit_price)
-    ("openai", "llm", "gpt-4o-mini", "tokens", "per_1k_tokens", "0.0006"),
-    ("openai", "llm", "gpt-4o", "tokens", "per_1k_tokens", "0.005"),
-    ("openai", "llm", "gpt-4.1-mini", "tokens", "per_1k_tokens", "0.0007"),
-    ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1k_tokens", "0.00002"),
-    ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1k_tokens", "0.00013"),
+    # (provider_code, capability, model_code, component, unit, unit_price, currency)
+    ("openai", "llm", "gpt-4o-mini", "tokens", "per_1k_tokens", "0.0006", "USD"),
+    ("openai", "llm", "gpt-4o", "tokens", "per_1k_tokens", "0.005", "USD"),
+    ("openai", "llm", "gpt-4.1-mini", "tokens", "per_1k_tokens", "0.0007", "USD"),
+    ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1k_tokens", "0.00002", "USD"),
+    ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1k_tokens", "0.00013", "USD"),
+    # ── STT ──────────────────────────────────────────────────────────────
+    ("sarvam", "stt", "saarika:v2.5", "audio_seconds", "per_hour", "30", "INR"),
+    ("sarvam", "stt", "saaras:v3", "audio_seconds", "per_hour", "30", "INR"),
+    ("openai", "stt", "whisper-1", "audio_seconds", "per_minute", "0.006", "USD"),
+    ("deepgram", "stt", "nova-3", "audio_seconds", "per_minute", "0.0058", "USD"),
+    ("deepgram", "stt", "nova-2", "audio_seconds", "per_hour", "0.35", "USD"),
+    # ── TTS ──────────────────────────────────────────────────────────────
+    ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "3", "INR"),
+    ("sarvam", "tts", "bulbul:v2", "characters", "per_1k_characters", "1.5", "INR"),
+    ("elevenlabs", "tts", "eleven_flash_v2_5", "characters", "per_1k_characters", "0.05", "USD"),
+    ("elevenlabs", "tts", "eleven_turbo_v2_5", "characters", "per_1k_characters", "0.05", "USD"),
 ]
 
 SYSTEM_SETTINGS = [
@@ -610,7 +637,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                 created["currencies"] += 1
         db.flush()  # provider_pricing rows reference currencies.code
 
-        for provider_code, capability, model_code, component, unit, price in PROVIDER_PRICING:
+        for provider_code, capability, model_code, component, unit, price, currency in PROVIDER_PRICING:
             exists = db.scalar(
                 select(ProviderPricing).where(
                     ProviderPricing.provider_code == provider_code,
@@ -623,7 +650,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                 db.add(ProviderPricing(
                     id=new_id("ppr"), provider_code=provider_code, capability=capability,
                     model_code=model_code, component=component, unit=unit,
-                    unit_price=Decimal(price), currency_code="USD",
+                    unit_price=Decimal(price), currency_code=currency,
                 ))
                 created["provider_pricing"] += 1
 

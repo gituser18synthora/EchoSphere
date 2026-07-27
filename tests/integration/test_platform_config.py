@@ -801,3 +801,156 @@ def test_serializer_exposes_integer_sort_order(client, super_admin, mtype):
     assert items, f"expected seeded {mtype} rows to verify sortOrder"
     assert all(isinstance(i["sortOrder"], int) for i in items)
     assert all("sortOrder" in i for i in items)
+
+
+# ── Provider pricing: STT/TTS costing configuration ─────────────────────────
+
+
+class TestProviderPricingValidation:
+    """Super-Admin pricing CRUD: catalog compatibility, selling price,
+    currency/rate rules, capability/provider filters and authorization."""
+
+    def _create(self, client, headers, **overrides):
+        from datetime import datetime, timedelta
+
+        offset = overrides.pop("_offset_minutes", 0)
+        payload = {
+            "providerCode": "elevenlabs", "capability": "tts",
+            "modelCode": "eleven_flash_v2_5", "component": "characters",
+            "unit": "per_1m_characters", "unitPrice": "50",
+            "currencyCode": "USD",
+            "effectiveFrom": (
+                datetime.utcnow() - timedelta(days=30, minutes=offset)
+            ).isoformat(timespec="seconds"),
+        }
+        payload.update(overrides)
+        return client.post(f"{API}/master/provider-pricing", headers=headers, json=payload)
+
+    def test_model_must_belong_to_provider_and_capability(self, client, super_admin):
+        response = self._create(client, super_admin, providerCode="sarvam",
+                                modelCode="nova-3", capability="stt",
+                                component="audio_seconds", unit="per_hour")
+        assert response.status_code == 422
+        assert "not a configured stt model" in _field_errors(response)["modelCode"]
+
+    def test_governance_inactive_provider_and_model_are_priceable(self, client, super_admin):
+        # deepgram + nova-3 are catalogued but inactive (STT is Sarvam-only);
+        # their pricing must still be configurable ahead of rollout.
+        response = self._create(client, super_admin, providerCode="deepgram",
+                                capability="stt", modelCode="nova-3",
+                                component="audio_seconds", unit="per_minute",
+                                unitPrice="0.0058")
+        assert response.status_code == 201, response.json()
+        created = _data(response)
+        _track("provider_pricing", created["id"])
+        assert created["unit"] == "per_minute"
+
+    def test_per_1m_characters_unit_accepted_and_returned(self, client, super_admin):
+        response = self._create(client, super_admin, _offset_minutes=1)
+        assert response.status_code == 201, response.json()
+        created = _data(response)
+        _track("provider_pricing", created["id"])
+        assert created["unit"] == "per_1m_characters"
+        assert created["sellingPrice"] is None
+
+    def test_unknown_unit_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, unit="per_fortnight")
+        assert response.status_code == 422
+        assert "unit" in _field_errors(response)
+
+    def test_selling_price_must_be_positive(self, client, super_admin):
+        response = self._create(client, super_admin, sellingPrice="-1")
+        assert response.status_code == 422
+        assert "sellingPrice" in _field_errors(response)
+
+    def test_selling_price_saved_updated_and_cleared(self, client, super_admin):
+        created = _data(self._create(client, super_admin, _offset_minutes=2,
+                                     sellingPrice="75"))
+        _track("provider_pricing", created["id"])
+        assert created["sellingPrice"] is not None
+
+        updated = _data(client.patch(
+            f"{API}/master/provider-pricing/{created['id']}", headers=super_admin,
+            json={"sellingPrice": "80"},
+        ))
+        assert float(updated["sellingPrice"]) == 80.0
+
+        cleared = _data(client.patch(
+            f"{API}/master/provider-pricing/{created['id']}", headers=super_admin,
+            json={"sellingPrice": ""},
+        ))
+        assert cleared["sellingPrice"] is None
+
+    def test_non_usd_currency_requires_configured_exchange_rate(self, client, super_admin):
+        # AED is an active currency with no configured USD→AED rate.
+        response = self._create(client, super_admin, currencyCode="AED")
+        assert response.status_code == 422
+        assert "exchange rate" in _field_errors(response)["currencyCode"]
+
+    def test_capability_and_provider_filters(self, client, super_admin):
+        stt = _data(client.get(
+            f"{API}/master/provider-pricing?capability=stt&pageSize=100",
+            headers=super_admin))
+        assert stt and all(r["capability"] == "stt" for r in stt)
+        sarvam_tts = _data(client.get(
+            f"{API}/master/provider-pricing?capability=tts&provider=sarvam&pageSize=100",
+            headers=super_admin))
+        assert sarvam_tts
+        assert all(
+            r["capability"] == "tts" and r["providerCode"] == "sarvam"
+            for r in sarvam_tts
+        )
+
+    def test_seeded_stt_tts_prices_present(self, client, super_admin):
+        rows = _data(client.get(
+            f"{API}/master/provider-pricing?pageSize=200", headers=super_admin))
+
+        def has(provider, cap, model, unit, price, currency):
+            return any(
+                r["providerCode"] == provider and r["capability"] == cap
+                and r["modelCode"] == model and r["unit"] == unit
+                and float(r["unitPrice"]) == price and r["currencyCode"] == currency
+                for r in rows
+            )
+
+        # Official rates verified 2026-07-27 (see base_seed.PROVIDER_PRICING).
+        assert has("sarvam", "stt", "saarika:v2.5", "per_hour", 30.0, "INR")
+        assert has("sarvam", "stt", "saaras:v3", "per_hour", 30.0, "INR")
+        assert has("sarvam", "tts", "bulbul:v3", "per_1k_characters", 3.0, "INR")
+        assert has("openai", "stt", "whisper-1", "per_minute", 0.006, "USD")
+        assert has("deepgram", "stt", "nova-3", "per_minute", 0.0058, "USD")
+        assert has("deepgram", "stt", "nova-2", "per_hour", 0.35, "USD")
+        assert has("elevenlabs", "tts", "eleven_flash_v2_5", "per_1k_characters", 0.05, "USD")
+        assert has("elevenlabs", "tts", "eleven_turbo_v2_5", "per_1k_characters", 0.05, "USD")
+
+    def test_pricing_mutations_are_super_admin_only(self, client, super_admin):
+        from sqlalchemy import select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.ids import new_id
+        from shared.models import Role, Tenant, User
+
+        session = get_sessionmaker()()
+        try:
+            role = session.execute(
+                select(Role).where(Role.code == "tenant_admin")
+            ).scalar_one()
+            tenant = Tenant(id=new_id("tn"), name=f"Pricing T {_SUFFIX}",
+                            code=f"prc_{_SUFFIX}",
+                            domain=f"pricing-{_SUFFIX}.example.test", status="active")
+            session.add(tenant)
+            session.flush()
+            user = User(id=new_id("usr"), email=f"pricing.{_SUFFIX}@example.test",
+                        name="Pricing Tenant Admin", password_hash="x",
+                        role_id=role.id, tenant_id=tenant.id, status="active")
+            session.add(user)
+            session.commit()
+            _track("tenants", tenant.id)
+            _track("users", user.id)
+            headers = {"Authorization": f"Bearer {create_access_token(user_id=user.id, role='tenant_admin', tenant_id=tenant.id)}"}
+        finally:
+            session.close()
+
+        assert self._create(client, headers).status_code == 403
+        listing = client.get(f"{API}/master/provider-pricing", headers=headers)
+        assert listing.status_code == 403

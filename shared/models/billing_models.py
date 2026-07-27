@@ -2,8 +2,10 @@
 
 Money conventions:
 - The platform base currency is USD. Provider prices are stored in their
-  native currency (normally USD); costs on usage events are snapshotted in
-  USD at recording time so later price/rate changes never rewrite history.
+  native currency (Sarvam publishes INR-only rates; most others USD); a
+  non-USD price converts to USD through the exchange rate in force when the
+  usage occurs. Costs on usage events are snapshotted in USD at recording
+  time so later price/rate changes never rewrite history.
 - All monetary columns are DECIMAL — arithmetic happens in `decimal.Decimal`
   inside shared/billing, never floats.
 """
@@ -50,15 +52,19 @@ PRICING_COMPONENTS = (
 )
 
 # How a unit price is expressed. The divisor maps a raw quantity to the
-# priced unit (e.g. tokens → per-1M-token price).
+# priced unit (e.g. tokens → per-1M-token price). Providers quote different
+# units for the same thing (ElevenLabs per 1M characters, Sarvam per hour of
+# audio) — the unit lives on the price row, never in runtime code.
 PRICING_UNITS = (
     "per_token",
     "per_1k_tokens",
     "per_1m_tokens",
     "per_character",
     "per_1k_characters",
+    "per_1m_characters",
     "per_second",
     "per_minute",
+    "per_hour",
     "per_request",
 )
 
@@ -148,6 +154,10 @@ class ProviderPricing(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     unit: Mapped[str] = mapped_column(String(20), nullable=False)  # PRICING_UNITS
     # Native provider price for one `unit` — small per-unit prices need depth.
     unit_price: Mapped[float] = mapped_column(Numeric(18, 10), nullable=False)
+    # Optional platform selling price per `unit` (what the tenant is charged).
+    # NULL means the platform hasn't set a markup — events then carry a zero
+    # charge and only the provider cost.
+    selling_price: Mapped[float | None] = mapped_column(Numeric(18, 10), nullable=True)
     currency_code: Mapped[str] = mapped_column(
         String(3),
         ForeignKey("currencies.code", name="fk_pricing_currency", onupdate="CASCADE"),
@@ -213,6 +223,10 @@ class UsageEvent(Base, TimestampMixin):
     usage_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # priced | missing_price (quantities recorded, cost unknown — surfaced to admin)
     pricing_status: Mapped[str] = mapped_column(String(20), default="priced", nullable=False)
-    # {component: {unit, unit_price, currency}} used for this event.
+    # {component: {priceId, unit, unit_price, selling_price, currency}} used
+    # for this event — the priceId pins the exact ProviderPricing row so the
+    # calculation stays auditable after prices change.
     pricing_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cost_usd: Mapped[float] = mapped_column(Numeric(14, 6), default=0, nullable=False)
+    # Tenant/platform charge from the selling price; 0 when no selling price.
+    charge_usd: Mapped[float] = mapped_column(Numeric(14, 6), default=0, nullable=False)

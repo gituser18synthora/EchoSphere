@@ -250,6 +250,7 @@ def serialize_provider_pricing(row: "ProviderPricing", *, usage: int = 0, names:
         "component": row.component,
         "unit": row.unit,
         "unitPrice": str(row.unit_price),
+        "sellingPrice": str(row.selling_price) if row.selling_price is not None else None,
         "currencyCode": row.currency_code,
         "effectiveFrom": iso(row.effective_from),
         "sortOrder": row.sort_order,

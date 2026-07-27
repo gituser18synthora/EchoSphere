@@ -267,6 +267,12 @@ PROVIDER_MODELS = [
     # Inactive under platform governance: STT is Sarvam-only.
     ("openai", "stt", "whisper-1", "Whisper (whisper-1)",
      [], ["linear16"], [8000, 16000, 24000], False, {}, True, "inactive", 0),
+    # Deepgram — streaming STT; inactive under the same governance. Catalogued
+    # so provider-model pricing can be configured/validated ahead of rollout.
+    ("deepgram", "stt", "nova-3", "Nova-3 (streaming)",
+     [], ["linear16"], [8000, 16000, 24000], True, {}, True, "inactive", 0),
+    ("deepgram", "stt", "nova-2", "Nova-2 (legacy)",
+     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 1),
     # OpenAI TTS — inactive under platform governance: TTS is Sarvam/ElevenLabs.
     ("openai", "tts", "tts-1", "TTS-1", [], ["linear16"], [24000], False,
      {}, True, "inactive", 0),

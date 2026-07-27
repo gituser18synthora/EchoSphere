@@ -94,13 +94,19 @@ def record_usage_event(
         quantities=quantities,
         as_of=occurred_at,
     )
+    charge_usd = sum((p.charge for p in priced), Decimal(0))
     snapshot = {
         p.component: {
+            "priceId": p.price_id,
             "unit": p.unit,
             "unitPrice": str(p.unit_price),
+            "sellingPrice": str(p.selling_price) if p.selling_price is not None else None,
             "currency": p.currency,
+            # USD -> native rate applied for non-USD native prices (e.g. INR).
+            "fxRate": str(p.fx_rate) if p.fx_rate is not None else None,
             "quantity": str(p.quantity),
             "cost": str(p.cost),
+            "charge": str(p.charge),
         }
         for p in priced
     }
@@ -131,6 +137,7 @@ def record_usage_event(
         pricing_status="missing_price" if missing else "priced",
         pricing_snapshot=snapshot or None,
         cost_usd=cost_usd,
+        charge_usd=charge_usd,
     )
     db.add(event)
 
