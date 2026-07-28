@@ -63,6 +63,9 @@ storage/cache/
 uploads/
 recordings/
 
+# scripts/dev.sh runtime state (PID + log files)
+.devrun/
+
 # Logs and temporary files
 logs/
 *.log

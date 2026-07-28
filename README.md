@@ -109,6 +109,22 @@ docs/                    Architecture & operations documentation (see below)
 API docs: `/api/docs` · liveness: `/api/health` · readiness: `/api/health/ready`
 (checks MySQL, PostgreSQL+pgvector, Redis, MongoDB).
 
+### One-command dev environment
+
+```bash
+./scripts/dev.sh            # start everything (same as ./scripts/dev.sh start)
+./scripts/dev.sh status     # RUNNING / STOPPED / STALE PID / PORT OCCUPIED per service
+./scripts/dev.sh logs       # follow all service logs, prefixed by service name
+./scripts/dev.sh restart    # stop + start
+./scripts/dev.sh stop       # stop only the processes this script started
+```
+
+Starts the Platform API, voice worker, ingestion worker, MCP server, the Vaani
+telephony gateway (`TELEPHONY_GATEWAY_PORT`, 9011) and the Vite frontend. All
+ports come from `.env`. PID files live in `.devrun/pids/`, logs in
+`.devrun/logs/` (both git-ignored). `start` stays in the foreground —
+`Ctrl+C` shuts every service down cleanly.
+
 ## Setup
 
 ```bash
