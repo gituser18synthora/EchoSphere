@@ -22,7 +22,7 @@ from shared.errors import ApiError
 class TelephonyProviderConfig(BaseModel):
     """Typed per-tenant/bot telephony configuration (secrets are references)."""
 
-    provider: str  # freeswitch | twilio | telnyx | plivo | exotel
+    provider: str  # freeswitch | twilio | telnyx | plivo | exotel | vaani
     account_sid_reference: str = ""
     auth_token_reference: str = ""
     public_ws_base: str = ""  # wss host the provider streams media to
@@ -32,7 +32,7 @@ class TelephonyProviderConfig(BaseModel):
     def validate_for(self, provider: str) -> None:
         if self.provider != provider:
             raise ApiError(f"Configuration is for '{self.provider}', not '{provider}'", 400)
-        if provider in ("twilio", "telnyx", "plivo", "exotel") and not self.public_ws_base:
+        if provider in ("twilio", "telnyx", "plivo", "exotel", "vaani") and not self.public_ws_base:
             raise ApiError("public_ws_base (wss://…) is required for media streaming", 400)
         if provider == "twilio" and not self.auth_token_reference:
             raise ApiError("auth_token_reference is required for Twilio signature checks", 400)
@@ -46,7 +46,7 @@ class ConnectInstructions:
     body: str
 
 
-SUPPORTED_PROVIDERS = ("freeswitch", "twilio", "telnyx", "plivo", "exotel")
+SUPPORTED_PROVIDERS = ("freeswitch", "twilio", "telnyx", "plivo", "exotel", "vaani")
 
 
 def connect_instructions(
@@ -71,6 +71,9 @@ def connect_instructions(
         return ConnectInstructions("application/xml", xml)
     if provider == "exotel":
         # Exotel Voicebot applet expects the WS URL as plain text/JSON.
+        return ConnectInstructions("application/json", f'{{"url": "{ws_url}"}}')
+    if provider == "vaani":
+        # Vaani Telephony connects to the bot's bidirectional media WebSocket.
         return ConnectInstructions("application/json", f'{{"url": "{ws_url}"}}')
     if provider == "telnyx":
         # Returned to the TeXML/Call Control handler that answers with stream start.

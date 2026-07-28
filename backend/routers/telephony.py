@@ -7,6 +7,7 @@ that points its media stream at the voice worker.
 """
 
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
@@ -60,11 +61,52 @@ def _assert_voice_channel_enabled(bot_id: str) -> None:
         session.close()
 
 
-async def _extract_called_number(provider: str, request: Request) -> tuple[str, str | None]:
-    """Returns (called_number, caller_number) from the provider payload."""
+def _public_ws_base(settings, request: Request) -> str:
+    """Base URL providers use to reach the voice worker's media WebSocket.
+
+    The explicit TELEPHONY_PUBLIC_WS_BASE setting wins — the API and the voice
+    worker are separate processes, so the webhook's own host:port is only
+    correct behind a proxy that routes /ws/telephony/* to the worker. Without
+    the setting, the historical behavior (derive from the request) is kept.
+    """
+    configured = (settings.telephony_public_ws_base or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return str(request.base_url).replace("http", "ws", 1).rstrip("/")
+
+
+_VARIABLE_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+_MAX_VARIABLES = 20
+_MAX_VARIABLE_CHARS = 200
+
+
+def _sanitize_variables(raw: object) -> dict[str, str]:
+    """Bound and normalize dialer-supplied per-call variables.
+
+    The webhook is HMAC-signed, so the sender is trusted — but values still
+    get size/shape limits before they reach Redis, logs, or the LLM context.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if len(out) >= _MAX_VARIABLES:
+            break
+        key = str(key).strip()
+        if not _VARIABLE_KEY.match(key):
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            out[key] = str(value)[:_MAX_VARIABLE_CHARS]
+    return out
+
+
+async def _extract_call_details(
+    provider: str, request: Request
+) -> tuple[str, str | None, str | None, dict[str, str]]:
+    """Returns (called_number, caller_number, call_id, variables)."""
     if provider == "twilio":
         form = await request.form()
-        return form.get("To", ""), form.get("From")
+        return form.get("To", ""), form.get("From"), form.get("CallSid"), {}
     body = {}
     try:
         body = await request.json()
@@ -76,7 +118,11 @@ async def _extract_called_number(provider: str, request: Request) -> tuple[str, 
         or body.get("called_number") or ""
     )
     caller = body.get("From") or body.get("from") or body.get("caller_number")
-    return called, caller
+    call_id = (
+        body.get("CallSid") or body.get("callId") or body.get("call_id") or None
+    )
+    variables = _sanitize_variables(body.get("variables"))
+    return called, caller, (str(call_id)[:64] if call_id else None), variables
 
 
 @router.post("/telephony/webhook/{provider}")
@@ -105,7 +151,7 @@ async def inbound_call_webhook(provider: str, request: Request):
         await check_replay(signature)
 
     # ── trusted routing: number → tenant → bot → published config ─────────
-    called, caller = await _extract_called_number(provider, request)
+    called, caller, call_id, variables = await _extract_call_details(provider, request)
     if not called:
         raise ApiError("Webhook payload missing the dialed number", status_code=422)
     config = await resolve_bot_for_phone_number(called)
@@ -119,16 +165,20 @@ async def inbound_call_webhook(provider: str, request: Request):
         user_id=None,
         channel="phone",
         caller=caller,
+        call_id=call_id,
+        variables=variables,
     )
     logger.info(
-        "telephony.inbound provider=%s called=%s tenant=%s bot=%s session=%s",
+        "telephony.inbound provider=%s called=%s tenant=%s bot=%s session=%s "
+        "call_id=%s variables=%d",
         provider, called, config.tenant_id, config.bot_id, session["session_id"],
+        call_id, len(variables),
     )
 
     provider_config = TelephonyProviderConfig(
         provider=provider,
         auth_token_reference=settings.telephony_webhook_secret_reference,
-        public_ws_base=str(request.base_url).replace("http", "ws", 1).rstrip("/"),
+        public_ws_base=_public_ws_base(settings, request),
     )
     instructions = connect_instructions(provider, provider_config, session["session_id"])
     return Response(content=instructions.body, media_type=instructions.content_type)

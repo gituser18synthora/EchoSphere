@@ -74,11 +74,21 @@ class VoiceBotReadiness(Base, TimestampMixin):
 
 
 class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
-    """Platform voice catalog (shared across tenants)."""
+    """Voice catalog. tenant_id NULL = platform voice visible to every tenant;
+    set = private to the owning tenant (e.g. an ElevenLabs voice clone)."""
 
     __tablename__ = "voice_profiles"
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id"), nullable=True, index=True
+    )
+    # platform (curated catalog) | cloned (tenant-created via a provider
+    # voice-cloning API — provider_voice_id is the provider clone id).
+    source: Mapped[str] = mapped_column(String(20), default="platform", nullable=False)
+    # Clone provenance: sample file names/sizes, requires_verification, the
+    # provider options used. Training audio itself is never stored.
+    clone_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     gender: Mapped[str] = mapped_column(String(10), default="neutral", nullable=False)
     languages: Mapped[list | None] = mapped_column(JSON, nullable=True)

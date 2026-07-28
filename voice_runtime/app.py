@@ -67,7 +67,7 @@ async def health():
 
 @app.websocket("/ws/telephony/{provider}/{session_id}")
 async def telephony_session(websocket: WebSocket, provider: str, session_id: str):
-    """Provider media stream (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH).
+    """Provider media stream (Twilio/Telnyx/Plivo/Exotel/Vaani/FreeSWITCH).
 
     The session was issued by the signed inbound-call webhook, so the tenant/
     bot mapping is already trusted. Providers that send a JSON start message
@@ -86,19 +86,28 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
     if session is None:
         await websocket.close(code=4401, reason="unknown or expired session")
         return
+    if session_id in _active_sessions:
+        # Reject duplicates BEFORE the handshake read: a duplicate connection
+        # that never sends `start` must not park inside receive_text() holding
+        # a socket while the real stream is live. (_run_call re-checks.)
+        await websocket.accept()
+        await websocket.close(code=4409, reason="session already active")
+        return
     await websocket.accept()
 
     start_message: dict | None = None
-    if provider in ("twilio", "telnyx", "plivo", "exotel"):
-        # Read messages until the provider's stream-start event arrives.
+    if provider in ("twilio", "telnyx", "plivo", "exotel", "vaani"):
+        # Read messages until the provider's stream-start event arrives. The
+        # deadline bounds a client that connects and then goes silent.
         try:
-            for _ in range(4):
-                message = _json.loads(await websocket.receive_text())
-                event = message.get("event") or message.get("event_type")
-                if event in ("start", "streamStart", "media_start"):
-                    start_message = message
-                    break
-        except Exception:  # noqa: BLE001
+            async with asyncio.timeout(10):
+                for _ in range(4):
+                    message = _json.loads(await websocket.receive_text())
+                    event = message.get("event") or message.get("event_type")
+                    if event in ("start", "streamStart", "media_start"):
+                        start_message = message
+                        break
+        except Exception:  # noqa: BLE001 — timeout, disconnect or bad JSON
             await websocket.close(code=4400, reason="invalid stream handshake")
             return
         if start_message is None:
@@ -137,6 +146,21 @@ async def _run_call(
     if len(_active_sessions) >= settings.voice_worker_concurrency:
         await websocket.close(code=4429, reason="voice worker at capacity")
         return
+    if session_id in _active_sessions:
+        # A second live connection for the same session (telephony retry or
+        # reconnect while the first socket is still up) would run a second
+        # pipeline over the same call: duplicate greeting, duplicate STT/TTS
+        # usage, duplicate billing. One session id, one media stream.
+        logger.warning(
+            "voice session %s already active — rejecting duplicate connection",
+            session_id,
+        )
+        await websocket.close(code=4409, reason="session already active")
+        return
+    # Claim the session BEFORE any awaits so a concurrent connect can't slip
+    # through between the check above and pipeline start.
+    _active_sessions[session_id] = asyncio.current_task()
+
     await update_voice_session(session_id, status="connected")
 
     try:
@@ -146,12 +170,14 @@ async def _run_call(
         )
     except Exception:  # noqa: BLE001
         logger.exception("bot config resolution failed for %s", session_id)
+        _active_sessions.pop(session_id, None)
         await websocket.close(code=4404, reason="bot configuration unavailable")
         return
 
     # Defense-in-depth: the session's tenant must match the bot's tenant.
     if session["tenant_id"] != config.tenant_id:
         logger.error("tenant mismatch for session %s", session_id)
+        _active_sessions.pop(session_id, None)
         await websocket.close(code=4403, reason="forbidden")
         return
 
@@ -236,16 +262,22 @@ async def _run_call(
             stt_sample_rate=stt_sample_rate,
             idle_timeout_secs=float(config.silence_timeout) * 4,
             client_info=client_info,
+            call_context=session.get("variables") or None,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)
         await recorder.flush_event("pipeline_build_failed")
+        _active_sessions.pop(session_id, None)
         await websocket.close(code=4500, reason="voice engine configuration error")
         return
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        await recorder.flush_event("call_started", channel=recorder.channel)
+        await recorder.flush_event(
+            "call_started",
+            channel=recorder.channel,
+            call_id=session.get("call_id"),
+        )
         await brain.speak_greeting()
 
     @transport.event_handler("on_client_disconnected")
@@ -258,9 +290,7 @@ async def _run_call(
         await worker.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
-    run_task = asyncio.current_task()
-    _active_sessions[session_id] = run_task
-
+    # The session was already claimed in _active_sessions at connection time.
     max_duration_handle = asyncio.get_running_loop().call_later(
         config.max_call_duration, lambda: asyncio.ensure_future(worker.cancel())
     )

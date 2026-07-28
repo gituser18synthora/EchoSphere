@@ -56,7 +56,7 @@ const FIELDS: Record<ChannelType, FieldDef[]> = {
       hint: "E.164 — this number is claimed for inbound routing to this bot.",
       validate: (v) => (E164.test(normPhone(v)) ? null : "Enter an E.164 number, e.g. +14155550119.") },
     { key: "telephonyProvider", label: "Telephony provider", kind: "select",
-      options: ["freeswitch", "twilio", "telnyx", "plivo", "exotel"],
+      options: ["freeswitch", "twilio", "telnyx", "plivo", "exotel", "vaani"],
       validate: req("Provider") },
     { key: "publicWsBase", label: "Public WebSocket base", kind: "text", placeholder: "wss://voice.example.com",
       hint: "Where the carrier streams call media (your voice runtime's public address).",

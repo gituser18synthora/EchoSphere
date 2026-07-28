@@ -2,7 +2,7 @@
 
 Two schemes:
 - Twilio: HMAC-SHA1 over URL + sorted POST params, base64, `X-Twilio-Signature`.
-- Generic (Exotel/Plivo/Telnyx/FreeSWITCH event socket bridges): HMAC-SHA256
+- Generic (Exotel/Plivo/Telnyx/Vaani/FreeSWITCH event socket bridges): HMAC-SHA256
   over `<timestamp>.<raw body>` with `X-Webhook-Signature` + `X-Webhook-Timestamp`.
 
 Replay protection: signatures are single-use within their validity window

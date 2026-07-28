@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from backend.core.deps import get_current_user
+from backend.core.deps import get_current_user, is_super_admin
 from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import SupportedLanguage, User, VoiceProfile
@@ -20,12 +20,22 @@ def list_voices(
     language: str | None = Query(None),
     locale: str | None = Query(None),
     gender: str | None = Query(None),
+    source: str | None = Query(None),
     search: str | None = Query(None, max_length=100),
     include_inactive: bool = Query(False, alias="includeInactive"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     stmt = select(VoiceProfile).where(VoiceProfile.is_deleted.is_(False))
+    # Tenant isolation: platform voices (tenant_id NULL) are shared; cloned
+    # voices are visible only to the tenant that owns them.
+    if not is_super_admin(user):
+        stmt = stmt.where(or_(
+            VoiceProfile.tenant_id.is_(None),
+            VoiceProfile.tenant_id == (user.tenant_id or ""),
+        ))
+    if source:
+        stmt = stmt.where(VoiceProfile.source == source)
     if not include_inactive:
         stmt = stmt.where(VoiceProfile.status == "active")
     if provider:

@@ -27,7 +27,7 @@ transcripts live in MongoDB; live call/session state and caches live in Redis.
   MongoDB (`backend/main.py`).
 - The voice worker exposes `GET /health` plus two WebSocket endpoints:
   `/ws/voice/{session_id}` (browser test client) and
-  `/ws/telephony/{provider}/{session_id}` (twilio | telnyx | plivo | exotel | freeswitch).
+  `/ws/telephony/{provider}/{session_id}` (twilio | telnyx | plivo | exotel | vaani | freeswitch).
 - The MCP server serves streamable-HTTP MCP at `/mcp` behind JWT bearer auth, plus
   `GET /health`. It can also run as `env/bin/python -m backend.mcp_server.server`.
 

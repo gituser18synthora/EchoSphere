@@ -112,6 +112,8 @@ export interface ProviderInfo {
   description: string;
   requiresApiKey: boolean;
   hasCredentials: boolean;
+  /** TTS providers with a public voice-cloning API (e.g. ElevenLabs IVC). */
+  supportsCloning?: boolean;
 }
 
 export interface ParamSpec {
@@ -166,6 +168,8 @@ export interface VoiceOption {
   status: string;
   providerSettings: Record<string, unknown>;
   sampleText: string | null;
+  /** "cloned" = tenant-created voice clone; "platform" = curated catalog voice. */
+  source?: "platform" | "cloned";
 }
 
 export interface ValidateConfigResult {
@@ -759,8 +763,53 @@ export interface PromptTestResult {
 
 /* ---------- Voice ---------- */
 
+export interface VoiceCloneSampleMeta {
+  fileName: string;
+  sizeBytes: number;
+}
+
+export interface VoiceCloneMetadata {
+  kind?: string;
+  requiresVerification?: boolean;
+  removeBackgroundNoise?: boolean;
+  samples?: VoiceCloneSampleMeta[];
+}
+
+/** Provider-specific clone option rendered dynamically by the Clone Voice UI. */
+export interface VoiceCloneParamSpec {
+  name: string;
+  type: "string" | "boolean";
+  label: string;
+  help?: string;
+  maxLength?: number;
+  default?: string | boolean;
+  optional?: boolean;
+}
+
+export interface VoiceCloneProviderInfo {
+  code: string;
+  name: string;
+  supportsCloning: boolean;
+  hasCredentials: boolean;
+  cloneParams: VoiceCloneParamSpec[];
+  /** Set when cloning is unavailable (e.g. Sarvam has no public cloning API). */
+  reason: string | null;
+}
+
+export interface VoiceCloneConfig {
+  providers: VoiceCloneProviderInfo[];
+  allowedExtensions: string[];
+  accept: string;
+  maxFiles: number;
+  maxFileMb: number;
+  maxTotalMb: number;
+}
+
 export interface VoiceProfile {
   id: string;
+  tenantId?: string | null;
+  source?: "platform" | "cloned";
+  cloneMetadata?: VoiceCloneMetadata;
   name: string;
   gender: "female" | "male" | "neutral";
   languages: string[];
@@ -777,6 +826,8 @@ export interface VoiceProfile {
   pitch?: number;
   isDefault?: boolean;
   status?: string;
+  modelCodes?: string[];
+  providerSettings?: Record<string, unknown>;
   usageCount?: number;
   updatedAt?: string;
 }

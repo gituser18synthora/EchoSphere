@@ -437,7 +437,10 @@ def update_voice_settings(
     if body.voice_id is not None:
         if body.voice_id:
             profile = db.get(VoiceProfile, body.voice_id)
-            if profile is None or profile.is_deleted:
+            # Another tenant's cloned voice is indistinguishable from a
+            # nonexistent one — never selectable, never acknowledged.
+            if (profile is None or profile.is_deleted
+                    or profile.tenant_id not in (None, bot.tenant_id)):
                 raise ApiError("Unknown voice profile.", 422)
             if profile.status != "active":
                 raise ApiError(

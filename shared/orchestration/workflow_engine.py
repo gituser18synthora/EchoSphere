@@ -43,6 +43,7 @@ class WorkflowState(TypedDict, total=False):
     awaiting: str | None
     node_retries: dict[str, int]
     trace: list[str]  # node ids visited THIS turn (reset every turn)
+    handoff_queue: str | None  # handover node's configured queue, if any
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -621,6 +622,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         trace: list[str] = []
         replies: list[str] = []
         status = "collecting"
+        handoff_queue: str | None = None
         text = (state.get("user_text") or "").strip()
         current = state.get("current_node")
         awaiting = state.get("awaiting")
@@ -769,8 +771,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     "Please stay on the line."
                 )
                 replies.append(spoken)
+                queue = _node_config(node).get("queue")
                 audit.append({"action": "handover", "node": current,
-                              "queue": _node_config(node).get("queue")})
+                              "queue": queue})
+                handoff_queue = str(queue) if queue else None
                 status = "handoff"
                 current = None
             elif kind == "end":
@@ -800,6 +804,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "trace": trace,
             "current_node": awaiting or current,
             "awaiting": awaiting,
+            "handoff_queue": handoff_queue,
             "status": status if not awaiting else "collecting",
             "reply": " ".join(r for r in replies if r).strip()
                      or "Is there anything else I can help you with?",
@@ -959,6 +964,7 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
+            "handoffQueue": state.get("handoff_queue"),
         }
 
     async def aclose(self) -> None:

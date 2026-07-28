@@ -18,7 +18,8 @@ import type {
   ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
   ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
   ModelLanguagesInfo, ProviderInfo, ProviderModelInfo, ProviderSettings,
-  ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability, VoiceOption,
+  ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability,
+  VoiceCloneConfig, VoiceOption,
 } from "@/types/domain";
 import { http, requestWithMeta, type Paged } from "./http";
 import { downloadFile } from "./fileDownload";
@@ -225,6 +226,22 @@ export const testProviderConnection = (body: {
 export const generateTtsPreview = (body: {
   provider: string; model: string; voice: string; language: string; text: string; params?: ProviderSettings;
 }): Promise<TtsPreviewResult> => http.post("/providers/tts-preview", body);
+
+/* ---------- Tenant voice cloning ---------- */
+export const getVoiceCloneConfig = (): Promise<VoiceCloneConfig> =>
+  http.get("/voice-clones/config");
+export const listVoiceClones = (): Promise<VoiceProfile[]> => http.get("/voice-clones");
+/** Multipart: provider, name, files[] plus provider-specific clone options. */
+export const createVoiceClone = (form: FormData): Promise<VoiceProfile> =>
+  http.postForm("/voice-clones", form);
+export const updateVoiceClone = (
+  id: string,
+  body: { name?: string; description?: string; gender?: string; locale?: string; sampleText?: string },
+): Promise<VoiceProfile> => http.patch(`/voice-clones/${id}`, body);
+export const setVoiceCloneStatus = (id: string, status: "active" | "inactive" | "archived"): Promise<VoiceProfile> =>
+  http.post(`/voice-clones/${id}/status`, { status });
+export const deleteVoiceClone = (id: string): Promise<{ deleted: boolean; providerDeleted: boolean }> =>
+  http.delete(`/voice-clones/${id}`);
 
 /* ---------- Prompts / Voice ---------- */
 export const listPrompts = (botId: string): Promise<Prompt[]> => http.get(`/bots/${botId}/prompts`);

@@ -29,6 +29,7 @@ import TenantDashboard from "@/pages/tenant/Dashboard";
 import Bots from "@/pages/tenant/Bots";
 import Studio from "@/pages/tenant/Studio";
 import KnowledgeHub from "@/pages/tenant/KnowledgeHub";
+import TenantVoices from "@/pages/tenant/Voices";
 import TenantWorkflows from "@/pages/tenant/Workflows";
 import Channels from "@/pages/tenant/Channels";
 import Analytics from "@/pages/tenant/Analytics";
@@ -79,6 +80,7 @@ export default function App() {
         <Route path="bots/:botId" element={<Studio />} />
         <Route path="bots/:botId/:tab" element={<Studio />} />
         <Route path="knowledge" element={<KnowledgeHub />} />
+        <Route path="voices" element={<TenantVoices />} />
         <Route path="workflows" element={<TenantWorkflows />} />
         <Route path="channels" element={<Channels />} />
         <Route path="analytics" element={<Analytics />} />

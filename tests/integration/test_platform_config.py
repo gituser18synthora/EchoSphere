@@ -394,9 +394,11 @@ class TestLanguageOrdering:
 
 
 class TestAsiaCountryCatalog:
-    def test_active_country_catalog_is_database_driven_and_asia_only(self, client, super_admin):
+    def test_country_catalog_is_database_driven_and_asia_only(self, client, super_admin):
+        # Full catalog (admins may deactivate countries in the shared dev DB,
+        # so the seed is verified over includeInactive=true).
         countries = _data(client.get(
-            f"{API}/master/countries?includeInactive=false&pageSize=100&sortBy=name&sortDir=asc",
+            f"{API}/master/countries?includeInactive=true&pageSize=100&sortBy=name&sortDir=asc",
             headers=super_admin,
         ))
         by_iso2 = {country["iso2"]: country for country in countries}
@@ -409,27 +411,40 @@ class TestAsiaCountryCatalog:
         assert all(isinstance(country["id"], int) for country in countries)
         assert all(country["region"] == "Asia" for country in countries)
 
+        # The active listing is a strict subset of the catalog.
+        active = _data(client.get(
+            f"{API}/master/countries?includeInactive=false&pageSize=100",
+            headers=super_admin,
+        ))
+        assert {c["iso2"] for c in active} <= set(by_iso2)
+        assert all(c["status"] == "active" for c in active)
+
     def test_data_region_uses_numeric_country_id_and_server_canonicalizes_region(
         self, client, super_admin
     ):
-        countries = _data(client.get(
-            f"{API}/master/countries?search=Nepal&pageSize=10", headers=super_admin
+        # Data regions only accept ACTIVE countries; pick one that is active
+        # right now instead of assuming a specific seed row still is.
+        active = _data(client.get(
+            f"{API}/master/countries?includeInactive=false&pageSize=100",
+            headers=super_admin,
         ))
-        nepal = next(country for country in countries if country["iso2"] == "NP")
+        if not active:
+            pytest.skip("no active countries in the shared dev DB")
+        country = active[0]
         created = _data(client.post(f"{API}/master/data-regions", headers=super_admin, json={
-            "code": f"np_{_SUFFIX}",
-            "name": f"Nepal Region {_SUFFIX}",
-            "countryId": nepal["id"],
+            "code": f"cc_{_SUFFIX}",
+            "name": f"Canonical Region {_SUFFIX}",
+            "countryId": country["id"],
             # A stale/tampered client value must never override the country master.
             "region": "Europe",
         }))
         _track("data_regions", created["id"])
 
-        assert created["countryId"] == nepal["id"]
-        assert created["countryCode"] == "np"
-        assert created["countryIso2"] == "NP"
-        assert created["countryIso3"] == "NPL"
-        assert created["country"] == "Nepal"
+        assert created["countryId"] == country["id"]
+        assert created["countryCode"] == country["iso2"].lower()
+        assert created["countryIso2"] == country["iso2"]
+        assert created["countryIso3"] == country["iso3"]
+        assert created["country"] == country["name"]
         assert created["region"] == "Asia"
 
     def test_unknown_country_cannot_be_saved_in_data_region(self, client, super_admin):

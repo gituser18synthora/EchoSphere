@@ -106,7 +106,26 @@ def _ensure_engine_allowed(session, kind: str, provider: str, model: str | None)
         raise ProviderNotAvailableError(f"Voice engine unavailable: {reason}.")
 
 
-def _wire_voice(session, provider: str, voice: str | None) -> str:
+def _tenant_profile(session, voice: str | None, tenant_id: str | None):
+    """Voice profile lookup honoring tenant ownership.
+
+    Platform voices (tenant_id NULL) resolve for everyone; a tenant-owned
+    voice (e.g. a cloned voice) resolves only for its owning tenant. A
+    cross-tenant reference is treated as unknown — never another tenant's
+    provider voice id.
+    """
+    if not voice:
+        return None
+    profile = session.get(VoiceProfile, voice)
+    if profile is not None and profile.tenant_id not in (None, tenant_id):
+        logger.warning(
+            "voice profile '%s' belongs to another tenant — ignoring", voice
+        )
+        return None
+    return profile
+
+
+def _wire_voice(session, provider: str, voice: str | None, tenant_id: str | None = None) -> str:
     """Translate a stored voice value into the provider wire code.
 
     Accepts either a voice_profiles id (catalog reference) or an already-wire
@@ -114,17 +133,21 @@ def _wire_voice(session, provider: str, voice: str | None) -> str:
     """
     if not voice:
         return ""
-    profile = session.get(VoiceProfile, voice)
+    profile = _tenant_profile(session, voice, tenant_id)
     if profile is not None:
         return profile.provider_voice_id or profile.name
+    if session.get(VoiceProfile, voice) is not None:
+        # Cross-tenant catalog reference: fail closed instead of passing the
+        # raw id (or another tenant's clone) to the provider.
+        return ""
     return voice
 
 
-def _voice_display_name(session, voice: str | None) -> str:
+def _voice_display_name(session, voice: str | None, tenant_id: str | None = None) -> str:
     """Human-readable voice name for UIs (falls back to the raw value)."""
     if not voice:
         return ""
-    profile = session.get(VoiceProfile, voice)
+    profile = _tenant_profile(session, voice, tenant_id)
     return profile.name if profile is not None else voice
 
 
@@ -144,7 +167,7 @@ def _profile_supports_language(profile, locale: str) -> bool:
     return locale in languages or locale.split("-")[0] in languages
 
 
-def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
+def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | None = None) -> dict:
     """Normalize language_voice_map entries to engine dicts.
 
     Entries may be legacy voice_profiles id strings or objects
@@ -160,13 +183,13 @@ def _normalize_voice_map(session, vbs, default_engine: dict) -> dict:
             engine = {
                 "provider": provider,
                 "model": entry.get("model") or default_engine["model"],
-                "voice": _wire_voice(session, provider, entry.get("voice")),
-                "voice_name": _voice_display_name(session, entry.get("voice")),
+                "voice": _wire_voice(session, provider, entry.get("voice"), tenant_id),
+                "voice_name": _voice_display_name(session, entry.get("voice"), tenant_id),
                 "params": entry.get("params") or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
         else:  # legacy: a voice_profiles id
-            profile = session.get(VoiceProfile, entry)
+            profile = _tenant_profile(session, entry, tenant_id)
             if profile is None:
                 continue
             provider = profile.provider or default_engine["provider"]
@@ -305,7 +328,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
 
         voice_name = ""
         if vbs is not None and vbs.voice_id:
-            profile = session.get(VoiceProfile, vbs.voice_id)
+            profile = _tenant_profile(session, vbs.voice_id, bot.tenant_id)
             voice_name = profile.name if profile else ""
 
         greeting = None
@@ -403,12 +426,12 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         tts_engine = {
             "provider": tts_provider,
             "model": tts_model,
-            "voice": _wire_voice(session, tts_provider, default_voice_value),
-            "voice_name": _voice_display_name(session, default_voice_value),
+            "voice": _wire_voice(session, tts_provider, default_voice_value, bot.tenant_id),
+            "voice_name": _voice_display_name(session, default_voice_value, bot.tenant_id),
             "settings": (vbs.tts_settings if vbs else None) or {},
             "api_key_reference": _secret_ref_for(session, "tts", tts_provider),
         }
-        tts_engine["language_map"] = _normalize_voice_map(session, vbs, tts_engine)
+        tts_engine["language_map"] = _normalize_voice_map(session, vbs, tts_engine, bot.tenant_id)
         fallback = None
         if vbs is not None and vbs.fallback_provider:
             # Governance: an inactive fallback engine is dropped (fallback
@@ -421,8 +444,10 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 fallback = {
                     "provider": vbs.fallback_provider,
                     "model": vbs.fallback_model or "",
-                    "voice": _wire_voice(session, vbs.fallback_provider, vbs.fallback_voice),
-                    "voice_name": _voice_display_name(session, vbs.fallback_voice),
+                    "voice": _wire_voice(
+                        session, vbs.fallback_provider, vbs.fallback_voice, bot.tenant_id
+                    ),
+                    "voice_name": _voice_display_name(session, vbs.fallback_voice, bot.tenant_id),
                     "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
                 }
         tts_engine["fallback"] = fallback
@@ -437,11 +462,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             select(BotLanguage.language_code).where(BotLanguage.bot_id == bot_id)
         ).all())
         language_warnings: dict[str, str] = {}
-        default_profile = (
-            session.get(VoiceProfile, default_voice_value) if default_voice_value else None
-        )
+        default_profile = _tenant_profile(session, default_voice_value, bot.tenant_id)
         fallback_profile = (
-            session.get(VoiceProfile, vbs.fallback_voice)
+            _tenant_profile(session, vbs.fallback_voice, bot.tenant_id)
             if (fallback is not None and vbs is not None and vbs.fallback_voice)
             else None
         )

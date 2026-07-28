@@ -60,6 +60,7 @@ export function navFor(role: Role, criticalAlerts: number): NavSection[] {
       title: "Build",
       items: [
         { to: "/t/bots", label: "My VoiceBots", icon: "bot" },
+        { to: "/t/voices", label: "Voices", icon: "mic" },
         { to: "/t/knowledge", label: "Knowledge Hub", icon: "book" },
         { to: "/t/workflows", label: "Workflows", icon: "workflow" },
         { to: "/t/channels", label: "Channels", icon: "plug" },
@@ -92,7 +93,7 @@ const crumbNames: Record<string, string> = {
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
   knowledge: "Knowledge", "knowledge-chunks": "Chunk Review",
   workflows: "Workflows", monitoring: "Monitoring",
-  security: "Security", reports: "Reports", bots: "My VoiceBots",
+  security: "Security", reports: "Reports", bots: "My VoiceBots", voices: "Voices",
   channels: "Channels", analytics: "Analytics", conversations: "Conversation Review",
   team: "Team", integrations: "Integrations", settings: "Settings",
   overview: "Overview", prompts: "Prompts", intents: "Intents & Entities",

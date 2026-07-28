@@ -78,7 +78,7 @@ docs/                    Architecture & operations documentation (see below)
   TTS, with barge-in cancellation, per-bot provider selection and pinned
   published-config snapshots. Browser test calls use
   `ws://…:9002/ws/voice/{session_id}`; telephony media streams
-  (Twilio/Telnyx/Plivo/Exotel/FreeSWITCH) use
+  (Twilio/Telnyx/Plivo/Exotel/Vaani/FreeSWITCH) use
   `/ws/telephony/{provider}/{session_id}`. Sessions are issued **only** by the
   API (`POST /api/v1/voice-sessions` or a signed telephony webhook), which
   writes the trusted tenant/bot mapping into Redis; the worker rejects unknown
@@ -182,7 +182,7 @@ embedding provider — no external API keys required. See
 | [docs/KNOWLEDGE_AND_RAG.md](docs/KNOWLEDGE_AND_RAG.md) | ingestion pipeline, hybrid retrieval, KB modes |
 | [docs/PGVECTOR.md](docs/PGVECTOR.md) | knowledge-plane schema, indexes, migrations, perf |
 | [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | MCP server, tools, auth, rate limits |
-| [docs/TELEPHONY.md](docs/TELEPHONY.md) | webhooks, signatures, media streams, FreeSWITCH |
+| [docs/TELEPHONY.md](docs/TELEPHONY.md) | webhooks, signatures, media streams, Vaani, FreeSWITCH |
 | [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | LangGraph workflows and checkpointing |
 | [docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md) | tenant resolution and isolation guarantees |
 | [docs/SECURITY.md](docs/SECURITY.md) | auth, upload safety, PII, prompt injection, audit |

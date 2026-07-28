@@ -416,6 +416,9 @@ def serialize_prompt(p: Prompt, *, include_config: bool = True) -> dict:
 def serialize_voice(v: VoiceProfile, *, usage: int = 0) -> dict:
     return {
         "id": v.id,
+        "tenantId": v.tenant_id,
+        "source": v.source or "platform",
+        "cloneMetadata": v.clone_metadata or {},
         "name": v.name,
         "gender": v.gender,
         "languages": v.languages or [],

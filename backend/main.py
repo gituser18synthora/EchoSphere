@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
         testing,
         usage,
         users,
+        voice_clones,
         voice_sessions,
         workflows,
     )
@@ -129,7 +130,7 @@ def create_app() -> FastAPI:
         auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
         knowledge_review, prompts, intents, apis, workflows, channels, testing, releases,
         conversations, exports, platform, integrations, audit, analytics, reports, voice_sessions, telephony,
-        master_data, providers, usage,
+        master_data, providers, usage, voice_clones,
     ):
         app.include_router(module.router, prefix=prefix)
 

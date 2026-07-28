@@ -65,7 +65,11 @@ def record_usage_event(
     """
     if not tenant_id:
         raise ValueError("usage event requires a tenant_id")
-    occurred_at = occurred_at or datetime.utcnow()
+    # Truncate to whole seconds: MySQL DATETIME(0) ROUNDS fractional seconds,
+    # so an event stamped hh:mm:ss.5+ would be stored one second in the future
+    # and fall outside an occurred_at <= now() summary window queried in the
+    # same instant.
+    occurred_at = (occurred_at or datetime.utcnow()).replace(microsecond=0)
     if not total_tokens and (input_tokens or output_tokens or cached_tokens):
         total_tokens = input_tokens + output_tokens + cached_tokens
 

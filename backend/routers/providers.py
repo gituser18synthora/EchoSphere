@@ -26,7 +26,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
-from backend.core.deps import get_current_user, require_permission, require_tenant_member
+from backend.core.deps import (
+    get_current_user,
+    is_super_admin,
+    require_permission,
+    require_tenant_member,
+)
 from backend.core.provider_catalog import (
     CAPABILITIES,
     find_voice,
@@ -37,6 +42,7 @@ from backend.core.provider_catalog import (
     list_providers,
     list_voices,
     model_platform_languages,
+    supports_voice_cloning,
     validate_voice_settings,
 )
 from backend.core.responses import ok
@@ -70,6 +76,7 @@ def _serialize_provider(row, capability: str) -> dict:
         "description": row.description,
         "requiresApiKey": row.requires_api_key,
         "hasCredentials": has_credentials(row),
+        "supportsCloning": capability == "tts" and supports_voice_cloning(row),
     }
 
 
@@ -103,6 +110,7 @@ def _serialize_voice(row: VoiceProfile) -> dict:
         "status": row.status,
         "providerSettings": row.provider_settings or {},
         "sampleText": row.sample_text,
+        "source": row.source or "platform",
     }
 
 
@@ -171,7 +179,11 @@ def provider_voices(
         raise NotFoundError("Provider")
     return ok([
         _serialize_voice(v)
-        for v in list_voices(db, code, model=model, language=language, gender=gender)
+        for v in list_voices(
+            db, code, model=model, language=language, gender=gender,
+            tenant_id=user.tenant_id,
+            include_all_tenants=is_super_admin(user),
+        )
     ])
 
 
@@ -398,7 +410,17 @@ async def tts_preview(
     if model_row is None:
         raise ApiError(f"Model '{body.model}' does not belong to '{body.provider}'.", 422)
 
-    voice_row = find_voice(db, body.provider, body.voice)
+    voice_row = find_voice(
+        db, body.provider, body.voice,
+        tenant_id=user.tenant_id,
+        include_all_tenants=is_super_admin(user),
+    )
+    if voice_row is None:
+        # Raw wire codes pass through, but a value that maps to some OTHER
+        # tenant's cloned voice must not — 404, without leaking existence.
+        hidden = find_voice(db, body.provider, body.voice, include_all_tenants=True)
+        if hidden is not None and hidden.tenant_id:
+            raise NotFoundError("Voice")
     wire_voice = voice_row.provider_voice_id or voice_row.name if voice_row else body.voice
     started = time.perf_counter()
 

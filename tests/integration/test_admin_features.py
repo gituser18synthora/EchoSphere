@@ -195,7 +195,11 @@ class TestMasterData:
 
 class TestLanguages:
     def test_indian_languages_seeded_with_metadata(self, client, tenant_admin):
-        languages = _data(client.get(f"{API}/languages", headers=tenant_admin))
+        # includeDisabled: this test verifies the SEED (rows + metadata), and
+        # admins may legitimately disable languages in the shared dev DB.
+        languages = _data(client.get(
+            f"{API}/languages?includeDisabled=true", headers=tenant_admin
+        ))
         by_code = {l["code"]: l for l in languages}
         for code in ("en-IN", "hi-IN", "bn-IN", "ta-IN", "te-IN", "ml-IN", "pa-IN",
                      "ur-IN", "sa-IN", "sat-IN", "ne-IN", "sd-IN"):

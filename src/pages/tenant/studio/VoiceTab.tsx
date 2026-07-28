@@ -372,7 +372,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
       .filter((v) => voiceSupportsModel(v, model) && (!locale || voiceSupportsLanguage(v, locale)))
       .map((v) => ({
         value: v.id,
-        label: `${v.name}${v.isDefault ? " · default" : ""}${v.premium ? " · premium" : ""}`,
+        label: `${v.name}${v.source === "cloned" ? " · cloned" : ""}${v.isDefault ? " · default" : ""}${v.premium ? " · premium" : ""}`,
         sub: [v.gender, v.locale, v.status && v.status !== "active" ? v.status : null].filter(Boolean).join(" · "),
         disabled: v.status === "unavailable",
       }));

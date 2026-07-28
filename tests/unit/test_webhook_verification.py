@@ -82,3 +82,63 @@ async def test_replay_protection_via_redis():
     await check_replay(signature)
     with pytest.raises(WebhookVerificationError):
         await check_replay(signature)
+
+
+class TestDialerVariableSanitization:
+    """Per-call variables from the signed telephony webhook are bounded and
+    shape-checked before they reach Redis, logs or the LLM context."""
+
+    def _sanitize(self, raw):
+        from backend.routers.telephony import _sanitize_variables
+
+        return _sanitize_variables(raw)
+
+    def test_valid_variables_pass_through_as_strings(self):
+        out = self._sanitize({"customer_name": "Rahul", "amount": 2000,
+                              "vip": True, "dpd.bucket": "0-7"})
+        assert out == {"customer_name": "Rahul", "amount": "2000",
+                       "vip": "True", "dpd.bucket": "0-7"}
+
+    def test_bad_keys_values_and_shapes_are_dropped(self):
+        assert self._sanitize("not a dict") == {}
+        assert self._sanitize(None) == {}
+        out = self._sanitize({
+            "ok": "yes",
+            "bad key!": "dropped",              # illegal characters
+            "x" * 41: "dropped",                 # key too long
+            "nested": {"drop": "me"},            # non-scalar value
+            "list": ["drop"],
+        })
+        assert out == {"ok": "yes"}
+
+    def test_limits_are_enforced(self):
+        out = self._sanitize({f"k{i}": "v" for i in range(50)})
+        assert len(out) == 20
+        out = self._sanitize({"long": "A" * 500})
+        assert len(out["long"]) == 200
+
+
+class TestPublicWsBase:
+    """The webhook must hand providers a WS URL that actually reaches the
+    voice worker: explicit TELEPHONY_PUBLIC_WS_BASE wins; empty setting keeps
+    the historical derive-from-request behavior."""
+
+    class _Req:
+        base_url = "http://192.168.60.123:9011/"
+
+    class _Settings:
+        def __init__(self, base):
+            self.telephony_public_ws_base = base
+
+    def _resolve(self, base):
+        from backend.routers.telephony import _public_ws_base
+
+        return _public_ws_base(self._Settings(base), self._Req())
+
+    def test_configured_base_wins_and_is_normalized(self):
+        assert self._resolve("ws://192.168.60.123:9002/") == "ws://192.168.60.123:9002"
+        assert self._resolve("wss://voice.example.com") == "wss://voice.example.com"
+
+    def test_empty_setting_derives_from_request(self):
+        assert self._resolve("") == "ws://192.168.60.123:9011"
+        assert self._resolve("   ") == "ws://192.168.60.123:9011"

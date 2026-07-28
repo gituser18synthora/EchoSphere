@@ -191,6 +191,7 @@ def build_voice_pipeline(
     use_vad: bool = True,
     idle_timeout_secs: float | None = None,
     client_info: dict | None = None,
+    call_context: dict | None = None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
     stt = build_stt_service(config, sample_rate=stt_sample_rate, recorder=recorder)
@@ -204,6 +205,7 @@ def build_voice_pipeline(
         knowledge_service=knowledge_service,
         workflow_engine=workflow_engine,
         client_info=client_info,
+        call_context=call_context,
     )
 
     processors = [transport.input()]

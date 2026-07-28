@@ -12,7 +12,7 @@ material, it only answers "is a credential configured?".
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from shared.config import get_settings
@@ -26,6 +26,25 @@ from shared.models import (
 from shared.providers.languages import matches_model_language
 
 CAPABILITIES = ("stt", "tts", "llm", "embedding")
+
+# Providers with a public voice-cloning API. Sarvam offers cloning only inside
+# its Studio product (browser recording, no API) as of 2026-07, so it is not
+# listed. A provider_defs.config {"voice_cloning": bool} entry overrides this.
+_VOICE_CLONING_PROVIDERS = frozenset({"elevenlabs"})
+
+
+def supports_voice_cloning(provider: ProviderDef) -> bool:
+    config = provider.config or {}
+    if "voice_cloning" in config:
+        return bool(config["voice_cloning"])
+    return provider.code in _VOICE_CLONING_PROVIDERS
+
+
+def _tenant_visibility_filter(tenant_id: str | None):
+    """Rows a tenant may see: platform voices plus its own cloned voices."""
+    if tenant_id:
+        return or_(VoiceProfile.tenant_id.is_(None), VoiceProfile.tenant_id == tenant_id)
+    return VoiceProfile.tenant_id.is_(None)
 
 
 # ── lookups ──────────────────────────────────────────────────────────────────
@@ -103,14 +122,17 @@ def list_voices(
     model: str | None = None,
     language: str | None = None,
     gender: str | None = None,
+    tenant_id: str | None = None,
+    include_all_tenants: bool = False,
 ) -> list[VoiceProfile]:
-    rows = db.scalars(
-        select(VoiceProfile).where(
-            VoiceProfile.provider == provider,
-            VoiceProfile.status == "active",
-            VoiceProfile.is_deleted.is_(False),
-        ).order_by(VoiceProfile.sort_order, VoiceProfile.name)
-    ).all()
+    stmt = select(VoiceProfile).where(
+        VoiceProfile.provider == provider,
+        VoiceProfile.status == "active",
+        VoiceProfile.is_deleted.is_(False),
+    )
+    if not include_all_tenants:
+        stmt = stmt.where(_tenant_visibility_filter(tenant_id))
+    rows = db.scalars(stmt.order_by(VoiceProfile.sort_order, VoiceProfile.name)).all()
     result = []
     for voice in rows:
         if model and voice.model_codes and model not in voice.model_codes:
@@ -123,28 +145,42 @@ def list_voices(
     return result
 
 
-def find_voice(db: Session, provider: str, voice: str) -> VoiceProfile | None:
+def find_voice(
+    db: Session,
+    provider: str,
+    voice: str,
+    *,
+    tenant_id: str | None = None,
+    include_all_tenants: bool = False,
+) -> VoiceProfile | None:
     """Look an ACTIVE voice up by catalog id or provider wire code.
 
     Input is trimmed so padded ids validate; wire-code matching is
     case-insensitive via the column collation. Inactive/deleted voices are
     not returned — a disabled speaker must fail validation, not resolve.
+    Tenant scoping: unless include_all_tenants, only platform voices and the
+    given tenant's own voices resolve — another tenant's clone never does.
     """
     if not voice or not str(voice).strip():
         return None
     voice = str(voice).strip()
+
+    def _visible(row: VoiceProfile) -> bool:
+        return include_all_tenants or row.tenant_id in (None, tenant_id or None)
+
     row = db.get(VoiceProfile, voice)
     if (row is not None and row.provider == provider
-            and row.status == "active" and not row.is_deleted):
+            and row.status == "active" and not row.is_deleted and _visible(row)):
         return row
-    return db.scalar(
-        select(VoiceProfile).where(
-            VoiceProfile.provider == provider,
-            VoiceProfile.provider_voice_id == voice,
-            VoiceProfile.status == "active",
-            VoiceProfile.is_deleted.is_(False),
-        )
+    stmt = select(VoiceProfile).where(
+        VoiceProfile.provider == provider,
+        VoiceProfile.provider_voice_id == voice,
+        VoiceProfile.status == "active",
+        VoiceProfile.is_deleted.is_(False),
     )
+    if not include_all_tenants:
+        stmt = stmt.where(_tenant_visibility_filter(tenant_id))
+    return db.scalar(stmt)
 
 
 def has_credentials(provider: ProviderDef) -> bool:
@@ -228,6 +264,7 @@ def _validate_engine(
     errors: list[str],
     warnings: list[str],
     require_voice: bool = False,
+    tenant_id: str | None = None,
 ) -> ProviderModel | None:
     """Validate one TTS engine selection (provider+model+voice+language+params)."""
     if not provider:
@@ -249,7 +286,7 @@ def _validate_engine(
     elif require_voice:
         errors.append(f"{prefix}: a model is required.")
     if voice:
-        voice_row = find_voice(db, provider, voice)
+        voice_row = find_voice(db, provider, voice, tenant_id=tenant_id)
         if voice_row is None:
             errors.append(f"{prefix}: voice '{voice}' does not belong to provider '{provider}'.")
         elif model and voice_row.model_codes and model not in voice_row.model_codes:
@@ -281,6 +318,9 @@ def validate_voice_settings(
     """
     errors: list[str] = []
     warnings: list[str] = []
+    # Voice lookups are scoped to the bot's tenant: platform voices plus the
+    # tenant's own clones. Another tenant's cloned voice must fail validation.
+    tenant_id = getattr(bot, "tenant_id", None)
 
     bot_languages = set(db.scalars(
         select(BotLanguage.language_code).where(BotLanguage.bot_id == bot.id)
@@ -360,6 +400,7 @@ def validate_voice_settings(
             prefix="TTS",
             errors=errors,
             warnings=warnings,
+            tenant_id=tenant_id,
         )
 
     # ── Fallback engine ──
@@ -377,6 +418,7 @@ def validate_voice_settings(
             prefix="Fallback TTS",
             errors=errors,
             warnings=warnings,
+            tenant_id=tenant_id,
         )
 
     # ── Per-language voice map ──
@@ -401,10 +443,12 @@ def validate_voice_settings(
                     prefix=f"Voice mapping [{locale}]",
                     errors=errors,
                     warnings=warnings,
+                    tenant_id=tenant_id,
                 )
             elif isinstance(entry, str):
                 voice_row = db.get(VoiceProfile, entry)
-                if voice_row is None or voice_row.is_deleted:
+                if (voice_row is None or voice_row.is_deleted
+                        or voice_row.tenant_id not in (None, tenant_id)):
                     errors.append(f"Voice mapping [{locale}]: unknown voice profile '{entry}'.")
                 elif voice_row.languages and locale not in voice_row.languages:
                     errors.append(

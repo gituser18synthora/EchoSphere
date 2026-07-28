@@ -31,8 +31,15 @@ async def create_voice_session(
     user_id: str | None,
     channel: str = "browser",
     caller: str | None = None,
+    call_id: str | None = None,
+    variables: dict[str, str] | None = None,
 ) -> dict:
-    """Issue a session token (called from the authenticated API process)."""
+    """Issue a session token (called from the authenticated API process).
+
+    ``call_id`` is the telephony provider's own call identifier (log/trace
+    correlation only); ``variables`` are dialer-supplied per-call values that
+    arrived on a SIGNED webhook — already sanitized by the caller.
+    """
     settings = get_settings()
     session_id = f"vs_{secrets.token_urlsafe(18)}"
     payload = {
@@ -42,6 +49,8 @@ async def create_voice_session(
         "user_id": user_id,
         "channel": channel,
         "caller": caller,
+        "call_id": call_id,
+        "variables": variables or {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "issued",
     }

@@ -76,8 +76,16 @@ class TestCatalogReads:
             f"{API}/providers/tts/sarvam/models/bulbul:v3/languages", headers=tenant_admin
         ))
         codes = {lang["code"] for lang in payload["languages"]}
-        assert len(codes) == 11
-        assert "or-IN" in codes          # platform form of Sarvam's od-IN
+        # Intersection semantics, robust to admins disabling languages in the
+        # shared dev DB: every offered code must be an enabled platform
+        # language, and non-bulbul languages never appear regardless.
+        enabled = {
+            lang["code"] for lang in data(client.get(f"{API}/languages", headers=tenant_admin))
+        }
+        assert codes, "no bulbul languages enabled on the platform"
+        assert codes <= enabled
+        if "or-IN" in enabled:
+            assert "or-IN" in codes      # platform form of Sarvam's od-IN
         assert "fr-FR" not in codes      # not a bulbul language
         assert payload["supportsAutoDetect"] is False
 
@@ -101,7 +109,9 @@ class TestCatalogReads:
             f"{API}/providers/tts/elevenlabs/voices?model=eleven_flash_v2_5",
             headers=tenant_admin,
         ))
-        assert {v["name"] for v in eleven} == {
+        # Subset, not equality: admins can add their own voices in the shared
+        # dev DB — the seeded catalog must be present, extras are fine.
+        assert {v["name"] for v in eleven} >= {
             "Monika", "Raju", "Niraj", "Leo", "Viraj", "Shardul", "Anvi", "Shivank"
         }
 

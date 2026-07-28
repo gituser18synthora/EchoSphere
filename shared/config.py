@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     freeswitch_port: int = 9004
     freeswitch_password_reference: str = "env:FREESWITCH_PASSWORD"
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
+    # Public base URL (ws:// or wss://) telephony providers use to reach the
+    # VOICE WORKER's media WebSocket. Set it whenever the worker is not
+    # reachable on the same host:port that served the webhook (separate
+    # process/port, or a different public hostname). Empty = derive from the
+    # webhook request's own base URL (single-host proxy deployments).
+    telephony_public_ws_base: str = ""
 
     @property
     def postgres_url(self) -> str:

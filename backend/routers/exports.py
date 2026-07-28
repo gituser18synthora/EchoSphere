@@ -279,18 +279,21 @@ async def export_conversation_transcript(
     db: Session = Depends(get_db),
 ):
     _validate_format(export_format)
+    # Outer join, and no bot-deletion filter: archiving a bot must not make
+    # its past conversations un-exportable (the conversations list keeps
+    # showing them; the bot name here is only a label).
     row = db.execute(
         select(ConversationSession, VoiceBot.name)
-        .join(VoiceBot, VoiceBot.id == ConversationSession.bot_id)
+        .outerjoin(VoiceBot, VoiceBot.id == ConversationSession.bot_id)
         .where(
             ConversationSession.id == conversation_id,
             ConversationSession.is_deleted.is_(False),
-            VoiceBot.is_deleted.is_(False),
         )
     ).first()
     if row is None:
         raise NotFoundError("Conversation")
     conversation, bot_name = row
+    bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
     transcript_doc = await Mongo.transcripts().find_one(
         {
