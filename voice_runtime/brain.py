@@ -1,12 +1,27 @@
 """ConversationBrain — the frame processor between STT and TTS.
 
-For every final user transcription it:
+Turn taking: STT transcripts are FINAL per speech segment but not per
+utterance — Sarvam finalizes a segment every time the local VAD flushes it
+(~0.2 s pause), so a caller pausing mid-sentence produces several transcripts
+for one thought. Segments are therefore buffered and the turn runs only when
+the turn controller signals real end-of-turn (UserStoppedSpeakingFrame =
+VAD stop + the configured user-speech timeout). A transcript arriving with no
+active user turn (VAD missed a quiet utterance, or STT finalized after the
+turn already closed) runs immediately — the caller is silent either way.
+
+For every completed user turn it:
   1. records the turn,
   2. routes it (workflow / call-control / intent / knowledge / chat),
   3. optionally performs tenant-safe KB retrieval,
   4. streams the LLM answer downstream as TextFrames (TTS aggregates them),
 and cancels all in-flight work the instant the caller barges in
 (InterruptionFrame / UserStartedSpeakingFrame passing through the pipeline).
+
+Hang-up requests are detected deterministically on EVERY segment (before
+buffering, workflows and the LLM — see shared.orchestration.router
+``detect_hangup``): current audio is interrupted, a short acknowledgement in
+the caller's language plays, the worker ends, and no later STT event can
+produce another reply.
 """
 
 import asyncio
@@ -27,12 +42,19 @@ from pipecat.frames.frames import (
     TextFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
-from shared.orchestration.router import RouteDecision, RouteKind, TurnRouter
+from shared.orchestration.phrases import canned
+from shared.orchestration.router import (
+    RouteDecision,
+    RouteKind,
+    TurnRouter,
+    detect_hangup,
+)
 from shared.providers.base import LLMProvider, ProviderError
 from shared.providers.languages import to_platform_language
 from shared.bot_config import ResolvedBotConfig
@@ -55,6 +77,15 @@ _LLM_PAUSE_FLUSH_SECONDS = 0.6
 _MIN_SWITCH_WORDS = 2
 _DEVANAGARI_CHARS = re.compile(r"[ऀ-ॿ]")
 _LATIN_CHARS = re.compile(r"[A-Za-z]")
+# Romanized-Hindi (Hinglish) marker words: when the STT reports Hindi but the
+# text is fully Latin (translit/codemix STT modes), these confirm the STT's
+# verdict so a Hinglish speaker still gets Hindi replies and a Hindi voice.
+_HINGLISH_HINTS = re.compile(
+    r"\b(haa?n|nahin?|nhi|abhi|aaj|paisa|paise|rupay[ae]?|bhai|"
+    r"theek|thik|karo|karu(?:nga|ngi)?|kar (?:do|de|dunga|dungi)|hai|hain|"
+    r"mera|mere|meri|aap|kyun?|kaise|kitna|batao|bolo|dijiye)\b",
+    re.I,
+)
 
 _LANGUAGE_LABELS = {
     "hi": "Hindi", "en": "English", "bn": "Bengali", "ta": "Tamil",
@@ -75,8 +106,10 @@ def script_supports_language(text: str, locale: str) -> bool:
 
     Hindi speech is transcribed in Devanagari (borrowed English words stay
     Latin, so code-mixed text still counts as Hindi when Devanagari holds a
-    meaningful share). English must be clearly Latin-dominant. Languages we
-    have no script heuristic for pass through on the STT's word alone.
+    meaningful share). Fully-Latin text still counts as Hindi when it reads
+    as romanized Hinglish — the STT's language verdict plus marker words.
+    English must be clearly Latin-dominant. Languages we have no script
+    heuristic for pass through on the STT's word alone.
     """
     dev = len(_DEVANAGARI_CHARS.findall(text))
     lat = len(_LATIN_CHARS.findall(text))
@@ -85,7 +118,9 @@ def script_supports_language(text: str, locale: str) -> bool:
         return False
     base = locale.split("-")[0].lower()
     if base == "hi":
-        return dev / total >= 0.4
+        if dev / total >= 0.4:
+            return True
+        return dev == 0 and bool(_HINGLISH_HINTS.search(text))
     if base == "en":
         return lat / total >= 0.7
     return True
@@ -134,6 +169,13 @@ class ConversationBrain(FrameProcessor):
         self._llm_max_retries: int = int(llm_settings.get("max_retries", 1))
         self._pipeline_started = False
         self._pending_greeting = False
+        # Turn taking: STT segments buffered until the turn controller closes
+        # the user's turn (see module docstring).
+        self._turn_active = False
+        self._pending_segments: list[str] = []
+        self._pending_language: str | None = None
+        # Hang-up in progress: nothing may produce speech after this is set.
+        self._closing = False
 
     # ── pipeline plumbing ─────────────────────────────────────────────────
 
@@ -151,12 +193,40 @@ class ConversationBrain(FrameProcessor):
                 self._generation = self.create_task(self._open_session())
             return
 
+        if self._closing:
+            # Disconnect has started: STT events must not produce responses,
+            # and a barge-in must not cancel the goodbye/stop already queued.
+            if isinstance(frame, TranscriptionFrame):
+                self._recorder.add_event(
+                    "post_hangup_transcript_dropped", text=frame.text
+                )
+                return
+            if isinstance(
+                frame,
+                (InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame),
+            ):
+                return
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            if isinstance(frame, UserStartedSpeakingFrame):
+                self._turn_active = True
             await self._cancel_generation("barge_in")
             await self.push_frame(frame, direction)
             # A barge-in during a transfer/stop announcement must not lose the
             # control event — the caller already asked for it.
             await self._flush_pending_controls()
+            return
+
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            # Real end-of-turn (VAD stop + user-speech timeout): run the turn
+            # over everything the caller said, joined. An empty buffer means
+            # STT is still finalizing — the next transcript runs immediately.
+            self._turn_active = False
+            await self.push_frame(frame, direction)
+            if self._pending_segments:
+                await self._consume_pending_turn()
             return
 
         if isinstance(frame, BotStoppedSpeakingFrame):
@@ -165,12 +235,38 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, TranscriptionFrame):
-            await self._cancel_generation("new_turn")
-            await self._maybe_switch_language(frame)
-            self._generation = self.create_task(self._handle_turn(frame.text))
+            await self._on_transcription(frame)
             return
 
         await self.push_frame(frame, direction)
+
+    async def _on_transcription(self, frame: TranscriptionFrame) -> None:
+        text = (frame.text or "").strip()
+        if not text:
+            return
+        raw = getattr(frame, "language", None)
+        if raw is not None:
+            self._pending_language = getattr(raw, "value", str(raw))
+        # Hang-up is the highest-priority intent: act on the segment itself —
+        # never buffer it behind end-of-turn, a workflow rung or the LLM.
+        if detect_hangup(text):
+            self._pending_segments.append(text)
+            await self._begin_hangup(" ".join(self._pending_segments).strip())
+            return
+        self._pending_segments.append(text)
+        if not self._turn_active:
+            # No open user turn: either VAD missed a quiet utterance or STT
+            # finalized after the turn closed. The caller is silent — run now.
+            await self._consume_pending_turn()
+
+    async def _consume_pending_turn(self) -> None:
+        text = " ".join(self._pending_segments).strip()
+        self._pending_segments.clear()
+        if not text:
+            return
+        await self._cancel_generation("new_turn")
+        await self._maybe_switch_language(text, self._pending_language)
+        self._generation = self.create_task(self._handle_turn(text))
 
     def _supported_languages(self) -> list[str]:
         return self._config.languages or [self._config.language]
@@ -186,21 +282,19 @@ class ConversationBrain(FrameProcessor):
                 return locale
         return None
 
-    async def _maybe_switch_language(self, frame: TranscriptionFrame) -> None:
+    async def _maybe_switch_language(self, text: str, raw: str | None) -> None:
         """Follow the caller's CURRENT language, with stability rules.
 
-        A switch happens only when the STT-detected language (a) maps onto a
-        language this bot is configured for, (b) belongs to a meaningful
-        utterance (not a single borrowed word / filler), and (c) agrees with
-        the utterance's dominant script. Conversation history, intent state
-        and the session itself are untouched by a switch.
+        ``raw`` is the STT-reported language of the newest segment. A switch
+        happens only when it (a) maps onto a language this bot is configured
+        for, (b) belongs to a meaningful utterance (not a single borrowed
+        word / filler), and (c) agrees with the utterance's dominant script
+        (romanized Hinglish counts as Hindi). Conversation history, intent
+        state and the session itself are untouched by a switch.
         """
-        raw = getattr(frame, "language", None)
         if not raw:
             return
-        detected = to_platform_language(
-            self._config.stt.get("provider", ""), getattr(raw, "value", str(raw))
-        )
+        detected = to_platform_language(self._config.stt.get("provider", ""), raw)
         if not detected:
             return
         target = self._match_supported(detected)
@@ -218,7 +312,7 @@ class ConversationBrain(FrameProcessor):
             return
         if target == self._conversation_language:
             return
-        text = (frame.text or "").strip()
+        text = (text or "").strip()
         if len(text.split()) < _MIN_SWITCH_WORDS:
             return  # too short to re-decide the conversation language
         if not script_supports_language(text, target):
@@ -229,14 +323,49 @@ class ConversationBrain(FrameProcessor):
             previous=self._conversation_language,
         )
         self._conversation_language = target
+        # Session-state mirror: exports/summaries report the call's language.
+        self._recorder.language = target
         await self.push_frame(SwitchVoiceLanguageFrame(language=target))
         await self._notify_client({"type": "language", "language": target})
 
     async def _cancel_generation(self, reason: str) -> None:
-        if self._generation is not None and not self._generation.done():
-            await self.cancel_task(self._generation)
-            await self._recorder.flush_event("generation_cancelled", reason=reason)
-        self._generation = None
+        generation, self._generation = self._generation, None
+        if generation is None or generation.done():
+            return
+        if generation is asyncio.current_task():
+            # Called from inside the generation task itself (router-detected
+            # hang-up): cancelling would kill the goodbye we are about to
+            # speak. The task ends right after anyway.
+            return
+        await self.cancel_task(generation)
+        await self._recorder.flush_event("generation_cancelled", reason=reason)
+
+    async def _begin_hangup(self, text: str | None) -> None:
+        """Caller asked to end the call — highest-priority, irreversible.
+
+        Stops current audio, drops all queued work, speaks one short
+        acknowledgement in the caller's language and ends the worker. After
+        this, no STT event can produce another response (``_closing``).
+        """
+        if self._closing:
+            return
+        self._closing = True
+        self._pending_segments.clear()
+        self._pending_controls.clear()
+        self._active_workflow = None
+        await self._cancel_generation("hangup")
+        # Kill any reply still rendering/playing (TTS contexts are cancelled,
+        # telephony serializers emit their `clear` event).
+        await self.push_frame(InterruptionFrame())
+        if text is not None:
+            # Fast-path detection: the routed path already recorded the turn.
+            self._recorder.add_turn(TurnRecord(role="user", text=text,
+                                               route=RouteKind.CALL_CONTROL.value))
+        await self._recorder.flush_event("call_control", action="hangup")
+        await self._say(canned("hangup_ack", self._conversation_language))
+        # Queued behind the acknowledgement: the worker drains it, then ends
+        # (telephony serializers translate this into the protocol `stop`).
+        await self.push_frame(EndWorkerFrame(reason="caller_hangup_request"))
 
     def _queue_control(self, payload: dict) -> None:
         """Defer a telephony control event until bot speech completes."""
@@ -287,42 +416,37 @@ class ConversationBrain(FrameProcessor):
             elif decision.kind == RouteKind.HANDOFF:
                 await self._handle_handoff(decision)
             elif decision.kind == RouteKind.SAFETY:
-                await self._say(
-                    "For your security, please never share card numbers, OTPs or "
-                    "passwords on this call. How else can I help you?"
-                )
+                await self._say(canned("safety", self._conversation_language))
             elif decision.kind == RouteKind.WORKFLOW and self._workflows is not None:
                 await self._handle_workflow(decision, text)
             elif decision.kind == RouteKind.CLARIFY:
-                await self._say("Sorry, could you tell me a bit more about what you need?")
+                await self._say(canned("clarify", self._conversation_language))
             else:
                 await self._generate_reply(text, decision, started)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - one bad turn must not kill the call
             logger.exception("turn handling failed")
-            await self._say(
-                "I'm sorry, something went wrong on my end. Could you say that again?"
-            )
+            await self._say(canned("error", self._conversation_language))
 
     async def _handle_call_control(self, decision: RouteDecision) -> None:
         if decision.action == "hangup":
-            await self._say("Thank you for calling. Goodbye!")
-            await self._recorder.flush_event("call_control", action="hangup")
-            await self.push_frame(EndWorkerFrame(reason="caller_hangup_request"))
+            # Router/intent-detected hang-up (the turn is already recorded).
+            await self._begin_hangup(None)
         elif decision.action == "repeat":
-            await self._say(self._last_bot_reply or "I haven't said anything yet.")
+            await self._say(
+                self._last_bot_reply
+                or canned("repeat_none", self._conversation_language)
+            )
         elif decision.action == "slower":
             await self._recorder.flush_event("call_control", action="slower")
-            await self._say("Of course, I'll slow down. What would you like to know?")
+            await self._say(canned("slower_ack", self._conversation_language))
         else:
-            await self._say("Alright.")
+            await self._say(canned("ack", self._conversation_language))
 
     async def _handle_handoff(self, decision: RouteDecision) -> None:
         await self._recorder.flush_event("handoff", reason=decision.reason)
-        await self._say(
-            "I understand — let me connect you with a human agent. Please hold on."
-        )
+        await self._say(canned("handoff", self._conversation_language))
         self._queue_control({
             "type": "telephony_control",
             "event": "transfer",
@@ -337,6 +461,7 @@ class ConversationBrain(FrameProcessor):
             bot_id=self._config.bot_id,
             workflow_name=workflow_name,
             user_text=text,
+            language=self._conversation_language,
         )
         self._active_workflow = None if result["done"] else workflow_name
         await self._say(result["reply"])
@@ -448,10 +573,7 @@ class ConversationBrain(FrameProcessor):
                     for s in result.sources
                 ]
             else:
-                await self._say(
-                    "I couldn't find that in the information I have. "
-                    "Would you like me to connect you with a human agent?"
-                )
+                await self._say(canned("kb_miss", self._conversation_language))
                 return
 
         first_token_ms: float | None = None

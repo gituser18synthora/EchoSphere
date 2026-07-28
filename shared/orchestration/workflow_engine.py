@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from shared.config import get_settings
+from shared.orchestration.phrases import canned
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class WorkflowState(TypedDict, total=False):
     session_id: str
     workflow: str
     user_text: str
+    language: str  # caller's current conversation locale ("hi-IN"); "" = en
     slots: dict[str, str]
     pending_slot: str | None
     just_filled: bool
@@ -610,12 +612,15 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         out = edges_from.get(node_id) or []
         return str(out[0].get("to")) if out else None
 
-    def _question(node: dict, retrying: bool) -> str:
+    def _question(node: dict, retrying: bool, lang: str = "") -> str:
         base = _node_text(node, "question", "prompt", "text")
-        prefix = "Sorry, I didn't catch that. " if retrying else ""
-        return f"{prefix}{base}" if base else "Could you tell me a bit more?"
+        prefix = canned("wf_retry_prefix", lang) if retrying else ""
+        return f"{prefix}{base}" if base else canned("wf_more_detail", lang)
 
     async def _step(state: WorkflowState) -> WorkflowState:
+        # Generic engine strings follow the caller's conversation language —
+        # workflow-authored node text is spoken as authored.
+        lang = state.get("language") or ""
         slots = dict(state.get("slots") or {})
         node_retries = dict(state.get("node_retries") or {})
         audit = list(state.get("audit") or [])
@@ -637,7 +642,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             kind = node.get("kind")
             trace.append(awaiting)
             if not text:
-                replies.append(_question(node, retrying=False))
+                replies.append(_question(node, retrying=False, lang=lang))
                 current = None  # stay awaiting
             elif kind == "ask":
                 config = _node_config(node)
@@ -663,13 +668,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                             current, awaiting = str(fallback.get("to")), None
                         else:
                             status = "handoff"
-                            replies.append(
-                                "I'm having trouble capturing that. Let me connect "
-                                "you with an agent."
-                            )
+                            replies.append(canned("wf_handover", lang))
                             current, awaiting = None, None
                     else:
-                        replies.append(_question(node, retrying=True))
+                        replies.append(_question(node, retrying=True, lang=lang))
                         current = None  # stay awaiting
             elif kind == "intent":
                 lowered = text.lower()
@@ -689,7 +691,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     if retries > 1 and out_edges:
                         chosen = out_edges[0]
                     else:
-                        replies.append(_question(node, retrying=True))
+                        replies.append(_question(node, retrying=True, lang=lang))
                         current = None
                 if chosen is not None:
                     audit.append({"action": "intent_branch", "node": awaiting,
@@ -714,7 +716,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     replies.append(spoken)
                 current = _next_of(current)
             elif kind == "ask":
-                replies.append(_question(node, retrying=False))
+                replies.append(_question(node, retrying=False, lang=lang))
                 awaiting, current = current, None
             elif kind == "intent":
                 prompt = _node_text(node, "prompt", "question", "text",
@@ -753,7 +755,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 replies.append(
                     answer
                     or _node_text(node, "fallbackText", fallback_label=False)
-                    or "I couldn't find that in the information I have."
+                    or canned("wf_kb_miss", lang)
                 )
                 audit.append({"action": "knowledge", "node": current,
                               "answered": answered})
@@ -766,9 +768,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 )
                 current = str(edge.get("to")) if edge else None
             elif kind == "handover":
-                spoken = _node_text(node, "text", fallback_label=False) or (
-                    "Let me connect you with a colleague who can help. "
-                    "Please stay on the line."
+                spoken = _node_text(node, "text", fallback_label=False) or canned(
+                    "wf_handover", lang
                 )
                 replies.append(spoken)
                 queue = _node_config(node).get("queue")
@@ -794,7 +795,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         if steps >= _MAX_NODE_STEPS:
             logger.warning("workflow definition %s exceeded step budget", definition.get("id"))
             status = "error"
-            replies.append("Something went wrong with this flow. Let me connect you with an agent.")
+            replies.append(canned("wf_error", lang))
 
         return {
             **state,
@@ -897,6 +898,7 @@ class WorkflowEngine:
         workflow_name: str,
         user_text: str,
         timeout_seconds: float = 10.0,
+        language: str | None = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -925,8 +927,7 @@ class WorkflowEngine:
                 workflow_name, bot_id,
             )
             return {
-                "reply": "I'm sorry — I can't start that flow right now. "
-                         "Let me connect you with an agent.",
+                "reply": canned("wf_missing", language),
                 "done": True, "status": "error", "source": "missing",
                 "workflowId": None, "trace": [], "slots": {},
             }
@@ -941,6 +942,7 @@ class WorkflowEngine:
                         "session_id": session_id,
                         "workflow": workflow_name,
                         "user_text": user_text,
+                        "language": language or "",
                     },
                     config=thread,
                 ),
@@ -949,15 +951,14 @@ class WorkflowEngine:
         except TimeoutError:
             logger.error("workflow %s timed out for %s", workflow_name, session_id)
             return {
-                "reply": "I'm sorry, that took longer than expected. "
-                         "Let me connect you with an agent.",
+                "reply": canned("wf_timeout", language),
                 "done": True, "status": "error", "source": source,
                 "workflowId": (definition or {}).get("id"), "trace": [], "slots": {},
             }
         status = state.get("status", "collecting")
         done = status in ("done", "handoff", "error")
         return {
-            "reply": state.get("reply", "Could you repeat that?"),
+            "reply": state.get("reply") or canned("wf_repeat", language),
             "done": done,
             "status": status,
             "source": source,

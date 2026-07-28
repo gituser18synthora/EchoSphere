@@ -5,8 +5,6 @@ switches must never touch conversation history or session state."""
 
 import pytest
 
-from pipecat.frames.frames import TranscriptionFrame
-
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.brain import (
     ConversationBrain,
@@ -54,8 +52,6 @@ def make_brain(language="hi-IN", languages=("en-IN", "hi-IN")) -> ConversationBr
     return brain
 
 
-def frame(text: str, language: str | None) -> TranscriptionFrame:
-    return TranscriptionFrame(text=text, user_id="u", timestamp="t", language=language)
 
 
 class TestScriptHeuristics:
@@ -83,9 +79,7 @@ class TestLanguageSwitching:
     async def test_hindi_to_english_switch(self):
         brain = make_brain(language="hi-IN")
         brain._history.append({"role": "user", "content": "पहला सवाल"})
-        await brain._maybe_switch_language(
-            frame("Actually, can you tell me when it was created?", "en-IN")
-        )
+        await brain._maybe_switch_language("Actually, can you tell me when it was created?", "en-IN")
         assert brain._conversation_language == "en-IN"
         assert any(getattr(f, "language", None) == "en-IN" for f in brain._pushed)
         assert {"type": "language", "language": "en-IN"} in brain._notified
@@ -94,13 +88,13 @@ class TestLanguageSwitching:
 
     async def test_switch_back_to_hindi(self):
         brain = make_brain(language="hi-IN")
-        await brain._maybe_switch_language(frame("Can you help me in English?", "en-IN"))
-        await brain._maybe_switch_language(frame("अच्छा, और ये कैंसल कैसे होगा?", "hi-IN"))
+        await brain._maybe_switch_language("Can you help me in English?", "en-IN")
+        await brain._maybe_switch_language("अच्छा, और ये कैंसल कैसे होगा?", "hi-IN")
         assert brain._conversation_language == "hi-IN"
 
     async def test_unsupported_language_keeps_current_and_notifies(self):
         brain = make_brain(language="hi-IN")
-        await brain._maybe_switch_language(frame("ஒரு கேள்வி உள்ளது", "ta-IN"))
+        await brain._maybe_switch_language("ஒரு கேள்வி உள்ளது", "ta-IN")
         assert brain._conversation_language == "hi-IN"
         assert brain._pushed == []  # no voice switch
         assert any(
@@ -109,23 +103,23 @@ class TestLanguageSwitching:
 
     async def test_single_word_never_switches(self):
         brain = make_brain(language="hi-IN")
-        await brain._maybe_switch_language(frame("Okay.", "en-IN"))
+        await brain._maybe_switch_language("Okay.", "en-IN")
         assert brain._conversation_language == "hi-IN"
 
     async def test_script_disagreement_blocks_switch(self):
         brain = make_brain(language="hi-IN")
         # STT says English but the words are Devanagari-dominant — stay Hindi.
-        await brain._maybe_switch_language(frame("मेरा account status क्या है", "en-IN"))
+        await brain._maybe_switch_language("मेरा account status क्या है", "en-IN")
         assert brain._conversation_language == "hi-IN"
 
     async def test_base_code_maps_to_configured_locale(self):
         brain = make_brain(language="hi-IN")
-        await brain._maybe_switch_language(frame("Please talk in English now", "en"))
+        await brain._maybe_switch_language("Please talk in English now", "en")
         assert brain._conversation_language == "en-IN"
 
     async def test_missing_language_metadata_is_ignored(self):
         brain = make_brain(language="hi-IN")
-        await brain._maybe_switch_language(frame("hello there my friend", None))
+        await brain._maybe_switch_language("hello there my friend", None)
         assert brain._conversation_language == "hi-IN"
 
 
@@ -179,3 +173,33 @@ class TestSessionAnnouncement:
         assert brain._notified and brain._notified[0]["type"] == "session_config"
         assert brain._notified[0]["sampleRate"] == 16000
         assert said  # greeting spoken after the announcement
+
+
+class TestHinglishFollowing:
+    async def test_romanized_hinglish_switches_to_hindi(self):
+        # STT (translit/codemix modes) reports Hindi but writes Latin script —
+        # the STT verdict plus Hinglish marker words confirm the switch.
+        brain = make_brain(language="en-IN")
+        await brain._maybe_switch_language(
+            "haan bhai kal payment kar dunga", "hi-IN"
+        )
+        assert brain._conversation_language == "hi-IN"
+
+    async def test_plain_english_misdetected_as_hindi_does_not_switch(self):
+        brain = make_brain(language="en-IN")
+        await brain._maybe_switch_language(
+            "I will make the payment tomorrow", "hi-IN"
+        )
+        assert brain._conversation_language == "en-IN"
+
+    def test_hinglish_reads_as_hindi_not_english(self):
+        assert script_supports_language("haan bhai kal payment kar dunga", "hi-IN")
+        assert not script_supports_language("I will pay tomorrow morning", "hi-IN")
+
+    async def test_switch_updates_recorder_language(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language(
+            "Actually, please continue in English", "en-IN"
+        )
+        assert brain._conversation_language == "en-IN"
+        assert brain._recorder.language == "en-IN"

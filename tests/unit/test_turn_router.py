@@ -142,3 +142,82 @@ class TestSafety:
 
     def test_empty_input(self):
         assert make_router().decide("   ").kind == RouteKind.CLARIFY
+
+
+class TestMultilingualHangup:
+    """Deterministic hang-up detection: Hindi, Hinglish, English, and the
+    transcription variants collections callers actually produce. Hang-up
+    outranks everything — including an active workflow."""
+
+    HANGUP_PHRASES = [
+        "फोन कट करो",
+        "Phone cut karo",
+        "Call disconnect karo",
+        "Call band karo",
+        "Cut kar do",
+        "बस, कॉल खत्म करो",
+        "Hang up",
+        "Disconnect the call",
+        "cut karu",           # transcription variant
+        "kaat do",
+        "काट दो",
+        "फ़ोन काट दो",
+        "call khatam karo",
+        "phone rakh do",
+        "कॉल बंद करो",
+        "please end this call",
+    ]
+
+    NOT_HANGUP = [
+        "नहीं, मेरे पास अभी पैसा नहीं है",   # refusal, not a hang-up
+        "phone mat kato",                     # negation
+        "फोन मत काटो",
+        "don't hang up",
+        "काटना मत",
+        "paise kat gaye account se",          # money deducted (past tense)
+        "मेरे अकाउंट से पैसे कट गए",
+        "EMI cut ho gayi",
+        "SMS band karo",                      # stop the messages, not the call
+        "kal payment kar dunga",
+    ]
+
+    def test_hangup_phrases(self):
+        from shared.orchestration.router import detect_hangup
+
+        router = make_router()
+        for phrase in self.HANGUP_PHRASES:
+            assert detect_hangup(phrase), phrase
+            decision = router.decide(phrase)
+            assert decision.kind == RouteKind.CALL_CONTROL, phrase
+            assert decision.action == "hangup", phrase
+
+    def test_non_hangup_phrases(self):
+        from shared.orchestration.router import detect_hangup
+
+        router = make_router()
+        for phrase in self.NOT_HANGUP:
+            assert not detect_hangup(phrase), phrase
+            decision = router.decide(phrase)
+            assert decision.action != "hangup", phrase
+
+    def test_hangup_beats_active_workflow(self):
+        # A caller asking to hang up mid-ladder must never get the next rung.
+        decision = make_router().decide(
+            "Phone cut karo", active_workflow="dpd_0_7_collection_call"
+        )
+        assert decision.kind == RouteKind.CALL_CONTROL
+        assert decision.action == "hangup"
+
+    def test_configured_hangup_intent_routes_to_call_control(self):
+        router = make_router(
+            intents=[{
+                "name": "hangup_semantic",
+                "samples": ["baat khatam", "rehne do"],
+                "route": "hangup",
+                "confidence_threshold": 0.3,
+            }]
+        )
+        decision = router.decide("ab rehne do bhai")
+        assert decision.kind == RouteKind.CALL_CONTROL
+        assert decision.action == "hangup"
+        assert decision.intent == "hangup_semantic"

@@ -18,6 +18,7 @@ configuration (ResolvedBotConfig):
 import logging
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
@@ -38,6 +39,74 @@ from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provid
 from voice_runtime.recording import SessionRecorder
 
 logger = logging.getLogger(__name__)
+
+# ── turn detection ──────────────────────────────────────────────────────────
+# End-of-turn = VAD silence (stop_secs, also triggers the STT flush so the
+# final transcript overlaps the policy wait) + user_speech_timeout (the window
+# in which the caller may resume after a pause). The brain only runs the LLM
+# once the turn closes, so the effective endpoint a caller experiences is
+# stop_secs + user_speech_timeout of silence (~1 s with the defaults).
+#
+# Telephony audio is quieter and band-limited (8 kHz PSTN), so its VAD
+# thresholds are more permissive — with the browser defaults, short low-energy
+# words ("हाँ", "yes") often never trip VAD start, the STT never gets flushed
+# and the first response waits on the provider's own slow endpointing.
+#
+# Per-bot overrides live in voice settings: stt_settings.turn_detection.
+TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
+    "browser": {
+        "confidence": 0.7,
+        "start_secs": 0.2,
+        "stop_secs": 0.2,
+        "min_volume": 0.6,
+        "user_speech_timeout": 0.8,
+    },
+    "telephony": {
+        "confidence": 0.6,
+        "start_secs": 0.2,
+        "stop_secs": 0.2,
+        "min_volume": 0.4,
+        "user_speech_timeout": 0.8,
+    },
+}
+
+# Misconfiguration must never produce an unusable call (e.g. a 30 s endpoint
+# or a VAD that triggers on line noise).
+_TURN_BOUNDS: dict[str, tuple[float, float]] = {
+    "confidence": (0.3, 0.95),
+    "start_secs": (0.1, 1.0),
+    "stop_secs": (0.1, 2.0),
+    "min_volume": (0.0, 1.0),
+    "user_speech_timeout": (0.2, 3.0),
+}
+
+
+def resolve_turn_detection(
+    config: ResolvedBotConfig, transport_kind: str = "browser"
+) -> dict[str, float]:
+    """Effective turn-detection parameters for one call.
+
+    Transport-aware defaults overridden by the bot's
+    ``stt_settings.turn_detection``, every value clamped to a sane range.
+    """
+    defaults = TURN_DETECTION_DEFAULTS.get(
+        transport_kind, TURN_DETECTION_DEFAULTS["browser"]
+    )
+    overrides = ((config.stt or {}).get("settings") or {}).get("turn_detection") or {}
+    resolved: dict[str, float] = {}
+    for key, default in defaults.items():
+        value = overrides.get(key, default)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "turn_detection.%s=%r is not a number; using default %s",
+                key, value, default,
+            )
+            value = default
+        low, high = _TURN_BOUNDS[key]
+        resolved[key] = min(max(value, low), high)
+    return resolved
 
 
 def _sarvam_stream_encodings() -> set[str]:
@@ -192,6 +261,7 @@ def build_voice_pipeline(
     idle_timeout_secs: float | None = None,
     client_info: dict | None = None,
     call_context: dict | None = None,
+    transport_kind: str = "browser",
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
     stt = build_stt_service(config, sample_rate=stt_sample_rate, recorder=recorder)
@@ -208,9 +278,21 @@ def build_voice_pipeline(
         call_context=call_context,
     )
 
+    turn = resolve_turn_detection(config, transport_kind)
     processors = [transport.input()]
     if use_vad:
-        processors.append(VADProcessor(vad_analyzer=SileroVADAnalyzer()))
+        processors.append(
+            VADProcessor(
+                vad_analyzer=SileroVADAnalyzer(
+                    params=VADParams(
+                        confidence=turn["confidence"],
+                        start_secs=turn["start_secs"],
+                        stop_secs=turn["stop_secs"],
+                        min_volume=turn["min_volume"],
+                    )
+                )
+            )
+        )
     processors.append(
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
@@ -219,9 +301,12 @@ def build_voice_pipeline(
                 # the brain downstream and never reach the turn processor, so
                 # waiting for one only ever hits the 5s fallback — which also
                 # blocked barge-in (a new turn can't start while the previous
-                # one is stuck open).
+                # one is stuck open). The brain gates the LLM on the resulting
+                # UserStoppedSpeakingFrame, so this timeout IS the pause window
+                # a caller gets before the bot takes the turn.
                 stop=[SpeechTimeoutUserTurnStopStrategy(
-                    user_speech_timeout=0.8, wait_for_transcript=False,
+                    user_speech_timeout=turn["user_speech_timeout"],
+                    wait_for_transcript=False,
                 )],
             )
         )

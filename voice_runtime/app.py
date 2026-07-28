@@ -263,6 +263,7 @@ async def _run_call(
             idle_timeout_secs=float(config.silence_timeout) * 4,
             client_info=client_info,
             call_context=session.get("variables") or None,
+            transport_kind=transport_kind,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)

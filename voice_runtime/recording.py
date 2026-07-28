@@ -51,6 +51,9 @@ class SessionRecorder:
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
         self.end_reason: str | None = None
+        # Conversation language, live: starts at the bot default and follows
+        # the caller (the brain updates it on every detected switch).
+        self.language: str = config.language
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
@@ -121,6 +124,7 @@ class SessionRecorder:
                         "usage": self.usage,
                         "tts_usage": list(self.tts_usage.values()),
                         "bot_version": self.config.version,
+                        "language": self.language,
                     }
                 },
                 upsert=True,
@@ -154,7 +158,7 @@ class SessionRecorder:
                 duration_sec=duration,
                 contained=not escalated,
                 escalation_reason="human_handoff" if escalated else None,
-                language=self.config.language,
+                language=self.language,
                 status="completed",
             )
             session.add(row)

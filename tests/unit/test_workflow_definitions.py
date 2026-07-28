@@ -187,3 +187,48 @@ class TestSlugify:
     def test_names_slugify_to_route_form(self):
         assert wfe.slugify_workflow_name("Payment plan journey") == "payment_plan_journey"
         assert wfe.slugify_workflow_name("Billing – Support!! journey") == "billing_support_journey"
+
+
+class TestLocalizedEngineStrings:
+    """Generic interpreter strings (retry prefix, handover/error fallbacks)
+    follow the caller's conversation language; node-authored text is spoken
+    exactly as authored."""
+
+    async def _hi_turn(self, engine, text, session="s-hi"):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x",
+            workflow_name="payment_plan_journey", user_text=text,
+            language="hi-IN",
+        )
+
+    async def test_ask_retry_prefix_is_hindi_for_hindi_calls(
+        self, engine, monkeypatch
+    ):
+        from shared.orchestration.phrases import canned
+
+        _use_definition(monkeypatch, PAYMENT_PLAN)
+        await self._hi_turn(engine, "shuru karo")
+        result = await self._hi_turn(engine, "पता नहीं")  # not a number → retry
+        assert result["reply"].startswith(canned("wf_retry_prefix", "hi-IN"))
+        # The authored question itself is untouched.
+        assert "How much can you pay today" in result["reply"]
+
+    async def test_ask_retry_prefix_stays_english_by_default(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, PAYMENT_PLAN)
+        await _turn(engine, "start", session="s-en")
+        result = await _turn(engine, "no idea", session="s-en")
+        assert result["reply"].startswith("Sorry, I didn't catch that.")
+
+    async def test_unknown_workflow_reply_is_localized(self, engine, monkeypatch):
+        from shared.orchestration.phrases import canned
+
+        _use_definition(monkeypatch, None)
+        result = await engine.handle_turn_detailed(
+            session_id="s-miss", tenant_id="tn_x", bot_id="bot_x",
+            workflow_name="does_not_exist", user_text="haan",
+            language="hi-IN",
+        )
+        assert result["reply"] == canned("wf_missing", "hi-IN")
+        assert result["status"] == "error"

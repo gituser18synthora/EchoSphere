@@ -57,6 +57,27 @@ caller/browser → Sarvam STT WS (saarika/saaras, auto-detect supported)
 - One persistent TTS WebSocket per call and provider; sentences never open
   connections. ElevenLabs voice changes reconnect (voice is in the URL);
   Sarvam voice/language changes re-send config on the same connection.
+- Turn taking: Sarvam finalizes a transcript every time the local VAD flushes
+  (~0.2 s pause), so STT finals are per SEGMENT. The brain buffers segments
+  and answers only when the turn controller closes the user's turn
+  (VAD `stop_secs` + `user_speech_timeout` of silence ≈ 1 s by default) — a
+  caller pausing mid-sentence is never talked over. Transport-aware defaults
+  (telephony uses lower VAD volume/confidence thresholds for quiet 8 kHz PSTN
+  audio) can be overridden per bot via `voice_bot_settings.stt_settings.
+  turn_detection` `{confidence, start_secs, stop_secs, min_volume,
+  user_speech_timeout}` — see `voice_runtime/pipeline.py
+  resolve_turn_detection` for the clamped ranges.
+- Hang-up: `shared/orchestration/router.py detect_hangup()` matches Hindi /
+  Hinglish / English disconnect requests (negation-guarded) on every STT
+  segment, before workflows and the LLM. The brain interrupts playback,
+  speaks one short acknowledgement in the caller's language
+  (`shared/orchestration/phrases.py`), ends the worker (telephony serializers
+  emit the protocol `stop`) and drops any later STT events.
+- Language following: the reply language tracks the caller per utterance
+  (script-checked, incl. romanized Hinglish → Hindi); canned fallbacks and
+  workflow-engine retry/handover strings are localized via
+  `shared/orchestration/phrases.py`. Only languages the bot is configured
+  for (`bot_languages`) are eligible — enable the locale to allow switching.
 - Barge-in: Pipecat interruption cancels the LLM task, closes the ElevenLabs
   context / drops the Sarvam connection, clears queued audio, and rejects any
   late chunks (generation IDs on both provider and router side).

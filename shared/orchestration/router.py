@@ -46,8 +46,69 @@ _SMALLTALK = re.compile(
     re.IGNORECASE,
 )
 
+# ── multilingual hang-up detection ──────────────────────────────────────────
+# Deterministic, transcription-tolerant matching for Hindi (Devanagari),
+# Hinglish (Latin) and English. Checked before EVERYTHING else (including an
+# active workflow) — a caller asking to hang up must never receive another
+# payment pitch, clarification or LLM fallback.
+#
+# NOTE: Python's \b misfires after Devanagari matra-final words — Devanagari
+# alternates stay outside \b groups.
+
+# Negations must never hang up: "फोन मत काटो", "call mat kato", "don't hang
+# up". Both orders are covered (neg before verb, and "kaatna mat").
+_HANGUP_NEGATION = re.compile(
+    r"(?:\bmat\b|\bna\b|\bnahin?\b|\bdon'?t\b|\bdo not\b|मत|ना|नहीं)\W*"
+    r"(?:\w+\W+)?(?:kat+\w*|kaat\w*|cut|band|bandh|khat[ae]?m|rakh\w*|hang|"
+    r"disconnect|काट\w*|कट|बंद|ख़?त्म|रख)"
+    r"|(?:kat+n[aei]|kaatn[aei]|काटना|कट करना)\W+(?:mat\b|मत)",
+    re.I,
+)
+
+_HANGUP_PATTERNS: list[re.Pattern] = [
+    # English.
+    re.compile(
+        r"\b(hang ?up|end (the |this )?call|disconnect( the| this)?( call| phone)?|"
+        r"(cut|stop|drop) (the |this )?call)\b",
+        re.I,
+    ),
+    # phone/call + cut/band/khatam/rakh verb (Latin and Devanagari nouns).
+    re.compile(
+        r"(?:\b(?:phone|phon|fone|call|kaal)\b|फ़?ोन|फ़ोन|फोन|कॉल|काल)\W*(?:ko\W+|को\W*)?"
+        r"(?:kat+\w*|kaat\w*|cut|band\w*|khat[ae]?m|khatm|rakh\w*|काट\w*|कट|बंद|ख़?त्म|रख)",
+        re.I,
+    ),
+    # Bare imperative cut verb: "cut kar do", "cut karo", "cut karu",
+    # "kaat do", "काट दो", "कट करो". Past tense ("paise kat gaye" — money got
+    # deducted) deliberately does NOT match: only imperative aux verbs listed.
+    re.compile(
+        r"\b(?:kat+|kaat|cut)\s+(?:kar\w*|kr\w*|do|de|dijiye|dena)\b",
+        re.I,
+    ),
+    re.compile(r"(?:काट|कट)\s*(?:कर\s*)?(?:दो|दे|दीजिए|करो|करिए)"),
+    # band/khatam without a phone/call noun needs a "bas" style terminator so
+    # "SMS band karo" (stop the messages) can't kill the call.
+    re.compile(
+        r"\bbas\b.{0,16}\b(?:band|bandh|khat[ae]?m|khatm)\s+kar\w*",
+        re.I,
+    ),
+    re.compile(r"बस.{0,16}(?:बंद|ख़?त्म)\s*कर"),
+]
+
+
+def detect_hangup(text: str) -> bool:
+    """Deterministic multilingual hang-up intent (hi / hinglish / en)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if _HANGUP_NEGATION.search(stripped):
+        return False
+    return any(p.search(stripped) for p in _HANGUP_PATTERNS)
+
+
 _CALL_CONTROL: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\b(hang ?up|end (the )?call|disconnect)\b", re.I), "hangup"),
+    # hang-up lives in detect_hangup() (multilingual + negation-guarded),
+    # checked before this list ever runs.
     (re.compile(r"\b(transfer|connect) (me )?(to )?(a |an )?(human|agent|person|representative|someone)\b", re.I), "transfer"),
     (re.compile(r"\b(speak|talk) (to|with) (a |an )?(human|agent|person|representative)\b", re.I), "transfer"),
     (re.compile(r"\b(repeat|say (that|it) again|pardon|come again)\b", re.I), "repeat"),
@@ -93,6 +154,13 @@ class TurnRouter:
         stripped = (text or "").strip()
         if not stripped:
             return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.3, reason="empty_input")
+
+        # 0a. Hang-up outranks everything, including an active workflow: a
+        # caller asking to end the call must never get another pitch, rung,
+        # clarification or LLM fallback (any language).
+        if detect_hangup(stripped):
+            return RouteDecision(kind=RouteKind.CALL_CONTROL, action="hangup",
+                                 reason="hangup_phrase")
 
         # 0. Safety: caller reading out secrets — refuse/deflect, never store.
         if _UNSAFE.search(stripped):
@@ -147,6 +215,12 @@ class TurnRouter:
             if route == "handoff":
                 return RouteDecision(kind=RouteKind.HANDOFF, intent=name, confidence=confidence,
                                      action="transfer", reason="intent_handoff")
+            # Semantic hang-up: tenant-configured sample phrases (any language)
+            # escalate to the same deterministic hang-up flow.
+            if route == "hangup":
+                return RouteDecision(kind=RouteKind.CALL_CONTROL, intent=name,
+                                     confidence=confidence, action="hangup",
+                                     reason="intent_hangup")
             return RouteDecision(kind=RouteKind.INTENT, intent=name, confidence=confidence,
                                  reason="configured_intent")
 
