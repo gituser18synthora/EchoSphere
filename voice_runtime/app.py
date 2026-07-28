@@ -15,13 +15,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.websockets import WebSocketState
 
 from shared.config import get_settings
 from shared.db.mongo import Mongo
 from shared.db.redis import redis_health_check
 from shared.bot_config import resolve_bot_config
+from shared.errors import install_error_handlers
 from shared.voice_sessions import (
     end_voice_session,
     load_voice_session,
@@ -53,6 +54,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EchoSphere Voice Worker", lifespan=lifespan)
+install_error_handlers(app)
+
+
+@app.get("/")
+async def root():
+    return {"service": "EchoSphere Voice Worker", "status": "up"}
 
 
 @app.get("/health")
@@ -63,6 +70,20 @@ async def health():
         "active_sessions": len(_active_sessions),
         "redis": redis,
     }
+
+
+@app.post("/telephony/webhook/{provider}")
+async def inbound_call_webhook(provider: str, request: Request):
+    """Signed dialer webhook on the SAME host:port as the media WebSocket.
+
+    External dialers (Vaani) get exactly one public endpoint pair:
+    POST /telephony/webhook/{provider} here mints the session whose
+    /ws/telephony/{provider}/{session_id} URL is returned in the response.
+    Sessions live in Redis, so any worker instance can host the call.
+    """
+    from shared.telephony_webhooks import handle_inbound_call_webhook
+
+    return await handle_inbound_call_webhook(provider, request)
 
 
 @app.websocket("/ws/telephony/{provider}/{session_id}")

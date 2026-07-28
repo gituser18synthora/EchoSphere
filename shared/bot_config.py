@@ -570,24 +570,60 @@ async def resolve_bot_config(
     return config
 
 
-def _resolve_phone_sync(phone_number: str) -> str:
-    """Trusted phone-number → bot mapping for inbound telephony."""
+def _phone_assignment_sync(phone_number: str) -> tuple[str | None, str | None]:
+    """Trusted phone-number mapping for inbound telephony → (bot_id, tenant_id)."""
     session = get_sessionmaker()()
     try:
         row = session.execute(
             select(PhoneNumber).where(
                 PhoneNumber.number == phone_number,
                 PhoneNumber.status == "assigned",
+                PhoneNumber.is_deleted.is_(False),
             )
         ).scalar_one_or_none()
-        if row is None or not row.bot_id:
+        if row is None:
             # NotFoundError appends "not found." — pass a resource label only.
             raise NotFoundError("A bot assignment for this number")
-        return row.bot_id
+        return row.bot_id, row.tenant_id
+    finally:
+        session.close()
+
+
+def _bot_tenant_sync(bot_id: str) -> str | None:
+    """Owning tenant of a live (non-deleted) bot; NotFoundError otherwise."""
+    session = get_sessionmaker()()
+    try:
+        bot = session.get(VoiceBot, bot_id)
+        if bot is None or bot.is_deleted:
+            raise NotFoundError("Bot")
+        return bot.tenant_id
     finally:
         session.close()
 
 
 async def resolve_bot_for_phone_number(phone_number: str) -> ResolvedBotConfig:
-    bot_id = await asyncio.to_thread(_resolve_phone_sync, phone_number)
+    bot_id, _tenant_id = await asyncio.to_thread(_phone_assignment_sync, phone_number)
+    if not bot_id:
+        raise NotFoundError("A bot assignment for this number")
     return await resolve_bot_config(bot_id, require_published=True)
+
+
+async def resolve_bot_for_dialer(
+    called_number: str, requested_bot_id: str | None = None
+) -> ResolvedBotConfig:
+    """Dialer routing: the dialed number anchors the tenant (trusted DB
+    mapping); the signed payload's ``botId`` may then select a different bot
+    *within that tenant* — per-campaign routing over a shared DID. Nothing
+    client-supplied ever picks the tenant, and a bot id from another tenant
+    resolves to a sanitized 404 (existence is not revealed)."""
+    default_bot_id, tenant_id = await asyncio.to_thread(
+        _phone_assignment_sync, called_number
+    )
+    if not requested_bot_id:
+        if not default_bot_id:
+            raise NotFoundError("A bot assignment for this number")
+        return await resolve_bot_config(default_bot_id, require_published=True)
+    bot_tenant = await asyncio.to_thread(_bot_tenant_sync, requested_bot_id)
+    if not tenant_id or bot_tenant != tenant_id:
+        raise NotFoundError("Bot")
+    return await resolve_bot_config(requested_bot_id, require_published=True)

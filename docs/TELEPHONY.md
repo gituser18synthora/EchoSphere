@@ -29,10 +29,11 @@ sequenceDiagram
     VW->>VW: build serializer + Pipecat pipeline, run call
 ```
 
-Implementation: `backend/routers/telephony.py` (webhook),
-`voice_runtime/app.py` (`telephony_session`), `shared/telephony.py`
-(provider catalog + connect payloads), `voice_runtime/telephony.py`
-(media-stream serializers).
+Implementation: `shared/telephony_webhooks.py` (webhook handler, mounted by
+`backend/routers/telephony.py` under `/api/v1` and by `voice_runtime/app.py`
+at the root path), `voice_runtime/app.py` (`telephony_session`),
+`shared/telephony.py` (provider catalog + connect payloads),
+`voice_runtime/telephony.py` (media-stream serializers).
 
 ## Webhook signature verification
 
@@ -54,10 +55,19 @@ auth token used in the signature.
 
 The dialed number (`To`/`to`/`CallTo`/`called_number` in the payload) is looked up in
 MySQL `phone_numbers` with `status='assigned'`
-(`resolve_bot_for_phone_number`, `shared/bot_config.py`). The bot must
+(`resolve_bot_for_dialer`, `shared/bot_config.py`). The bot must
 have a **published release** (`require_published=True`) — draft bots never answer
 carrier traffic. The session created for the call is channel `phone` and records the
 caller number (masked before it reaches MySQL).
+
+**Per-campaign bot selection (`botId`).** Outbound dialers often run several
+campaigns over one DID. The signed payload may therefore carry a `botId`
+(alias `bot_id`): the dialed number still anchors the **tenant** (trusted DB
+mapping — nothing client-supplied ever picks the tenant), and `botId` selects
+a bot *within that tenant*. A missing `botId` falls back to the number's
+assigned bot. A bot id that does not exist, is archived, has no published
+release, or belongs to **another tenant** answers with a sanitized `404`
+(existence is never revealed); a malformed `botId` is `422`.
 
 ## Connect payloads
 
@@ -79,6 +89,32 @@ the voice worker is not reachable on the host:port that served the webhook —
 separate port/host with no proxy in front); otherwise it is derived from the
 webhook request's base URL. It must be a publicly reachable `wss://` host in
 production.
+
+## Telephony gateway (one public host:port)
+
+External dialers get a single public endpoint pair. The gateway is the voice
+worker app bound to the public dialer port (`TELEPHONY_GATEWAY_HOST`/`PORT`,
+default `0.0.0.0:9011`), run **alongside** the regular 9002 worker:
+
+```bash
+env/bin/python -m voice_runtime.app        # browser worker, port 9002
+env/bin/python -m voice_runtime.gateway    # dialer gateway, port 9011
+```
+
+The worker app itself now also mounts `POST /telephony/webhook/{provider}` at
+the **root path** (no `/api/v1` prefix — same handler as the API's route,
+`shared/telephony_webhooks.py`), so the gateway serves:
+
+```text
+POST  http://<public-host>:9011/telephony/webhook/vaani
+WS    ws://<public-host>:9011/ws/telephony/vaani/{session_id}
+```
+
+Set `TELEPHONY_PUBLIC_WS_BASE=ws://<public-host>:9011` so the webhook answers
+with the gateway's own WebSocket URL. Sessions are handed off through Redis,
+so webhook and media stream may even be served by different instances; the
+duplicate-connection guard (`4409`) is per-instance, which is safe because a
+session's returned URL only ever points at one instance.
 
 ## Media WebSocket handshake
 

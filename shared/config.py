@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     # process/port, or a different public hostname). Empty = derive from the
     # webhook request's own base URL (single-host proxy deployments).
     telephony_public_ws_base: str = ""
+    # The telephony gateway (`python -m voice_runtime.gateway`) is a second
+    # voice-worker instance bound to the public dialer port so external
+    # dialers reach ONE host:port for both the signed webhook and the media
+    # WebSocket. TELEPHONY_PUBLIC_WS_BASE should point at this instance.
+    telephony_gateway_host: str = "0.0.0.0"
+    telephony_gateway_port: int = 9011
 
     @property
     def postgres_url(self) -> str:

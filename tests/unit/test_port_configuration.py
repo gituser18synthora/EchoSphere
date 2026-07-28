@@ -11,6 +11,7 @@ EXPECTED_PORTS = {
     "VOICE_WORKER_PORT": 9002,
     "MCP_PORT": 9003,
     "FREESWITCH_PORT": 9004,
+    "TELEPHONY_GATEWAY_PORT": 9011,
 }
 
 
@@ -25,6 +26,7 @@ def test_settings_port_fallbacks_match_current_local_ports(monkeypatch):
     assert settings.voice_worker_port == EXPECTED_PORTS["VOICE_WORKER_PORT"]
     assert settings.mcp_port == EXPECTED_PORTS["MCP_PORT"]
     assert settings.freeswitch_port == EXPECTED_PORTS["FREESWITCH_PORT"]
+    assert settings.telephony_gateway_port == EXPECTED_PORTS["TELEPHONY_GATEWAY_PORT"]
 
 
 def test_env_example_port_values_match_settings_defaults():
