@@ -16,12 +16,22 @@ configuration (ResolvedBotConfig):
 """
 
 import logging
+import time
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    ErrorFrame,
+    Frame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
@@ -107,6 +117,61 @@ def resolve_turn_detection(
         low, high = _TURN_BOUNDS[key]
         resolved[key] = min(max(value, low), high)
     return resolved
+
+
+class CallStageLogger(FrameProcessor):
+    """Per-call stage tracing between STT and the brain.
+
+    One log stream per session id showing whether inbound audio tripped VAD,
+    whether STT produced interim/final text, and the turn timing. Together
+    with the serializer's ``fs-media``/``vaani-media`` lines and the brain's
+    ``turn[…]``/TTS logs, a live call is traceable end to end. Transcripts are
+    truncated; no payloads or secrets are logged.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self._sid = session_id
+        self._turn = 0
+        self._turn_started_at: float | None = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._turn += 1
+            self._turn_started_at = time.monotonic()
+            logger.info(
+                "stage[%s] vad: user started speaking (turn %d) — audio is "
+                "streaming to STT", self._sid, self._turn,
+            )
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            held = (
+                time.monotonic() - self._turn_started_at
+                if self._turn_started_at else 0.0
+            )
+            logger.info(
+                "stage[%s] vad: user stopped speaking (turn %d after %.2fs) — "
+                "awaiting final transcript", self._sid, self._turn, held,
+            )
+        elif isinstance(frame, InterimTranscriptionFrame):
+            logger.debug(
+                "stage[%s] stt interim (turn %d): %r",
+                self._sid, self._turn, (frame.text or "")[:120],
+            )
+        elif isinstance(frame, TranscriptionFrame):
+            language = getattr(frame, "language", None)
+            logger.info(
+                "stage[%s] stt final transcript (turn %d, lang=%s): %r",
+                self._sid, self._turn,
+                getattr(language, "value", language),
+                (frame.text or "")[:200],
+            )
+        elif isinstance(frame, ErrorFrame):
+            logger.error(
+                "stage[%s] pipeline error frame: %s",
+                self._sid, getattr(frame, "error", frame),
+            )
+        await self.push_frame(frame, direction)
 
 
 def _sarvam_stream_encodings() -> set[str]:
@@ -293,6 +358,11 @@ def build_voice_pipeline(
                 )
             )
         )
+    # STT must receive VADUserStoppedSpeakingFrame directly. Sarvam uses that
+    # frame to flush its streaming socket; placing UserTurnProcessor first
+    # consumed the control frame and left telephony transcripts waiting for
+    # the provider's roughly 60-second server-side endpoint.
+    processors.append(stt)
     processors.append(
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
@@ -311,7 +381,12 @@ def build_voice_pipeline(
             )
         )
     )
-    processors += [stt, brain, tts, transport.output()]
+    processors += [
+        CallStageLogger(recorder.session_id),
+        brain,
+        tts,
+        transport.output(),
+    ]
 
     worker = PipelineWorker(
         Pipeline(processors),

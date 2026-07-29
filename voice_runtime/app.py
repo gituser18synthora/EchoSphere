@@ -98,23 +98,39 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
 
     from shared.errors import ApiError
     from shared.telephony import SUPPORTED_PROVIDERS
-    from voice_runtime.telephony import build_media_serializer
 
     if provider not in SUPPORTED_PROVIDERS:
+        logger.warning(
+            "telephony ws rejected (4404 unknown provider %r) session=%s",
+            provider, session_id,
+        )
         await websocket.close(code=4404, reason="unknown provider")
         return
     session = await load_voice_session(session_id)
     if session is None:
+        logger.warning(
+            "telephony ws rejected (4401 unknown/expired session) provider=%s "
+            "session=%s", provider, session_id,
+        )
         await websocket.close(code=4401, reason="unknown or expired session")
         return
     if session_id in _active_sessions:
         # Reject duplicates BEFORE the handshake read: a duplicate connection
         # that never sends `start` must not park inside receive_text() holding
         # a socket while the real stream is live. (_run_call re-checks.)
+        logger.warning(
+            "telephony ws rejected (4409 duplicate connection) provider=%s "
+            "session=%s", provider, session_id,
+        )
         await websocket.accept()
         await websocket.close(code=4409, reason="session already active")
         return
     await websocket.accept()
+    peer = websocket.client.host if websocket.client else "?"
+    logger.info(
+        "telephony ws connected: provider=%s session=%s call_id=%s peer=%s",
+        provider, session_id, session.get("call_id"), peer,
+    )
 
     start_message: dict | None = None
     if provider in ("twilio", "telnyx", "plivo", "exotel", "vaani"):
@@ -125,18 +141,55 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
                 for _ in range(4):
                     message = _json.loads(await websocket.receive_text())
                     event = message.get("event") or message.get("event_type")
+                    logger.info(
+                        "telephony ws handshake event: provider=%s session=%s "
+                        "event=%s", provider, session_id, event,
+                    )
                     if event in ("start", "streamStart", "media_start"):
                         start_message = message
                         break
         except Exception:  # noqa: BLE001 — timeout, disconnect or bad JSON
+            logger.warning(
+                "telephony ws handshake failed (4400) provider=%s session=%s",
+                provider, session_id,
+            )
             await websocket.close(code=4400, reason="invalid stream handshake")
             return
         if start_message is None:
+            logger.warning(
+                "telephony ws missing stream start (4400) provider=%s session=%s",
+                provider, session_id,
+            )
             await websocket.close(code=4400, reason="missing stream start message")
             return
+        start_body = start_message.get("start") or {}
+        logger.info(
+            "telephony stream start: provider=%s session=%s streamSid=%s "
+            "mediaFormat=%s track=%s",
+            provider, session_id,
+            start_body.get("streamSid") or start_message.get("streamSid")
+            or start_body.get("stream_sid") or start_body.get("streamId")
+            or start_body.get("stream_id"),
+            start_body.get("mediaFormat") or start_body.get("media_format"),
+            start_body.get("track"),
+        )
+    # Importing Pipecat and its serializers can take longer than the
+    # mod_audio_stream WebSocket handshake timeout on the first call after a
+    # process restart. The socket must already be accepted before that work.
+    import inspect
+
+    from voice_runtime.telephony import build_media_serializer
+
+    factory_kwargs: dict = {"start_message": start_message}
+    if "session_id" in inspect.signature(build_media_serializer).parameters:
+        factory_kwargs["session_id"] = session_id  # tags media-stage log lines
     try:
-        serializer = build_media_serializer(provider, start_message=start_message)
+        serializer = build_media_serializer(provider, **factory_kwargs)
     except ApiError as exc:
+        logger.warning(
+            "telephony serializer rejected (4400) provider=%s session=%s: %s",
+            provider, session_id, exc.message,
+        )
         await websocket.close(code=4400, reason=exc.message[:100])
         return
     await _run_call(websocket, session_id, session, serializer=serializer,
@@ -165,6 +218,10 @@ async def _run_call(
 ):
     settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
+        logger.warning(
+            "voice session %s rejected (4429): worker at capacity (%d active)",
+            session_id, len(_active_sessions),
+        )
         await websocket.close(code=4429, reason="voice worker at capacity")
         return
     if session_id in _active_sessions:
@@ -295,6 +352,10 @@ async def _run_call(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
+        logger.info(
+            "call started: session=%s channel=%s call_id=%s — speaking greeting",
+            session_id, recorder.channel, session.get("call_id"),
+        )
         await recorder.flush_event(
             "call_started",
             channel=recorder.channel,
@@ -304,10 +365,14 @@ async def _run_call(
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        logger.info(
+            "client disconnected: session=%s — cancelling pipeline", session_id
+        )
         await worker.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(transport, client):
+        logger.info("session timeout: session=%s — cancelling pipeline", session_id)
         await recorder.flush_event("session_timeout")
         await worker.cancel()
 

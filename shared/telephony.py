@@ -32,7 +32,9 @@ class TelephonyProviderConfig(BaseModel):
     def validate_for(self, provider: str) -> None:
         if self.provider != provider:
             raise ApiError(f"Configuration is for '{self.provider}', not '{provider}'", 400)
-        if provider in ("twilio", "telnyx", "plivo", "exotel", "vaani") and not self.public_ws_base:
+        if provider in (
+            "freeswitch", "twilio", "telnyx", "plivo", "exotel", "vaani"
+        ) and not self.public_ws_base:
             raise ApiError("public_ws_base (wss://…) is required for media streaming", 400)
         if provider == "twilio" and not self.auth_token_reference:
             raise ApiError("auth_token_reference is required for Twilio signature checks", 400)
@@ -82,6 +84,9 @@ def connect_instructions(
             f'{{"stream_url": "{ws_url}", "stream_track": "inbound_track"}}',
         )
     if provider == "freeswitch":
-        # Consumed by our dialplan helper: mod_audio_fork target.
-        return ConnectInstructions("application/json", f'{{"audio_fork_url": "{ws_url}"}}')
+        # Keep the old key for compatibility with existing dialplan helpers.
+        return ConnectInstructions(
+            "application/json",
+            f'{{"audio_stream_url": "{ws_url}", "audio_fork_url": "{ws_url}"}}',
+        )
     raise ApiError(f"Unsupported telephony provider '{provider}'", 400)

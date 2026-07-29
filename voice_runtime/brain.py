@@ -398,6 +398,10 @@ class ConversationBrain(FrameProcessor):
         started = time.perf_counter()
         await self._notify_client({"type": "transcript", "text": text})
         decision = self._router.decide(text, active_workflow=self._active_workflow)
+        logger.info(
+            "turn[%s] user said (route=%s): %r",
+            self._recorder.session_id, decision.kind.value, text[:200],
+        )
         turn = TurnRecord(role="user", text=text, route=decision.kind.value)
         self._recorder.add_turn(turn)
         self._recorder.add_event(
@@ -586,6 +590,16 @@ class ConversationBrain(FrameProcessor):
 
         reply = "".join(reply_parts).strip()
         self._record_llm_usage(reply)
+        if not reply:
+            logger.warning(
+                "turn[%s] llm returned an empty reply", self._recorder.session_id
+            )
+        else:
+            logger.info(
+                "turn[%s] llm reply (%d chars, first_token=%.0fms): %r",
+                self._recorder.session_id, len(reply), first_token_ms or -1.0,
+                reply[:200],
+            )
         if reply:
             await self._notify_client({"type": "bot_text", "text": reply})
             self._last_bot_reply = reply
@@ -679,6 +693,9 @@ class ConversationBrain(FrameProcessor):
 
     async def _say(self, text: str) -> None:
         """Speak a fixed phrase through the TTS path."""
+        logger.info(
+            "turn[%s] bot says: %r", self._recorder.session_id, (text or "")[:200]
+        )
         self._last_bot_reply = text
         self._history.append({"role": "assistant", "content": text})
         self._recorder.add_turn(TurnRecord(role="bot", text=text))

@@ -257,6 +257,11 @@ class StreamingTTSRouter(TTSService):
 
     # ── TTSService contract ─────────────────────────────────────────────
     async def run_tts(self, text: str, context_id: str):
+        logger.info(
+            "tts[%s] generating %d chars (lang=%s, context=%s)",
+            self._recorder.session_id if self._recorder else "?",
+            len(text), self._current_language, str(context_id)[:8],
+        )
         state = self._generations.get(context_id)
         engine: dict | None = state.engine if state else None
         try:

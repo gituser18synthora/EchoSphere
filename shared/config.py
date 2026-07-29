@@ -144,6 +144,18 @@ class Settings(BaseSettings):
     freeswitch_host: str = "127.0.0.1"
     freeswitch_port: int = 9004
     freeswitch_password_reference: str = "env:FREESWITCH_PASSWORD"
+    # Which of the two interleaved 16-bit streams in the mod_audio_stream
+    # binary feed carries the CALLER's voice. "auto" (default) starts on the
+    # first stream (FreeSWITCH's standard read/caller position) and locks or
+    # switches based on which stream actually shows voice while the bot is
+    # silent; "first"/"second" (aliases "left"/"right") pin it explicitly.
+    freeswitch_caller_channel: str = "auto"
+    # Upper bound for the adaptive inbound gain applied to the caller stream
+    # before VAD/STT. The QA dialer delivers caller speech at ~-32 dBFS
+    # (peak ≈ 800), far below the VAD volume threshold; the effective gain is
+    # min(this, target/observed_peak) and never clips already-loud speech.
+    # (Per-channel raw captures: set ECHOSPHERE_FS_AUDIO_DEBUG_DIR.)
+    freeswitch_input_gain: float = 12.0
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not
