@@ -278,6 +278,21 @@ class TestVaaniTelephony:
         oversized = "A" * 140_001  # > 100 KB PCM once decoded
         assert await serializer.deserialize(self._media(oversized)) is None
 
+    async def test_unsupported_control_events_are_ignored(self):
+        serializer = VaaniFrameSerializer(stream_sid="MZ123")
+        events = (
+            {"event": "dtmf", "dtmf": {"digit": "5", "duration": 120}},
+            {"event": "mark", "mark": {"name": "played-1"}},
+            {"event": "marker", "marker": {"name": "played-2"}},
+            {"event": "clear", "clear": {"reason": "dialer_request"}},
+            {"event": "transfer", "transfer": {"reason": "dialer_request"}},
+            {"event": "error", "error": {"code": "dialer_error"}},
+            {"event": "hangup", "hangup": {"reason": "normal"}},
+        )
+        for event in events:
+            event["streamSid"] = "MZ123"
+            assert await serializer.deserialize(json.dumps(event)) is None
+
     async def test_stop_event_ends_the_worker_and_duplicates_are_safe(self):
         from pipecat.frames.frames import EndWorkerFrame
 
