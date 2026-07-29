@@ -134,10 +134,12 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         session_id: str = "",
         caller_channel: str = "auto",
         input_gain: float = _FS_DEFAULT_INPUT_GAIN,
+        send_kill_audio: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._session_id = session_id or "?"
+        self._send_kill_audio = send_kill_audio
         mode = (caller_channel or "auto").strip().lower()
         if mode != "auto" and mode not in _CHANNEL_ALIASES:
             logger.warning(
@@ -179,6 +181,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         self._interval_out_chunks = 0
         self._interval_out_bytes = 0
         self._last_bot_audio = 0.0
+        self._first_out_time = 0.0
         self._logged_first_out = False
         # Opt-in per-channel debug capture (ECHOSPHERE_FS_AUDIO_DEBUG_DIR):
         # both interleaved streams are dumped separately so channel
@@ -219,11 +222,17 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         if isinstance(frame, InterruptionFrame):
             dropped = len(self._pending_audio)
             self._pending_audio.clear()
-            if dropped:
-                logger.info(
-                    "fs-media[%s] barge-in: dropped %d pending outbound bytes",
-                    self._session_id, dropped,
-                )
+            logger.info(
+                "fs-media[%s] barge-in: dropped %d pending outbound bytes%s",
+                self._session_id, dropped,
+                ", sending killAudio" if self._send_kill_audio else "",
+            )
+            if self._send_kill_audio:
+                # Local buffers alone are not enough: up to
+                # _FREESWITCH_MAX_CHUNK_BYTES (~2 s) of audio already shipped
+                # keeps playing at the module and talks over the caller.
+                # killAudio tells mod_audio_stream to drop its playback queue.
+                return json.dumps({"type": "killAudio"})
         return None
 
     def _emit_chunk(self, *, force: bool) -> str | None:
@@ -236,10 +245,12 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         self._interval_out_bytes += len(audio)
         if not self._logged_first_out:
             self._logged_first_out = True
+            self._first_out_time = time.monotonic()
             logger.info(
                 "fs-media[%s] first outbound bot-audio chunk → dialer: %d bytes "
-                "raw L16@8k in streamAudio envelope",
-                self._session_id, len(audio),
+                "(%.0f ms) raw L16@8k mono in streamAudio envelope "
+                "(sampleRate=8000)",
+                self._session_id, len(audio), len(audio) / 16.0,
             )
         return json.dumps({
             "type": "streamAudio",
@@ -514,6 +525,19 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
             self._muted_msgs,
             self._interval_out_chunks, self._interval_out_bytes,
         )
+        if self._first_out_time:
+            # Pacing check: audio-seconds shipped vs wall-clock since first
+            # send. ratio≈1.0 = real-time; <1 the caller will hear gaps,
+            # >1 the module is buffering ahead.
+            out_audio_s = self._out_bytes / 16000.0
+            wall_s = now - self._first_out_time
+            logger.info(
+                "fs-media[%s] outbound pacing: audio_s=%.1f wall_s=%.1f "
+                "ratio=%.2f chunks=%d",
+                self._session_id, out_audio_s, wall_s,
+                (out_audio_s / wall_s) if wall_s > 0 else 0.0,
+                self._out_chunks,
+            )
         self._inbound_interval_bytes = 0
         self._inbound_interval_msgs = 0
         self._inbound_interval_peak = 0
@@ -823,6 +847,7 @@ def build_media_serializer(
             session_id=session_id,
             caller_channel=settings.freeswitch_caller_channel,
             input_gain=settings.freeswitch_input_gain,
+            send_kill_audio=settings.freeswitch_send_kill_audio,
         )
     if provider == "twilio":
         from pipecat.serializers.twilio import TwilioFrameSerializer

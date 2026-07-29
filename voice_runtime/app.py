@@ -36,12 +36,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voice_runtime.app")
 
+# Provider SDK errors can embed request headers (API keys) in exception text
+# — scrub every std-logging and loguru (pipecat) line before it reaches
+# journald. Observed live 2026-07-29: sarvamai's 403 error printed the full
+# api-subscription-key.
+from shared.logging_utils import install_log_redaction  # noqa: E402
+
+install_log_redaction()
+
 # Fail fast on missing mandatory configuration before serving any call.
 from shared.config import validate_settings  # noqa: E402
 
 validate_settings("voice-runtime")
 
 _active_sessions: dict[str, asyncio.Task] = {}
+
+# Every telephony media serializer speaks the 8 kHz PSTN world: the
+# FreeSWITCH streamAudio envelope declares sampleRate 8000, Vaani's contract
+# is L16@8k, and the pipecat Twilio/Telnyx/Plivo/Exotel serializers encode
+# G.711-rate audio. There is exactly ONE correct pipeline output rate.
+TELEPHONY_SAMPLE_RATE = 8000
+
+
+def resolve_telephony_sample_rate(
+    audio_conf: dict, *, bot_id: str = "?", provider: str = "?"
+) -> int:
+    """Telephony output rate, clamped to the serializers' 8 kHz contract.
+
+    A bot configured with any other telephony rate would generate PCM at that
+    rate while the wire envelope still declares 8000 — played at the wrong
+    speed on the caller's phone (16k config = half speed). Configuration must
+    never be able to produce that, so it is forced with a loud warning.
+    """
+    configured = int(audio_conf.get("sampleRate", TELEPHONY_SAMPLE_RATE))
+    if configured != TELEPHONY_SAMPLE_RATE:
+        logger.warning(
+            "bot %s telephony audio_settings.sampleRate=%d is not supported by "
+            "the %s media stream (fixed L16@8k) — forcing %d so playback speed "
+            "stays correct",
+            bot_id, configured, provider, TELEPHONY_SAMPLE_RATE,
+        )
+    return TELEPHONY_SAMPLE_RATE
+
+
+def session_timeout_should_cancel(recorder) -> bool:
+    """Whether the pipecat session timeout may cancel this call.
+
+    Pipecat's ``session_timeout`` is an ABSOLUTE one-shot timer from
+    connection start — not an inactivity timeout. Killing an in-progress
+    conversation at exactly VOICE_SESSION_TIMEOUT seconds is a mid-call
+    disconnect, so the timer is only honored for sessions that never became
+    a call (no greeting, no turns): those are dead sockets worth reaping.
+    Live calls stay bounded by ``max_call_duration``.
+    """
+    return len(getattr(recorder, "turns", []) or []) == 0
 
 
 @asynccontextmanager
@@ -299,7 +347,9 @@ async def _run_call(
     transport_kind = "telephony" if telephony_provider else "browser"
     audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
     if telephony_provider:
-        tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
+        tts_sample_rate = resolve_telephony_sample_rate(
+            audio_conf, bot_id=session["bot_id"], provider=telephony_provider
+        )
         stt_sample_rate = 8000
     else:
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
@@ -372,6 +422,16 @@ async def _run_call(
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(transport, client):
+        if not session_timeout_should_cancel(recorder):
+            # Absolute timer fired mid-conversation — never a reason to
+            # drop a live call (max_call_duration still bounds it).
+            logger.info(
+                "session timeout timer fired for ACTIVE session=%s "
+                "(turns=%d) — ignoring; call stays up",
+                session_id, len(recorder.turns),
+            )
+            await recorder.flush_event("session_timeout_ignored_active")
+            return
         logger.info("session timeout: session=%s — cancelling pipeline", session_id)
         await recorder.flush_event("session_timeout")
         await worker.cancel()

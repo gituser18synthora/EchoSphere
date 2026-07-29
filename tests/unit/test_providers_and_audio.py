@@ -514,6 +514,44 @@ class TestFreeSwitchTelephony:
         serializer = FreeSwitchAudioStreamSerializer()
         assert await serializer.deserialize('{"event":"connected"}') is None
 
+    async def test_barge_in_clears_pending_audio_and_sends_kill_audio(self):
+        # Local pending bytes must never survive an interruption, and the
+        # module must be told to drop what was ALREADY shipped (killAudio) —
+        # otherwise up to ~2 s of stale bot audio talks over the caller.
+        serializer = FreeSwitchAudioStreamSerializer()
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
+        ))
+        message = await serializer.serialize(InterruptionFrame())
+        assert json.loads(message) == {"type": "killAudio"}
+        assert len(serializer._pending_audio) == 0
+        # Nothing stale may be flushed after the barge-in.
+        assert await serializer.serialize(BotStoppedSpeakingFrame()) is None
+
+    async def test_kill_audio_can_be_disabled_for_older_module_builds(self):
+        serializer = FreeSwitchAudioStreamSerializer(send_kill_audio=False)
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
+        ))
+        assert await serializer.serialize(InterruptionFrame()) is None
+        assert len(serializer._pending_audio) == 0
+
+    async def test_outbound_envelope_always_declares_8k_and_320_byte_frames(self):
+        # The wire contract: L16@8k mono, frame-aligned. 3200 bytes at
+        # 8000 Hz × 2 bytes/sample × 1 channel = exactly 200 ms of speech —
+        # a mislabeled rate here is what wrong-speed playback sounds like.
+        serializer = FreeSwitchAudioStreamSerializer()
+        raw = None
+        for _ in range(3):  # 3 × 1280 = 3840 bytes ≥ min chunk
+            raw = await serializer.serialize(OutputAudioRawFrame(
+                audio=b"\x02" * 1280, sample_rate=8000, num_channels=1,
+            )) or raw
+        payload = json.loads(raw)
+        assert payload["data"]["sampleRate"] == 8000
+        audio = base64.b64decode(payload["data"]["audioData"])
+        assert len(audio) % 320 == 0
+        assert len(audio) / (8000 * 2) == pytest.approx(0.2, abs=0.05)
+
     async def test_audio_is_batched_before_module_file_playback(self):
         serializer = FreeSwitchAudioStreamSerializer()
         assert await serializer.serialize(OutputAudioRawFrame(

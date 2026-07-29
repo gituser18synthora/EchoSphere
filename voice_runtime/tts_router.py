@@ -28,6 +28,7 @@ from dataclasses import dataclass, field as dc_field
 
 from pipecat.frames.frames import (
     AggregatedTextFrame,
+    EndWorkerFrame,
     ErrorFrame,
     Frame,
     TTSAudioRawFrame,
@@ -67,6 +68,14 @@ _SUPPORTED_RATES = {
 
 _FIRST_AUDIO_TIMEOUT_S = 10.0
 
+# Failure categories that no retry, fallback or later turn can heal: the
+# credentials or the engine configuration are wrong. Leaving the call up
+# after one of these means the caller sits in dead air until they hang up
+# (observed live 2026-07-29: corrupted Sarvam key → 403 on every sentence →
+# 12.7 s of silence → dialer closed the socket). The call is ended cleanly
+# instead.
+_FATAL_ERROR_CATEGORIES = frozenset({"auth", "invalid_input"})
+
 
 def is_streaming_tts_provider(provider: str) -> bool:
     return provider in _STREAMING_PROVIDERS
@@ -83,6 +92,8 @@ class _Generation:
     got_audio: bool = False
     fallback_used: bool = False
     watchdog: asyncio.Task | None = None
+    audio_bytes: int = 0   # post-resample bytes delivered downstream
+    audio_chunks: int = 0
 
 
 class StreamingTTSRouter(TTSService):
@@ -138,6 +149,7 @@ class StreamingTTSRouter(TTSService):
         self._providers: dict[tuple, StreamingTTSProvider] = {}
         self._pumps: dict[tuple, asyncio.Task] = {}
         self._generations: dict[str, _Generation] = {}
+        self._fatal_call_ended = False
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -278,6 +290,7 @@ class StreamingTTSRouter(TTSService):
                 self._log_engine_failure(engine, exc, "synthesis dispatch")
                 yield ErrorFrame(error=f"tts_failure:{exc.category}")
                 await self._finalize_generation(context_id, failed=True)
+                await self._maybe_end_call_fatal(exc.category)
                 return
         except (ConnectionError, OSError, TimeoutError) as exc:
             error = ProviderError("tts", "upstream", str(exc)[:200])
@@ -364,16 +377,29 @@ class StreamingTTSRouter(TTSService):
             # Reject late audio: unknown/cancelled generations are dropped.
             if state is None or not self.audio_context_available(generation):
                 return
+            audio = event.audio
+            provider_rate = state.provider.settings.sample_rate
             if not state.got_audio:
                 state.got_audio = True
                 await self.stop_ttfb_metrics()
                 if state.watchdog is not None:
                     state.watchdog.cancel()
                     state.watchdog = None
-            audio = event.audio
-            provider_rate = state.provider.settings.sample_rate
+                # Format trace: what the provider was asked for vs what the
+                # pipeline emits. A wrong-speed complaint starts here.
+                logger.info(
+                    "tts[%s] first audio (context=%s): provider=%s "
+                    "provider_rate=%d router_rate=%d resample=%s "
+                    "chunk_bytes=%d (mono s16le)",
+                    self._recorder.session_id if self._recorder else "?",
+                    str(generation)[:8], state.engine.get("provider"),
+                    provider_rate, self.sample_rate,
+                    provider_rate != self.sample_rate, len(audio),
+                )
             if provider_rate != self.sample_rate:
                 audio = resample_pcm(audio, provider_rate, self.sample_rate)
+            state.audio_bytes += len(audio)
+            state.audio_chunks += 1
             await self.append_to_audio_context(
                 generation,
                 TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=generation),
@@ -390,9 +416,30 @@ class StreamingTTSRouter(TTSService):
                     self._log_engine_failure(state.engine, error, "provider stream")
                     await self.push_error(error_msg=f"tts_failure:{error.category}")
                     await self._finalize_generation(generation, failed=True)
+                    await self._maybe_end_call_fatal(error.category)
             else:
                 logger.warning("tts-router: provider error outside generation: %s", error)
         # "disconnected" events are informational — reconnects are lazy.
+
+    async def _maybe_end_call_fatal(self, category: str) -> None:
+        """End the call after an unrecoverable TTS configuration failure.
+
+        Auth/invalid-config failures never fall back and cannot heal within
+        the call — every further reply would fail the same way and the caller
+        would only ever hear dead air. Ending the worker closes the media
+        stream cleanly (telephony serializers emit their protocol `stop`).
+        """
+        if category not in _FATAL_ERROR_CATEGORIES or self._fatal_call_ended:
+            return
+        self._fatal_call_ended = True
+        logger.error(
+            "tts[%s] unrecoverable TTS failure (%s) — ending the call instead "
+            "of leaving dead air",
+            self._recorder.session_id if self._recorder else "?", category,
+        )
+        if self._recorder is not None:
+            await self._recorder.flush_event("tts_fatal", category=category)
+        await self.push_frame(EndWorkerFrame(reason=f"tts_failure:{category}"))
 
     async def _finalize_generation(self, context_id: str, *, failed: bool):
         state = self._generations.pop(context_id, None)
@@ -400,6 +447,17 @@ class StreamingTTSRouter(TTSService):
             return
         if state.watchdog is not None:
             state.watchdog.cancel()
+        if not failed and state.audio_bytes:
+            # bytes / (rate × 2 bytes/sample × 1 channel) = seconds of speech.
+            duration_s = state.audio_bytes / (self.sample_rate * 2)
+            logger.info(
+                "tts[%s] generation %s complete: provider=%s chunks=%d "
+                "bytes=%d duration=%.2fs rate=%d fallback=%s",
+                self._recorder.session_id if self._recorder else "?",
+                str(context_id)[:8], state.engine.get("provider"),
+                state.audio_chunks, state.audio_bytes, duration_s,
+                self.sample_rate, state.fallback_used,
+            )
         if self._recorder is not None:
             # Billable characters: counted once per generation against the
             # engine that actually delivered audio (fallback replays the same
