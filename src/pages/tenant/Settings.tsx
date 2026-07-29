@@ -7,7 +7,7 @@ import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Berlin"];
-const ACCENTS = ["#6d55d9", "#2a78d6", "#1baf7a", "#eb6834"];
+const ACCENTS = ["#6a5af9", "#2a78d6", "#1baf7a", "#eb6834"];
 const OPEN_TIMES = ["7:00 AM", "8:00 AM", "9:00 AM", "10:00 AM"];
 const CLOSE_TIMES = ["1:00 PM", "5:00 PM", "6:00 PM", "8:00 PM"];
 
