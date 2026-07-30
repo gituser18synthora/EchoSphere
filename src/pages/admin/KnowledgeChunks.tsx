@@ -990,7 +990,7 @@ function ChunkDetailDrawer({
           <div className="col gap-8">
             <span className="t-label">Boundary context (previous · current · next)</span>
             <NeighborBlock label="Previous" n={d.prev} onOpen={onNavigate} />
-            <div className="card card-pad" style={{ border: "2px solid var(--brand, #6d55d9)" }}>
+            <div className="card card-pad" style={{ border: "2px solid var(--brand, #6a5af9)" }}>
               <span className="t-micro t-sub">Current · #{d.current.chunkIndex}</span>
               <p className="t-body" style={{ whiteSpace: "pre-wrap", margin: "6px 0 0" }}>{d.content}</p>
             </div>
