@@ -78,13 +78,14 @@ def super_admin():
 def _cleanup_voices():
     yield
     with get_engine().begin() as conn:
-        conn.execute(sa_text(
-            "DELETE FROM audit_logs WHERE entity_type = 'voice_profile' AND entity_id IN "
-            "(SELECT id FROM voice_profiles WHERE provider_voice_id LIKE :p)"
-        ), {"p": f"pvtest_{_SUFFIX}%"})
-        conn.execute(sa_text(
-            "DELETE FROM voice_profiles WHERE provider_voice_id LIKE :p"
-        ), {"p": f"pvtest_{_SUFFIX}%"})
+        for pattern in (f"pvtest_{_SUFFIX}%", f"%{_SUFFIX}-mockclone%"):
+            conn.execute(sa_text(
+                "DELETE FROM audit_logs WHERE entity_type = 'voice_profile' AND entity_id IN "
+                "(SELECT id FROM voice_profiles WHERE provider_voice_id LIKE :p OR name LIKE :p)"
+            ), {"p": pattern})
+            conn.execute(sa_text(
+                "DELETE FROM voice_profiles WHERE provider_voice_id LIKE :p OR name LIKE :p"
+            ), {"p": pattern})
 
 
 def _wav_bytes(payload: bytes = b"\x00\x01" * 512) -> bytes:
@@ -537,6 +538,94 @@ def test_provider_voice_removed_when_persistence_fails(client, tenant_a_admin, m
     assert calls["delete"] == [f"pvtest_{_SUFFIX}orph"]
     listed = _data(client.get(f"{API}/voice-clones", headers=tenant_a_admin))
     assert f"Orphan Voice {_SUFFIX}" not in {v["name"] for v in listed}
+
+
+# ── provider dispatch: mock backend + config-enabled-but-unimplemented ──────
+
+
+def _set_provider_cloning(code: str, enabled: bool | None):
+    """Set/remove the voice_cloning key on a TTS provider's config."""
+    from sqlalchemy import select
+
+    from shared.models import ProviderDef
+
+    session = get_sessionmaker()()
+    try:
+        row = session.execute(select(ProviderDef).where(
+            ProviderDef.kind == "tts", ProviderDef.code == code)).scalar_one()
+        before = dict(row.config or {})
+        config = dict(before)
+        if enabled is None:
+            config.pop("voice_cloning", None)
+        else:
+            config["voice_cloning"] = enabled
+        row.config = config
+        session.commit()
+        return before.get("voice_cloning", None)
+    finally:
+        session.close()
+
+
+class TestCloneProviderDispatch:
+    """Cloning capability is config-driven; execution is dispatched per
+    provider. The mock pseudo-provider clones without any external call."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _mock_cloning_enabled(self):
+        previous = _set_provider_cloning("mock", True)
+        yield
+        _set_provider_cloning("mock", previous)
+
+    def test_config_reports_mock_as_cloneable(self, client, tenant_a_admin):
+        cfg = _data(client.get(f"{API}/voice-clones/config", headers=tenant_a_admin))
+        providers = {p["code"]: p for p in cfg["providers"]}
+        assert providers["mock"]["supportsCloning"] is True
+        assert providers["mock"]["hasCredentials"] is True  # no API key required
+
+    def test_mock_clone_lifecycle_without_external_calls(self, client, tenant_a_admin):
+        name = f"Mock Clone {_SUFFIX}-mockclone"
+        created = _data(client.post(
+            f"{API}/voice-clones", headers=tenant_a_admin,
+            data={"provider": "mock", "name": name},
+            files=[("files", ("take.wav", _wav_bytes(), "audio/wav"))],
+        ))
+        assert created["provider"] == "mock"
+        assert created["providerVoiceId"].startswith("mockclone")
+        assert created["status"] == "active"
+
+        listed = _data(client.get(f"{API}/voice-clones", headers=tenant_a_admin))
+        assert name in {v["name"] for v in listed}
+
+        deleted = _data(client.delete(
+            f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin))
+        assert deleted == {"deleted": True, "providerDeleted": True}
+        assert client.get(f"{API}/voice-clones/{created['id']}",
+                          headers=tenant_a_admin).status_code == 404
+
+    def test_recorded_webm_sample_accepted_for_mock(self, client, tenant_a_admin):
+        webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 64  # EBML magic, as MediaRecorder emits
+        name = f"Mock Rec {_SUFFIX}-mockclone"
+        created = _data(client.post(
+            f"{API}/voice-clones", headers=tenant_a_admin,
+            data={"provider": "mock", "name": name},
+            files=[("files", ("recording-123.webm", webm, "audio/webm"))],
+        ))
+        assert created["providerVoiceId"].startswith("mockclone")
+        assert client.delete(f"{API}/voice-clones/{created['id']}",
+                             headers=tenant_a_admin).status_code == 200
+
+    def test_enabled_config_without_backend_is_rejected(self, client, tenant_a_admin):
+        previous = _set_provider_cloning("sarvam", True)
+        try:
+            response = client.post(
+                f"{API}/voice-clones", headers=tenant_a_admin,
+                data={"provider": "sarvam", "name": f"Nope {_SUFFIX}-mockclone"},
+                files=[("files", ("s.wav", _wav_bytes(), "audio/wav"))],
+            )
+            assert response.status_code == 422
+            assert "no cloning integration" in response.text.lower()
+        finally:
+            _set_provider_cloning("sarvam", previous)
 
 
 # ── metering ─────────────────────────────────────────────────────────────────

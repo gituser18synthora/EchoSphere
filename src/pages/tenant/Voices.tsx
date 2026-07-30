@@ -241,6 +241,46 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const rowSeq = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [previewFileId, setPreviewFileId] = useState<number | null>(null);
+  const filePreviewRef = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
+
+  const stopFilePreview = () => {
+    const current = filePreviewRef.current;
+    if (current) {
+      current.audio.pause();
+      URL.revokeObjectURL(current.url);
+      filePreviewRef.current = null;
+    }
+    setPreviewFileId(null);
+  };
+
+  // Listen to any sample — uploaded or recorded — before creating the clone.
+  const toggleFilePreview = (row: SampleRow) => {
+    if (previewFileId === row.id) {
+      stopFilePreview();
+      return;
+    }
+    stopFilePreview();
+    const url = URL.createObjectURL(row.file);
+    const audio = new Audio(url);
+    audio.onended = () => stopFilePreview();
+    filePreviewRef.current = { audio, url };
+    setPreviewFileId(row.id);
+    void audio.play().catch(() => {
+      stopFilePreview();
+      toast("Could not play this audio sample.", "error");
+    });
+  };
+
+  useEffect(() => () => {
+    // Unmount: never leave a sample playing.
+    const current = filePreviewRef.current;
+    if (current) {
+      current.audio.pause();
+      URL.revokeObjectURL(current.url);
+      filePreviewRef.current = null;
+    }
+  }, []);
 
   const providers = config?.providers ?? [];
   const cloneable = providers.filter((p) => p.supportsCloning);
@@ -258,6 +298,8 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
     setSubmitting(false);
     setError("");
     setFieldErrors({});
+    stopFilePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, config]);
 
   const pickProvider = (code: string) => {
@@ -398,6 +440,10 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
             <Field
               label="Reference audio"
               required
+              // plain: a <label> here forwards clicks to its first button (the
+              // "Upload Audio File" segment) whenever a recorder button unmounts
+              // mid-click, silently kicking the user out of record mode.
+              plain
               hint={config
                 ? `Clear speech, no background music. ${config.allowedExtensions.map((e) => `.${e}`).join(", ")} · up to ${config.maxFiles} files, ${config.maxFileMb} MB each`
                 : undefined}
@@ -480,10 +526,21 @@ function CloneVoiceModal({ open, config, configError, onClose, onSaved }: {
                     </div>
                     <span className="row gap-6" style={{ flexShrink: 0 }}>
                       <StatusChip status={f.error ? "error" : "available"} label={f.error ? "invalid" : "ready"} />
+                      {!f.error && (
+                        <Button
+                          size="sm" variant="ghost" icon={previewFileId === f.id ? "pause" : "play"}
+                          aria-label={previewFileId === f.id ? `Stop preview of ${f.file.name}` : `Play ${f.file.name}`}
+                          title={previewFileId === f.id ? "Stop preview" : "Play sample"}
+                          onClick={() => toggleFilePreview(f)}
+                        />
+                      )}
                       <Button
                         size="sm" variant="ghost" icon="x"
                         aria-label={`Remove ${f.file.name}`} title="Remove" disabled={submitting}
-                        onClick={() => setFiles((rows) => rows.filter((r) => r.id !== f.id))}
+                        onClick={() => {
+                          if (previewFileId === f.id) stopFilePreview();
+                          setFiles((rows) => rows.filter((r) => r.id !== f.id));
+                        }}
                       />
                     </span>
                   </div>
@@ -549,6 +606,7 @@ function CloneParamField({ spec, value, error, disabled, onChange }: {
 /* ---------- live voice recorder ---------- */
 
 const REC_MAX_SECONDS = 300;
+const REC_MIN_SECONDS = 1;
 const REC_MIME_CANDIDATES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -588,20 +646,27 @@ interface RecordedClip {
   blob: Blob;
   url: string;
   mime: string;
+  /** Display duration, whole seconds. */
   seconds: number;
+  /** Wall-clock take length — authoritative for the usability check. */
+  durationMs: number;
 }
 
+type RecorderPhase = "idle" | "requesting" | "recording" | "processing" | "recorded";
+type PreviewState = "stopped" | "playing" | "paused";
+
 function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: File) => void }) {
-  const [phase, setPhase] = useState<"idle" | "requesting" | "recording" | "recorded">("idle");
+  const [phase, setPhase] = useState<RecorderPhase>("idle");
   const [error, setError] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [clip, setClip] = useState<RecordedClip | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>("stopped");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const elapsedRef = useRef(0);
+  const startedAtRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const stopTimer = () => {
@@ -616,16 +681,48 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
     streamRef.current = null;
   };
 
-  const stopPreview = () => {
+  // One audio element per clip so pause keeps its position (resume works).
+  const previewAudio = (): HTMLAudioElement | null => {
+    if (!clip) return null;
+    if (!audioRef.current) {
+      const audio = new Audio(clip.url);
+      audio.onended = () => setPreview("stopped");
+      audioRef.current = audio;
+    }
+    return audioRef.current;
+  };
+
+  const startPlayback = async (fromStart: boolean) => {
+    const audio = previewAudio();
+    if (!audio) return;
+    if (fromStart) audio.currentTime = 0;
+    setPreview("playing");
+    try {
+      await audio.play();
+    } catch {
+      setPreview("stopped");
+      setError("Could not play the recording preview.");
+    }
+  };
+
+  const pausePreview = () => {
     audioRef.current?.pause();
-    audioRef.current = null;
-    setPlaying(false);
+    setPreview("paused");
   };
 
   const discardClip = () => {
-    stopPreview();
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPreview("stopped");
     if (clip) URL.revokeObjectURL(clip.url);
     setClip(null);
+  };
+
+  const deleteClip = () => {
+    discardClip();
+    setPhase("idle");
+    setElapsed(0);
+    setError("");
   };
 
   useEffect(() => () => {
@@ -663,16 +760,24 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
         releaseStream();
         const type = recorder.mimeType || chunksRef.current[0]?.type || "audio/webm";
         const blob = new Blob(chunksRef.current, { type });
+        const durationMs = Math.max(0, Date.now() - startedAtRef.current);
         if (blob.size === 0) {
           setPhase("idle");
           setError("No audio was captured — check your microphone and try again.");
           return;
         }
-        setClip({ blob, url: URL.createObjectURL(blob), mime: type, seconds: elapsedRef.current });
+        setClip({
+          blob,
+          url: URL.createObjectURL(blob),
+          mime: type,
+          seconds: Math.round(durationMs / 1000),
+          durationMs,
+        });
         setPhase("recorded");
       };
       recorder.start();
       recorderRef.current = recorder;
+      startedAtRef.current = Date.now();
       elapsedRef.current = 0;
       setElapsed(0);
       setPhase("recording");
@@ -690,8 +795,13 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
 
   const stopRecording = () => {
     stopTimer();
+    const recorder = recorderRef.current;
+    if (recorder?.state !== "recording") return;
+    // "processing" until onstop delivers the final blob (set first — a
+    // synchronously-firing onstop must win with "recorded").
+    setPhase("processing");
     try {
-      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      recorder.stop();
     } catch {
       releaseStream();
       setPhase("idle");
@@ -699,26 +809,10 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
     }
   };
 
-  const togglePreview = async () => {
-    if (!clip) return;
-    if (playing) {
-      stopPreview();
-      return;
-    }
-    const audio = new Audio(clip.url);
-    audioRef.current = audio;
-    audio.onended = () => setPlaying(false);
-    setPlaying(true);
-    try {
-      await audio.play();
-    } catch {
-      setPlaying(false);
-      setError("Could not play the recording preview.");
-    }
-  };
+  const tooShort = clip !== null && clip.durationMs < REC_MIN_SECONDS * 1000;
 
   const useRecording = () => {
-    if (!clip) return;
+    if (!clip || tooShort) return;
     const ext = recordingExtension(clip.mime);
     const file = new File([clip.blob], `recording-${Date.now()}.${ext}`, { type: clip.mime });
     onUse(file); // from here on it is treated exactly like an uploaded sample
@@ -764,6 +858,12 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
           <Button icon="pause" onClick={stopRecording}>Stop</Button>
         </>
       )}
+      {phase === "processing" && (
+        <>
+          <span className="dropzone-icon"><Icon name="refresh" size={20} /></span>
+          <span className="t-strong" style={{ fontSize: 13 }}>Processing recording…</span>
+        </>
+      )}
       {phase === "recorded" && clip && (
         <>
           <span className="dropzone-icon"><Icon name="volume" size={20} /></span>
@@ -771,16 +871,31 @@ function LiveRecorder({ disabled, onUse }: { disabled?: boolean; onUse: (file: F
             Recording ready · {fmtSeconds(clip.seconds)} · {fmtFileSize(clip.blob.size)}
           </span>
           <span className="row gap-6" style={{ flexWrap: "wrap", justifyContent: "center" }}>
-            <Button size="sm" variant="ghost" icon={playing ? "pause" : "play"} onClick={() => void togglePreview()}>
-              {playing ? "Stop preview" : "Play"}
+            {preview === "playing" ? (
+              <Button size="sm" variant="ghost" icon="pause" onClick={pausePreview}>Pause</Button>
+            ) : (
+              <Button size="sm" variant="ghost" icon="play" onClick={() => void startPlayback(false)}>
+                {preview === "paused" ? "Resume" : "Play"}
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" icon="undo" onClick={() => void startPlayback(true)}>
+              Replay
             </Button>
             <Button size="sm" variant="ghost" icon="refresh" disabled={disabled} onClick={reRecord}>
               Re-record
             </Button>
-            <Button size="sm" variant="primary" icon="check" disabled={disabled} onClick={useRecording}>
+            <Button size="sm" variant="danger-ghost" icon="trash" disabled={disabled} onClick={deleteClip}>
+              Delete
+            </Button>
+            <Button size="sm" variant="primary" icon="check" disabled={disabled || tooShort} onClick={useRecording}>
               Use Recording
             </Button>
           </span>
+          {tooShort && (
+            <span className="t-micro" style={{ color: "var(--status-critical)" }}>
+              Recording is too short — speak for at least {REC_MIN_SECONDS} second{REC_MIN_SECONDS > 1 ? "s" : ""}, then use it or re-record.
+            </span>
+          )}
         </>
       )}
       {error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{error}</span>}
