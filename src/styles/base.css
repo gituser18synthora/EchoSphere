@@ -33,6 +33,12 @@ a {
 a:hover {
   text-decoration: underline;
 }
+:root[data-theme="dark"] a {
+  color: var(--brand-300);
+}
+:root[data-theme="dark"] a:hover {
+  color: var(--brand-200);
+}
 
 button {
   font-family: inherit;

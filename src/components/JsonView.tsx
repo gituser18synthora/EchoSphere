@@ -6,7 +6,7 @@ import { useState } from "react";
 
 const VALUE_STYLE: Record<string, React.CSSProperties> = {
   string: { color: "var(--status-good, #1a7f37)" },
-  number: { color: "var(--brand-500, #6d55d9)" },
+  number: { color: "var(--brand-500, #6a5af9)" },
   boolean: { color: "var(--status-warning, #b26a00)" },
   null: { color: "var(--ink-3)", fontStyle: "italic" },
 };

@@ -301,7 +301,7 @@ export function Timeline({ items }: { items: TimelineEntry[] }) {
 }
 
 /* ---------- Avatar ---------- */
-const avatarHues = ["#6d55d9", "#1baf7a", "#2a78d6", "#eb6834", "#e87ba4", "#008300"];
+const avatarHues = ["#6a5af9", "#1baf7a", "#2a78d6", "#eb6834", "#e87ba4", "#008300"];
 export function Avatar({ name, size }: { name: string; size?: "lg" }) {
   const initials = name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   const hue = avatarHues[(name.charCodeAt(0) + name.length) % avatarHues.length];
