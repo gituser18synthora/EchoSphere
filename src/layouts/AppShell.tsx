@@ -112,6 +112,7 @@ export default function AppShell() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchReady, setSearchReady] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -205,13 +206,30 @@ export default function AppShell() {
           <Icon name="search" size={14} />
           <input
             ref={searchRef}
+            type="search"
+            name="echosphere-global-search"
             className="input"
             placeholder={user!.role === "super_admin" ? "Search tenants…" : "Search bots…"}
             value={search}
             aria-label="Global search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            readOnly={!searchReady}
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-bwignore="true"
+            data-form-type="other"
             onChange={(e) => { setSearch(e.target.value); setSearchOpen(true); }}
-            onFocus={() => setSearchOpen(true)}
-            onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+            onFocus={() => {
+              setSearchReady(true);
+              setSearchOpen(true);
+            }}
+            onBlur={() => {
+              setSearchReady(false);
+              setTimeout(() => setSearchOpen(false), 150);
+            }}
           />
           <span className="kbd">ctrl + K</span>
           {searchOpen && searchResults.length > 0 && (
@@ -239,13 +257,6 @@ export default function AppShell() {
             <Icon name="menu" size={20} />
           </button>
 
-          <nav className="topbar-nav" aria-label="Quick links">
-            <Link to={homeTo}>Home</Link>
-            <span className="topbar-divider" aria-hidden />
-            <button type="button" className="topbar-link" onClick={toggleTheme}>
-              {theme === "light" ? "Dark" : "Light"}
-            </button>
-          </nav>
 
           <div style={{ position: "relative" }}>
             <button
@@ -274,11 +285,12 @@ export default function AppShell() {
                       style={{
                         width: "100%",
                         alignItems: "flex-start",
-                        border: "1px solid var(--hairline)",
+                        border: "1px solid #e6e8f0",
                         borderRadius: 8,
                         marginBottom: 8,
-                        background: "var(--surface)",
+                        background: "#ffffff",
                         padding: 10,
+                        color: "#1b1b1b",
                       }}
                       onClick={() => {
                         setAlertsOpen(false);
@@ -295,7 +307,7 @@ export default function AppShell() {
                   {(alertsQ.data ?? []).length === 0 && (
                     <div className="col" style={{ alignItems: "center", padding: "28px 8px", gap: 6 }}>
                       <Icon name="bell" size={28} />
-                      <span className="t-strong" style={{ fontSize: 13, color: "var(--ink-3)" }}>No notifications</span>
+                      <span className="t-strong" style={{ fontSize: 13, color: "#6b7280" }}>No notifications</span>
                       <span className="t-micro">You're all caught up!</span>
                     </div>
                   )}
@@ -341,10 +353,29 @@ export default function AppShell() {
                 >
                   <Icon name="shield" size={14} /> Change password
                 </button>
-                <button type="button" className="menu-item" onClick={toggleTheme}>
-                  <Icon name={theme === "light" ? "moon" : "sun"} size={14} />
-                  {theme === "light" ? "Dark mode" : "Light mode"}
-                </button>
+                <div className="menu-sep" />
+                <div className="theme-switch-row">
+                  <div className="theme-switch" role="group" aria-label="Color theme">
+                    <button
+                      type="button"
+                      className={`theme-switch-opt${theme === "light" ? " is-active" : ""}`}
+                      aria-pressed={theme === "light"}
+                      onClick={() => { if (theme !== "light") toggleTheme(); }}
+                    >
+                      <Icon name="sun" size={16} />
+                      <span>Light</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`theme-switch-opt${theme === "dark" ? " is-active" : ""}`}
+                      aria-pressed={theme === "dark"}
+                      onClick={() => { if (theme !== "dark") toggleTheme(); }}
+                    >
+                      <Icon name="moon" size={16} />
+                      <span>Dark</span>
+                    </button>
+                  </div>
+                </div>
                 <div className="menu-sep" />
                 <button type="button" className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>
                   <Icon name="logout" size={14} /> Log out
@@ -418,7 +449,7 @@ export default function AppShell() {
                     style={{ position: "relative" }}
                   >
                     <Icon name={it.icon} size={16} />
-                    <span className="nav-label">{it.label}</span>
+                    <span className="text-sm font-medium">{it.label}</span>
                     {it.badge ? <span className="nav-badge">{it.badge}</span> : null}
                   </NavLink>
                 ))}

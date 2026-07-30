@@ -24,13 +24,6 @@
   box-shadow: var(--shadow-1);
 }
 .btn-primary:hover:not(:disabled) { background: var(--brand-600); }
-:root[data-theme="dark"] .btn-primary {
-  background: var(--brand-500);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 14px rgba(106, 90, 249, 0.28);
-}
-:root[data-theme="dark"] .btn-primary:hover:not(:disabled) {
-  background: var(--brand-400);
-}
 .btn-secondary {
   background: var(--surface);
   border-color: var(--border-strong);
@@ -81,12 +74,6 @@
   font-size: 13px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-:root[data-theme="dark"] .input,
-:root[data-theme="dark"] .select,
-:root[data-theme="dark"] .textarea {
-  background: var(--surface-2);
-  border-color: var(--border-strong);
-}
 .textarea {
   height: auto;
   min-height: 84px;
@@ -98,13 +85,6 @@
   border-color: var(--brand-400);
   box-shadow: 0 0 0 3px var(--brand-100);
   outline: none;
-}
-:root[data-theme="dark"] .input:focus,
-:root[data-theme="dark"] .select:focus,
-:root[data-theme="dark"] .textarea:focus {
-  box-shadow: 0 0 0 3px rgba(143, 132, 247, 0.22);
-  border-color: var(--brand-400);
-  background: var(--surface);
 }
 .input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] {
   border-color: var(--status-critical);
@@ -194,19 +174,6 @@
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
 }
-:root[data-theme="dark"] .card,
-:root[data-theme="dark"] .kpi,
-:root[data-theme="dark"] .table-wrap,
-:root[data-theme="dark"] .studio-bar,
-:root[data-theme="dark"] .studio-tabs-wrap {
-  border-color: var(--border);
-  box-shadow: var(--shadow-1);
-  background: var(--surface);
-}
-:root[data-theme="dark"] .card-clickable:hover {
-  border-color: var(--brand-400);
-  box-shadow: var(--shadow-2);
-}
 .card-pad { padding: 20px; }
 .card-pad-sm { padding: 14px 16px; }
 .card-header {
@@ -287,7 +254,7 @@
 .chip-info { background: var(--status-info-bg); color: var(--status-info); }
 .chip-neutral { background: var(--status-neutral-bg); color: var(--status-neutral); }
 .chip-brand { background: var(--brand-100); color: var(--brand-700); }
-:root[data-theme="dark"] .chip-brand { background: rgba(106, 90, 249, 0.2); color: var(--brand-300); }
+:root[data-theme="dark"] .chip-brand { background: var(--brand-50); color: var(--brand-300); }
 .chip-dot {
   width: 6px;
   height: 6px;
@@ -595,7 +562,7 @@
 .timeline-icon.critical { background: var(--status-critical-bg); color: var(--status-critical); }
 .timeline-icon.warning { background: var(--status-warning-bg); color: var(--status-warning); }
 .timeline-icon.brand { background: var(--brand-100); color: var(--brand-600); }
-:root[data-theme="dark"] .timeline-icon.brand { background: rgba(106, 90, 249, 0.2); color: var(--brand-300); }
+:root[data-theme="dark"] .timeline-icon.brand { background: var(--brand-50); color: var(--brand-300); }
 
 /* ============ Skeleton / loading ============ */
 .skeleton {
@@ -699,7 +666,7 @@
   color: var(--ink-3);
 }
 .wizard-step.active { background: var(--brand-50); color: var(--brand-700); }
-:root[data-theme="dark"] .wizard-step.active { background: rgba(106, 90, 249, 0.14); color: var(--brand-300); }
+:root[data-theme="dark"] .wizard-step.active { background: var(--brand-50); color: var(--brand-300); }
 .wizard-step.done { color: var(--ink-2); }
 .wizard-step-num {
   width: 22px;
@@ -786,7 +753,7 @@
   flex-shrink: 0;
 }
 .icon-tile.brand { background: var(--brand-100); color: var(--brand-600); }
-:root[data-theme="dark"] .icon-tile.brand { background: rgba(106, 90, 249, 0.18); color: var(--brand-300); }
+:root[data-theme="dark"] .icon-tile.brand { background: var(--brand-50); color: var(--brand-300); }
 .icon-tile.good { background: var(--status-good-bg); color: var(--status-good); }
 .icon-tile.warning { background: var(--status-warning-bg); color: var(--status-warning); }
 .icon-tile.critical { background: var(--status-critical-bg); color: var(--status-critical); }
@@ -804,11 +771,6 @@
   padding: 5px;
   z-index: 50;
   animation: pop-in 0.12s ease-out;
-}
-:root[data-theme="dark"] .menu {
-  background: var(--surface-2);
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-pop);
 }
 .menu-item {
   display: flex;
