@@ -251,6 +251,45 @@ async def _elevenlabs_delete_voice(api_key: str, voice_id: str) -> bool:
     return response.status_code < 400 or response.status_code == 404
 
 
+# ── mock provider (dev/test pseudo-provider, never listed in production) ─────
+
+async def _mock_create_voice(
+    api_key: str,
+    *,
+    name: str,
+    samples: list[tuple[str, bytes, str]],
+    description: str | None,
+    remove_background_noise: bool,
+) -> dict:
+    """Simulated clone for the dev pseudo-provider — no external calls."""
+    return {"voice_id": new_id("mockclone"), "requires_verification": False}
+
+
+async def _mock_delete_voice(api_key: str, voice_id: str) -> bool:
+    return True
+
+
+# ── provider dispatch ────────────────────────────────────────────────────────
+# Whether a provider supports cloning is DB-config driven
+# (provider_catalog.supports_voice_cloning); this registry maps each
+# cloning-capable provider to its management-plane implementation. Attribute
+# names, not references — resolved late so tests can monkeypatch the module
+# functions. A provider whose config enables cloning without an entry here is
+# rejected explicitly instead of being routed to another vendor's API.
+
+_CLONE_BACKENDS: dict[str, tuple[str, str]] = {
+    "elevenlabs": ("_elevenlabs_create_voice", "_elevenlabs_delete_voice"),
+    "mock": ("_mock_create_voice", "_mock_delete_voice"),
+}
+
+
+def _clone_backend(provider_code: str):
+    names = _CLONE_BACKENDS.get(provider_code)
+    if names is None:
+        return None
+    return globals()[names[0]], globals()[names[1]]
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _get_clone_checked(db: Session, voice_id: str, user: User) -> VoiceProfile:
@@ -401,8 +440,17 @@ async def create_voice_clone(
             errors=[{"field": "provider",
                      "message": f"{provider_row.name} does not support voice cloning."}],
         )
+    backend = _clone_backend(provider_row.code)
+    if backend is None:
+        raise ApiError(
+            f"Voice cloning is enabled for {provider_row.name} in its provider "
+            "configuration, but no cloning integration is implemented for it.", 422,
+            errors=[{"field": "provider",
+                     "message": "No cloning integration for this provider."}],
+        )
+    create_voice, delete_voice = backend
     api_key = _provider_secret(provider_row)
-    if not api_key:
+    if provider_row.requires_api_key and not api_key:
         raise ApiError(
             f"No API key configured for {provider_row.name} — set the referenced "
             "environment variable to enable voice cloning.", 422,
@@ -425,7 +473,7 @@ async def create_voice_clone(
 
     samples = await _read_samples(files)
 
-    created = await _elevenlabs_create_voice(
+    created = await create_voice(
         api_key, name=name, samples=samples,
         description=description, remove_background_noise=remove_background_noise,
     )
@@ -469,11 +517,12 @@ async def create_voice_clone(
         # Provider voice exists but persistence failed — remove the provider
         # voice so the account is not left with an orphan slot.
         db.rollback()
-        removed = await _elevenlabs_delete_voice(api_key, provider_voice_id)
+        removed = await delete_voice(api_key, provider_voice_id)
         if not removed:
             logger.error(
-                "orphaned ElevenLabs voice %s (tenant %s): local persistence "
-                "failed and provider cleanup also failed", provider_voice_id, tenant_id,
+                "orphaned %s voice %s (tenant %s): local persistence failed "
+                "and provider cleanup also failed",
+                provider_row.code, provider_voice_id, tenant_id,
             )
         raise ApiError("The cloned voice could not be saved — please try again.", 500) from None
 
@@ -594,17 +643,23 @@ async def delete_voice_clone(
     provider_row = get_provider(db, "tts", row.provider or "")
     provider_deleted = False
     if row.provider_voice_id:
-        api_key = _provider_secret(provider_row) if provider_row is not None else ""
-        if not api_key:
+        backend = _clone_backend(provider_row.code) if provider_row is not None else None
+        if provider_row is None or backend is None:
+            raise ApiError(
+                "Cannot delete the provider voice — no cloning integration is "
+                f"available for {row.provider}. Archive the voice instead.", 422,
+            )
+        api_key = _provider_secret(provider_row)
+        if provider_row.requires_api_key and not api_key:
             raise ApiError(
                 "Cannot delete the provider voice — no API key is configured "
                 f"for {row.provider}. Archive the voice instead.", 422,
             )
-        provider_deleted = await _elevenlabs_delete_voice(api_key, row.provider_voice_id)
+        provider_deleted = await backend[1](api_key, row.provider_voice_id)
         if not provider_deleted:
             raise ApiError(
-                "ElevenLabs did not confirm the voice deletion — the local "
-                "record was kept. Please try again.", 502,
+                f"{provider_row.name} did not confirm the voice deletion — the "
+                "local record was kept. Please try again.", 502,
             )
     from backend.core.softdelete import soft_delete
 

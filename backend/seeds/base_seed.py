@@ -587,6 +587,15 @@ def run_base_seed(db: Session | None = None) -> dict:
                 ))
                 created["providers"] += 1
 
+        # The mock TTS pseudo-provider simulates voice cloning so the whole
+        # clone flow is exercisable without external accounts (config-driven —
+        # provider_catalog.supports_voice_cloning; mock is never listed in
+        # production). Converge-only: an operator's explicit setting wins.
+        mock_tts = db.scalar(select(ProviderDef).where(
+            ProviderDef.kind == "tts", ProviderDef.code == "mock"))
+        if mock_tts is not None and "voice_cloning" not in (mock_tts.config or {}):
+            mock_tts.config = {**(mock_tts.config or {}), "voice_cloning": True}
+
         for vid, name, gender, langs, accent, styles, latency, premium, sample in VOICES:
             if db.get(VoiceProfile, vid) is None:
                 db.add(VoiceProfile(
