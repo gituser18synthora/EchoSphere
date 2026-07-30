@@ -18,7 +18,7 @@ interface NavSection {
   items: NavEntry[];
 }
 
-function navFor(role: Role, criticalAlerts: number): NavSection[] {
+export function navFor(role: Role, criticalAlerts: number): NavSection[] {
   if (role === "super_admin") {
     return [
       { items: [{ to: "/admin", label: "Dashboard", icon: "dashboard" }] },
@@ -35,9 +35,12 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
       {
         title: "Platform",
         items: [
+          { to: "/admin/platform-config", label: "Platform Configuration", icon: "settings" },
+          { to: "/admin/regional-settings", label: "Regional & Currency Settings", icon: "globe" },
           { to: "/admin/governance", label: "AI Governance", icon: "brain" },
           { to: "/admin/voice", label: "Voice Platform", icon: "phone" },
           { to: "/admin/knowledge", label: "Knowledge", icon: "book" },
+          { to: "/admin/knowledge-chunks", label: "Chunk Review", icon: "database" },
           { to: "/admin/workflows", label: "Workflows", icon: "workflow" },
         ],
       },
@@ -57,6 +60,7 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
       title: "Build",
       items: [
         { to: "/t/bots", label: "My VoiceBots", icon: "bot" },
+        { to: "/t/voices", label: "Voices", icon: "mic" },
         { to: "/t/knowledge", label: "Knowledge Hub", icon: "book" },
         { to: "/t/workflows", label: "Workflows", icon: "workflow" },
         { to: "/t/channels", label: "Channels", icon: "plug" },
@@ -81,11 +85,15 @@ function navFor(role: Role, criticalAlerts: number): NavSection[] {
 }
 
 const crumbNames: Record<string, string> = {
-  admin: "Super Admin", t: "Meridian Health Group", tenants: "Organizations",
+  admin: "Super Admin", t: "Workspace", tenants: "Organizations",
+  "platform-config": "Platform Configuration", profile: "My Profile",
+  "regional-settings": "Regional & Currency Settings", countries: "Countries",
+  "data-regions": "Data Regions", currencies: "Currencies", "exchange-rates": "Exchange Rates",
   onboarding: "Tenant Onboarding", subscriptions: "Subscriptions", billing: "Billing",
   usage: "Usage", governance: "AI Governance", voice: "Voice Platform",
-  knowledge: "Knowledge", workflows: "Workflows", monitoring: "Monitoring",
-  security: "Security", reports: "Reports", bots: "My VoiceBots",
+  knowledge: "Knowledge", "knowledge-chunks": "Chunk Review",
+  workflows: "Workflows", monitoring: "Monitoring",
+  security: "Security", reports: "Reports", bots: "My VoiceBots", voices: "Voices",
   channels: "Channels", analytics: "Analytics", conversations: "Conversation Review",
   team: "Team", integrations: "Integrations", settings: "Settings",
   overview: "Overview", prompts: "Prompts", intents: "Intents & Entities",
@@ -93,7 +101,7 @@ const crumbNames: Record<string, string> = {
 };
 
 export default function AppShell() {
-  const { user, signOut, theme, toggleTheme, toast } = useApp();
+  const { user, signOut, theme, toggleTheme } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -103,9 +111,10 @@ export default function AppShell() {
   const searchRef = useRef<HTMLInputElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
+  const isSuper = user?.role === "super_admin";
   const alertsQ = useAsync(listAlerts, []);
   const botsQ = useAsync(listBots, []);
-  const tenantsQ = useAsync(listTenants, []);
+  const tenantsQ = useAsync(() => (isSuper ? listTenants() : Promise.resolve([])), [isSuper]);
 
   const critical = (alertsQ.data ?? []).filter((a) => a.status === "open" && (a.severity === "critical" || a.severity === "serious")).length;
   const sections = useMemo(() => navFor(user!.role, critical), [user, critical]);
@@ -142,10 +151,14 @@ export default function AppShell() {
       path += `/${p}`;
       const bot = botsQ.data?.find((b) => b.id === p);
       const tenant = tenantsQ.data?.find((t) => t.id === p);
-      acc.push({ to: path, label: bot?.name ?? tenant?.name ?? crumbNames[p] ?? p });
+      const label =
+        p === "t"
+          ? user?.tenantName ?? "Workspace"
+          : bot?.name ?? tenant?.name ?? crumbNames[p] ?? p;
+      acc.push({ to: path, label });
     }
     return acc;
-  }, [location.pathname, botsQ.data, tenantsQ.data]);
+  }, [location.pathname, botsQ.data, tenantsQ.data, user?.tenantName]);
 
   const searchResults = useMemo(() => {
     if (search.trim().length < 2) return [];
@@ -298,14 +311,18 @@ export default function AppShell() {
                   <div style={{ padding: "8px 10px" }}>
                     <div className="t-strong" style={{ fontSize: 13 }}>{user!.name}</div>
                     <div className="t-micro">{user!.email}</div>
-                    <div className="mt-8"><StatusChip status="active" label={user!.role === "super_admin" ? "Super Admin" : "Tenant Admin"} /></div>
+                    <div className="mt-8"><StatusChip status="active" label={user!.role === "super_admin" ? "Super Admin" : user!.role === "tenant_admin" ? "Tenant Admin" : "Tenant User"} /></div>
+                    {user!.tenantName && <div className="t-micro mt-8">{user!.tenantName}</div>}
                   </div>
                   <div className="menu-sep" />
+                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile"); }}>
+                    <Icon name="user" size={14} /> My profile
+                  </button>
+                  <button className="menu-item" onClick={() => { setProfileOpen(false); navigate(isSuper ? "/admin/profile" : "/t/profile", { state: { tab: "security" } }); }}>
+                    <Icon name="shield" size={14} /> Change password
+                  </button>
                   <button className="menu-item" onClick={() => { setProfileOpen(false); navigate("/login"); }}>
                     <Icon name="refresh" size={14} /> Switch role
-                  </button>
-                  <button className="menu-item" onClick={() => { setProfileOpen(false); toast("Profile settings coming with SSO integration", "info"); }}>
-                    <Icon name="user" size={14} /> Profile settings
                   </button>
                   <div className="menu-sep" />
                   <button className="menu-item danger" onClick={() => { signOut(); navigate("/login"); }}>

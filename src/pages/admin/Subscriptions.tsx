@@ -1,15 +1,35 @@
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { listSubscriptions } from "@/services/api";
 import { DataTable } from "@/components/DataTable";
-import { Button, Progress, StatusChip } from "@/components/ui";
+import { Progress, StatusChip } from "@/components/ui";
+import { ExportControls } from "@/components/ExportControls";
 import { fmtNum } from "@/components/charts";
-import { useApp } from "@/state/AppContext";
+import { downloadOperationalExport } from "@/services/exportDownload";
 
 export default function Subscriptions() {
   const q = useAsync(listSubscriptions, []);
   const navigate = useNavigate();
-  const { toast } = useApp();
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const [plan, setPlan] = useState("");
+
+  const plans = useMemo(
+    () => [...new Set((q.data ?? []).map((subscription) => subscription.plan))].sort(),
+    [q.data],
+  );
+  const rows = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return (q.data ?? []).filter((subscription) => (
+      (!needle
+        || subscription.id.toLowerCase().includes(needle)
+        || subscription.tenant.toLowerCase().includes(needle)
+        || subscription.plan.toLowerCase().includes(needle))
+      && (!status || subscription.status === status)
+      && (!plan || subscription.plan === plan)
+    ));
+  }, [q.data, search, status, plan]);
 
   return (
     <>
@@ -19,16 +39,59 @@ export default function Subscriptions() {
           <p className="page-sub">Plan limits, consumption and renewal state per tenant</p>
         </div>
         <div className="page-actions">
-          <Button icon="download" onClick={() => toast("Export queued — backend job API pending (TODO_BACKEND #6)", "info")}>Export</Button>
+          <ExportControls
+            buttonLabel="Export"
+            onDownload={(format) => downloadOperationalExport(
+              "subscriptions",
+              format,
+              {
+                search: search.trim() || undefined,
+                status: status || undefined,
+                plan: plan || undefined,
+              },
+            )}
+          />
         </div>
+      </div>
+      <div className="filter-bar">
+        <div className="search-box">
+          <input
+            className="input"
+            aria-label="Search subscriptions"
+            placeholder="Search subscription, tenant or plan…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
+        <select
+          className="select"
+          aria-label="Filter subscriptions by status"
+          value={status}
+          onChange={(event) => setStatus(event.target.value)}
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="trial">Trial</option>
+          <option value="past_due">Past due</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <select
+          className="select"
+          aria-label="Filter subscriptions by plan"
+          value={plan}
+          onChange={(event) => setPlan(event.target.value)}
+        >
+          <option value="">All plans</option>
+          {plans.map((code) => <option key={code} value={code}>{code}</option>)}
+        </select>
       </div>
       <div className="card">
         <DataTable
           loading={q.loading}
           error={q.error}
           onRetry={q.reload}
-          rows={q.data}
-          rowKey={(s) => s.tenantId}
+          rows={rows}
+          rowKey={(s) => s.id}
           onRowClick={(s) => navigate(`/admin/tenants/${s.tenantId}`)}
           empty={{ icon: "layers", title: "No subscriptions" }}
           columns={[
@@ -40,7 +103,9 @@ export default function Subscriptions() {
             {
               key: "minutes", header: "Minutes used", width: 220, sortValue: (s) => s.minutesUsed / s.minutesIncluded,
               render: (s) => {
-                const pct = (s.minutesUsed / s.minutesIncluded) * 100;
+                const pct = s.minutesIncluded
+                  ? (s.minutesUsed / s.minutesIncluded) * 100
+                  : 0;
                 return (
                   <div className="col gap-4">
                     <div className="row-between t-micro t-num">

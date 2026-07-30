@@ -1,22 +1,21 @@
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { getPlatformAnalytics, listTenants } from "@/services/api";
-import { Button, CardSkeleton, ErrorState, Tabs } from "@/components/ui";
+import { getPlatformAnalytics } from "@/services/api";
+import { CardSkeleton, ErrorState, Tabs } from "@/components/ui";
 import { BarChart, ChartCard, Donut, HBarList, Legend, LineChart, fmtNum } from "@/components/charts";
-import { useApp } from "@/state/AppContext";
+import { ReportExportControls } from "@/components/ReportExportControls";
+import type { ReportType } from "@/services/reportDownload";
 
-const tabs = [
+const tabs: { id: ReportType; label: string }[] = [
   { id: "usage", label: "Usage" },
   { id: "revenue", label: "Revenue" },
-  { id: "aicost", label: "AI Cost" },
+  { id: "ai_cost", label: "AI Cost" },
 ];
 
 export default function Reports() {
-  const [tab, setTab] = useState("usage");
+  const [tab, setTab] = useState<ReportType>("usage");
   const [range, setRange] = useState(30);
   const a = useAsync(() => getPlatformAnalytics(range), [range]);
-  const tenantsQ = useAsync(listTenants, []);
-  const { toast } = useApp();
 
   if (a.error) return <ErrorState message={a.error} onRetry={a.reload} />;
 
@@ -33,10 +32,10 @@ export default function Reports() {
               <button key={d} aria-pressed={range === d} onClick={() => setRange(d)}>{d}d</button>
             ))}
           </div>
-          <Button icon="download" onClick={() => toast("Export queued — backend job API pending (TODO_BACKEND #6)", "info")}>Export</Button>
+          <ReportExportControls reportType={tab} filters={{ days: range }} />
         </div>
       </div>
-      <Tabs tabs={tabs} active={tab} onChange={setTab} />
+      <Tabs tabs={tabs} active={tab} onChange={(value) => setTab(value as ReportType)} />
       <div className="mt-16">
         {!a.data ? <div className="grid grid-2"><CardSkeleton rows={6} /><CardSkeleton rows={6} /></div> : (
           <>
@@ -57,18 +56,14 @@ export default function Reports() {
                 </ChartCard>
                 <ChartCard title="MRR by plan" sub="Share of monthly recurring revenue">
                   <Donut
-                    data={[
-                      { label: "Enterprise", value: (tenantsQ.data ?? []).filter((t) => t.plan === "enterprise").reduce((s, t) => s + t.mrr, 0) },
-                      { label: "Growth", value: (tenantsQ.data ?? []).filter((t) => t.plan === "growth").reduce((s, t) => s + t.mrr, 0) },
-                      { label: "Starter", value: (tenantsQ.data ?? []).filter((t) => t.plan === "starter").reduce((s, t) => s + t.mrr, 0) },
-                    ]}
-                    centerValue={`$${fmtNum((tenantsQ.data ?? []).reduce((s, t) => s + t.mrr, 0))}`}
+                    data={a.data.mrrByPlan}
+                    centerValue={`$${fmtNum(a.data.mrrByPlan.reduce((sum, plan) => sum + plan.value, 0))}`}
                     centerLabel="MRR"
                   />
                 </ChartCard>
               </div>
             )}
-            {tab === "aicost" && (
+            {tab === "ai_cost" && (
               <div className="grid grid-2">
                 <ChartCard title="AI cost run-rate" sub={`Daily USD · last ${range} days`} legend={<Legend shape="line" items={[{ label: "AI cost", color: "var(--series-3)" }]} />}>
                   <LineChart data={a.data.revVsCost} x="t" yFmt={(v) => `$${fmtNum(v)}`} series={[{ key: "aiCost", label: "AI cost", color: "var(--series-3)", area: true }]} />

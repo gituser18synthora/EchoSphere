@@ -1,0 +1,41 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+alembic>=1.13
+pymysql>=1.1
+cryptography>=42
+motor>=3.5
+pydantic>=2.7
+pydantic-settings>=2.3
+PyJWT>=2.8
+bcrypt>=4.1
+redis>=5.0
+python-dotenv>=1.0
+httpx>=0.27
+pytest>=8.2
+pytest-asyncio>=0.23
+email-validator
+python-multipart>=0.0.9
+
+# ── Knowledge plane (PostgreSQL + pgvector RAG) ──────────────
+asyncpg>=0.30
+pgvector>=0.5
+openai>=1.60
+tiktoken>=0.8
+pymupdf>=1.25
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=1.0
+pytesseract>=0.3.13
+Pillow>=10.0
+numpy>=2.0
+
+# ── Voice runtime / orchestration ────────────────────────────
+pipecat-ai[silero]>=1.5
+sarvamai==0.1.28          # pinned to pipecat's supported version (Sarvam streaming STT)
+langgraph>=1.0
+langgraph-checkpoint-postgres>=3.0
+mcp[cli]>=1.20
+
+# Optional (enable RETRIEVAL_USE_RERANKER=true after installing):
+# sentence-transformers>=3.0

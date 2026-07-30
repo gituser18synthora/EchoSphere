@@ -3,12 +3,16 @@ import {
   type ReactNode,
 } from "react";
 import type { Role } from "@/types/domain";
+import { setToken } from "@/services/http";
 
 export interface SessionUser {
+  id?: string;
   name: string;
   email: string;
   role: Role;
-  tenantName?: string;
+  tenantName?: string | null;
+  tenantId?: string | null;
+  permissions?: string[];
 }
 
 interface Toast {
@@ -19,8 +23,12 @@ interface Toast {
 
 interface AppState {
   user: SessionUser | null;
-  signIn: (user: SessionUser) => void;
+  signIn: (user: SessionUser, token: string) => void;
   signOut: () => void;
+  /** Merge fields into the stored session user (e.g. after a profile update). */
+  updateSessionUser: (patch: Partial<SessionUser>) => void;
+  /** Server-enforced permission code check — UI affordance only, never security. */
+  hasPermission: (code: string) => boolean;
   theme: "light" | "dark";
   toggleTheme: () => void;
   toasts: Toast[];
@@ -52,15 +60,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
-  const signIn = useCallback((u: SessionUser) => {
+  const signIn = useCallback((u: SessionUser, token: string) => {
+    setToken(token);
     setUser(u);
     localStorage.setItem(USER_KEY, JSON.stringify(u));
   }, []);
 
   const signOut = useCallback(() => {
+    setToken(null);
     setUser(null);
     localStorage.removeItem(USER_KEY);
   }, []);
+
+  const updateSessionUser = useCallback((patch: Partial<SessionUser>) => {
+    setUser((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      localStorage.setItem(USER_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const hasPermission = useCallback(
+    (code: string) => Boolean(user?.permissions?.includes(code)),
+    [user],
+  );
 
   const toggleTheme = useCallback(() => setTheme((t) => (t === "light" ? "dark" : "light")), []);
 
@@ -71,8 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, signIn, signOut, theme, toggleTheme, toasts, toast }),
-    [user, signIn, signOut, theme, toggleTheme, toasts, toast],
+    () => ({ user, signIn, signOut, updateSessionUser, hasPermission, theme, toggleTheme, toasts, toast }),
+    [user, signIn, signOut, updateSessionUser, hasPermission, theme, toggleTheme, toasts, toast],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

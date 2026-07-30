@@ -1,5 +1,5 @@
 import {
-  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes,
+  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./Icon";
@@ -398,11 +398,16 @@ export function ToastRegion() {
 }
 
 /* ---------- Form field ---------- */
-export function Field({ label, hint, error, required, children }: {
-  label: string; hint?: string; error?: string; required?: boolean; children: ReactNode;
+export function Field({ label, hint, error, required, plain, children }: {
+  label: string; hint?: string; error?: string; required?: boolean;
+  /** Render as <div> instead of <label> — needed when the child has interactive
+      elements (e.g. MultiSelect chips) that a label click would activate. */
+  plain?: boolean;
+  children: ReactNode;
 }) {
+  const Tag = plain ? "div" : "label";
   return (
-    <label className="field">
+    <Tag className="field">
       <span className="field-label">
         {label} {required && <span className="req">*</span>}
       </span>
@@ -412,6 +417,397 @@ export function Field({ label, hint, error, required, children }: {
       ) : hint ? (
         <span className="field-hint">{hint}</span>
       ) : null}
-    </label>
+    </Tag>
+  );
+}
+
+/* ---------- Non-negative number input ---------- */
+interface NumberInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange" | "value" | "min" | "className"> {
+  value: string | number;
+  onChange: (value: string) => void;
+  /** Lower bound (default 0 — quota/limit/price fields must never go negative). */
+  min?: number;
+  invalid?: boolean;
+}
+/** The single numeric input for limits, quotas, prices and sort orders.
+    Blocks the minus key, clamps pasted/typed values below `min` (and on blur),
+    and never lets the spinner decrement past `min`. */
+export function NumberInput({ value, onChange, min = 0, step, invalid, onBlur, ...rest }: NumberInputProps) {
+  const clamp = (raw: string): string => {
+    if (raw === "" || raw === undefined) return "";
+    const n = Number(raw);
+    if (Number.isNaN(n)) return "";
+    return n < min ? String(min) : raw;
+  };
+  return (
+    <input
+      className="input"
+      type="number"
+      min={min}
+      step={step}
+      value={String(value ?? "")}
+      aria-invalid={invalid || undefined}
+      onKeyDown={(e) => {
+        if (min >= 0 && e.key === "-") e.preventDefault();
+      }}
+      onChange={(e) => onChange(clamp(e.target.value))}
+      onPaste={(e) => {
+        const text = e.clipboardData.getData("text");
+        if (min >= 0 && text.includes("-")) {
+          e.preventDefault();
+          onChange(clamp(text.replace(/-/g, "")));
+        }
+      }}
+      onBlur={(e) => {
+        const clamped = clamp(e.target.value);
+        if (clamped !== e.target.value) onChange(clamped);
+        onBlur?.(e);
+      }}
+      {...rest}
+    />
+  );
+}
+
+/* ---------- Password input (masked by default, eye/eye-off toggle) ---------- */
+interface PasswordInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange" | "value" | "className"> {
+  value: string;
+  onChange: (value: string) => void;
+  invalid?: boolean;
+}
+/** The single password input used everywhere a secret is typed. The visibility
+    toggle is a real button (keyboard reachable, labelled), and toggling never
+    touches the field's value or the surrounding form behavior. */
+export function PasswordInput({ value, onChange, invalid, autoComplete = "current-password", ...rest }: PasswordInputProps) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative", width: "100%" }}>
+      <input
+        className="input"
+        style={{ paddingRight: 38, width: "100%" }}
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        aria-invalid={invalid || undefined}
+        {...rest}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        aria-label={show ? "Hide password" : "Show password"}
+        aria-pressed={show}
+        title={show ? "Hide password" : "Show password"}
+        style={{
+          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+          display: "flex", padding: 6, background: "none", border: "none",
+          cursor: "pointer", color: "var(--ink-3)",
+        }}
+      >
+        <Icon name={show ? "eye-off" : "eye"} size={16} />
+      </button>
+    </div>
+  );
+}
+
+/* ---------- MultiSelect (searchable, chips, "+N more" overflow) ---------- */
+export interface MultiSelectOption {
+  value: string;
+  label: string;
+  /** Secondary text shown under the label and on selected chips (e.g. a locale code). */
+  sub?: string;
+}
+
+export function MultiSelect({
+  options, selected, onChange, placeholder = "Select…",
+  searchPlaceholder = "Search…", maxChips = 4, invalid, disabled,
+}: {
+  options: MultiSelectOption[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  /** Chips shown before collapsing the rest into “+N more”. */
+  maxChips?: number;
+  invalid?: boolean;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // Inside scroll containers (e.g. modal bodies) the popover extends the scroll
+    // height instead of floating — bring it into view.
+    popRef.current?.scrollIntoView({ block: "nearest" });
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); setQuery(""); }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const byValue = new Map(options.map((o) => [o.value, o]));
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter((o) =>
+        o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q) || (o.sub ?? "").toLowerCase().includes(q))
+    : options;
+
+  const toggle = (value: string) =>
+    onChange(selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value]);
+
+  const visible = expanded ? selected : selected.slice(0, maxChips);
+  const overflow = selected.length - visible.length;
+
+  return (
+    <div className="mselect" ref={ref}>
+      <div
+        className={`mselect-control${open ? " open" : ""}`}
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-invalid={invalid || undefined}
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : 0}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); }
+        }}
+      >
+        {selected.length === 0 ? (
+          <span className="mselect-placeholder">{placeholder}</span>
+        ) : (
+          <span className="mselect-chips">
+            {visible.map((v) => (
+              <span key={v} className="chip chip-brand mselect-chip" title={byValue.get(v)?.label ?? v}>
+                {byValue.get(v)?.sub ?? v}
+                {!disabled && (
+                  <button
+                    type="button"
+                    className="mselect-chip-x"
+                    aria-label={`Remove ${byValue.get(v)?.label ?? v}`}
+                    onClick={(e) => { e.stopPropagation(); toggle(v); }}
+                  >
+                    <Icon name="x" size={11} />
+                  </button>
+                )}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <button type="button" className="chip chip-neutral mselect-more"
+                onClick={(e) => { e.stopPropagation(); setExpanded(true); }}>
+                +{overflow} more
+              </button>
+            )}
+            {expanded && selected.length > maxChips && (
+              <button type="button" className="chip chip-neutral mselect-more"
+                onClick={(e) => { e.stopPropagation(); setExpanded(false); }}>
+                show less
+              </button>
+            )}
+          </span>
+        )}
+        <Icon name="chevron-down" size={14} className="mselect-caret" />
+      </div>
+
+      {open && (
+        <div className="mselect-pop" ref={popRef}>
+          <div className="mselect-search">
+            <Icon name="search" size={13} />
+            <input
+              className="input"
+              autoFocus
+              value={query}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); if (filtered.length > 0) toggle(filtered[0].value); }
+                if (e.key === "Backspace" && !query && selected.length > 0) onChange(selected.slice(0, -1));
+              }}
+            />
+          </div>
+          <div className="mselect-list" role="listbox" aria-multiselectable>
+            {filtered.length === 0 && <span className="mselect-empty">No matches{query ? ` for “${query}”` : ""}</span>}
+            {filtered.map((o) => {
+              const on = selected.includes(o.value);
+              return (
+                <button key={o.value} type="button" role="option" aria-selected={on}
+                  className={`mselect-option${on ? " on" : ""}`} onClick={() => toggle(o.value)}>
+                  <span className={`mselect-box${on ? " on" : ""}`}>{on && <Icon name="check" size={11} />}</span>
+                  <span className="mselect-opt-text">
+                    <span className="mselect-opt-label">{o.label}</span>
+                    {o.sub && <span className="mselect-opt-sub">{o.sub}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {selected.length > 0 && (
+            <div className="mselect-foot">
+              <span className="t-micro">{selected.length} selected</span>
+              <button type="button" className="mselect-clear" onClick={() => onChange([])}>Clear all</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- SearchableSelect (single-select variant of MultiSelect) ---------- */
+export interface SearchableSelectOption {
+  value: string;
+  label: string;
+  /** Secondary text shown under the label (e.g. gender, locale). */
+  sub?: string;
+  disabled?: boolean;
+}
+
+export function SearchableSelect({
+  options, value, onChange, placeholder = "Select…",
+  searchPlaceholder = "Search…", invalid, disabled, ariaLabel,
+}: {
+  options: SearchableSelectOption[];
+  value: string;
+  onChange: (next: string) => void;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  invalid?: boolean;
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    popRef.current?.scrollIntoView({ block: "nearest" });
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); setQuery(""); }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter((o) =>
+        o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q) || (o.sub ?? "").toLowerCase().includes(q))
+    : options;
+
+  useEffect(() => {
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  const selectedOpt = options.find((o) => o.value === value);
+  const pick = (o: SearchableSelectOption) => {
+    if (o.disabled) return;
+    onChange(o.value);
+    setOpen(false);
+    setQuery("");
+  };
+  const openList = () => {
+    if (disabled) return;
+    setActive(Math.max(0, filtered.findIndex((o) => o.value === value)));
+    setOpen(true);
+  };
+
+  return (
+    <div className="mselect" ref={ref}>
+      <div
+        className={`mselect-control${open ? " open" : ""}`}
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-invalid={invalid || undefined}
+        aria-disabled={disabled || undefined}
+        aria-label={ariaLabel}
+        tabIndex={disabled ? -1 : 0}
+        onClick={() => (open ? setOpen(false) : openList())}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+            e.preventDefault();
+            if (open && e.key !== "ArrowDown") setOpen(false);
+            else openList();
+          }
+        }}
+      >
+        {selectedOpt ? (
+          <span className="mselect-opt-text" style={{ flex: 1, minWidth: 0 }}>
+            <span className="mselect-opt-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selectedOpt.label}
+            </span>
+            {selectedOpt.sub && <span className="mselect-opt-sub">{selectedOpt.sub}</span>}
+          </span>
+        ) : (
+          <span className="mselect-placeholder">{placeholder}</span>
+        )}
+        <Icon name="chevron-down" size={14} className="mselect-caret" />
+      </div>
+
+      {open && (
+        <div className="mselect-pop" ref={popRef}>
+          <div className="mselect-search">
+            <Icon name="search" size={13} />
+            <input
+              className="input"
+              autoFocus
+              value={query}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") { e.preventDefault(); setActive((i) => Math.min(i + 1, filtered.length - 1)); }
+                if (e.key === "ArrowUp") { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
+                if (e.key === "Enter") { e.preventDefault(); if (filtered[active]) pick(filtered[active]); }
+              }}
+            />
+          </div>
+          <div className="mselect-list" role="listbox" ref={listRef}>
+            {filtered.length === 0 && <span className="mselect-empty">No matches{query ? ` for “${query}”` : ""}</span>}
+            {filtered.map((o, i) => {
+              const on = o.value === value;
+              return (
+                <button
+                  key={o.value} type="button" role="option" aria-selected={on}
+                  aria-disabled={o.disabled || undefined} data-active={i === active || undefined}
+                  className={`mselect-option${on ? " on" : ""}`}
+                  style={{
+                    ...(i === active ? { background: "var(--surface-3)" } : undefined),
+                    ...(o.disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined),
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => pick(o)}
+                >
+                  <span className={`mselect-box${on ? " on" : ""}`}>{on && <Icon name="check" size={11} />}</span>
+                  <span className="mselect-opt-text">
+                    <span className="mselect-opt-label">{o.label}</span>
+                    {o.sub && <span className="mselect-opt-sub">{o.sub}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

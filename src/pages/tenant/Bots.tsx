@@ -1,15 +1,18 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listBots, simulateAction } from "@/services/api";
+import { createBot, listBots, listLanguages, simulateAction } from "@/services/api";
 import {
-  Button, ConfirmModal, Field, Health, MenuButton, Modal, StatusChip,
+  Button, ConfirmModal, Field, Health, MenuButton, Modal, MultiSelect, StatusChip,
   CardSkeleton, EmptyState,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
 import type { VoiceBot } from "@/types/domain";
+
+const langSummary = (codes: string[], max = 3) =>
+  codes.length <= max ? codes.join(", ") : `${codes.slice(0, max).join(", ")} +${codes.length - max} more`;
 
 export default function Bots() {
   const navigate = useNavigate();
@@ -123,7 +126,7 @@ export default function Bots() {
               </div>
               <div className="row-between t-micro">
                 <span className="row gap-4"><Icon name="user" size={12} />{b.owner}</span>
-                <span>{b.languages.join(" · ")}</span>
+                <span title={b.languages.join(", ")}>{langSummary(b.languages)}</span>
               </div>
             </div>
           ))}
@@ -148,7 +151,7 @@ export default function Bots() {
                     <td><Health level={b.health} /></td>
                     <td><code>{b.liveVersion ?? b.version}</code></td>
                     <td className="t-sub">{b.owner}</td>
-                    <td className="t-sub">{b.languages.join(", ")}</td>
+                    <td className="t-sub" title={b.languages.join(", ")}>{langSummary(b.languages)}</td>
                     <td className="num t-num">{b.callsMonth ? fmtNum(b.callsMonth) : "—"}</td>
                     <td className="num t-num">{b.containment ? `${b.containment}%` : "—"}</td>
                     <td className="num t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"}</td>
@@ -161,7 +164,7 @@ export default function Bots() {
         </div>
       )}
 
-      <CreateBotModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateBotModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={q.reload} />
 
       <ConfirmModal
         open={!!archiveTarget}
@@ -207,23 +210,32 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CreateBotModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const navigate = useNavigate();
   const { toast } = useApp();
+  const langsQ = useAsync(listLanguages, []);
   const [name, setName] = useState("");
   const [useCase, setUseCase] = useState("Appointment booking");
   const [langs, setLangs] = useState<string[]>(["en-US"]);
   const [err, setErr] = useState("");
+  const [langErr, setLangErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
     if (name.trim().length < 3) { setErr("Give the bot a name (at least 3 characters)"); return; }
+    if (langs.length === 0) { setLangErr("Select at least one language"); return; }
     setBusy(true);
-    await simulateAction("create-bot");
-    setBusy(false);
-    toast(`“${name}” created as draft`);
-    onClose();
-    navigate("/t/bots/bot-104/overview"); // draft fixture stands in for the newly created bot
+    try {
+      const created = await createBot({ name: name.trim(), useCase, languages: langs });
+      toast("VoiceBot created");
+      onCreated();
+      onClose();
+      navigate(`/t/bots/${created.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to create bot", "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -246,18 +258,19 @@ function CreateBotModal({ open, onClose }: { open: boolean; onClose: () => void 
             {["Appointment booking", "Billing support", "Order status", "FAQ & information", "Triage & routing", "Surveys & feedback", "Custom"].map((u) => <option key={u}>{u}</option>)}
           </select>
         </Field>
-        <Field label="Languages">
-          <div className="row wrap gap-6">
-            {["en-US", "es-US", "en-GB", "fr-FR", "hi-IN", "vi-VN"].map((l) => {
-              const on = langs.includes(l);
-              return (
-                <button key={l} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on}
-                  onClick={() => setLangs(on ? langs.filter((x) => x !== l) : [...langs, l])}>
-                  {on && <Icon name="check" size={11} />}{l}
-                </button>
-              );
-            })}
-          </div>
+        <Field label="Languages" required plain error={langErr} hint="Callers can speak to the bot in any of these.">
+          <MultiSelect
+            options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
+              value: l.code,
+              label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
+              sub: l.code,
+            }))}
+            selected={langs}
+            onChange={(next) => { setLangs(next); setLangErr(""); }}
+            placeholder="Select supported languages"
+            searchPlaceholder="Search languages…"
+            invalid={!!langErr}
+          />
         </Field>
       </div>
     </Modal>

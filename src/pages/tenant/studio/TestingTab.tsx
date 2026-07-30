@@ -1,73 +1,209 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listScenarios, simulateAction } from "@/services/api";
+import { listPrompts, listScenarios, runSuite as runSuiteApi, testBotChat } from "@/services/api";
+import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
 import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 
-/* Tiny scripted engine for the simulator */
-function botReply(input: string, turn: number): TraceStep {
-  const lower = input.toLowerCase();
-  const base = { turn, speaker: "bot" as const, latencyMs: Math.round(380 + Math.random() * 400), costUsd: 0.004 + Math.random() * 0.004, promptVersion: undefined as string | undefined };
-  if (/book|appoint|see (a )?doctor|schedule/.test(lower)) {
-    return { ...base, text: "Sure — which clinic works best for you, and do you have a preferred day?", intent: "book_appointment", confidence: 0.93, apiCalls: [{ name: "EHR Slot Availability", ms: 356, ok: true }] };
-  }
-  if (/insurance|coverage|aetna|blue cross/.test(lower)) {
-    return { ...base, text: "We accept most major plans including BlueCross and UnitedHealthcare. For Medicare Advantage, coverage varies by clinic — would you like me to check a specific plan?", intent: "insurance_question", confidence: 0.64, chunksUsed: ["Insurance Providers Page §1 (stale)", "Top 60 Patient FAQs §12"] };
-  }
-  if (/human|person|front desk|operator|someone/.test(lower)) {
-    return { ...base, text: "No problem — I'll connect you with the front desk now. Please stay on the line.", intent: "talk_to_human", confidence: 0.96, promptVersion: "escalation v5" };
-  }
-  if (/hour|open|close/.test(lower)) {
-    return { ...base, text: "The Oakwood clinic is open 8 AM to 6 PM on weekdays and 9 AM to 1 PM on Saturdays.", intent: "clinic_hours", confidence: 0.9, chunksUsed: ["Clinic Locations & Hours §2"] };
-  }
-  return { ...base, text: "Sorry, I didn’t quite catch that. You can say things like “book an appointment”, “reschedule”, or “talk to the front desk”.", intent: "fallback", confidence: 0.41, promptVersion: "fallback v2" };
+/* Text testing runs each turn through the REAL runtime stack on the backend
+   (TurnRouter routing + the WorkflowEngine executing the bot's saved
+   workflow), so what you see here is what a live call does — only the
+   audio layer (STT/TTS) is out of the loop. */
+
+/* Readable names for the live-session chips — never raw locale/provider codes. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  hi: "Hindi", en: "English", bn: "Bengali", ta: "Tamil", te: "Telugu",
+  mr: "Marathi", gu: "Gujarati", kn: "Kannada", ml: "Malayalam",
+  pa: "Punjabi", or: "Odia", ur: "Urdu",
+};
+export function languageName(locale?: string): string {
+  if (!locale) return "";
+  return LANGUAGE_NAMES[locale.split("-")[0].toLowerCase()] ?? locale;
+}
+const PROVIDER_NAMES: Record<string, string> = {
+  sarvam: "Sarvam", elevenlabs: "ElevenLabs", openai: "OpenAI",
+  azure: "Azure", google: "Google", mock: "Mock (dev)",
+};
+export function providerName(code?: string): string {
+  if (!code) return "";
+  return PROVIDER_NAMES[code.toLowerCase()] ?? code;
+}
+/** Voice shown for the current conversation language (per-language voice
+    first, then the bot's configured default voice). */
+export function activeVoice(
+  config: VoiceSessionConfig | null,
+  language?: string,
+): { provider: string; voice: string } | null {
+  if (!config) return null;
+  const forLanguage = language ? config.voices?.[language] : undefined;
+  return forLanguage ?? config.defaultVoice ?? null;
 }
 
 export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
+  const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
   const navigate = useNavigate();
   const { toast } = useApp();
-  const [steps, setSteps] = useState<TraceStep[]>([
-    { turn: 1, speaker: "bot", text: "Hi, thanks for calling Meridian Health. I can help you book, change or cancel an appointment. How can I help today?", promptVersion: "greeting v4", latencyMs: 480, costUsd: 0.004 },
-  ]);
+  const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
+  const greetingText =
+    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0]?.content
+    ?? `Test session for ${bot.name} — type a caller message; it runs through the real routing and workflow engine.`;
+  const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null);
   const [runningSuite, setRunningSuite] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const send = () => {
+  /* ---------- Live voice session ---------- */
+  const voiceRef = useRef<VoiceClient | null>(null);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceConnecting, setVoiceConnecting] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
+  const [sessionConfig, setSessionConfig] = useState<VoiceSessionConfig | null>(null);
+  const [liveLanguage, setLiveLanguage] = useState<string>("");
+
+  /* Tear the session down when leaving the tab */
+  useEffect(() => () => { voiceRef.current?.stop(); voiceRef.current = null; }, []);
+
+  const scrollToEnd = () =>
+    setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
+
+  const appendVoiceStep = (speaker: "user" | "bot", text: string) => {
+    setSteps((s) => [...s, { turn: s.length + 2, speaker, text }]);
+    scrollToEnd();
+  };
+
+  const stopVoice = () => {
+    const client = voiceRef.current;
+    voiceRef.current = null;
+    client?.stop();
+    setVoiceActive(false);
+    setVoiceStatus("listening");
+    setSessionConfig(null);
+    setLiveLanguage("");
+  };
+
+  const startVoice = async () => {
+    if (voiceConnecting || voiceActive) return;
+    setVoiceConnecting(true);
+    const client = new VoiceClient({
+      onSessionConfig: (config) => {
+        setSessionConfig(config);
+        setLiveLanguage(config.language ?? "");
+      },
+      onTranscript: (text) => appendVoiceStep("user", text),
+      onBotText: (text) => appendVoiceStep("bot", text),
+      onLanguage: (locale) => setLiveLanguage(locale),
+      onEvent: (name, detail) => {
+        if (name === "bot_speaking_started") setVoiceStatus("bot_speaking");
+        else if (name === "bot_speaking_stopped" || name === "interruption") setVoiceStatus("listening");
+        else if (name === "language_unsupported") {
+          const supported = voiceRef.current?.sessionConfig?.languages ?? [];
+          toast(
+            `Only ${supported.map(languageName).join(" and ") || "the configured languages"} are supported` +
+              (detail?.language ? ` — heard ${languageName(String(detail.language))}` : ""),
+            "info",
+          );
+        }
+      },
+      onClose: () => {
+        if (voiceRef.current) {
+          voiceRef.current = null;
+          setVoiceActive(false);
+          setVoiceStatus("listening");
+          toast("Voice session ended", "info");
+        }
+      },
+      onError: (message) => toast(message, "error"),
+    });
+    try {
+      await client.start(bot.id);
+      voiceRef.current = client;
+      setVoiceActive(true);
+      setVoiceStatus("listening");
+      toast("Voice session live — speak into your microphone");
+    } catch (e) {
+      client.stop();
+      toast(e instanceof Error ? e.message : "Could not start the voice session", "error");
+    } finally {
+      setVoiceConnecting(false);
+    }
+  };
+
+  /* One conversation per tab mount — the backend keeps workflow state per id. */
+  const chatSessionRef = useRef<string | undefined>(undefined);
+
+  const send = async () => {
     const text = input.trim();
     if (!text || thinking) return;
-    const userStep: TraceStep = { turn: steps.length + 1, speaker: "user", text };
+    const userStep: TraceStep = { turn: steps.length + 2, speaker: "user", text };
     setSteps((s) => [...s, userStep]);
     setInput("");
     setThinking(true);
-    setTimeout(() => {
+    scrollToEnd();
+    const started = performance.now();
+    try {
+      const result = await testBotChat(bot.id, text, chatSessionRef.current);
+      chatSessionRef.current = result.sessionId;
+      const latency = Math.round(performance.now() - started);
       setSteps((s) => {
-        const reply = botReply(text, s.length + 1);
+        const reply: TraceStep = {
+          turn: s.length + 2,
+          speaker: "bot",
+          text: result.reply,
+          intent: result.matchedIntent ?? undefined,
+          confidence: result.matchedIntent ? result.confidence : undefined,
+          route: result.route,
+          workflowName: result.workflow?.name,
+          workflowNodes: result.workflow?.nodeTrace,
+          workflowSlots: result.workflow?.slots,
+          workflowDone: result.workflow?.done,
+          latencyMs: latency,
+        };
         setSelectedTurn(reply.turn);
         return [...s, reply];
       });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Test turn failed", "error");
+      setSteps((s) => [...s, {
+        turn: s.length + 2, speaker: "bot",
+        text: "The test turn failed — check that the platform API is running and try again.",
+      }]);
+    } finally {
       setThinking(false);
-      setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
-    }, 700);
-    setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
+      scrollToEnd();
+    }
   };
 
-  const selected = steps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...steps].reverse().find((s) => s.speaker === "bot");
+  const greetingStep: TraceStep = {
+    turn: 1,
+    speaker: "bot",
+    text: greetingText,
+    promptVersion: greetingPrompt ? `greeting v${greetingPrompt.activeVersion}` : undefined,
+    latencyMs: 400,
+    costUsd: 0.004,
+  };
+  const allSteps = [greetingStep, ...steps];
+
+  const selected = allSteps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...allSteps].reverse().find((s) => s.speaker === "bot");
   const failing = (scenariosQ.data ?? []).filter((s) => s.lastRun && !s.lastRun.pass);
 
   const runSuite = async () => {
     setRunningSuite(true);
-    await simulateAction("suite");
-    setRunningSuite(false);
-    toast("Regression suite finished: 6 passed, 2 failed — details below");
-    scenariosQ.reload();
+    try {
+      const result = await runSuiteApi(bot.id);
+      toast(`Regression suite finished: ${result.passed} passed, ${result.failed} failed — details below`);
+      scenariosQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Suite run failed", "error");
+    } finally {
+      setRunningSuite(false);
+    }
   };
 
   return (
@@ -81,12 +217,42 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               <span className="tag">draft {bot.version}</span>
             </div>
             <div className="row gap-6">
-              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps(steps.slice(0, 1)); setSelectedTurn(null); }}>Reset</Button>
-              <Button size="sm" variant="ghost" icon="mic" disabled title="Voice simulation requires audio backend (TODO_BACKEND #2)">Voice mode</Button>
+              {voiceActive && (
+                <span className={`chip ${voiceStatus === "bot_speaking" ? "chip-brand" : "chip-good"}`}>
+                  <span className="chip-dot live" />
+                  {voiceStatus === "bot_speaking" ? "Bot speaking" : "Listening"}
+                </span>
+              )}
+              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps([]); setSelectedTurn(null); }}>Reset</Button>
+              {voiceActive ? (
+                <Button size="sm" variant="danger-ghost" icon="x" onClick={stopVoice}>Stop voice session</Button>
+              ) : (
+                <Button size="sm" variant="ghost" icon="mic" busy={voiceConnecting} onClick={() => void startVoice()}>Voice mode</Button>
+              )}
             </div>
           </div>
+          {voiceActive && sessionConfig && (
+            <div
+              className="row gap-6"
+              style={{ padding: "6px 16px", borderBottom: "1px solid var(--hairline)", flexWrap: "wrap" }}
+              data-testid="live-session-status"
+            >
+              {liveLanguage && <span className="tag">{languageName(liveLanguage)}</span>}
+              {(() => {
+                const voice = activeVoice(sessionConfig, liveLanguage);
+                return voice ? (
+                  <span className="tag">{providerName(voice.provider)} · {voice.voice}</span>
+                ) : null;
+              })()}
+              {Object.keys(sessionConfig.warnings ?? {}).map((locale) => (
+                <span key={locale} className="chip chip-warning" role="alert">
+                  No compatible {languageName(locale)} voice is configured for this Voice Bot.
+                </span>
+              ))}
+            </div>
+          )}
           <div ref={listRef} className="col grow" style={{ padding: 16, gap: 10, overflowY: "auto" }}>
-            {steps.map((s) => (
+            {allSteps.map((s) => (
               <button
                 key={s.turn}
                 className={`transcript-bubble ${s.speaker}`}
@@ -137,6 +303,31 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                     </span>
                   ) : <span className="t-micro">n/a (scripted prompt)</span>}
                 </TraceRow>
+                <TraceRow icon="workflow" label="Workflow">
+                  {selected.workflowName ? (
+                    <div className="col gap-4" style={{ fontSize: 12 }}>
+                      <span className="row gap-6">
+                        <code>{selected.workflowName}</code>
+                        <span className={`chip ${selected.workflowDone ? "chip-neutral" : "chip-good"}`}>
+                          {selected.workflowDone ? "finished" : "in progress"}
+                        </span>
+                      </span>
+                      {selected.workflowNodes && selected.workflowNodes.length > 0 && (
+                        <span className="t-micro" data-testid="workflow-node-trace">
+                          nodes: {selected.workflowNodes.join(" → ")}
+                        </span>
+                      )}
+                      {selected.workflowSlots && Object.keys(selected.workflowSlots).length > 0 && (
+                        <span className="t-micro" data-testid="workflow-slots">
+                          collected: {Object.entries(selected.workflowSlots)
+                            .map(([k, v]) => `${k}=${String(v)}`).join(", ")}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="t-micro">{selected.route ? `route: ${selected.route}` : "not in a workflow"}</span>
+                  )}
+                </TraceRow>
                 <TraceRow icon="book" label="Knowledge chunks">
                   {selected.chunksUsed?.length ? (
                     <div className="col gap-4">
@@ -168,11 +359,11 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                   ) : <span className="t-micro">generated response</span>}
                 </TraceRow>
                 <TraceRow icon="clock" label="Latency">
-                  <span className="t-num t-strong">{selected.latencyMs}ms</span>
+                  <span className="t-num t-strong">{selected.latencyMs != null ? `${selected.latencyMs}ms` : "—"}</span>
                 </TraceRow>
                 {flags.tenantCostVisibility && (
                   <TraceRow icon="dollar" label="Turn cost">
-                    <span className="t-num t-strong">${selected.costUsd?.toFixed(4)}</span>
+                    <span className="t-num t-strong">{selected.costUsd != null ? `$${selected.costUsd.toFixed(4)}` : "—"}</span>
                   </TraceRow>
                 )}
               </>

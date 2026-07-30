@@ -1,13 +1,19 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listConversations, simulateAction } from "@/services/api";
+import { flagConversation, listConversations, simulateAction } from "@/services/api";
 import type { Conversation } from "@/types/domain";
 import { Button, Drawer, MenuButton, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
+import { ExportControls } from "@/components/ExportControls";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+import {
+  downloadConversationTranscript,
+  downloadOperationalExport,
+  type StructuredExportFormat,
+} from "@/services/exportDownload";
 
 const channelIcon: Record<string, IconName> = { voice: "phone", whatsapp: "whatsapp", web: "monitor", mobile: "smartphone" };
 
@@ -17,7 +23,6 @@ function fmtDur(sec: number) {
 
 export default function Conversations() {
   const q = useAsync(listConversations, []);
-  const { toast } = useApp();
   const [open, setOpen] = useState<Conversation | null>(null);
   const [filter, setFilter] = useState("all");
   const [botFilter, setBotFilter] = useState("all");
@@ -28,15 +33,23 @@ export default function Conversations() {
     if (filter === "escalated") r = r.filter((c) => !c.contained);
     if (filter === "flagged") r = r.filter((c) => c.flagged);
     if (filter === "negative") r = r.filter((c) => c.sentiment === "negative");
-    if (botFilter !== "all") r = r.filter((c) => c.bot === botFilter);
+    if (botFilter !== "all") r = r.filter((c) => c.botId === botFilter);
     if (query) {
       const s = query.toLowerCase();
-      r = r.filter((c) => c.intents.some((i) => i.includes(s)) || c.bot.toLowerCase().includes(s) || c.id.includes(s));
+      r = r.filter((c) =>
+        c.intents.some((intent) => intent.toLowerCase().includes(s))
+        || c.bot.toLowerCase().includes(s)
+        || c.id.toLowerCase().includes(s));
     }
     return r;
   }, [q.data, filter, botFilter, query]);
 
-  const bots = [...new Set((q.data ?? []).map((c) => c.bot))];
+  const bots = [...new Map(
+    (q.data ?? []).map((conversation) => [
+      conversation.botId,
+      conversation.bot,
+    ]),
+  ).entries()];
 
   return (
     <>
@@ -46,7 +59,20 @@ export default function Conversations() {
           <p className="page-sub">QA every call: transcript, trace, sentiment and scorecards — turn findings into fixes</p>
         </div>
         <div className="page-actions">
-          <Button icon="download" onClick={() => toast("Export queued — backend job API pending (TODO_BACKEND #6)", "info")}>Export</Button>
+          <ExportControls
+            buttonLabel="Export"
+            onDownload={(format) => downloadOperationalExport(
+              "conversations",
+              format,
+              {
+                search: query.trim() || undefined,
+                botId: botFilter === "all" ? undefined : botFilter,
+                sentiment: filter === "negative" ? "negative" : undefined,
+                contained: filter === "escalated" ? false : undefined,
+                flagged: filter === "flagged" ? true : undefined,
+              },
+            )}
+          />
         </div>
       </div>
 
@@ -68,7 +94,7 @@ export default function Conversations() {
         </div>
         <select className="select" value={botFilter} onChange={(e) => setBotFilter(e.target.value)} aria-label="Filter by bot">
           <option value="all">All bots</option>
-          {bots.map((b) => <option key={b}>{b}</option>)}
+          {bots.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
       </div>
 
@@ -105,25 +131,40 @@ export default function Conversations() {
         />
       </div>
 
-      <ConversationDrawer conv={open} onClose={() => setOpen(null)} />
+      <ConversationDrawer conv={open} onClose={() => setOpen(null)} onUpdate={(c) => { setOpen(c); q.reload(); }} />
     </>
   );
 }
 
-function ConversationDrawer({ conv, onClose }: { conv: Conversation | null; onClose: () => void }) {
+function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | null; onClose: () => void; onUpdate: (c: Conversation) => void }) {
   const { toast } = useApp();
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
+  const [transcriptBusy, setTranscriptBusy] = useState(false);
 
   if (!conv) return null;
 
+  const qa = conv.qaScore ?? 0;
   const scorecard = [
-    { label: "Greeting & identity", score: conv.qaScore ? Math.min(100, conv.qaScore + 4) : 0 },
-    { label: "Intent understanding", score: conv.qaScore ?? 0 },
-    { label: "Resolution quality", score: conv.contained ? (conv.qaScore ?? 0) : Math.max(20, (conv.qaScore ?? 40) - 18) },
-    { label: "Tone & empathy", score: conv.sentiment === "negative" ? 62 : 92 },
-    { label: "Compliance (PII, disclosures)", score: 100 },
+    { label: "Greeting & identity", score: qa ? Math.min(100, qa + 4) : 0 },
+    { label: "Intent understanding", score: qa },
+    { label: "Resolution quality", score: qa ? (conv.contained ? qa : Math.max(20, qa - 18)) : 0 },
+    { label: "Tone & empathy", score: qa ? (conv.sentiment === "negative" ? Math.max(20, qa - 12) : Math.min(100, qa + 6)) : 0 },
+    { label: "Compliance (PII, disclosures)", score: qa ? Math.min(100, qa + 10) : 0 },
   ];
+
+  const exportTranscript = async (format: StructuredExportFormat) => {
+    if (transcriptBusy) return;
+    setTranscriptBusy(true);
+    try {
+      const filename = await downloadConversationTranscript(conv.id, format);
+      toast(`Downloaded ${filename}`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Transcript export failed.", "error");
+    } finally {
+      setTranscriptBusy(false);
+    }
+  };
 
   return (
     <Drawer
@@ -132,9 +173,31 @@ function ConversationDrawer({ conv, onClose }: { conv: Conversation | null; onCl
       sub={`${conv.bot} · ${conv.channel} · ${new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${fmtDur(conv.durationSec)} · ${conv.caller}`}
       headerExtra={
         <MenuButton actions={[
-          { label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag", onClick: () => toast(conv.flagged ? "Flag removed" : "Flagged for QA review") },
+          {
+            label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag",
+            onClick: async () => {
+              try {
+                const updated = await flagConversation(conv.id, !conv.flagged);
+                onUpdate(updated);
+                toast(updated.flagged ? "Flagged for QA review" : "Flag removed");
+              } catch (e) {
+                toast(e instanceof Error ? e.message : "Could not update flag", "error");
+              }
+            },
+          },
           { label: "Add comment", icon: "message", onClick: () => toast("Comment added to QA thread") },
-          { label: "Export transcript", icon: "download", onClick: () => toast("Export queued — pending backend job API (TODO_BACKEND #6)", "info") },
+          {
+            label: transcriptBusy ? "Exporting transcript…" : "Export transcript as CSV",
+            icon: "download",
+            disabled: transcriptBusy,
+            onClick: () => void exportTranscript("csv"),
+          },
+          {
+            label: transcriptBusy ? "Exporting transcript…" : "Export transcript as Excel",
+            icon: "download",
+            disabled: transcriptBusy,
+            onClick: () => void exportTranscript("xlsx"),
+          },
         ]} />
       }
       footer={

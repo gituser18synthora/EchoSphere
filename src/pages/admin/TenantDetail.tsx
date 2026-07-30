@@ -2,17 +2,19 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  getTenant, listAudit, listBots, listKnowledge, listReleases, listTeam,
+  getOnboardingOptions, getTenant, getTenantAnalytics, listAudit, listBots,
+  listKnowledge, listReleases, listSubscriptions, listTeam, resetUserPassword,
+  updateTenant,
 } from "@/services/api";
 import {
-  Button, CardSkeleton, EmptyState, ErrorState, Health, KpiCard, StatusChip,
-  Tabs, Timeline, Avatar,
+  Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
+  Health, KpiCard, Modal, PasswordInput, StatusChip, Tabs, Timeline, Avatar,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
+import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
-import { daysBack, genSeries } from "@/services/mockData";
-import type { VoiceBot } from "@/types/domain";
+import type { Release, Tenant, VoiceBot } from "@/types/domain";
 import { useApp } from "@/state/AppContext";
 
 const tabs = [
@@ -31,6 +33,7 @@ export default function TenantDetail() {
   const navigate = useNavigate();
   const { toast } = useApp();
   const [tab, setTab] = useState("overview");
+  const [editOpen, setEditOpen] = useState(false);
   const tenantQ = useAsync(() => getTenant(tenantId!), [tenantId]);
 
   if (tenantQ.error) return <ErrorState message={tenantQ.error} onRetry={tenantQ.reload} />;
@@ -39,8 +42,6 @@ export default function TenantDetail() {
   if (!t) {
     return <EmptyState icon="building" title="Tenant not found" body="It may have been removed or the link is stale." action={<Button onClick={() => navigate("/admin/tenants")}>Back to Organizations</Button>} />;
   }
-
-  const isMeridian = t.id === "tn-001";
 
   return (
     <>
@@ -56,6 +57,7 @@ export default function TenantDetail() {
           </div>
         </div>
         <div className="page-actions">
+          <Button icon="edit" onClick={() => setEditOpen(true)}>Edit tenant</Button>
           <Button icon="mail" onClick={() => toast(`Invite sent to ${t.adminEmail}`, "info")}>Contact admin</Button>
           <Button variant="primary" icon="external" onClick={() => toast("Impersonation requires a second approver (four-eyes policy).", "info")}>
             Impersonate
@@ -63,71 +65,286 @@ export default function TenantDetail() {
         </div>
       </div>
 
+      {editOpen && (
+        <EditTenantModal
+          tenant={t}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); tenantQ.reload(); }}
+        />
+      )}
+
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
       <div className="mt-16">
-        {tab === "overview" && (
-          <>
-            <div className="grid grid-5">
-              <KpiCard label="Health" value={t.health === "good" ? "Healthy" : t.health === "warning" ? "Degraded" : t.health === "serious" ? "At risk" : t.health === "critical" ? "Critical" : "No data"} icon="activity" />
-              <KpiCard label="Active users" value={String(t.users)} icon="users" />
-              <KpiCard label="VoiceBots" value={String(t.bots)} icon="bot" />
-              <KpiCard label="Calls this month" value={fmtNum(t.callsMonth)} icon="phone" />
-              <KpiCard label="MRR" value={`$${fmtNum(t.mrr)}`} icon="dollar" />
-            </div>
-            <div className="grid grid-2 mt-16">
-              <ChartCard title="Call volume" sub="Last 30 days" legend={<Legend shape="line" items={[{ label: "Calls", color: "var(--series-1)" }]} />}>
-                <LineChart
-                  data={daysBack(30).map((d, i) => ({ t: d, calls: genSeries(t.id.charCodeAt(4) + 7, 30, Math.max(30, t.callsMonth / 30), t.callsMonth / 90)[i] }))}
-                  x="t"
-                  series={[{ key: "calls", label: "Calls", area: true }]}
-                  height={200}
-                />
-              </ChartCard>
-              <div className="card">
-                <div className="card-header"><span className="card-title">Account summary</span><Health level={t.health} /></div>
-                <div className="col" style={{ padding: 18, gap: 12 }}>
-                  {[
-                    ["Plan", <span key="p" className="tag" style={{ textTransform: "capitalize" }}>{t.plan}</span>],
-                    ["Primary admin", t.adminEmail],
-                    ["Minutes this month", `${fmtNum(t.minutesMonth)} min`],
-                    ["AI cost this month", `$${fmtNum(t.aiCostMonth)}`],
-                    ["Data region", t.region],
-                    ["Tenant ID", <code key="id">{t.id}</code>],
-                  ].map(([k, v], i) => (
-                    <div className="row-between" key={i} style={{ borderBottom: i < 5 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 5 ? 10 : 0 }}>
-                      <span className="t-sub">{k}</span>
-                      <span className="t-body t-strong t-num">{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {tab === "users" && <UsersTab isMeridian={isMeridian} />}
-        {tab === "bots" && <BotsTab isMeridian={isMeridian} />}
-        {tab === "knowledge" && <KnowledgeTab isMeridian={isMeridian} />}
-        {tab === "usage" && <UsageTab minutesUsed={t.minutesMonth} mrr={t.mrr} />}
-        {tab === "ai" && <AiUsageTab aiCost={t.aiCostMonth} />}
-        {tab === "deployments" && <DeploymentsTab isMeridian={isMeridian} />}
+        {tab === "overview" && <OverviewTab tenant={t} />}
+        {tab === "users" && <UsersTab tenantId={t.id} />}
+        {tab === "bots" && <BotsTab tenantId={t.id} />}
+        {tab === "knowledge" && <KnowledgeTab tenantId={t.id} tenantName={t.name} />}
+        {tab === "usage" && <UsageTab tenantId={t.id} />}
+        {tab === "ai" && <AiUsageTab tenantId={t.id} />}
+        {tab === "deployments" && <DeploymentsTab tenantId={t.id} />}
         {tab === "audit" && <AuditTab tenantName={t.name} />}
       </div>
     </>
   );
 }
 
-function UsersTab({ isMeridian }: { isMeridian: boolean }) {
-  const q = useAsync(listTeam, []);
-  const rows = isMeridian ? q.data : [];
+/* Mirrors the backend password policy (backend/core/security.py) so the Super
+   Admin gets instant feedback; the API remains the enforcement boundary. */
+function passwordPolicyError(password: string): string | null {
+  const missing: string[] = [];
+  if (password.length < 8) missing.push("at least 8 characters");
+  if (!/[a-z]/.test(password)) missing.push("a lowercase letter");
+  if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
+  if (!/\d/.test(password)) missing.push("a digit");
+  return missing.length ? `Password must contain ${missing.join(", ")}.` : null;
+}
+
+function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
+  const { toast, hasPermission } = useApp();
+  const canResetPassword = hasPermission("reset_user_password");
+  const optionsQ = useAsync(getOnboardingOptions, []);
+  const opts = optionsQ.data;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    name: tenant.name,
+    code: tenant.code ?? "",
+    status: tenant.status as string,
+    plan: tenant.plan as string,
+    region: tenant.region,
+    industry: tenant.industry,
+    aiProfile: tenant.aiProfileCode ?? "",
+    adminEmail: tenant.adminEmail,
+  });
+  const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const [pw, setPw] = useState({ next: "", confirm: "" });
+  const [pwErr, setPwErr] = useState<{ next?: string; confirm?: string }>({});
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const wantsPasswordReset = pw.next !== "" || pw.confirm !== "";
+
+  /* Keep the tenant's current value selectable even if it's missing from the option catalog. */
+  const withCurrent = (options: { code: string; name: string }[], current: string) =>
+    current && !options.some((o) => o.code === current) ? [{ code: current, name: current }, ...options] : options;
+
+  const buildDiff = () => {
+    const diff: Parameters<typeof updateTenant>[1] = {};
+    if (form.name.trim() !== tenant.name) diff.name = form.name.trim();
+    if (form.code.trim() !== (tenant.code ?? "")) diff.code = form.code.trim();
+    if (form.status !== tenant.status) diff.status = form.status as Tenant["status"];
+    if (form.plan !== tenant.plan) diff.planCode = form.plan;
+    if (form.region !== tenant.region) diff.region = form.region;
+    if (form.industry !== tenant.industry) diff.industry = form.industry;
+    if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
+    if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
+    return diff;
+  };
+
+  const save = async () => {
+    /* Password reset happens ONLY when the Super Admin explicitly typed and
+       confirmed a new password; empty fields leave the password untouched. */
+    if (wantsPasswordReset) {
+      const errs: { next?: string; confirm?: string } = {};
+      const policy = passwordPolicyError(pw.next);
+      if (policy) errs.next = policy;
+      if (pw.next !== pw.confirm) errs.confirm = "Passwords do not match.";
+      setPwErr(errs);
+      if (errs.next || errs.confirm) return;
+      setConfirmResetOpen(true);
+      return;
+    }
+    await doSave(false);
+  };
+
+  const doSave = async (resetPassword: boolean) => {
+    const diff = buildDiff();
+    if (!resetPassword && Object.keys(diff).length === 0) { onClose(); return; }
+    setBusy(true);
+    setErr(null);
+    try {
+      if (resetPassword) {
+        /* The reset targets the CURRENT admin account (tenant.adminEmail as
+           saved), never the not-yet-saved value typed in the email field. */
+        const team = await listTeam(tenant.id);
+        const admin =
+          team.find((m) => m.email.toLowerCase() === tenant.adminEmail.toLowerCase()) ??
+          team.find((m) => m.roleCode === "tenant_admin");
+        if (!admin) {
+          throw new Error(`No tenant admin account was found for ${tenant.adminEmail || "this tenant"}.`);
+        }
+        await resetUserPassword(admin.id, { newPassword: pw.next, confirmPassword: pw.confirm });
+      }
+      if (Object.keys(diff).length > 0) await updateTenant(tenant.id, diff);
+      toast(resetPassword
+        ? "Tenant admin password reset — their existing sessions have been signed out."
+        : "Tenant updated");
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to update tenant");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Edit tenant"
+      sub="Platform-level tenant record. Changes take effect immediately."
+      wide
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="primary" icon="check" busy={busy} disabled={busy || !opts} onClick={save}>Save changes</Button>
+        </>
+      }
+    >
+      {optionsQ.loading ? (
+        <CardSkeleton rows={6} />
+      ) : optionsQ.error || !opts ? (
+        <ErrorState message={optionsQ.error ?? "Options could not be loaded"} onRetry={optionsQ.reload} />
+      ) : (
+        <div className="col gap-14">
+          {err && <Callout tone="critical" title="Update failed">{err}</Callout>}
+          <div className="grid grid-2">
+            <Field label="Tenant name">
+              <input className="input" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            </Field>
+            <Field label="Tenant code">
+              <input className="input" value={form.code} onChange={(e) => set("code", e.target.value)} />
+            </Field>
+            <Field label="Status">
+              <select className="select" value={form.status} onChange={(e) => set("status", e.target.value)}>
+                {["active", "trial", "suspended", "provisioning"].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Plan">
+              <select className="select" value={form.plan} onChange={(e) => set("plan", e.target.value)}>
+                {withCurrent(opts.plans, form.plan).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Data region">
+              <select className="select" value={form.region} onChange={(e) => set("region", e.target.value)}>
+                {withCurrent(opts.dataRegions, form.region).map((r) => <option key={r.code} value={r.code}>{r.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Industry">
+              <select className="select" value={form.industry} onChange={(e) => set("industry", e.target.value)}>
+                {withCurrent(opts.industries, form.industry).map((i) => <option key={i.code} value={i.code}>{i.name}</option>)}
+              </select>
+            </Field>
+            <Field label="AI profile">
+              <select className="select" value={form.aiProfile} onChange={(e) => set("aiProfile", e.target.value)}>
+                {form.aiProfile === "" && <option value="">— Not set —</option>}
+                {withCurrent(opts.aiProfiles, form.aiProfile).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Admin email">
+              <input className="input" type="email" value={form.adminEmail} onChange={(e) => set("adminEmail", e.target.value)} />
+            </Field>
+          </div>
+
+          {canResetPassword && (
+            <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>
+              <div>
+                <div className="t-strong">Reset tenant admin password</div>
+                <p className="t-sub" style={{ marginTop: 4 }}>
+                  Optional — leave both fields blank to keep the current password. The current
+                  password is stored as a hash and is never shown. Resetting signs the tenant
+                  admin out of all existing sessions.
+                </p>
+              </div>
+              <div className="grid grid-2">
+                <Field
+                  label="New password"
+                  error={pwErr.next}
+                  hint="Minimum 8 characters with an uppercase letter, a lowercase letter and a digit."
+                >
+                  <PasswordInput
+                    value={pw.next}
+                    onChange={(v) => { setPw((p) => ({ ...p, next: v })); setPwErr({}); }}
+                    autoComplete="new-password"
+                    invalid={Boolean(pwErr.next)}
+                  />
+                </Field>
+                <Field label="Confirm password" error={pwErr.confirm}>
+                  <PasswordInput
+                    value={pw.confirm}
+                    onChange={(v) => { setPw((p) => ({ ...p, confirm: v })); setPwErr({}); }}
+                    autoComplete="new-password"
+                    invalid={Boolean(pwErr.confirm)}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <ConfirmModal
+        open={confirmResetOpen}
+        onClose={() => setConfirmResetOpen(false)}
+        onConfirm={() => { setConfirmResetOpen(false); void doSave(true); }}
+        title="Reset tenant admin password?"
+        body="Are you sure you want to reset this Tenant Admin's password? Their existing sessions will be signed out."
+        confirmLabel="Reset password"
+        danger
+        busy={busy}
+      />
+    </Modal>
+  );
+}
+
+function OverviewTab({ tenant: t }: { tenant: Tenant }) {
+  const a = useAsync(() => getTenantAnalytics(30, undefined, t.id), [t.id]);
+  return (
+    <>
+      <div className="grid grid-5">
+        <KpiCard label="Health" value={t.health === "good" ? "Healthy" : t.health === "warning" ? "Degraded" : t.health === "serious" ? "At risk" : t.health === "critical" ? "Critical" : "No data"} icon="activity" />
+        <KpiCard label="Active users" value={String(t.users)} icon="users" />
+        <KpiCard label="VoiceBots" value={String(t.bots)} icon="bot" />
+        <KpiCard label="Calls this month" value={fmtNum(t.callsMonth)} icon="phone" />
+        <KpiCard label="MRR" value={`$${fmtNum(t.mrr)}`} icon="dollar" />
+      </div>
+      <div className="grid grid-2 mt-16">
+        <ChartCard title="Call volume" sub="Last 30 days" legend={<Legend shape="line" items={[{ label: "Calls", color: "var(--series-1)" }]} />}>
+          {a.loading ? <CardSkeleton rows={5} /> : a.error ? <ErrorState message={a.error} onRetry={a.reload} /> : (
+            <LineChart data={a.data!.callsSeries} x="t" series={[{ key: "calls", label: "Calls", area: true }]} height={200} />
+          )}
+        </ChartCard>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Account summary</span><Health level={t.health} /></div>
+          <div className="col" style={{ padding: 18, gap: 12 }}>
+            {[
+              ["Plan", <span key="p" className="tag" style={{ textTransform: "capitalize" }}>{t.plan}</span>],
+              ["Primary admin", t.adminEmail],
+              ["Minutes this month", `${fmtNum(t.minutesMonth)} min`],
+              ["AI cost this month", `$${fmtNum(t.aiCostMonth)}`],
+              ["Data region", t.region],
+              ["Tenant ID", <code key="id">{t.id}</code>],
+            ].map(([k, v], i) => (
+              <div className="row-between" key={i} style={{ borderBottom: i < 5 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 5 ? 10 : 0 }}>
+                <span className="t-sub">{k}</span>
+                <span className="t-body t-strong t-num">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function UsersTab({ tenantId }: { tenantId: string }) {
+  const q = useAsync(() => listTeam(tenantId), [tenantId]);
   return (
     <div className="card">
       <DataTable
         loading={q.loading}
         error={q.error}
         onRetry={q.reload}
-        rows={rows}
+        rows={q.data}
         empty={{ icon: "users", title: "No users provisioned", body: "Users appear here once the tenant admin completes onboarding." }}
         columns={[
           { key: "name", header: "User", sortValue: (m) => m.name, render: (m) => <div className="row gap-12"><Avatar name={m.name} /><div><div className="t-strong">{m.name}</div><div className="t-micro">{m.email}</div></div></div> },
@@ -140,9 +357,8 @@ function UsersTab({ isMeridian }: { isMeridian: boolean }) {
   );
 }
 
-function BotsTab({ isMeridian }: { isMeridian: boolean }) {
-  const q = useAsync(listBots, []);
-  const rows = isMeridian ? q.data : [];
+function BotsTab({ tenantId }: { tenantId: string }) {
+  const q = useAsync(() => listBots(tenantId), [tenantId]);
   const cols: Column<VoiceBot>[] = [
     { key: "name", header: "Bot", sortValue: (b) => b.name, render: (b) => <div><div className="t-strong">{b.name}</div><div className="t-micro">{b.useCase}</div></div> },
     { key: "status", header: "Status", render: (b) => <StatusChip status={b.status} /> },
@@ -153,60 +369,84 @@ function BotsTab({ isMeridian }: { isMeridian: boolean }) {
   ];
   return (
     <div className="card">
-      <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={rows} columns={cols}
+      <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data} columns={cols}
         empty={{ icon: "bot", title: "No bots yet", body: "This tenant hasn't created any VoiceBots." }} />
     </div>
   );
 }
 
-function KnowledgeTab({ isMeridian }: { isMeridian: boolean }) {
-  const q = useAsync(() => listKnowledge(), []);
-  const rows = isMeridian ? q.data : [];
+function KnowledgeTab({ tenantId, tenantName }: { tenantId: string; tenantName?: string }) {
+  const q = useAsync(() => listKnowledge(undefined, tenantId), [tenantId]);
+  const [viewId, setViewId] = useState<string | null>(null);
   return (
-    <div className="card">
-      <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
-        empty={{ icon: "book", title: "No knowledge sources", body: "Documents, URLs and FAQs the tenant indexes will appear here." }}
-        columns={[
-          { key: "name", header: "Source", sortValue: (k) => k.name, render: (k) => <div><div className="t-strong">{k.name}</div><div className="t-micro">{k.detail}</div></div> },
-          { key: "type", header: "Type", render: (k) => <span className="tag" style={{ textTransform: "capitalize" }}>{k.type}</span> },
-          { key: "status", header: "Index status", render: (k) => <StatusChip status={k.status} /> },
-          { key: "chunks", header: "Chunks", align: "right", sortValue: (k) => k.chunks, render: (k) => <span className="t-num">{fmtNum(k.chunks)}</span> },
-          { key: "quality", header: "Quality", align: "right", sortValue: (k) => k.quality, render: (k) => <span className="t-num">{k.quality ? `${k.quality}%` : "—"}</span> },
-        ]}
-      />
+    <div className="col gap-8">
+      <span className="t-micro t-sub">
+        Knowledge Bases of <strong>{tenantName ?? tenantId}</strong> — the View action stays scoped to this tenant.
+      </span>
+      <div className="card">
+        <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
+          onRowClick={(k) => setViewId(k.id)}
+          empty={{ icon: "book", title: "No knowledge sources", body: "Documents, URLs and FAQs the tenant indexes will appear here." }}
+          columns={[
+            { key: "name", header: "Source", sortValue: (k) => k.name, render: (k) => <div><div className="t-strong">{k.name}</div><div className="t-micro">{k.detail}</div></div> },
+            { key: "type", header: "Type", render: (k) => <span className="tag" style={{ textTransform: "capitalize" }}>{k.type}</span> },
+            { key: "status", header: "Index status", render: (k) => <StatusChip status={k.status} /> },
+            { key: "chunks", header: "Chunks", align: "right", sortValue: (k) => k.chunks, render: (k) => <span className="t-num">{fmtNum(k.chunks)}</span> },
+            { key: "quality", header: "Quality", align: "right", sortValue: (k) => k.quality, render: (k) => <span className="t-num">{k.quality ? `${k.quality}%` : "—"}</span> },
+            {
+              key: "actions", header: "", align: "right", width: 90,
+              render: (k) => (
+                <span onClick={(e) => e.stopPropagation()}>
+                  <Button size="sm" icon="eye" onClick={() => setViewId(k.id)}>View</Button>
+                </span>
+              ),
+            },
+          ]}
+        />
+      </div>
+      {viewId && <KnowledgeDetailDrawer sourceId={viewId} onClose={() => setViewId(null)} />}
     </div>
   );
 }
 
-function UsageTab({ minutesUsed, mrr }: { minutesUsed: number; mrr: number }) {
+function UsageTab({ tenantId }: { tenantId: string }) {
+  const a = useAsync(() => getTenantAnalytics(30, undefined, tenantId), [tenantId]);
+  const subsQ = useAsync(listSubscriptions, []);
+  const sub = subsQ.data?.find((s) => s.tenantId === tenantId);
+  const minutesSeries = (a.data?.callsSeries ?? []).map((p) => ({ t: p.t, min: Math.round((p.calls as number) * 3.2) }));
   return (
     <div className="grid grid-2">
       <ChartCard title="Minutes consumed" sub="Daily voice minutes, last 30 days" legend={<Legend shape="line" items={[{ label: "Minutes", color: "var(--series-1)" }]} />}>
-        <LineChart
-          data={daysBack(30).map((d, i) => ({ t: d, min: genSeries(91, 30, Math.max(20, minutesUsed / 30), minutesUsed / 80)[i] }))}
-          x="t" series={[{ key: "min", label: "Minutes", area: true }]} height={200}
-        />
+        {a.loading ? <CardSkeleton rows={5} /> : (
+          <LineChart data={minutesSeries} x="t" series={[{ key: "min", label: "Minutes", area: true }]} height={200} />
+        )}
       </ChartCard>
       <div className="card">
-        <div className="card-header"><span className="card-title">Billing snapshot</span><StatusChip status="paid" label="Current" /></div>
+        <div className="card-header"><span className="card-title">Billing snapshot</span>{sub && <StatusChip status={sub.status} />}</div>
         <div className="col" style={{ padding: 18, gap: 12 }}>
-          {[
-            ["Monthly recurring", `$${fmtNum(mrr)}`],
-            ["Overage this month", "$118"],
-            ["Payment method", "ACH · verified"],
-            ["Next invoice", "Aug 1, 2026"],
-          ].map(([k, v], i) => (
-            <div className="row-between" key={i} style={{ borderBottom: i < 3 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 3 ? 10 : 0 }}>
-              <span className="t-sub">{k}</span><span className="t-strong t-num">{v}</span>
-            </div>
-          ))}
+          {subsQ.loading ? <CardSkeleton rows={4} /> : !sub ? (
+            <EmptyState icon="card" title="No subscription" body="This tenant has no active subscription." />
+          ) : (
+            [
+              ["Monthly recurring", `$${fmtNum(sub.mrr)}`],
+              ["Plan", <span key="p" className="tag" style={{ textTransform: "capitalize" }}>{sub.plan}</span>],
+              ["Minutes used / included", `${fmtNum(sub.minutesUsed)} / ${fmtNum(sub.minutesIncluded)}`],
+              ["Seats", `${sub.seats}`],
+              ["Renews", sub.renewsAt ? new Date(sub.renewsAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"],
+            ].map(([k, v], i) => (
+              <div className="row-between" key={i} style={{ borderBottom: i < 4 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 4 ? 10 : 0 }}>
+                <span className="t-sub">{k}</span><span className="t-strong t-num">{v}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function AiUsageTab({ aiCost }: { aiCost: number }) {
+function AiUsageTab({ tenantId }: { tenantId: string }) {
+  const a = useAsync(() => getTenantAnalytics(30, undefined, tenantId), [tenantId]);
   return (
     <div className="grid grid-2">
       <ChartCard
@@ -217,22 +457,18 @@ function AiUsageTab({ aiCost }: { aiCost: number }) {
           { label: "STT", color: "var(--series-3)" }, { label: "Telephony", color: "var(--series-4)" },
         ]} />}
       >
-        <LineChart
-          data={daysBack(30).map((d, i) => ({
-            t: d,
-            llm: genSeries(61, 30, aiCost / 60, aiCost / 150)[i],
-            tts: genSeries(62, 30, aiCost / 140, aiCost / 300)[i],
-            stt: genSeries(63, 30, aiCost / 170, aiCost / 320)[i],
-            tel: genSeries(64, 30, aiCost / 90, aiCost / 200)[i],
-          }))}
-          x="t"
-          yFmt={(v) => `$${fmtNum(v)}`}
-          series={[
-            { key: "llm", label: "LLM" }, { key: "tts", label: "TTS" },
-            { key: "stt", label: "STT" }, { key: "tel", label: "Telephony" },
-          ]}
-          height={220}
-        />
+        {a.loading ? <CardSkeleton rows={5} /> : a.error ? <ErrorState message={a.error} onRetry={a.reload} /> : (
+          <LineChart
+            data={a.data!.costSeries}
+            x="t"
+            yFmt={(v) => `$${fmtNum(v)}`}
+            series={[
+              { key: "llm", label: "LLM" }, { key: "tts", label: "TTS" },
+              { key: "stt", label: "STT" }, { key: "telephony", label: "Telephony" },
+            ]}
+            height={220}
+          />
+        )}
       </ChartCard>
       <div className="card card-pad col gap-12">
         <span className="card-title">Governance notes</span>
@@ -246,29 +482,41 @@ function AiUsageTab({ aiCost }: { aiCost: number }) {
   );
 }
 
-function DeploymentsTab({ isMeridian }: { isMeridian: boolean }) {
-  const q = useAsync(() => listReleases("bot-101"), []);
-  if (!isMeridian) return <div className="card"><EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." /></div>;
+function DeploymentsTab({ tenantId }: { tenantId: string }) {
+  const q = useAsync(async () => {
+    const bots = await listBots(tenantId);
+    const perBot = await Promise.all(
+      bots.slice(0, 6).map(async (b) => {
+        const rels = await listReleases(b.id);
+        return rels.map((r) => ({ release: r, botName: b.name }));
+      }),
+    );
+    return perBot.flat().sort((x, y) => (y.release.publishedAt ?? "").localeCompare(x.release.publishedAt ?? ""));
+  }, [tenantId]);
+
+  if (q.loading) return <div className="card card-pad"><CardSkeleton rows={4} /></div>;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
+  if (!q.data || q.data.length === 0) {
+    return <div className="card"><EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." /></div>;
+  }
   return (
     <div className="card card-pad">
-      {q.loading ? <CardSkeleton rows={4} /> : (
-        <Timeline
-          items={(q.data ?? []).map((r) => ({
-            icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
-            tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
-            title: <>Appointment Concierge <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
-            meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
-            body: r.notes,
-          }))}
-        />
-      )}
+      <Timeline
+        items={q.data.map(({ release: r, botName }: { release: Release; botName: string }) => ({
+          icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
+          tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
+          title: <>{botName} <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
+          meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
+          body: r.notes,
+        }))}
+      />
     </div>
   );
 }
 
 function AuditTab({ tenantName }: { tenantName: string }) {
   const q = useAsync(listAudit, []);
-  const rows = (q.data ?? []).filter((a) => !a.tenant || a.tenant === tenantName);
+  const rows = (q.data ?? []).filter((a) => a.tenant === tenantName);
   return (
     <div className="card">
       <DataTable loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}

@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { listBots, listPhoneNumbers, listTenants } from "@/services/api";
+import { listBots, listChannelsSummary, listPhoneNumbers, listSipTrunks, listTenants } from "@/services/api";
 import { DataTable } from "@/components/DataTable";
-import { Button, Health, StatusChip, Tabs, Callout } from "@/components/ui";
+import { Button, Health, StatusChip, Tabs, Callout, CardSkeleton, EmptyState, ErrorState } from "@/components/ui";
 import { fmtNum } from "@/components/charts";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -88,58 +88,74 @@ function Numbers() {
 }
 
 function Sip() {
-  const trunks = [
-    { id: "trk-1", name: "Twilio elastic trunk — US", region: "US", channels: 240, usage: 61, status: "good" as const },
-    { id: "trk-2", name: "Voxbone trunk 3 — EU-West", region: "EU", channels: 120, usage: 84, status: "critical" as const },
-    { id: "trk-3", name: "Telnyx LATAM trunk", region: "LATAM", channels: 60, usage: 42, status: "good" as const },
-  ];
+  const q = useAsync(listSipTrunks, []);
+  if (q.loading) return <div className="grid grid-3">{Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} rows={3} />)}</div>;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
+  const trunks = q.data ?? [];
+  const degraded = trunks.filter((t) => t.status !== "healthy" || t.failurePct > 1);
   return (
     <>
-      <Callout tone="critical" title="Trunk degradation in EU-West-2">
-        Voxbone trunk 3 shows 8.2% call setup failures since 10:05 UTC. Failover to the backup trunk is armed; carrier ticket #88214 open.
-      </Callout>
+      {degraded.length > 0 && (
+        <Callout tone="critical" title={`Trunk degradation: ${degraded[0].name}`}>
+          {degraded[0].name} shows {degraded[0].failurePct}% call setup failures in {degraded[0].region}. Failover to the backup trunk is armed.
+        </Callout>
+      )}
       <div className="grid grid-3 mt-16">
-        {trunks.map((t) => (
-          <div key={t.id} className="card card-pad col gap-12">
-            <div className="row-between">
-              <span className="t-strong" style={{ fontSize: 13.5 }}>{t.name}</span>
-              <Health level={t.status} />
+        {trunks.length === 0 && <EmptyState icon="phone" title="No SIP trunks configured" />}
+        {trunks.map((t) => {
+          const usage = t.capacityLines ? Math.round((t.activeCalls / t.capacityLines) * 100) : 0;
+          const level = t.status === "healthy" ? "good" : t.failurePct > 5 ? "critical" : "warning";
+          return (
+            <div key={t.id} className="card card-pad col gap-12">
+              <div className="row-between">
+                <span className="t-strong" style={{ fontSize: 13.5 }}>{t.name}</span>
+                <Health level={level} />
+              </div>
+              <div className="row gap-16">
+                <div><div className="t-micro">Region</div><div className="t-strong">{t.region}</div></div>
+                <div><div className="t-micro">Lines</div><div className="t-strong t-num">{t.capacityLines}</div></div>
+                <div><div className="t-micro">Utilization</div><div className="t-strong t-num">{usage}%</div></div>
+                <div><div className="t-micro">Failures</div><div className="t-strong t-num">{t.failurePct}%</div></div>
+              </div>
+              <div className="progress"><div className={`progress-fill ${usage > 80 ? "critical" : "good"}`} style={{ width: `${usage}%` }} /></div>
             </div>
-            <div className="row gap-16">
-              <div><div className="t-micro">Region</div><div className="t-strong">{t.region}</div></div>
-              <div><div className="t-micro">Channels</div><div className="t-strong t-num">{t.channels}</div></div>
-              <div><div className="t-micro">Peak usage</div><div className="t-strong t-num">{t.usage}%</div></div>
-            </div>
-            <div className="progress"><div className={`progress-fill ${t.usage > 80 ? "critical" : "good"}`} style={{ width: `${t.usage}%` }} /></div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );
 }
 
+const channelMeta: Record<string, { name: string; icon: "phone" | "whatsapp" | "monitor" | "smartphone" | "message" }> = {
+  voice: { name: "Voice (PSTN/SIP)", icon: "phone" },
+  whatsapp: { name: "WhatsApp Business", icon: "whatsapp" },
+  web: { name: "Web widget", icon: "monitor" },
+  mobile: { name: "Mobile SDK", icon: "smartphone" },
+  sms: { name: "SMS", icon: "message" },
+};
+
 function ChannelsSummary() {
-  const rows = [
-    { id: "voice", name: "Voice (PSTN/SIP)", live: 96, testing: 8, failed: 2, icon: "phone" as const },
-    { id: "whatsapp", name: "WhatsApp Business", live: 34, testing: 5, failed: 1, icon: "whatsapp" as const },
-    { id: "web", name: "Web widget", live: 41, testing: 11, failed: 3, icon: "monitor" as const },
-    { id: "mobile", name: "Mobile SDK", live: 9, testing: 4, failed: 0, icon: "smartphone" as const },
-  ];
+  const q = useAsync(listChannelsSummary, []);
+  if (q.loading) return <div className="grid grid-4">{Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} rows={2} />)}</div>;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
   return (
     <div className="grid grid-4">
-      {rows.map((r) => (
-        <div key={r.id} className="card card-pad col gap-12">
-          <div className="row gap-12">
-            <span className="icon-tile brand"><Icon name={r.icon} size={16} /></span>
-            <span className="t-strong" style={{ fontSize: 13.5 }}>{r.name}</span>
+      {q.data?.map((r) => {
+        const meta = channelMeta[r.type] ?? { name: r.type, icon: "monitor" as const };
+        return (
+          <div key={r.type} className="card card-pad col gap-12">
+            <div className="row gap-12">
+              <span className="icon-tile brand"><Icon name={meta.icon} size={16} /></span>
+              <span className="t-strong" style={{ fontSize: 13.5 }}>{meta.name}</span>
+            </div>
+            <div className="row gap-16">
+              <div><div className="t-micro">Live</div><div className="t-strong t-num" style={{ color: "var(--status-good)" }}>{r.live}</div></div>
+              <div><div className="t-micro">Testing</div><div className="t-strong t-num">{r.testing}</div></div>
+              <div><div className="t-micro">Failed</div><div className="t-strong t-num" style={{ color: r.failed ? "var(--status-critical)" : undefined }}>{r.failed}</div></div>
+            </div>
           </div>
-          <div className="row gap-16">
-            <div><div className="t-micro">Live</div><div className="t-strong t-num" style={{ color: "var(--status-good)" }}>{r.live}</div></div>
-            <div><div className="t-micro">Testing</div><div className="t-strong t-num">{r.testing}</div></div>
-            <div><div className="t-micro">Failed</div><div className="t-strong t-num" style={{ color: r.failed ? "var(--status-critical)" : undefined }}>{r.failed}</div></div>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

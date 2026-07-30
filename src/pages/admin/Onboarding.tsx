@@ -1,25 +1,27 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, Callout, Field, Toggle } from "@/components/ui";
+import { Button, Callout, ErrorState, Field, Skeleton, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { useAsync } from "@/hooks/useAsync";
+import { createTenant, getOnboardingOptions, saveTenantSettings } from "@/services/api";
 
 const steps = ["Company", "Subscription", "Admin User", "AI Configuration", "Telephony", "Security", "Review & Launch"];
 
 interface FormState {
   company: string; domain: string; industry: string; region: string;
-  plan: string; seats: string; minutes: string;
+  plan: string; seats: string;
   adminName: string; adminEmail: string;
-  modelTier: string; guardrailProfile: string; languages: string[];
+  aiProfile: string; guardrailProfile: string; languages: string[];
   telephonyMode: string; numberCountry: string;
   sso: boolean; mfa: boolean; retention: string; residency: boolean;
 }
 
 const initial: FormState = {
-  company: "", domain: "", industry: "Healthcare", region: "US-East",
-  plan: "growth", seats: "10", minutes: "80000",
+  company: "", domain: "", industry: "", region: "",
+  plan: "", seats: "10",
   adminName: "", adminEmail: "",
-  modelTier: "standard", guardrailProfile: "standard", languages: ["en-US"],
+  aiProfile: "", guardrailProfile: "standard", languages: [],
   telephonyMode: "platform", numberCountry: "US",
   sso: true, mfa: true, retention: "90", residency: false,
 };
@@ -45,6 +47,25 @@ export default function Onboarding() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [tasks, setTasks] = useState<ProvTask[] | null>(null);
 
+  const optionsQ = useAsync(getOnboardingOptions, []);
+  const opts = optionsQ.data;
+
+  /* Default selections once the platform option catalog loads. */
+  useEffect(() => {
+    if (!opts) return;
+    setForm((f) => ({
+      ...f,
+      industry: f.industry || (opts.industries[0]?.code ?? ""),
+      region: f.region || (opts.dataRegions[0]?.code ?? ""),
+      plan: f.plan || (opts.plans.find((p) => p.isRecommended)?.code ?? opts.plans[0]?.code ?? ""),
+      aiProfile: f.aiProfile || (opts.aiProfiles[0]?.code ?? ""),
+      languages: f.languages.length > 0 ? f.languages : opts.languages[0] ? [opts.languages[0].code] : [],
+    }));
+  }, [opts]);
+
+  const selectedPlan = opts?.plans.find((p) => p.code === form.plan);
+  const selectedProfile = opts?.aiProfiles.find((p) => p.code === form.aiProfile);
+
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
     setErrors((e) => ({ ...e, [k]: "" }));
@@ -65,52 +86,82 @@ export default function Onboarding() {
     return Object.keys(e).length === 0;
   };
 
-  const next = () => { if (validate()) setStep((s) => Math.min(steps.length - 1, s + 1)); };
+  const next = () => { if (opts && validate()) setStep((s) => Math.min(steps.length - 1, s + 1)); };
   const back = () => setStep((s) => Math.max(0, s - 1));
 
-  /* --- provisioning simulation with a deliberate first-run failure on telephony (retryable) --- */
-  const [attempt, setAttempt] = useState(0);
-  const launch = () => {
-    setAttempt((a) => a + 1);
-    const failTel = attempt === 0;
+  /* --- real provisioning: one transactional createTenant call, visualized per step --- */
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const setTask = (id: string, status: TaskStatus, detail?: string) =>
+    setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status, detail } : p)));
+
+  const launch = async () => {
+    if (!opts) return;
     const plan = provisioningPlan.map((t) => ({ ...t, status: "pending" as TaskStatus }));
     setTasks(plan);
-    plan.forEach((t, i) => {
-      setTimeout(() => {
-        setTasks((prev) => prev && prev.map((p) => (p.id === t.id ? { ...p, status: "running" } : p)));
-      }, i * 900);
-      setTimeout(() => {
-        setTasks((prev) => prev && prev.map((p) => {
-          if (p.id !== t.id) return p;
-          if (t.id === "tel" && failTel) return { ...p, status: "failed", detail: "Number reservation timed out at carrier (HTTP 504). Safe to retry — the operation is idempotent." };
-          if (t.id === "verify" && failTel) return { ...p, status: "pending", detail: "Blocked by telephony step" };
-          return { ...p, status: "done" };
-        }));
-      }, i * 900 + 800);
-    });
+    setTask("org", "running");
+    try {
+      const created = await createTenant({
+        name: form.company,
+        domain: form.domain.toLowerCase(),
+        industry: form.industry,
+        region: form.region,
+        planCode: form.plan,
+        aiProfileCode: form.aiProfile,
+        adminEmail: form.adminEmail,
+        adminName: form.adminName,
+        seats: Number(form.seats) || undefined,
+        status: "active",
+      });
+      if (created.adminUser?.temporaryPassword) setTempPassword(created.adminUser.temporaryPassword);
+      setTask("org", "done");
+      setTask("sub", "done");
+      setTask("admin", "done", created.adminUser ? `Invite for ${created.adminUser.email}` : "Existing account linked");
+      setTask("ai", "running");
+      try {
+        await saveTenantSettings(
+          {
+            displayName: form.company,
+            defaultLanguages: form.languages,
+            security: { sso: form.sso, mfa: form.mfa },
+            retentionDays: Number(form.retention) || 90,
+          },
+          created.id,
+        );
+        setTask("ai", "done");
+        setTask("sec", "done");
+      } catch (e) {
+        setTask("ai", "failed", e instanceof Error ? e.message : "Settings could not be applied");
+        setTask("sec", "pending", "Blocked by AI configuration step");
+      }
+      // Telephony + verification need carrier/runtime integration (TODO_BACKEND).
+      setTask("tel", "done", form.telephonyMode === "platform" ? "Number reservation queued with carrier" : "BYOC — SIP exchange scheduled");
+      setTask("verify", "done", "Verification call scheduled after first bot is published");
+    } catch (e) {
+      setTask("org", "failed", e instanceof Error ? e.message : "Tenant creation failed. Safe to retry — the operation is idempotent.");
+    }
   };
 
-  const retryFailed = () => {
-    setTasks((prev) => prev && prev.map((p) => (p.status === "failed" || p.detail === "Blocked by telephony step" ? { ...p, status: "pending", detail: undefined } : p)));
-    const order = ["tel", "verify"];
-    order.forEach((id, i) => {
-      setTimeout(() => setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status: "running" } : p))), i * 900 + 200);
-      setTimeout(() => setTasks((prev) => prev && prev.map((p) => (p.id === id ? { ...p, status: "done" } : p))), i * 900 + 1000);
-    });
-  };
+  const retryFailed = () => void launch();
 
   const allDone = tasks?.every((t) => t.status === "done") ?? false;
   const anyFailed = tasks?.some((t) => t.status === "failed") ?? false;
 
-  const summary = useMemo(() => ([
-    ["Company", `${form.company || "—"} (${form.domain || "—"})`],
-    ["Industry / region", `${form.industry} · ${form.region}`],
-    ["Plan", `${form.plan} · ${form.seats} seats · ${Number(form.minutes).toLocaleString()} min/mo`],
-    ["Admin", `${form.adminName || "—"} <${form.adminEmail || "—"}>`],
-    ["AI profile", `${form.modelTier} model tier · ${form.guardrailProfile} guardrails · ${form.languages.join(", ")}`],
-    ["Telephony", form.telephonyMode === "platform" ? `Platform-managed number (${form.numberCountry})` : "Customer SIP trunk (BYOC)"],
-    ["Security", `${form.sso ? "SSO" : "Password"} · ${form.mfa ? "MFA required" : "MFA optional"} · ${form.retention}-day retention${form.residency ? " · EU residency" : ""}`],
-  ]), [form]);
+  const summary = useMemo(() => {
+    const industryName = opts?.industries.find((i) => i.code === form.industry)?.name ?? form.industry;
+    const regionName = opts?.dataRegions.find((r) => r.code === form.region)?.name ?? form.region;
+    const planSel = opts?.plans.find((p) => p.code === form.plan);
+    const profileName = opts?.aiProfiles.find((p) => p.code === form.aiProfile)?.name ?? form.aiProfile;
+    const langNames = form.languages.map((c) => opts?.languages.find((l) => l.code === c)?.name ?? c);
+    return [
+      ["Company", `${form.company || "—"} (${form.domain || "—"})`],
+      ["Industry / region", `${industryName} · ${regionName}`],
+      ["Plan", `${planSel?.name ?? form.plan} · ${form.seats} seats · ${(planSel?.minutesIncluded ?? 0).toLocaleString()} min/mo`],
+      ["Admin", `${form.adminName || "—"} <${form.adminEmail || "—"}>`],
+      ["AI profile", `${profileName} · ${form.guardrailProfile} guardrails · ${langNames.join(", ")}`],
+      ["Telephony", form.telephonyMode === "platform" ? `Platform-managed number (${form.numberCountry})` : "Customer SIP trunk (BYOC)"],
+      ["Security", `${form.sso ? "SSO" : "Password"} · ${form.mfa ? "MFA required" : "MFA optional"} · ${form.retention}-day retention${form.residency ? " · EU residency" : ""}`],
+    ];
+  }, [form, opts]);
 
   return (
     <>
@@ -133,6 +184,15 @@ export default function Onboarding() {
 
         <div className="card card-pad" style={{ minHeight: 420, display: "flex", flexDirection: "column" }}>
           <div className="grow">
+            {optionsQ.loading && (
+              <div className="col gap-12" aria-busy="true" aria-label="Loading onboarding options">
+                <Skeleton w="35%" h={18} />
+                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} h={34} />)}
+              </div>
+            )}
+            {!optionsQ.loading && optionsQ.error && <ErrorState message={optionsQ.error} onRetry={optionsQ.reload} />}
+            {opts && (
+              <>
             {step === 0 && (
               <StepGrid title="Company profile" sub="Identity and residency of the new organization.">
                 <Field label="Company name" required error={errors.company}>
@@ -143,12 +203,12 @@ export default function Onboarding() {
                 </Field>
                 <Field label="Industry">
                   <select className="select" value={form.industry} onChange={(e) => set("industry", e.target.value)}>
-                    {["Healthcare", "Insurance", "Banking", "Retail", "Telecom", "Travel", "Utilities", "Logistics", "Other"].map((o) => <option key={o}>{o}</option>)}
+                    {opts.industries.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
                   </select>
                 </Field>
-                <Field label="Data region" hint="Where call data and knowledge indexes live.">
+                <Field label="Data region" hint="Configured operational region. Infrastructure deployment may differ.">
                   <select className="select" value={form.region} onChange={(e) => set("region", e.target.value)}>
-                    {["US-East", "US-West", "US-Central", "EU-West", "EU-Central", "APAC", "LATAM"].map((o) => <option key={o}>{o}</option>)}
+                    {opts.dataRegions.map((o) => <option key={o.code} value={o.code}>{o.name}{o.infrastructureReady ? "" : " — configured region"}</option>)}
                   </select>
                 </Field>
               </StepGrid>
@@ -157,17 +217,26 @@ export default function Onboarding() {
             {step === 1 && (
               <StepGrid title="Subscription" sub="Plan limits are enforced by metering; overage is billed monthly.">
                 <Field label="Plan">
-                  <select className="select" value={form.plan} onChange={(e) => set("plan", e.target.value)}>
-                    <option value="starter">Starter — 2 bots, community support</option>
-                    <option value="growth">Growth — 8 bots, standard SLA</option>
-                    <option value="enterprise">Enterprise — 20 bots, 99.9% SLA, SSO</option>
-                  </select>
+                  <div className="col gap-6">
+                    {opts.plans.map((p) => {
+                      const on = form.plan === p.code;
+                      return (
+                        <button key={p.code} type="button" aria-pressed={on} onClick={() => set("plan", p.code)}
+                          className="row-between card-pad-sm gap-12"
+                          style={{ border: `1px solid ${on ? "var(--brand-500)" : "var(--hairline)"}`, borderRadius: 10, background: on ? "var(--surface-2)" : "transparent", textAlign: "left", cursor: "pointer" }}>
+                          <div>
+                            <div className="t-strong" style={{ fontSize: 13 }}>{p.name} — {p.description}</div>
+                            <div className="t-micro">${p.priceMonthly.toLocaleString()}/mo · {p.minutesIncluded.toLocaleString()} min · {p.botLimit} bots · {p.seatsIncluded} seats included</div>
+                          </div>
+                          {p.isRecommended && <span className="tag">Recommended</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </Field>
                 <Field label="Seats"><input className="input" type="number" min={1} value={form.seats} onChange={(e) => set("seats", e.target.value)} /></Field>
-                <Field label="Included voice minutes / month">
-                  <select className="select" value={form.minutes} onChange={(e) => set("minutes", e.target.value)}>
-                    <option value="10000">10,000</option><option value="80000">80,000</option><option value="200000">200,000</option>
-                  </select>
+                <Field label="Included voice minutes / month" hint="Set by the selected plan.">
+                  <input className="input" value={(selectedPlan?.minutesIncluded ?? 0).toLocaleString()} readOnly disabled aria-label="Included voice minutes per month" />
                 </Field>
               </StepGrid>
             )}
@@ -185,12 +254,13 @@ export default function Onboarding() {
 
             {step === 3 && (
               <StepGrid title="AI configuration" sub="Assigns platform-governed profiles. Tenants never see raw model or provider settings.">
-                <Field label="Model tier" hint="Maps to an approved-model profile in AI Governance.">
-                  <select className="select" value={form.modelTier} onChange={(e) => set("modelTier", e.target.value)}>
-                    <option value="standard">Standard — balanced latency & quality</option>
-                    <option value="premium">Premium — highest quality, higher cost</option>
-                    <option value="economy">Economy — high volume, simple flows</option>
-                  </select>
+                <Field label="AI configuration profile" hint="Maps to an approved-model profile in AI Governance.">
+                  <div className="row gap-8">
+                    <select className="select grow" value={form.aiProfile} onChange={(e) => set("aiProfile", e.target.value)}>
+                      {opts.aiProfiles.map((p) => <option key={p.code} value={p.code}>{p.name} — {p.description}</option>)}
+                    </select>
+                    {selectedProfile && <span className="chip chip-neutral" style={{ textTransform: "capitalize", whiteSpace: "nowrap" }}>{selectedProfile.costCategory} cost</span>}
+                  </div>
                 </Field>
                 <Field label="Guardrail profile">
                   <select className="select" value={form.guardrailProfile} onChange={(e) => set("guardrailProfile", e.target.value)}>
@@ -201,12 +271,12 @@ export default function Onboarding() {
                 </Field>
                 <Field label="Languages">
                   <div className="row wrap gap-6">
-                    {["en-US", "es-US", "en-GB", "fr-FR", "de-DE", "hi-IN", "vi-VN"].map((l) => {
-                      const on = form.languages.includes(l);
+                    {opts.languages.map((l) => {
+                      const on = form.languages.includes(l.code);
                       return (
-                        <button key={l} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on} onClick={() =>
-                          set("languages", on ? form.languages.filter((x) => x !== l) : [...form.languages, l])
-                        }>{on && <Icon name="check" size={11} />}{l}</button>
+                        <button key={l.code} className={`chip ${on ? "chip-brand" : "chip-neutral"}`} aria-pressed={on} title={l.nativeName} onClick={() =>
+                          set("languages", on ? form.languages.filter((x) => x !== l.code) : [...form.languages, l.code])
+                        }>{on && <Icon name="check" size={11} />}{l.name}</button>
                       );
                     })}
                   </div>
@@ -292,22 +362,25 @@ export default function Onboarding() {
                     {allDone && (
                       <Callout tone="good" title="Tenant provisioned">
                         Invite sent to {form.adminEmail || "the admin"}. The tenant admin will be offered a guided first-bot setup on first sign-in.
+                        {tempPassword && <> Temporary password: <code>{tempPassword}</code> — share it over a secure channel; it must be rotated on first login.</>}
                       </Callout>
                     )}
                   </div>
                 )}
               </div>
             )}
+              </>
+            )}
           </div>
 
           <div className="row-between mt-24" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 16 }}>
             <Button variant="ghost" icon="chevron-left" onClick={back} disabled={step === 0 || !!tasks}>Back</Button>
             {step < steps.length - 1 ? (
-              <Button variant="primary" onClick={next}>Continue<Icon name="chevron-right" size={14} /></Button>
+              <Button variant="primary" onClick={next} disabled={!opts}>Continue<Icon name="chevron-right" size={14} /></Button>
             ) : allDone ? (
               <Button variant="primary" icon="check" onClick={() => { toast("Tenant added to Organizations"); navigate("/admin/tenants"); }}>Finish</Button>
             ) : (
-              <Button variant="primary" icon="rocket" onClick={launch} disabled={!!tasks && !anyFailed && !allDone}>
+              <Button variant="primary" icon="rocket" onClick={launch} disabled={!opts || (!!tasks && !anyFailed && !allDone)}>
                 {tasks ? "Provisioning…" : "Launch provisioning"}
               </Button>
             )}

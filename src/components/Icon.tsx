@@ -229,6 +229,13 @@ const paths: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="3" />
     </>
   ),
+  "eye-off": (
+    <>
+      <path d="M10.7 5.8A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.6 17.6 0 0 1-3 3.85M6.5 6.7C4 8.6 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.35 0 2.6-.33 3.72-.85" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.24 4.24" />
+      <path d="M4 4l16 16" />
+    </>
+  ),
   "arrow-up": <path d="M12 19V5M6 11l6-6 6 6" />,
   "arrow-down": <path d="M12 5v14M6 13l6 6 6-6" />,
   "arrow-right": <path d="M5 12h14M13 6l6 6-6 6" />,

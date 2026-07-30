@@ -4,9 +4,11 @@ import { getTenantAnalytics, listBots, listConversations } from "@/services/api"
 import { Button, CardSkeleton, ErrorState, Health, KpiCard, StatusChip } from "@/components/ui";
 import { ChartCard, Donut, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
+import { useApp } from "@/state/AppContext";
 
 export default function TenantDashboard() {
   const navigate = useNavigate();
+  const { user } = useApp();
   const a = useAsync(() => getTenantAnalytics(30), []);
   const botsQ = useAsync(listBots, []);
   const convQ = useAsync(listConversations, []);
@@ -16,12 +18,21 @@ export default function TenantDashboard() {
   const liveBots = (botsQ.data ?? []).filter((b) => b.status === "published");
   const needsAttention = (botsQ.data ?? []).filter((b) => b.health === "warning" || b.health === "serious" || b.health === "critical");
 
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const firstName = user?.name?.split(" ")[0] ?? "";
+
+  const split = a.data?.sentimentSplit ?? [];
+  const splitTotal = split.reduce((sum, s) => sum + s.value, 0);
+  const dominant = split.length ? split.reduce((m, s) => (s.value > m.value ? s : m)) : null;
+  const dominantPct = dominant && splitTotal ? Math.round((dominant.value / splitTotal) * 100) : 0;
+
   return (
     <>
       <div className="page-head">
         <div className="page-head-titles">
-          <h1 className="page-title">Good morning, Priya</h1>
-          <p className="page-sub">Meridian Health Group · {liveBots.length} bots live · last 30 days</p>
+          <h1 className="page-title">{greeting}{firstName ? `, ${firstName}` : ""}</h1>
+          <p className="page-sub">{[user?.tenantName, `${liveBots.length} bots live`, "last 30 days"].filter(Boolean).join(" · ")}</p>
         </div>
         <div className="page-actions">
           <Button icon="headphones" onClick={() => navigate("/t/conversations")}>Review conversations</Button>
@@ -50,7 +61,7 @@ export default function TenantDashboard() {
           ) : <CardSkeleton rows={6} />}
         </ChartCard>
         <ChartCard title="Caller sentiment" sub="Share of calls, last 30 days">
-          {a.data ? <Donut data={a.data.sentimentSplit.map((s, i) => ({ ...s, color: [`var(--viz-good)`, `var(--status-neutral)`, `var(--viz-critical)`][i] }))} centerValue="58%" centerLabel="positive" /> : <CardSkeleton rows={6} />}
+          {a.data ? <Donut data={a.data.sentimentSplit.map((s, i) => ({ ...s, color: [`var(--viz-good)`, `var(--status-neutral)`, `var(--viz-critical)`][i] }))} centerValue={`${dominantPct}%`} centerLabel={dominant?.label.toLowerCase() ?? ""} /> : <CardSkeleton rows={6} />}
         </ChartCard>
       </div>
 

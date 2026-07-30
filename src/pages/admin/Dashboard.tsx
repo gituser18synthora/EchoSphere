@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { getPlatformAnalytics, getPlatformHealth, listAlerts, listTenants } from "@/services/api";
+import { getAdminDashboard, getPlatformAnalytics, getPlatformHealth, listAlerts, listTenants } from "@/services/api";
 import { KpiCard, CardSkeleton, ErrorState, StatusChip, Health, Button } from "@/components/ui";
 import { ChartCard, LineChart, Donut, HBarList, Legend, Sparkline, fmtNum } from "@/components/charts";
 import { Icon } from "@/components/Icon";
@@ -8,6 +8,7 @@ import { Icon } from "@/components/Icon";
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const analytics = useAsync(() => getPlatformAnalytics(30), []);
+  const dashboard = useAsync(getAdminDashboard, []);
   const health = useAsync(getPlatformHealth, []);
   const alerts = useAsync(listAlerts, []);
   const tenants = useAsync(listTenants, []);
@@ -15,9 +16,8 @@ export default function AdminDashboard() {
   if (analytics.error) return <ErrorState message={analytics.error} onRetry={analytics.reload} />;
 
   const a = analytics.data;
-  const totalCalls = a ? a.callVol.reduce((s, v) => s + v, 0) : 0;
-  const mrr = tenants.data?.reduce((s, t) => s + t.mrr, 0) ?? 0;
-  const aiCost = tenants.data?.reduce((s, t) => s + t.aiCostMonth, 0) ?? 0;
+  const tenantCount = tenants.data?.length ?? 0;
+  const kpiIcons = ["building", "bot", "phone", "dollar", "cpu"];
 
   return (
     <>
@@ -27,23 +27,27 @@ export default function AdminDashboard() {
           <p className="page-sub">Cross-tenant health, growth and risk — last 30 days</p>
         </div>
         <div className="page-actions">
-          <Button icon="download" onClick={() => navigate("/admin/reports")}>Reports</Button>
+          <Button icon="trend" onClick={() => navigate("/admin/reports")}>Reports</Button>
           <Button variant="primary" icon="rocket" onClick={() => navigate("/admin/onboarding")}>Onboard tenant</Button>
         </div>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-5">
-        {analytics.loading || tenants.loading ? (
+        {dashboard.loading ? (
           Array.from({ length: 5 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
         ) : (
-          <>
-            <KpiCard label="Active tenants" value="47" delta={6.8} icon="building" spark={[38, 39, 39, 41, 42, 43, 44, 47]} />
-            <KpiCard label="Live VoiceBots" value="128" delta={9.4} icon="bot" spark={[102, 105, 110, 112, 118, 121, 125, 128]} />
-            <KpiCard label="Calls (30d)" value={fmtNum(totalCalls)} delta={12.1} icon="phone" spark={a!.callVol.slice(-14)} />
-            <KpiCard label="MRR" value={`$${fmtNum(mrr)}`} delta={4.2} icon="dollar" spark={a!.revenue.slice(-14)} />
-            <KpiCard label="AI cost (30d)" value={`$${fmtNum(aiCost * 4.4)}`} delta={7.9} intent="down-good" icon="cpu" spark={a!.aiCost.slice(-14)} />
-          </>
+          dashboard.data?.kpis.map((k, i) => (
+            <KpiCard
+              key={k.label}
+              label={k.label}
+              value={k.value}
+              delta={k.delta}
+              intent={k.intent}
+              icon={kpiIcons[i] ?? "activity"}
+              spark={k.spark && k.spark.length ? k.spark : undefined}
+            />
+          ))
         )}
       </div>
 
@@ -99,8 +103,8 @@ export default function AdminDashboard() {
         <ChartCard title="Top tenants by calls" sub="This month">
           {a ? <HBarList data={a.topTenantsByCalls} /> : <CardSkeleton rows={5} />}
         </ChartCard>
-        <ChartCard title="Tenant plan mix" sub="47 tenants">
-          {a ? <Donut data={a.planMix} centerValue="47" centerLabel="tenants" /> : <CardSkeleton rows={5} />}
+        <ChartCard title="Tenant plan mix" sub={`${tenantCount} tenants`}>
+          {a ? <Donut data={a.planMix} centerValue={String(tenantCount)} centerLabel="tenants" /> : <CardSkeleton rows={5} />}
         </ChartCard>
         <div className="card">
           <div className="card-header">

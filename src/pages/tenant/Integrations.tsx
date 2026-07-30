@@ -1,5 +1,5 @@
 import { useAsync } from "@/hooks/useAsync";
-import { listIntegrations, simulateAction } from "@/services/api";
+import { connectIntegration, disconnectIntegration, listIntegrations } from "@/services/api";
 import { Button, CardSkeleton, StatusChip } from "@/components/ui";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -12,6 +12,16 @@ const catIcon: Record<string, IconName> = {
 export default function Integrations() {
   const q = useAsync(listIntegrations, []);
   const { toast } = useApp();
+
+  const run = async (action: () => Promise<unknown>, message: string) => {
+    try {
+      await action();
+      toast(message);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Action failed", "error");
+    }
+  };
 
   return (
     <>
@@ -41,21 +51,21 @@ export default function Integrations() {
             {ig.status === "error" && (
               <div className="callout callout-critical" style={{ padding: "8px 10px", fontSize: 12 }}>
                 <Icon name="x-circle" size={13} />
-                <div className="callout-body">OAuth token expired Jun 30. Reconnect to resume case sync.</div>
+                <div className="callout-body">This connection is reporting an error — reconnect to restore syncing.</div>
               </div>
             )}
             <div className="row gap-6">
               {ig.status === "connected" && (
                 <>
                   <Button size="sm" variant="ghost" icon="settings" onClick={() => toast(`${ig.name} settings opened`, "info")}>Configure</Button>
-                  <Button size="sm" variant="danger-ghost" onClick={async () => { await simulateAction("disconnect"); toast(`${ig.name} disconnected — dependent bots flagged in readiness checks`); }}>Disconnect</Button>
+                  <Button size="sm" variant="danger-ghost" onClick={() => run(() => disconnectIntegration(ig.id), `${ig.name} disconnected — dependent bots flagged in readiness checks`)}>Disconnect</Button>
                 </>
               )}
               {ig.status === "error" && (
-                <Button size="sm" variant="primary" icon="refresh" onClick={async () => { await simulateAction("reconnect"); toast(`${ig.name} reconnected`); q.reload(); }}>Reconnect</Button>
+                <Button size="sm" variant="primary" icon="refresh" onClick={() => run(() => connectIntegration(ig.id), `${ig.name} reconnected`)}>Reconnect</Button>
               )}
               {ig.status === "available" && (
-                <Button size="sm" variant="primary" icon="plus" onClick={() => toast(`${ig.name} connection wizard requires the OAuth backend (TODO_BACKEND #5)`, "info")}>Connect</Button>
+                <Button size="sm" variant="primary" icon="plus" onClick={() => run(() => connectIntegration(ig.id), `${ig.name} connected`)}>Connect</Button>
               )}
             </div>
             {ig.connectedAt && <span className="t-micro">Connected {new Date(ig.connectedAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}</span>}

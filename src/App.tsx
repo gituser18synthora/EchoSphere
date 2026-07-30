@@ -15,16 +15,21 @@ import UsageReport from "@/pages/admin/Usage";
 import Governance from "@/pages/admin/Governance";
 import VoicePlatform from "@/pages/admin/VoicePlatform";
 import KnowledgeAdmin from "@/pages/admin/KnowledgeAdmin";
+import KnowledgeChunks from "@/pages/admin/KnowledgeChunks";
 import WorkflowsAdmin from "@/pages/admin/WorkflowsAdmin";
 import Monitoring from "@/pages/admin/Monitoring";
 import Security from "@/pages/admin/Security";
 import Reports from "@/pages/admin/Reports";
+import PlatformConfig from "@/pages/admin/PlatformConfig";
+import RegionalSettings from "@/pages/admin/RegionalSettings";
+import Profile from "@/pages/Profile";
 
 /* Tenant Admin */
 import TenantDashboard from "@/pages/tenant/Dashboard";
 import Bots from "@/pages/tenant/Bots";
 import Studio from "@/pages/tenant/Studio";
 import KnowledgeHub from "@/pages/tenant/KnowledgeHub";
+import TenantVoices from "@/pages/tenant/Voices";
 import TenantWorkflows from "@/pages/tenant/Workflows";
 import Channels from "@/pages/tenant/Channels";
 import Analytics from "@/pages/tenant/Analytics";
@@ -33,10 +38,11 @@ import Team from "@/pages/tenant/Team";
 import Integrations from "@/pages/tenant/Integrations";
 import Settings from "@/pages/tenant/Settings";
 
-function Guard({ role, children }: { role: Role; children: React.ReactElement }) {
+function Guard({ roles, children }: { roles: Role[]; children: React.ReactElement }) {
   const { user } = useApp();
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== role) return <Navigate to={user.role === "super_admin" ? "/admin" : "/t"} replace />;
+  if (!roles.includes(user.role))
+    return <Navigate to={user.role === "super_admin" ? "/admin" : "/t"} replace />;
   return children;
 }
 
@@ -46,7 +52,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
 
-      <Route path="/admin" element={<Guard role="super_admin"><AppShell /></Guard>}>
+      <Route path="/admin" element={<Guard roles={["super_admin"]}><AppShell /></Guard>}>
         <Route index element={<AdminDashboard />} />
         <Route path="tenants" element={<Organizations />} />
         <Route path="tenants/:tenantId" element={<TenantDetail />} />
@@ -57,18 +63,24 @@ export default function App() {
         <Route path="governance" element={<Governance />} />
         <Route path="voice" element={<VoicePlatform />} />
         <Route path="knowledge" element={<KnowledgeAdmin />} />
+        <Route path="knowledge-chunks" element={<KnowledgeChunks />} />
         <Route path="workflows" element={<WorkflowsAdmin />} />
         <Route path="monitoring" element={<Monitoring />} />
         <Route path="security" element={<Security />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="platform-config" element={<PlatformConfig />} />
+        <Route path="regional-settings" element={<RegionalSettings />} />
+        <Route path="regional-settings/:tab" element={<RegionalSettings />} />
+        <Route path="profile" element={<Profile />} />
       </Route>
 
-      <Route path="/t" element={<Guard role="tenant_admin"><AppShell /></Guard>}>
+      <Route path="/t" element={<Guard roles={["tenant_admin", "tenant_user"]}><AppShell /></Guard>}>
         <Route index element={<TenantDashboard />} />
         <Route path="bots" element={<Bots />} />
         <Route path="bots/:botId" element={<Studio />} />
         <Route path="bots/:botId/:tab" element={<Studio />} />
         <Route path="knowledge" element={<KnowledgeHub />} />
+        <Route path="voices" element={<TenantVoices />} />
         <Route path="workflows" element={<TenantWorkflows />} />
         <Route path="channels" element={<Channels />} />
         <Route path="analytics" element={<Analytics />} />
@@ -76,6 +88,7 @@ export default function App() {
         <Route path="team" element={<Team />} />
         <Route path="integrations" element={<Integrations />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="profile" element={<Profile />} />
       </Route>
 
       <Route
