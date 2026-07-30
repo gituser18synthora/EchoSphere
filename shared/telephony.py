@@ -84,9 +84,12 @@ def connect_instructions(
             f'{{"stream_url": "{ws_url}", "stream_track": "inbound_track"}}',
         )
     if provider == "freeswitch":
-        # Keep the old key for compatibility with existing dialplan helpers.
+        # Keep the stream URL unchanged for existing helpers. The explicit
+        # query parameter lets the voice worker select the fork wire protocol
+        # without inventing a second provider or changing opaque session ids.
+        fork_url = f"{ws_url}?transport=audio_fork"
         return ConnectInstructions(
             "application/json",
-            f'{{"audio_stream_url": "{ws_url}", "audio_fork_url": "{ws_url}"}}',
+            f'{{"audio_stream_url": "{ws_url}", "audio_fork_url": "{fork_url}"}}',
         )
     raise ApiError(f"Unsupported telephony provider '{provider}'", 400)

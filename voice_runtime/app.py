@@ -36,60 +36,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voice_runtime.app")
 
-# Provider SDK errors can embed request headers (API keys) in exception text
-# — scrub every std-logging and loguru (pipecat) line before it reaches
-# journald. Observed live 2026-07-29: sarvamai's 403 error printed the full
-# api-subscription-key.
-from shared.logging_utils import install_log_redaction  # noqa: E402
-
-install_log_redaction()
-
 # Fail fast on missing mandatory configuration before serving any call.
 from shared.config import validate_settings  # noqa: E402
 
 validate_settings("voice-runtime")
 
 _active_sessions: dict[str, asyncio.Task] = {}
-
-# Every telephony media serializer speaks the 8 kHz PSTN world: the
-# FreeSWITCH streamAudio envelope declares sampleRate 8000, Vaani's contract
-# is L16@8k, and the pipecat Twilio/Telnyx/Plivo/Exotel serializers encode
-# G.711-rate audio. There is exactly ONE correct pipeline output rate.
-TELEPHONY_SAMPLE_RATE = 8000
-
-
-def resolve_telephony_sample_rate(
-    audio_conf: dict, *, bot_id: str = "?", provider: str = "?"
-) -> int:
-    """Telephony output rate, clamped to the serializers' 8 kHz contract.
-
-    A bot configured with any other telephony rate would generate PCM at that
-    rate while the wire envelope still declares 8000 — played at the wrong
-    speed on the caller's phone (16k config = half speed). Configuration must
-    never be able to produce that, so it is forced with a loud warning.
-    """
-    configured = int(audio_conf.get("sampleRate", TELEPHONY_SAMPLE_RATE))
-    if configured != TELEPHONY_SAMPLE_RATE:
-        logger.warning(
-            "bot %s telephony audio_settings.sampleRate=%d is not supported by "
-            "the %s media stream (fixed L16@8k) — forcing %d so playback speed "
-            "stays correct",
-            bot_id, configured, provider, TELEPHONY_SAMPLE_RATE,
-        )
-    return TELEPHONY_SAMPLE_RATE
-
-
-def session_timeout_should_cancel(recorder) -> bool:
-    """Whether the pipecat session timeout may cancel this call.
-
-    Pipecat's ``session_timeout`` is an ABSOLUTE one-shot timer from
-    connection start — not an inactivity timeout. Killing an in-progress
-    conversation at exactly VOICE_SESSION_TIMEOUT seconds is a mid-call
-    disconnect, so the timer is only honored for sessions that never became
-    a call (no greeting, no turns): those are dead sockets worth reaping.
-    Live calls stay bounded by ``max_call_duration``.
-    """
-    return len(getattr(recorder, "turns", []) or []) == 0
 
 
 @asynccontextmanager
@@ -148,37 +100,20 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
     from shared.telephony import SUPPORTED_PROVIDERS
 
     if provider not in SUPPORTED_PROVIDERS:
-        logger.warning(
-            "telephony ws rejected (4404 unknown provider %r) session=%s",
-            provider, session_id,
-        )
         await websocket.close(code=4404, reason="unknown provider")
         return
     session = await load_voice_session(session_id)
     if session is None:
-        logger.warning(
-            "telephony ws rejected (4401 unknown/expired session) provider=%s "
-            "session=%s", provider, session_id,
-        )
         await websocket.close(code=4401, reason="unknown or expired session")
         return
     if session_id in _active_sessions:
         # Reject duplicates BEFORE the handshake read: a duplicate connection
         # that never sends `start` must not park inside receive_text() holding
         # a socket while the real stream is live. (_run_call re-checks.)
-        logger.warning(
-            "telephony ws rejected (4409 duplicate connection) provider=%s "
-            "session=%s", provider, session_id,
-        )
         await websocket.accept()
         await websocket.close(code=4409, reason="session already active")
         return
     await websocket.accept()
-    peer = websocket.client.host if websocket.client else "?"
-    logger.info(
-        "telephony ws connected: provider=%s session=%s call_id=%s peer=%s",
-        provider, session_id, session.get("call_id"), peer,
-    )
 
     start_message: dict | None = None
     if provider in ("twilio", "telnyx", "plivo", "exotel", "vaani"):
@@ -189,59 +124,38 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
                 for _ in range(4):
                     message = _json.loads(await websocket.receive_text())
                     event = message.get("event") or message.get("event_type")
-                    logger.info(
-                        "telephony ws handshake event: provider=%s session=%s "
-                        "event=%s", provider, session_id, event,
-                    )
                     if event in ("start", "streamStart", "media_start"):
                         start_message = message
                         break
         except Exception:  # noqa: BLE001 — timeout, disconnect or bad JSON
-            logger.warning(
-                "telephony ws handshake failed (4400) provider=%s session=%s",
-                provider, session_id,
-            )
             await websocket.close(code=4400, reason="invalid stream handshake")
             return
         if start_message is None:
-            logger.warning(
-                "telephony ws missing stream start (4400) provider=%s session=%s",
-                provider, session_id,
-            )
             await websocket.close(code=4400, reason="missing stream start message")
             return
-        start_body = start_message.get("start") or {}
-        logger.info(
-            "telephony stream start: provider=%s session=%s streamSid=%s "
-            "mediaFormat=%s track=%s",
-            provider, session_id,
-            start_body.get("streamSid") or start_message.get("streamSid")
-            or start_body.get("stream_sid") or start_body.get("streamId")
-            or start_body.get("stream_id"),
-            start_body.get("mediaFormat") or start_body.get("media_format"),
-            start_body.get("track"),
-        )
     # Importing Pipecat and its serializers can take longer than the
     # mod_audio_stream WebSocket handshake timeout on the first call after a
     # process restart. The socket must already be accepted before that work.
-    import inspect
-
     from voice_runtime.telephony import build_media_serializer
 
-    factory_kwargs: dict = {"start_message": start_message}
-    if "session_id" in inspect.signature(build_media_serializer).parameters:
-        factory_kwargs["session_id"] = session_id  # tags media-stage log lines
     try:
-        serializer = build_media_serializer(provider, **factory_kwargs)
-    except ApiError as exc:
-        logger.warning(
-            "telephony serializer rejected (4400) provider=%s session=%s: %s",
-            provider, session_id, exc.message,
+        transport = websocket.query_params.get("transport")
+        serializer = build_media_serializer(
+            provider,
+            start_message=start_message,
+            transport=transport,
         )
+    except ApiError as exc:
         await websocket.close(code=4400, reason=exc.message[:100])
         return
-    await _run_call(websocket, session_id, session, serializer=serializer,
-                    telephony_provider=provider)
+    await _run_call(
+        websocket,
+        session_id,
+        session,
+        serializer=serializer,
+        telephony_provider=provider,
+        media_transport=transport,
+    )
 
 
 @app.websocket("/ws/voice/{session_id}")
@@ -263,13 +177,10 @@ async def _run_call(
     *,
     serializer=None,
     telephony_provider: str | None = None,
+    media_transport: str | None = None,
 ):
     settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
-        logger.warning(
-            "voice session %s rejected (4429): worker at capacity (%d active)",
-            session_id, len(_active_sessions),
-        )
         await websocket.close(code=4429, reason="voice worker at capacity")
         return
     if session_id in _active_sessions:
@@ -347,10 +258,16 @@ async def _run_call(
     transport_kind = "telephony" if telephony_provider else "browser"
     audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
     if telephony_provider:
-        tts_sample_rate = resolve_telephony_sample_rate(
-            audio_conf, bot_id=session["bot_id"], provider=telephony_provider
+        tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
+        # mod_audio_fork resamples the caller/read stream to 16 kHz. This also
+        # satisfies the Sarvam SDK's per-message audio contract. The legacy
+        # mod_audio_stream path remains 8 kHz.
+        stt_sample_rate = (
+            16000
+            if telephony_provider == "freeswitch"
+            and media_transport == "audio_fork"
+            else 8000
         )
-        stt_sample_rate = 8000
     else:
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
         stt_sample_rate = 16000
@@ -402,10 +319,6 @@ async def _run_call(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info(
-            "call started: session=%s channel=%s call_id=%s — speaking greeting",
-            session_id, recorder.channel, session.get("call_id"),
-        )
         await recorder.flush_event(
             "call_started",
             channel=recorder.channel,
@@ -415,24 +328,10 @@ async def _run_call(
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info(
-            "client disconnected: session=%s — cancelling pipeline", session_id
-        )
         await worker.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(transport, client):
-        if not session_timeout_should_cancel(recorder):
-            # Absolute timer fired mid-conversation — never a reason to
-            # drop a live call (max_call_duration still bounds it).
-            logger.info(
-                "session timeout timer fired for ACTIVE session=%s "
-                "(turns=%d) — ignoring; call stays up",
-                session_id, len(recorder.turns),
-            )
-            await recorder.flush_event("session_timeout_ignored_active")
-            return
-        logger.info("session timeout: session=%s — cancelling pipeline", session_id)
         await recorder.flush_event("session_timeout")
         await worker.cancel()
 
