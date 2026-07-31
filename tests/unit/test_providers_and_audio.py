@@ -27,7 +27,11 @@ from shared.providers.factory import (
     get_stt_provider,
     get_tts_provider,
 )
-from voice_runtime.telephony import VaaniFrameSerializer, build_media_serializer
+from voice_runtime.telephony import (
+    FreeSwitchAudioStreamSerializer,
+    VaaniFrameSerializer,
+    build_media_serializer,
+)
 
 os.environ.setdefault("FAKE_TEST_KEY", "test-key")
 KEY_REF = "env:FAKE_TEST_KEY"
@@ -321,3 +325,241 @@ class TestVaaniTelephony:
             "transfer": {"reason": "workflow_handover",
                          "transfer_queue": "queue 1", "agent_id": "agent 1"},
         }
+
+
+def _pcm_tone(samples: int, amplitude: int, *, period: int = 16) -> bytes:
+    """Square-ish test tone: alternating ±amplitude every half period."""
+    import struct
+
+    out = bytearray()
+    for index in range(samples):
+        value = amplitude if (index // (period // 2)) % 2 == 0 else -amplitude
+        out += struct.pack("<h", value)
+    return bytes(out)
+
+
+def _interleave(first: bytes, second: bytes) -> bytes:
+    return b"".join(
+        first[index:index + 2] + second[index:index + 2]
+        for index in range(0, len(first), 2)
+    )
+
+
+_SILENCE_160 = b"\x00\x00" * 160
+
+
+class TestFreeSwitchTelephony:
+    def test_connect_payload_supports_audio_stream_and_legacy_fork_key(self):
+        instructions = connect_instructions(
+            "freeswitch",
+            TelephonyProviderConfig(
+                provider="freeswitch", public_ws_base="ws://voice.example.com"
+            ),
+            "vs_456",
+        )
+        url = "ws://voice.example.com/ws/telephony/freeswitch/vs_456"
+        assert json.loads(instructions.body) == {
+            "audio_stream_url": url,
+            "audio_fork_url": url,
+        }
+
+    def test_public_websocket_base_is_required(self):
+        with pytest.raises(ApiError, match="public_ws_base"):
+            connect_instructions(
+                "freeswitch",
+                TelephonyProviderConfig(provider="freeswitch"),
+                "vs_456",
+            )
+
+    def test_factory_selects_mod_audio_stream_serializer(self):
+        assert isinstance(
+            build_media_serializer("freeswitch"),
+            FreeSwitchAudioStreamSerializer,
+        )
+
+    async def test_binary_caller_audio_uses_first_stream_little_endian(self):
+        # Capture analysis 2026-07-29: BOTH streams are little-endian (real
+        # caller speech: adjacent-sample corr 0.87 LE vs 0.11 byte-swapped;
+        # known-good TTS write stream: 0.92 LE vs 0.05 swapped). No byteswap.
+        # input_gain=1 isolates the wire format from level handling.
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=1.0)
+        caller_pcm = b"\x01\x02" * 160
+        bot_pcm = b"\x03\x04" * 160
+        frame = await serializer.deserialize(_interleave(caller_pcm, bot_pcm))
+        assert isinstance(frame, InputAudioRawFrame)
+        assert frame.audio == caller_pcm
+        assert frame.sample_rate == 8000
+        assert frame.num_channels == 1
+
+    async def test_pinned_second_channel_is_used_immediately(self):
+        serializer = FreeSwitchAudioStreamSerializer(
+            caller_channel="second", input_gain=1.0
+        )
+        caller_pcm = b"\x05\x06" * 160
+        bot_pcm = b"\x01\x02" * 160
+        frame = await serializer.deserialize(_interleave(bot_pcm, caller_pcm))
+        assert frame.audio == caller_pcm
+
+    async def test_quiet_caller_speech_is_gained_for_vad(self):
+        # Live calls: caller speech at ~0.18 full-scale sits just under the
+        # telephony VAD volume gate. The base gain applies until a level is
+        # observed, so the very first quiet utterance already clears VAD.
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=12.0)
+        caller = _pcm_tone(160, 800)
+        frame = await serializer.deserialize(_interleave(caller, _SILENCE_160))
+        samples = frame.audio
+        assert max(
+            abs(int.from_bytes(samples[i:i + 2], "little", signed=True))
+            for i in range(0, len(samples), 2)
+        ) == 9600  # 800 × 12
+
+    async def test_adaptive_gain_never_clips_loud_speech(self):
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=12.0)
+        loud = _pcm_tone(160, 8000)
+        frame = None
+        for _ in range(30):  # enough voiced evidence to track the level
+            frame = await serializer.deserialize(_interleave(loud, _SILENCE_160))
+        samples = frame.audio
+        peak = max(
+            abs(int.from_bytes(samples[i:i + 2], "little", signed=True))
+            for i in range(0, len(samples), 2)
+        )
+        assert peak == 16000  # gained to the -6 dBFS target, not 8000 × 12
+
+    async def test_playback_echo_is_not_gained(self):
+        # Right after bot audio goes out, sub-echo-gate levels must pass
+        # UNGAINED so the greeting's line echo cannot trip VAD/barge-in.
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=12.0)
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 3200, sample_rate=8000, num_channels=1,
+        ))
+        echo = _pcm_tone(160, 800)
+        frame = await serializer.deserialize(_interleave(echo, _SILENCE_160))
+        assert frame.audio == echo  # passthrough, no ×12
+
+    async def test_own_playback_on_selected_channel_is_muted_then_fled(self):
+        # If the selected (unlocked) stream turns out to carry the bot's own
+        # TTS, those messages are muted (never fed to VAD/STT) and the
+        # serializer switches to the other stream — the 2026-07-29 live
+        # self-barge-in during the greeting can never happen again.
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=12.0)
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 3200, sample_rate=8000, num_channels=1,
+        ))
+        tts_leak = _pcm_tone(160, 12000)
+        for _ in range(14):
+            frame = await serializer.deserialize(
+                _interleave(tts_leak, _SILENCE_160)
+            )
+            assert frame.audio == _SILENCE_160  # muted, selection unchanged
+        assert serializer._selected == 0
+        for _ in range(2):
+            await serializer.deserialize(_interleave(tts_leak, _SILENCE_160))
+        assert serializer._selected == 1  # fled the playback-carrying stream
+        assert serializer._muted_msgs >= 14
+
+    async def test_auto_switches_to_voiced_stream_when_selected_is_silent(self):
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=1.0)
+        voice = _pcm_tone(160, 1000)
+        frame = None
+        for _ in range(30):  # bot is quiet the whole time
+            frame = await serializer.deserialize(_interleave(_SILENCE_160, voice))
+        assert serializer._selected == 1
+        assert frame.audio == voice
+
+    async def test_mono_at_double_rate_is_detected_and_passed_through(self):
+        import math as _math
+        import struct as _struct
+
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=1.0)
+        mono_16k = b"".join(
+            _struct.pack("<h", int(9000 * _math.sin(2 * _math.pi * 400 * i / 16000)))
+            for i in range(320)
+        )
+        frame = None
+        for _ in range(30):
+            frame = await serializer.deserialize(mono_16k)
+        assert serializer._mono_2x is True
+        assert frame.sample_rate == 16000
+        assert frame.audio == mono_16k
+
+    async def test_debug_capture_writes_both_streams(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ECHOSPHERE_FS_AUDIO_DEBUG_DIR", str(tmp_path))
+        serializer = FreeSwitchAudioStreamSerializer(input_gain=1.0)
+        msg = _interleave(_pcm_tone(160, 700), _SILENCE_160)
+        await serializer.deserialize(msg)
+        await serializer.deserialize(msg)
+        firsts = list(tmp_path.glob("echosphere-fs-*-first.s16le"))
+        seconds = list(tmp_path.glob("echosphere-fs-*-second.s16le"))
+        assert len(firsts) == 1 and len(seconds) == 1
+        assert serializer._debug_audio_remaining == 8000 * 2 * 20 - 640
+
+    async def test_bot_audio_uses_mod_audio_stream_playback_envelope(self):
+        serializer = FreeSwitchAudioStreamSerializer()
+        pcm = b"\x03\x04" * 160
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=pcm, sample_rate=8000, num_channels=1,
+        )) is None
+        raw = await serializer.serialize(BotStoppedSpeakingFrame())
+        assert json.loads(raw) == {
+            "type": "streamAudio",
+            "data": {
+                "audioDataType": "raw",
+                "sampleRate": 8000,
+                "audioData": base64.b64encode(pcm).decode("ascii"),
+            },
+        }
+
+    async def test_text_metadata_is_not_treated_as_audio(self):
+        serializer = FreeSwitchAudioStreamSerializer()
+        assert await serializer.deserialize('{"event":"connected"}') is None
+
+    async def test_barge_in_clears_pending_audio_and_sends_kill_audio(self):
+        # Local pending bytes must never survive an interruption, and the
+        # module must be told to drop what was ALREADY shipped (killAudio) —
+        # otherwise up to ~2 s of stale bot audio talks over the caller.
+        serializer = FreeSwitchAudioStreamSerializer()
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
+        ))
+        message = await serializer.serialize(InterruptionFrame())
+        assert json.loads(message) == {"type": "killAudio"}
+        assert len(serializer._pending_audio) == 0
+        # Nothing stale may be flushed after the barge-in.
+        assert await serializer.serialize(BotStoppedSpeakingFrame()) is None
+
+    async def test_kill_audio_can_be_disabled_for_older_module_builds(self):
+        serializer = FreeSwitchAudioStreamSerializer(send_kill_audio=False)
+        await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
+        ))
+        assert await serializer.serialize(InterruptionFrame()) is None
+        assert len(serializer._pending_audio) == 0
+
+    async def test_outbound_envelope_always_declares_8k_and_320_byte_frames(self):
+        # The wire contract: L16@8k mono, frame-aligned. 3200 bytes at
+        # 8000 Hz × 2 bytes/sample × 1 channel = exactly 200 ms of speech —
+        # a mislabeled rate here is what wrong-speed playback sounds like.
+        serializer = FreeSwitchAudioStreamSerializer()
+        raw = None
+        for _ in range(3):  # 3 × 1280 = 3840 bytes ≥ min chunk
+            raw = await serializer.serialize(OutputAudioRawFrame(
+                audio=b"\x02" * 1280, sample_rate=8000, num_channels=1,
+            )) or raw
+        payload = json.loads(raw)
+        assert payload["data"]["sampleRate"] == 8000
+        audio = base64.b64decode(payload["data"]["audioData"])
+        assert len(audio) % 320 == 0
+        assert len(audio) / (8000 * 2) == pytest.approx(0.2, abs=0.05)
+
+    async def test_audio_is_batched_before_module_file_playback(self):
+        serializer = FreeSwitchAudioStreamSerializer()
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
+        )) is None
+        raw = await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x02" * 1600, sample_rate=8000, num_channels=1,
+        ))
+        audio = base64.b64decode(json.loads(raw)["data"]["audioData"])
+        assert len(audio) == 3200
+        assert audio == b"\x01" * 1600 + b"\x02" * 1600

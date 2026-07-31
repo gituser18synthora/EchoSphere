@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from functools import lru_cache
 from urllib.parse import quote_plus
 
@@ -14,6 +15,40 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__
 # must be loaded into the process environment too — not only into the pydantic
 # Settings fields. Real environment variables always win (override=False).
 load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=False)
+
+logger = logging.getLogger(__name__)
+
+# Env vars whose value already triggered a sanitization warning (warn once).
+_SANITIZED_SECRET_WARNED: set[str] = set()
+
+
+def _sanitize_env_secret(name: str, value: str) -> str:
+    """Normalize a secret read from the process environment.
+
+    Loaders disagree on `.env` syntax: python-dotenv strips inline
+    ` # comment` text after an unquoted value, but systemd EnvironmentFile
+    and plain `export` keep it — the comment then becomes part of the secret
+    and the provider rejects it (observed live: Sarvam 403 on every call
+    because the key ended in " #paid key"). Secrets here are API keys/tokens
+    that never contain whitespace, so anything from the first whitespace-#
+    onward is a comment, and surrounding quotes are loader artifacts.
+    The value itself is never logged.
+    """
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        cleaned = cleaned[1:-1].strip()
+    trailing_comment = re.search(r"\s+#", cleaned)
+    if trailing_comment:
+        cleaned = cleaned[: trailing_comment.start()].rstrip()
+    if cleaned != value and name not in _SANITIZED_SECRET_WARNED:
+        _SANITIZED_SECRET_WARNED.add(name)
+        logger.warning(
+            "secret %s contained surrounding whitespace/quotes or an inline "
+            "'#' comment (loader kept it in the value); sanitized %d -> %d "
+            "chars. Fix the .env/unit file entry.",
+            name, len(value), len(cleaned),
+        )
+    return cleaned
 
 
 class Settings(BaseSettings):
@@ -144,6 +179,23 @@ class Settings(BaseSettings):
     freeswitch_host: str = "127.0.0.1"
     freeswitch_port: int = 9004
     freeswitch_password_reference: str = "env:FREESWITCH_PASSWORD"
+    # Which of the two interleaved 16-bit streams in the mod_audio_stream
+    # binary feed carries the CALLER's voice. "auto" (default) starts on the
+    # first stream (FreeSWITCH's standard read/caller position) and locks or
+    # switches based on which stream actually shows voice while the bot is
+    # silent; "first"/"second" (aliases "left"/"right") pin it explicitly.
+    freeswitch_caller_channel: str = "auto"
+    # Upper bound for the adaptive inbound gain applied to the caller stream
+    # before VAD/STT. The QA dialer delivers caller speech at ~-32 dBFS
+    # (peak ≈ 800), far below the VAD volume threshold; the effective gain is
+    # min(this, target/observed_peak) and never clips already-loud speech.
+    # (Per-channel raw captures: set ECHOSPHERE_FS_AUDIO_DEBUG_DIR.)
+    freeswitch_input_gain: float = 12.0
+    # On barge-in, tell mod_audio_stream to stop playing audio it already
+    # buffered (JSON {"type": "killAudio"}). Without it, up to ~2 s of
+    # already-shipped bot audio keeps playing over the caller. Disable only
+    # if the installed module build logs errors on unknown message types.
+    freeswitch_send_kill_audio: bool = True
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not
@@ -177,7 +229,8 @@ class Settings(BaseSettings):
         if not reference:
             return ""
         if reference.startswith("env:"):
-            return os.environ.get(reference[4:], "")
+            name = reference[4:]
+            return _sanitize_env_secret(name, os.environ.get(name, ""))
         return reference
 
     @property

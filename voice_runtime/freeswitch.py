@@ -1,7 +1,8 @@
 """FreeSWITCH integration.
 
-Media: FreeSWITCH dialplans attach `mod_audio_fork` to the voice worker's
-`/ws/telephony/freeswitch/{session_id}` endpoint (raw L16 @ 8 kHz both ways).
+Media: FreeSWITCH dialplans attach `mod_audio_stream` to the voice worker's
+`/ws/telephony/freeswitch/{session_id}` endpoint. Caller audio is raw L16 at
+8 kHz; bot audio uses the module's JSON/base64 ``streamAudio`` envelope.
 
 Control: a minimal asyncio Event Socket Layer (ESL) client for call control —
 transfer, hangup, originate — used by human-handoff and call-control routes.

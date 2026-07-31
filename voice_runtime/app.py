@@ -98,7 +98,6 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
 
     from shared.errors import ApiError
     from shared.telephony import SUPPORTED_PROVIDERS
-    from voice_runtime.telephony import build_media_serializer
 
     if provider not in SUPPORTED_PROVIDERS:
         await websocket.close(code=4404, reason="unknown provider")
@@ -134,13 +133,29 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
         if start_message is None:
             await websocket.close(code=4400, reason="missing stream start message")
             return
+    # Importing Pipecat and its serializers can take longer than the
+    # mod_audio_stream WebSocket handshake timeout on the first call after a
+    # process restart. The socket must already be accepted before that work.
+    from voice_runtime.telephony import build_media_serializer
+
     try:
-        serializer = build_media_serializer(provider, start_message=start_message)
+        transport = websocket.query_params.get("transport")
+        serializer = build_media_serializer(
+            provider,
+            start_message=start_message,
+            transport=transport,
+        )
     except ApiError as exc:
         await websocket.close(code=4400, reason=exc.message[:100])
         return
-    await _run_call(websocket, session_id, session, serializer=serializer,
-                    telephony_provider=provider)
+    await _run_call(
+        websocket,
+        session_id,
+        session,
+        serializer=serializer,
+        telephony_provider=provider,
+        media_transport=transport,
+    )
 
 
 @app.websocket("/ws/voice/{session_id}")
@@ -162,6 +177,7 @@ async def _run_call(
     *,
     serializer=None,
     telephony_provider: str | None = None,
+    media_transport: str | None = None,
 ):
     settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
@@ -243,7 +259,15 @@ async def _run_call(
     audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
     if telephony_provider:
         tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
-        stt_sample_rate = 8000
+        # mod_audio_fork resamples the caller/read stream to 16 kHz. This also
+        # satisfies the Sarvam SDK's per-message audio contract. The legacy
+        # mod_audio_stream path remains 8 kHz.
+        stt_sample_rate = (
+            16000
+            if telephony_provider == "freeswitch"
+            and media_transport == "audio_fork"
+            else 8000
+        )
     else:
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
         stt_sample_rate = 16000
