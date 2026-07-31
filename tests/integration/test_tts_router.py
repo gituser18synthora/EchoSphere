@@ -187,6 +187,8 @@ class TestStreamingRouter:
         assert "Primary provider will fail here." in " ".join(eleven_server.texts())
         fallback_events = [e for e in recorder.events if e["kind"] == "tts_fallback"]
         assert fallback_events and fallback_events[0]["to_provider"] == "elevenlabs"
+        # Transient failures are recoverable — they must never end the call.
+        assert not [e for e in recorder.events if e["kind"] == "tts_fatal"]
         used = [e for e in recorder.events if e["kind"] == "tts_provider_used"]
         assert used and used[-1]["provider"] == "elevenlabs" and used[-1]["fallback_used"]
 
@@ -215,6 +217,36 @@ class TestStreamingRouter:
         assert collector.audio_count() == 0
         assert eleven_server.connections == 0
         assert not [e for e in recorder.events if e["kind"] == "tts_fallback"]
+        # …and the call must END instead of sitting in dead air until the
+        # caller hangs up (observed live: 12.7 s of silence, dialer close).
+        fatal = [e for e in recorder.events if e["kind"] == "tts_fatal"]
+        assert fatal and fatal[0]["category"] == "auth"
+
+    async def test_fatal_auth_failure_ends_the_call_without_external_stop(
+        self, monkeypatch
+    ):
+        """The router's own EndWorkerFrame must stop the pipeline — the test
+        would time out if the dead-air call were left running."""
+        monkeypatch.setenv("TEST_SARVAM_KEY", "wrong-key")
+        async with MockSarvamTTSServer() as sarvam_server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", sarvam_server.url)
+            recorder = make_recorder("vs_router_auth_ends")
+            router = StreamingTTSRouter(
+                tts_config=tts_config(), language="hi-IN",
+                sample_rate=16000, recorder=recorder,
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["Dead air must not linger. "], settle=1.0)
+                # No EndWorkerFrame queued here on purpose.
+
+            await run_router(router, collector, feeder, timeout=10)
+
+        assert collector.audio_count() == 0
+        fatal = [e for e in recorder.events if e["kind"] == "tts_fatal"]
+        assert fatal and fatal[0]["category"] == "auth"
 
     async def test_no_fallback_on_invalid_config_error(self, monkeypatch):
         """Sarvam 422 config rejections (bad language/speaker payload) are
@@ -245,6 +277,8 @@ class TestStreamingRouter:
         assert not [e for e in recorder.events if e["kind"] == "tts_fallback"]
         used = [e for e in recorder.events if e["kind"] == "tts_provider_used"]
         assert used and used[-1]["failed"] is True and used[-1]["provider"] == "sarvam"
+        fatal = [e for e in recorder.events if e["kind"] == "tts_fatal"]
+        assert fatal and fatal[0]["category"] == "invalid_input"
 
     async def test_per_language_provider_switch_reuses_connections(self, monkeypatch):
         monkeypatch.setenv("TEST_SARVAM_KEY", API_KEY)

@@ -7,8 +7,9 @@ control event with timestamps and the session id.
 
 Usage:
     env/bin/python backend/scripts/vaani_dialer_sim.py webhook [--bot BOT_ID]
-    env/bin/python backend/scripts/vaani_dialer_sim.py full-call [--say TEXT | --wav FILE]
+    env/bin/python backend/scripts/vaani_dialer_sim.py full-call [--say TEXT | --wav FILE | --raw FILE]
     env/bin/python backend/scripts/vaani_dialer_sim.py invalid-signature
+    env/bin/python backend/scripts/vaani_dialer_sim.py protocol-events
     env/bin/python backend/scripts/vaani_dialer_sim.py barge-in
     env/bin/python backend/scripts/vaani_dialer_sim.py transfer
     env/bin/python backend/scripts/vaani_dialer_sim.py negative
@@ -18,9 +19,10 @@ Secrets: the webhook secret is read from the TELEPHONY_WEBHOOK_SECRET
 environment variable (loaded from the project .env when run inside the repo).
 Nothing is hardcoded and the secret is never printed.
 
-Caller audio: --wav (mono 16-bit WAV; resampled to 8 kHz if needed), or --say
-TEXT rendered via Sarvam TTS (needs SARVAM_API_KEY), falling back to synthetic
-vowel audio that still trips voice-activity detection.
+Caller audio: --wav (mono 16-bit WAV; resampled to 8 kHz if needed), --raw
+(headerless 8 kHz PCM16 little-endian mono), or --say TEXT rendered via Sarvam
+TTS (needs SARVAM_API_KEY), falling back to synthetic vowel audio that still
+trips voice-activity detection.
 """
 
 import argparse
@@ -125,6 +127,16 @@ def load_wav_8k(path: str) -> bytes:
     return struct.pack(f"<{out_n}h", *out)
 
 
+def load_raw_8k(path: str) -> bytes:
+    """Load headerless 8 kHz PCM16 little-endian mono audio."""
+    pcm = Path(path).read_bytes()
+    if not pcm:
+        sys.exit(f"{path}: raw PCM file is empty")
+    if len(pcm) % 2:
+        sys.exit(f"{path}: raw PCM16 must contain an even number of bytes")
+    return pcm
+
+
 def synthetic_speech_8k(seconds: float = 1.6) -> bytes:
     """Formant-filtered vowels — synthetic but VAD-tripping caller audio."""
     rate, out = 8000, bytearray()
@@ -148,6 +160,8 @@ def synthetic_speech_8k(seconds: float = 1.6) -> bytes:
 async def caller_audio(args, text: str) -> tuple[bytes, str]:
     if getattr(args, "wav", None):
         return load_wav_8k(args.wav), f"wav:{args.wav}"
+    if getattr(args, "raw", None):
+        return load_raw_8k(args.raw), f"raw-pcm16le-8k:{args.raw}"
     api_key = os.environ.get("SARVAM_API_KEY", "")
     if api_key:
         try:
@@ -252,6 +266,25 @@ class DialerCall:
         await self.ws.send(json.dumps({"event": "stop", "streamSid": self.stream_sid,
                                        "stop": {"reason": "callended"}}))
 
+    async def send_dtmf(self, digit: str = "5") -> None:
+        """Send the currently unsupported Vaani-style DTMF event."""
+        log(f"dialer sends dtmf digit={digit} (no acknowledgement expected)", self.sid)
+        await self.ws.send(json.dumps({
+            "event": "dtmf",
+            "streamSid": self.stream_sid,
+            "dtmf": {"digit": digit, "duration": 120},
+        }))
+
+    async def send_markers(self) -> None:
+        """Exercise both common marker spellings; EchoSphere ignores both."""
+        for event_name, payload_name in (("mark", "mark"), ("marker", "marker")):
+            log(f"dialer sends {event_name} (no acknowledgement expected)", self.sid)
+            await self.ws.send(json.dumps({
+                "event": event_name,
+                "streamSid": self.stream_sid,
+                payload_name: {"name": f"sim-{event_name}-1"},
+            }))
+
     async def drain_until_close(self, timeout: float = 25) -> None:
         await self.events(until=lambda s, e: False, timeout=timeout)
 
@@ -311,6 +344,32 @@ async def cmd_invalid_signature(args) -> None:
     check("replayed signature → first 200, replay 403",
           first.status_code == 200 and replay.status_code == 403,
           f"first={first.status_code} replay={replay.status_code}")
+
+
+async def cmd_protocol_events(args) -> None:
+    """Prove DTMF/marker events are safely ignored without killing the call."""
+    url, sid = await open_call(args)
+    async with websockets.connect(ws_local(args, url), open_timeout=10) as ws:
+        call = DialerCall(ws, sid)
+        await call.handshake()
+        await call.events(until=lambda s, e: s["media_in"] >= 1, timeout=60)
+        check("call established before unsupported events",
+              call.stats["media_in"] >= 1, session=sid)
+        protocol_ok = True
+        try:
+            await call.send_dtmf(args.dtmf_digit)
+            await call.send_markers()
+            await asyncio.sleep(0.25)
+            await call.send_stop()
+        except websockets.exceptions.ConnectionClosed as exc:
+            protocol_ok = False
+            log(f"socket closed while sending protocol events: {exc}", sid)
+        check("DTMF/mark/marker ignored without protocol failure",
+              protocol_ok, session=sid)
+        await call.drain_until_close()
+        call.close_uplink()
+    check("protocol-events call closed cleanly", call.stats["closed"], session=sid)
+    log(f"stats: {call.stats}", sid)
 
 
 async def cmd_full_call(args) -> None:
@@ -479,6 +538,7 @@ COMMANDS = {
     "webhook": cmd_webhook,
     "full-call": cmd_full_call,
     "invalid-signature": cmd_invalid_signature,
+    "protocol-events": cmd_protocol_events,
     "barge-in": cmd_barge_in,
     "transfer": cmd_transfer,
     "negative": cmd_negative,
@@ -497,8 +557,13 @@ def main() -> None:
     parser.add_argument("--bot", default=None, help="botId for per-campaign routing")
     parser.add_argument("--say", default=DEFAULT_SAY,
                         help="caller utterance text (Sarvam TTS)")
-    parser.add_argument("--wav", default=None,
-                        help="mono 16-bit WAV file to use as caller audio")
+    audio = parser.add_mutually_exclusive_group()
+    audio.add_argument("--wav", default=None,
+                       help="mono 16-bit WAV file to use as caller audio")
+    audio.add_argument("--raw", default=None,
+                       help="headerless 8 kHz PCM16 little-endian mono audio")
+    parser.add_argument("--dtmf-digit", default="5",
+                        help="digit sent by protocol-events (default 5)")
     parser.add_argument("--no-rewrite", action="store_true",
                         help="connect to the returned public URL as-is")
     args = parser.parse_args()

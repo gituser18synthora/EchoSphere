@@ -293,6 +293,11 @@ def build_voice_pipeline(
                 )
             )
         )
+    # STT must receive VADUserStoppedSpeakingFrame directly. Sarvam uses that
+    # frame to flush its streaming socket; placing UserTurnProcessor first
+    # consumed the control frame and left telephony transcripts waiting for
+    # the provider's roughly 60-second server-side endpoint.
+    processors.append(stt)
     processors.append(
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
@@ -311,7 +316,7 @@ def build_voice_pipeline(
             )
         )
     )
-    processors += [stt, brain, tts, transport.output()]
+    processors += [brain, tts, transport.output()]
 
     worker = PipelineWorker(
         Pipeline(processors),
