@@ -19,6 +19,7 @@ from shared.models.bot_models import (
     VoiceBot,
     VoiceBotReadiness,
     VoiceBotSetting,
+    VoiceCloneAudio,
     VoiceProfile,
 )
 from shared.models.content_models import (
@@ -64,7 +65,8 @@ __all__ = [
     "Base",
     "Role", "Permission", "RolePermission", "User",
     "Tenant", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
-    "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "SupportedLanguage", "BotLanguage",
+    "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "VoiceCloneAudio",
+    "SupportedLanguage", "BotLanguage",
     "VoiceBotSetting", "ChannelConfig", "PhoneNumber", "SipTrunk",
     "KnowledgeSource", "KnowledgeGap", "Prompt", "PromptVersion", "Intent", "EntityDef",
     "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",

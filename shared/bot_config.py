@@ -31,8 +31,18 @@ from shared.models import (
     VoiceBotSetting,
     VoiceProfile,
 )
+from shared.providers.tts.delivery import clamp_level, clamp_speed
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp_int(value, low: int, high: int, default: int) -> int:
+    """Clamp a stored delivery value; malformed rows fall back to the default."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(high, max(low, value))
 
 _CACHE_TTL_SECONDS = 300
 
@@ -104,6 +114,26 @@ def _ensure_engine_allowed(session, kind: str, provider: str, model: str | None)
     reason = _engine_allowed(session, kind, provider, model)
     if reason is not None:
         raise ProviderNotAvailableError(f"Voice engine unavailable: {reason}.")
+
+
+def _model_streaming(session, kind: str, provider: str, model: str | None) -> bool:
+    """Whether the catalog marks the model as realtime-streaming capable.
+
+    Models without WebSocket support (ElevenLabs eleven_v3) synthesize over
+    REST instead. Unknown or unset models keep the streaming path (legacy
+    behavior; validation gates real configurations).
+    """
+    if not provider or not model:
+        return True
+    row = session.execute(
+        select(ProviderModel.streaming).where(
+            ProviderModel.capability == kind,
+            ProviderModel.provider_code == provider,
+            ProviderModel.code == model,
+            ProviderModel.is_deleted.is_(False),
+        )
+    ).scalar_one_or_none()
+    return True if row is None else bool(row)
 
 
 def _tenant_profile(session, voice: str | None, tenant_id: str | None):
@@ -239,7 +269,13 @@ class ResolvedBotConfig:
     stt: dict = field(default_factory=dict)
     tts: dict = field(default_factory=dict)
     llm: dict = field(default_factory=dict)
+    # Delivery tuning (voice_bot_settings): canonical speaking speed, sentence
+    # pause and the 0–100 empathy/energy levels. Cached snapshots written
+    # before these fields existed resolve to the dataclass defaults.
     speed: float = 1.0
+    pause_ms: int = 350
+    empathy: int = 50
+    energy: int = 50
     kb_ids: list[str] = field(default_factory=list)
     intents: list[dict] = field(default_factory=list)
     silence_timeout: int = 12
@@ -430,6 +466,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             "voice_name": _voice_display_name(session, default_voice_value, bot.tenant_id),
             "settings": (vbs.tts_settings if vbs else None) or {},
             "api_key_reference": _secret_ref_for(session, "tts", tts_provider),
+            # Realtime-capability of the selected model (catalog-driven): the
+            # runtime picks the WebSocket router or the segmented REST service.
+            "streaming": _model_streaming(session, "tts", tts_provider, tts_model),
         }
         tts_engine["language_map"] = _normalize_voice_map(session, vbs, tts_engine, bot.tenant_id)
         fallback = None
@@ -525,7 +564,10 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "settings": (vbs.llm_settings if vbs else None) or {},
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
             },
-            speed=vbs.speed if vbs else 1.0,
+            speed=clamp_speed(vbs.speed if vbs else None),
+            pause_ms=_clamp_int(vbs.pause_ms if vbs else None, 0, 5000, 350),
+            empathy=clamp_level(vbs.empathy if vbs else None),
+            energy=clamp_level(vbs.energy if vbs else None),
             kb_ids=list(kb_rows),
             intents=intents,
             silence_timeout=settings.default_silence_timeout,

@@ -225,6 +225,8 @@ export const testProviderConnection = (body: {
 }): Promise<ProviderTestResult> => http.post("/providers/test", body);
 export const generateTtsPreview = (body: {
   provider: string; model: string; voice: string; language: string; text: string; params?: ProviderSettings;
+  /* Delivery tuning — applied server-side with the same mapping as live calls. */
+  speed?: number; pauseMs?: number; energy?: number;
 }): Promise<TtsPreviewResult> => http.post("/providers/tts-preview", body);
 
 /* ---------- Tenant voice cloning ---------- */

@@ -801,6 +801,16 @@ const PRICING_ROW_INR = {
   sortOrder: 0, usageCount: 0, name: "sarvam/saarika:v2.5 · audio_seconds",
 };
 
+/* OpenAI quotes text models per 1M tokens split by component — the shape the
+   seeded LLM prices actually use. */
+const PRICING_ROW_PER_1M = {
+  id: "ppr_3", providerCode: "openai", capability: "llm", modelCode: "gpt-4.1-mini",
+  component: "output_tokens", unit: "per_1m_tokens", unitPrice: "1.6000000000",
+  sellingPrice: null, currencyCode: "USD", effectiveFrom: "2026-07-31T00:00:00Z",
+  status: "active", sortOrder: 0, usageCount: 0,
+  name: "openai/gpt-4.1-mini · output_tokens",
+};
+
 const PRICING_PROVIDERS = [
   { id: "prov_1", code: "sarvam", name: "Sarvam AI", status: "active", kind: "tts" },
   { id: "prov_2", code: "elevenlabs", name: "ElevenLabs", status: "active", kind: "tts" },
@@ -814,7 +824,9 @@ describe("Provider pricing configuration", () => {
     installDefaultMocks();
     listMaster.mockImplementation((mtype: string) => {
       if (mtype === "provider-pricing") {
-        return Promise.resolve(paged([PRICING_ROW, PRICING_ROW_INR]) as never);
+        return Promise.resolve(
+          paged([PRICING_ROW, PRICING_ROW_INR, PRICING_ROW_PER_1M]) as never,
+        );
       }
       if (mtype === "providers") return Promise.resolve(paged(PRICING_PROVIDERS) as never);
       if (mtype === "provider-models") {
@@ -831,7 +843,7 @@ describe("Provider pricing configuration", () => {
   async function openPricingTab(user: ReturnType<typeof userEvent.setup>) {
     render(<PlatformConfig />);
     await user.click(screen.getByText("Provider Pricing"));
-    await screen.findByText("openai");
+    await screen.findAllByText("openai");  // one row per priced component
   }
 
   it("renders human-readable units and the tenant price column", async () => {
@@ -844,6 +856,19 @@ describe("Provider pricing configuration", () => {
     expect(screen.queryByText("per_1k_tokens")).not.toBeInTheDocument();
     // INR per-hour row shows both the provider cost and the selling price.
     expect(screen.getAllByText("per hour")).toHaveLength(2);
+    // Split per-1M-token prices (the OpenAI shape) get their own label.
+    expect(screen.getByText("per 1M tokens")).toBeInTheDocument();
+    expect(screen.queryByText("per_1m_tokens")).not.toBeInTheDocument();
+  });
+
+  it("formats prices as money without dropping sub-cent precision", async () => {
+    const user = userEvent.setup();
+    await openPricingTab(user);
+    // 1.6 is a price, not a number: two decimals minimum.
+    expect(screen.getByText(/^\$1\.60$/)).toBeInTheDocument();
+    expect(screen.getByText(/^₹30\.00$/)).toBeInTheDocument();
+    // …but a rate finer than a cent is never rounded away.
+    expect(screen.getByText(/^\$0\.0006$/)).toBeInTheDocument();
   });
 
   it("adds a price through capability-driven provider/model selects", async () => {

@@ -37,6 +37,147 @@ class RouteDecision:
     action: str | None = None  # hangup | transfer | repeat | slower | ...
     intent: str | None = None
     considered_kb: bool = False
+    # Semantic signal of the utterance (see classify_user_signal) — attached
+    # to workflow decisions so the workflow layer can check whether the
+    # current node actually supports what the caller just said.
+    signal: str | None = None
+
+
+# ── user-signal classification ──────────────────────────────────────────────
+# Context-free semantic classification of a caller utterance (or of a
+# workflow edge-label token) into the conversation signals the workflow layer
+# reasons about. Hindi (Devanagari), Hinglish (Latin) and English are covered
+# by every pattern. ORDER MATTERS:
+#  - complaints about the conversation itself outrank everything (a caller
+#    saying "you are not listening" must never be matched as a refusal),
+#  - negated commitments ("nahi karunga") must be seen by hardship/refusal
+#    BEFORE the positive payment patterns can match their verb.
+#
+# NOTE: Python's \b misfires after Devanagari matra-final words — Devanagari
+# alternates stay outside \b groups (same convention as detect_hangup above).
+
+_SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # The caller says the bot is not listening / keeps repeating itself.
+    ("complaint", re.compile(
+        r"(?:sun|सुन)\w*\s+(?:(?:hi|ही)\s+)?(?:nahi|nahin|नहीं|नही)"
+        r"|(?:nahi|nahin|नहीं|नही)\s+(?:sun|सुन)"
+        r"|not listening|listen nahi|(?:samajh|समझ)\w*\s+(?:hi\s+)?"
+        r"(?:nahi|nahin|नहीं|नही)\s+(?:rahe|rahi|rhe|rhi|रहे|रही)"
+        r"|not understanding me|(?:wahi|वही|same)\s+(?:baat|बात)"
+        r"|baar baar|बार बार|(?:repeat|रिपीट)\s+(?:kar|कर|ho|हो)",
+        re.I,
+    )),
+    # The caller did not understand the bot.
+    ("clarify", re.compile(
+        r"(?:samajh|समझ)(?:\s+(?:mein|में))?\s+(?:nahi|nahin|नहीं|नही)\s+"
+        r"(?:aaya|aayi|आया|आयी|आई)"
+        r"|matlab kya|kya matlab|kya (?:kaha|bola)|मतलब क्या|क्या मतलब"
+        r"|क्या (?:कहा|बोला)|didn'?t (?:under)?stand|did not understand",
+        re.I,
+    )),
+    # Claims the payment was already made.
+    ("already_paid", re.compile(
+        r"already paid"
+        r"|(?:payment|पेमेंट|paisa|paise|पैसा|पैसे|amount)\W+(?:\w+\W+)?"
+        r"(?:kar (?:di|diya|chuka|chuki)|ho (?:gaya|gayi|chuka|chuki)|"
+        r"kat (?:gaya|gayi)|bhar (?:diya|di)|कर (?:दी|दिया|चुका|चुकी)|"
+        r"हो (?:गया|गई|चुका|चुकी)|कट (?:गया|गई)|भर (?:दिया|दी))"
+        r"|^\W*(?:paid|kar (?:di|diya|chuka|chuki)|ho (?:chuki|chuka|gaya|gayi)|"
+        r"kat (?:gaya|gayi)|कर (?:दी|दिया|चुका|चुकी)|हो (?:चुकी|चुका|गया|गई)|"
+        r"कट (?:गया|गई))\W*$",
+        re.I,
+    )),
+    # Wrong person / not my loan.
+    ("wrong_person", re.compile(
+        r"galat number|wrong number|main (?:woh|wo|vo) nahi|koi aur"
+        r"|mera loan nahi|loan (?:liya hi nahi|nahi liya)|is naam"
+        r"|गलत नंबर|मैं (?:वो|वह) नहीं|कोई और|मेरा लोन नहीं|इस नाम",
+        re.I,
+    )),
+    # Wants a human.
+    ("agent_request", re.compile(
+        r"\b(?:agent|customer care|supervisor|manager|human|representative)\b"
+        r"|insaan se|aadmi se|एजेंट|कस्टमर केयर|इंसान से|आदमी से|सुपरवाइज़र|मैनेजर",
+        re.I,
+    )),
+    # Financial / medical hardship — cannot pay.
+    ("hardship", re.compile(
+        r"(?:paisa|paise|money|funds|पैसा|पैसे)\s*(?:hi\s+|ही\s+)?"
+        r"(?:bhi\s+|भी\s+)?(?:nahi|nahin|नहीं|नही)"
+        r"|no money|can ?not (?:pay|afford)|can'?t (?:pay|afford)"
+        r"|afford nahi|(?:payment|पेमेंट|pay|पे|bhugtan|भुगतान)\s+"
+        r"(?:nahi|nahin|नहीं|नही)\s+(?:kar|कर|de|दे|ho|हो)"
+        r"|(?:nahi|nahin|नहीं|नही)\s+(?:de|दे|bhar|भर)\s+"
+        r"(?:sakta|sakti|paunga|paungi|sakenge|सकता|सकती|पाऊंगा|पाऊँगा|पाऊंगी)"
+        r"|financial (?:problem|difficulty|issue)|आर्थिक|वित्तीय"
+        r"|paise ki (?:dikkat|kami|tangi)|पैसों? की (?:दिक्कत|कमी|तंगी)"
+        r"|medical emergency|hospital|bimaar|bimar|beemar|ilaaj|ilaj"
+        r"|बीमार|बिमार|अस्पताल|इलाज|मेडिकल"
+        r"|(?:naukri|job|नौकरी)\s*(?:nahi|nahin|chali gayi|chhut|khatam|नहीं|चली गई|छूट)"
+        r"|(?:salary|सैलरी|pagar|पगार|tankhwah|तनख्वाह)\s*(?:nahi|nahin|नहीं|नही)"
+        r"|berozgar|बेरोज़गार|बेरोजगार|majboori|majburi|मजबूरी|मज़बूरी",
+        re.I,
+    )),
+    # Busy now / call me later.
+    ("callback", re.compile(
+        r"call ?back|baad (?:mein|me|में)|बाद में"
+        r"|(?:kal|parso|कल|परसों)\s+(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
+        r"|\bbusy\b|meeting|vyast|व्यस्त|मीटिंग|gaadi chala|गाड़ी चला|driv(?:e|ing)"
+        r"|(?:baat|बात)\s+(?:nahi|nahin|नहीं|नही)\s+kar\s+(?:sakta|sakti|सकता|सकती)"
+        r"|time chahiye|samay chahiye|समय चाहिए|टाइम चाहिए|more time"
+        r"|(?:agle|अगले)\s+(?:hafte|week|mahine|हफ़्ते|हफ्ते|महीने)",
+        re.I,
+    )),
+    # A question about amounts / process / consequences.
+    ("question", re.compile(
+        r"kitn[aei]\w*|कितन[ाेी]?"
+        r"|^\s*(?:kya|kab|kaise|kyun|kyon|kahan|क्या|कब|कैसे|क्यों|कहाँ|कहां)\b"
+        r"|\?\s*$",
+        re.I,
+    )),
+    # Refusal — negated commitment or a bare "no".
+    ("refusal", re.compile(
+        r"(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|"
+        r"करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)"
+        r"|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)"
+        r"|^\W*(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*"
+        r"(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)"
+        r"(?:\s*(?:nahi|nahin|नहीं|नही|ji|जी))?\W*$",
+        re.I,
+    )),
+    # Positive commitment to pay (verbs, not the bare noun "payment").
+    ("payment_intent", re.compile(
+        r"(?:payment|पेमेंट|pay|पे|bhugtan|भुगतान|paisa|paise|पैसा|पैसे|amount)\s+"
+        r"(?:\w+\s+)?(?:kar|कर|bhar|भर)\w*"
+        r"|(?:kar|कर)\s*(?:dunga|dungi|deta|deti|दूंगा|दूंगी|देता|देती)"
+        r"|karunga|karungi|करूंगा|करूंगी"
+        r"|\b(?:upi|bhim|paytm|g ?pay|google pay|phone ?pe|debit|card|atm)\b"
+        r"|यूपीआई|भीम|पेटीएम|फोन ?पे|गूगल ?पे|डेबिट|कार्ड|एटीएम"
+        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार",
+        re.I,
+    )),
+    # A bare confirmation ("haan", "theek hai") — meaningful only in context.
+    ("affirm", re.compile(
+        r"^\W*(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?|"
+        r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
+        r"हाँ|हां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?)\W*$",
+        re.I,
+    )),
+]
+
+
+def classify_user_signal(text: str) -> str | None:
+    """Semantic signal of an utterance: hardship, refusal, complaint,
+    clarify, callback, payment_intent, already_paid, wrong_person,
+    agent_request, question, affirm — or None. Language-agnostic across
+    Hindi/Hinglish/English; deliberately conservative (None over a guess)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    for name, pattern in _SIGNAL_PATTERNS:
+        if pattern.search(stripped):
+            return name
+    return None
 
 
 _SMALLTALK = re.compile(
@@ -178,7 +319,8 @@ class TurnRouter:
                         kind=RouteKind.CALL_CONTROL, action=action, reason="call_control_in_workflow"
                     )
             return RouteDecision(
-                kind=RouteKind.WORKFLOW, reason=f"active_workflow:{active_workflow}"
+                kind=RouteKind.WORKFLOW, reason=f"active_workflow:{active_workflow}",
+                signal=classify_user_signal(stripped),
             )
 
         # 2. Call control.
@@ -192,17 +334,17 @@ class TurnRouter:
         if _HANDOFF.search(stripped) and re.search(r"\b(want|need|give|get)\b", stripped, re.I):
             return RouteDecision(kind=RouteKind.HANDOFF, action="transfer", reason="handoff_phrase")
 
-        # 3. Smalltalk never hits the knowledge base.
-        if _SMALLTALK.match(stripped):
-            return RouteDecision(kind=RouteKind.CHAT, reason="smalltalk", considered_kb=True)
-
-        # 4. Configured intents (sample keyword voting).
+        # 3. Configured intents (sample keyword voting). This must precede the
+        # generic smalltalk shortcut: when a bot explicitly configures "yes"
+        # or "haan" as its opening confirmation, that answer must start the
+        # workflow instead of being sent to the LLM as casual smalltalk.
         intent = self._match_intent(stripped)
         if intent is not None:
             name, route, confidence = intent
             if route and route.startswith("workflow:"):
                 return RouteDecision(kind=RouteKind.WORKFLOW, intent=name, confidence=confidence,
-                                     action=route.split(":", 1)[1], reason="intent_workflow")
+                                     action=route.split(":", 1)[1], reason="intent_workflow",
+                                     signal=classify_user_signal(stripped))
             if route and route.startswith("tool:"):
                 return RouteDecision(kind=RouteKind.TOOL, intent=name, confidence=confidence,
                                      action=route.split(":", 1)[1], reason="intent_tool")
@@ -223,6 +365,10 @@ class TurnRouter:
                                      reason="intent_hangup")
             return RouteDecision(kind=RouteKind.INTENT, intent=name, confidence=confidence,
                                  reason="configured_intent")
+
+        # 4. Unconfigured smalltalk never hits the knowledge base.
+        if _SMALLTALK.match(stripped):
+            return RouteDecision(kind=RouteKind.CHAT, reason="smalltalk", considered_kb=True)
 
         # 5. Knowledge decision — question-shaped + domain terms + KBs exist.
         if self._has_kbs:

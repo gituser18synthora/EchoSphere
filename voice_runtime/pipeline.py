@@ -21,6 +21,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
@@ -32,11 +33,12 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError
 from shared.providers.factory import get_llm_provider, get_stt_provider, get_tts_provider
+from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
-from voice_runtime.recording import SessionRecorder
+from voice_runtime.recording import CallRecordingWriter, SessionRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ logger = logging.getLogger(__name__)
 # final transcript overlaps the policy wait) + user_speech_timeout (the window
 # in which the caller may resume after a pause). The brain only runs the LLM
 # once the turn closes, so the effective endpoint a caller experiences is
-# stop_secs + user_speech_timeout of silence (~1 s with the defaults).
+# stop_secs + user_speech_timeout of silence (~1.4 s in the browser).
 #
 # Telephony audio is quieter and band-limited (8 kHz PSTN), so its VAD
 # thresholds are more permissive — with the browser defaults, short low-energy
@@ -56,10 +58,11 @@ logger = logging.getLogger(__name__)
 TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
     "browser": {
         "confidence": 0.7,
-        "start_secs": 0.2,
+        "start_secs": 0.3,
         "stop_secs": 0.2,
         "min_volume": 0.6,
-        "user_speech_timeout": 0.8,
+        "user_speech_timeout": 1.2,
+        "finalize_grace": 0.3,
     },
     "telephony": {
         "confidence": 0.6,
@@ -67,6 +70,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "stop_secs": 0.2,
         "min_volume": 0.4,
         "user_speech_timeout": 0.8,
+        "finalize_grace": 0.3,
     },
 }
 
@@ -78,6 +82,10 @@ _TURN_BOUNDS: dict[str, tuple[float, float]] = {
     "stop_secs": (0.1, 2.0),
     "min_volume": (0.0, 1.0),
     "user_speech_timeout": (0.2, 3.0),
+    # Post-turn-close wait for straggler STT finals before the LLM runs (the
+    # brain's end-of-turn debounce) — bounded so a typo can't add seconds of
+    # response latency or disable fragment merging entirely.
+    "finalize_grace": (0.0, 1.5),
 }
 
 
@@ -130,8 +138,13 @@ def _sarvam_stream_encodings() -> set[str]:
     return {"audio/wav"}
 
 
-def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
-                      recorder: SessionRecorder | None = None):
+def build_stt_service(
+    config: ResolvedBotConfig,
+    *,
+    sample_rate: int = 16000,
+    recorder: SessionRecorder | None = None,
+    use_provider_vad: bool | None = None,
+):
     """STT service from bot config: Sarvam realtime WS or segmented fallback."""
     stt_conf = config.stt or {}
     provider = stt_conf.get("provider") or "sarvam"
@@ -139,6 +152,7 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
     if provider == "sarvam":
         # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK).
         from pipecat.services.sarvam.stt import SarvamSTTService
+        from pipecat.transcriptions.language import Language
 
         api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
         if not api_key:
@@ -148,13 +162,43 @@ def build_stt_service(config: ResolvedBotConfig, *, sample_rate: int = 16000,
             )
         settings_kwargs = stt_conf.get("settings") or {}
         model = stt_conf.get("model") or "saaras:v3"
-        language = stt_conf.get("language") or None  # None → auto-detect ("unknown")
+        language_code = stt_conf.get("language") or None
+        language = None
+        if language_code:
+            try:
+                language = Language(language_code)
+            except ValueError:
+                logger.warning(
+                    "sarvam-stt: unsupported configured language %r; using auto-detect",
+                    language_code,
+                )
         mode = settings_kwargs.get("mode")
+        provider_vad = settings_kwargs.get("vad_signals", False)
+        if use_provider_vad is not None:
+            provider_vad = use_provider_vad
+        forwarded_setting_names = (
+            "positive_speech_threshold",
+            "negative_speech_threshold",
+            "min_speech_frames",
+            "first_turn_min_speech_frames",
+            "negative_frames_count",
+            "negative_frames_window",
+            "start_speech_volume_threshold",
+            "interrupt_min_speech_frames",
+            "pre_speech_pad_frames",
+            "num_initial_ignored_frames",
+        )
+        forwarded_settings = {
+            key: settings_kwargs[key]
+            for key in forwarded_setting_names
+            if key in settings_kwargs and settings_kwargs[key] is not None
+        }
         service_settings = SarvamSTTService.Settings(
             model=model,
             language=language,
-            vad_signals=settings_kwargs.get("vad_signals", False) or None,
-            high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity") or None,
+            vad_signals=provider_vad,
+            high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity"),
+            **forwarded_settings,
         )
         codec = settings_kwargs.get("input_encoding", "wav")
         if codec not in ("wav", "pcm_s16le"):
@@ -203,15 +247,32 @@ def build_tts_service(
     tts_conf = config.tts or {}
     provider = tts_conf.get("provider") or "sarvam"
 
-    if is_streaming_tts_provider(provider):
+    # The catalog marks models without realtime WebSocket support (e.g.
+    # ElevenLabs eleven_v3) with streaming=False at config resolution; those
+    # synthesize segment-by-segment over REST like any non-streaming provider.
+    # Older cached snapshots without the flag keep the streaming path.
+    model_streams = tts_conf.get("streaming", True)
+    if is_streaming_tts_provider(provider) and model_streams:
         return StreamingTTSRouter(
             tts_config=tts_conf,
             language=config.language,
             speed=config.speed,
+            pause_ms=config.pause_ms,
+            energy=config.energy,
             sample_rate=sample_rate,
             recorder=recorder,
         )
 
+    # Delivery tuning for the segmented REST path: canonical speed overrides
+    # legacy pace/speed params and Energy maps onto documented model controls
+    # (same shared helper as the streaming router and previews).
+    extra = apply_delivery_params(
+        provider,
+        tts_conf.get("model") or "",
+        {**(tts_conf.get("extra") or {}), **(tts_conf.get("settings") or {})},
+        speed=config.speed,
+        energy=config.energy,
+    )
     tts_provider = get_tts_provider(
         ProviderConfig(
             provider=provider,
@@ -219,7 +280,7 @@ def build_tts_service(
             voice=tts_conf.get("voice", ""),
             language=config.language,
             api_key_reference=tts_conf.get("api_key_reference", ""),
-            extra=tts_conf.get("extra", {}),
+            extra=extra,
         )
     )
     return EchoTTSService(
@@ -227,6 +288,7 @@ def build_tts_service(
         voice=tts_conf.get("voice") or None,
         language=config.language,
         speed=config.speed,
+        pause_ms=config.pause_ms,
         sample_rate=sample_rate,
         recorder=recorder,
         model=tts_conf.get("model") or "",
@@ -264,10 +326,19 @@ def build_voice_pipeline(
     transport_kind: str = "browser",
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
-    stt = build_stt_service(config, sample_rate=stt_sample_rate, recorder=recorder)
+    # Local Silero owns speech boundaries in the normal pipeline. Enabling
+    # Sarvam server VAD at the same time produces duplicate start/stop frames;
+    # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
+    stt = build_stt_service(
+        config,
+        sample_rate=stt_sample_rate,
+        recorder=recorder,
+        use_provider_vad=not use_vad,
+    )
     tts = build_tts_service(config, recorder=recorder, sample_rate=tts_sample_rate)
     llm_provider = build_llm_provider(config)
 
+    turn = resolve_turn_detection(config, transport_kind)
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
@@ -276,9 +347,8 @@ def build_voice_pipeline(
         workflow_engine=workflow_engine,
         client_info=client_info,
         call_context=call_context,
+        finalize_grace=turn["finalize_grace"],
     )
-
-    turn = resolve_turn_detection(config, transport_kind)
     processors = [transport.input()]
     if use_vad:
         processors.append(
@@ -317,6 +387,44 @@ def build_voice_pipeline(
         )
     )
     processors += [brain, tts, transport.output()]
+
+    if get_settings().voice_call_recording_enabled:
+        # Sits after transport.output() so it hears exactly what was played.
+        # Stereo WAV: caller on the left channel, bot on the right. buffer_size
+        # is compared against the PER-TRACK (mono) buffers — this flushes
+        # roughly every 10s of call time so long calls never pile up in memory.
+        audiobuffer = AudioBufferProcessor(
+            sample_rate=stt_sample_rate,
+            num_channels=2,
+            buffer_size=stt_sample_rate * 2 * 10,
+            auto_start_recording=True,
+        )
+        recording_writer = CallRecordingWriter(recorder)
+        recording_writer.audiobuffer = audiobuffer
+        # The recorder drives the final flush at call end (writer.close) —
+        # teardown does not reliably deliver Cancel/End frames to processors
+        # sitting after the output transport.
+        recorder.recording_writer = recording_writer
+
+        @audiobuffer.event_handler("on_audio_data")
+        async def _on_audio_data(_processor, audio: bytes, sample_rate: int, num_channels: int):
+            await recording_writer.append(audio, sample_rate, num_channels)
+
+        @audiobuffer.event_handler("on_recording_stopped")
+        async def _on_recording_stopped(_processor):
+            await recording_writer.finalize()
+
+        # Pipecat 1.5 runs event handlers as detached tasks by default; pin
+        # these two to synchronous dispatch so stop_recording() awaits the
+        # final audio write before the recorder wraps the WAV. Guarded: if the
+        # internal shape changes, the writer's lock still keeps writes ordered
+        # (worst case the unflushed tail is dropped, never a corrupt file).
+        for _event in ("on_audio_data", "on_recording_stopped"):
+            _entry = getattr(audiobuffer, "_event_handlers", {}).get(_event)
+            if _entry is not None and hasattr(_entry, "is_sync"):
+                _entry.is_sync = True
+
+        processors.append(audiobuffer)
 
     worker = PipelineWorker(
         Pipeline(processors),

@@ -21,6 +21,7 @@ from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import ApiConnection, EntityDef, Intent, User, VoiceBot, Workflow
+from shared.bot_config import invalidate_bot_config_sync
 from shared.orchestration.entity_extractor import extract_entities, extract_entity
 from backend.serializers import serialize_entity, serialize_intent
 
@@ -182,6 +183,7 @@ def create_intent(
         new_value={"name": row.name, "code": code}, request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(serialize_intent(row))
 
 
@@ -280,6 +282,7 @@ def update_intent(
         request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok(serialize_intent(row))
 
 
@@ -335,6 +338,7 @@ def delete_intent(
         target_label=row.name, tenant_id=row.tenant_id, request=request,
     )
     db.commit()
+    invalidate_bot_config_sync(row.tenant_id, row.bot_id)
     return ok({"archived": True, "id": row.id})
 
 

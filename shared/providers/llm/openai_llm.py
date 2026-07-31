@@ -18,6 +18,38 @@ from shared.providers.base import (
 )
 
 
+def _is_reasoning_chat_model(model: str) -> bool:
+    """Models whose Chat Completions contract uses reasoning-era controls."""
+    normalized = (model or "").lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _chat_generation_params(
+    model: str, *, temperature: float, max_tokens: int
+) -> dict:
+    """Build model-compatible Chat Completions generation parameters.
+
+    GPT-5/reasoning models reject the legacy ``max_tokens`` field and
+    non-default sampling temperatures. The original GPT-5 family supports
+    ``minimal`` reasoning, which is the right latency profile for live voice.
+    Later GPT-5 generations are left at their model default because their
+    accepted effort values differ by release.
+    """
+    if not _is_reasoning_chat_model(model):
+        return {"temperature": temperature, "max_tokens": max_tokens}
+
+    params: dict = {"max_completion_tokens": max_tokens}
+    original_gpt5 = (
+        model == "gpt-5"
+        or model.startswith("gpt-5-2025")
+        or model.startswith("gpt-5-mini")
+        or model.startswith("gpt-5-nano")
+    )
+    if original_gpt5:
+        params["reasoning_effort"] = "minimal"
+    return params
+
+
 class OpenAILLM(LLMProvider):
     name = "openai-llm"
 
@@ -50,12 +82,15 @@ class OpenAILLM(LLMProvider):
         kwargs: dict = {}
         if tools:
             kwargs["tools"] = tools
+        kwargs.update(_chat_generation_params(
+            self._model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ))
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=self._build_messages(messages, system),
-                temperature=temperature,
-                max_tokens=max_tokens,
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001
@@ -88,16 +123,22 @@ class OpenAILLM(LLMProvider):
         max_tokens: int = 512,
     ) -> AsyncIterator[str]:
         self.last_stream_usage = None
+        kwargs = _chat_generation_params(
+            self._model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if tools:
+            kwargs["tools"] = tools
         try:
             stream = await self._client.chat.completions.create(
                 model=self._model,
                 messages=self._build_messages(messages, system),
-                temperature=temperature,
-                max_tokens=max_tokens,
                 stream=True,
                 # Final chunk carries provider-reported token usage — the
                 # billing source of truth for the streaming voice path.
                 stream_options={"include_usage": True},
+                **kwargs,
             )
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:

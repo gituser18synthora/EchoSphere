@@ -57,13 +57,18 @@ class _RecorderStub:
         return [kind for kind, _ in self.events]
 
 
+GRACE = 0.05  # fast end-of-turn debounce for tests
+
+
 def make_brain(language="hi-IN", languages=("hi-IN",)) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language=language, languages=list(languages),
         stt={"provider": "sarvam"}, system_prompt="You are Test.",
     )
-    brain = ConversationBrain(config=config, llm=None, recorder=_RecorderStub())
+    brain = ConversationBrain(
+        config=config, llm=None, recorder=_RecorderStub(), finalize_grace=GRACE
+    )
     brain._pushed = []
     brain._notified = []
 
@@ -118,6 +123,12 @@ async def settle():
         await asyncio.sleep(0)
 
 
+async def settle_turn():
+    """Let the end-of-turn debounce elapse and the turn task start."""
+    await asyncio.sleep(GRACE * 2)
+    await settle()
+
+
 class TestTurnGating:
     async def test_segment_during_open_turn_does_not_trigger_llm(self):
         brain = make_brain()
@@ -140,28 +151,32 @@ class TestTurnGating:
         assert handled == []
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await settle()
+        assert handled == []  # debounce still waiting for straggler finals
+        await settle_turn()
         assert handled == ["नहीं, मेरे पास अभी पैसा नहीं है"]
 
-    async def test_transcript_without_open_turn_runs_immediately(self):
-        # First-response latency: a quiet "हाँ" the VAD missed must not wait
-        # for anything — the caller is already silent.
+    async def test_transcript_without_open_turn_runs_after_grace(self):
+        # A quiet "हाँ" the VAD missed runs after only the short debounce —
+        # the caller is already silent, no turn-close signal will come.
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await brain.process_frame(transcript("हाँ बोलिए"), FrameDirection.DOWNSTREAM)
         await settle()
+        assert handled == []
+        await settle_turn()
         assert handled == ["हाँ बोलिए"]
 
-    async def test_late_final_after_turn_close_runs_immediately(self):
+    async def test_late_final_after_turn_close_runs_after_grace(self):
         # STT slower than the turn policy: turn closes with an empty buffer,
-        # the transcript lands moments later and runs without further delay.
+        # the transcript lands moments later and runs after the debounce.
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await settle()
+        await settle_turn()
         assert handled == []
         await brain.process_frame(transcript("हाँ ठीक है"), FrameDirection.DOWNSTREAM)
-        await settle()
+        await settle_turn()
         assert handled == ["हाँ ठीक है"]
 
     async def test_empty_turn_produces_nothing(self):
@@ -250,6 +265,7 @@ class TestHangup:
         brain = make_brain()
         handled, _ = stub_turn_handler(brain)
         await self.hangup_via(brain, "फोन मत काटो, मैं बात करना चाहता हूं")
+        await settle_turn()
         assert brain._closing is False
         assert handled  # processed as a normal turn (no open VAD turn)
 
@@ -340,10 +356,13 @@ class TestTurnDetectionConfig:
     def test_endpoint_tolerates_normal_pauses(self):
         # The silence a caller gets before the bot takes the turn is
         # stop_secs + user_speech_timeout — it must comfortably exceed the
-        # ~0.2 s VAD flush interval that produces per-segment STT finals.
+        # ~0.2 s VAD flush interval that produces per-segment STT finals. The
+        # browser needs extra room for natural conversational pauses.
         for kind in ("browser", "telephony"):
             turn = resolve_turn_detection(self._config(), kind)
             assert turn["stop_secs"] + turn["user_speech_timeout"] >= 0.8
+        browser = resolve_turn_detection(self._config(), "browser")
+        assert browser["stop_secs"] + browser["user_speech_timeout"] >= 1.4
 
     def test_bot_overrides_apply(self):
         turn = resolve_turn_detection(

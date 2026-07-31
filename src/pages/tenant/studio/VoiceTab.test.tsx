@@ -69,10 +69,36 @@ function installDefaultMocks(settings: Record<string, unknown> = SETTINGS) {
   vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
     Promise.resolve(
       provider === "sarvam" ? [
-        { code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true },
-        { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false },
+        {
+          code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true, capability: "tts", streaming: true,
+          paramsSchema: {
+            pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
+            min_buffer_size: { type: "integer", min: 10, max: 500, default: 40, label: "Min buffer size" },
+          },
+        },
+        { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false, capability: "tts", streaming: true, paramsSchema: {} },
       ] : provider === "elevenlabs" ? [
-        { code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true },
+        {
+          code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true,
+          capability: "tts", streaming: true,
+          description: "Ultra-low-latency model for realtime conversation.",
+          paramsSchema: {
+            stability: { type: "number", min: 0, max: 1, step: 0.05, default: 0, label: "Stability" },
+            speed: { type: "number", min: 0.7, max: 1.2, step: 0.05, default: 1, label: "Speed" },
+          },
+        },
+        {
+          code: "eleven_v3", displayName: "Eleven v3 (expressive)", isDefault: false,
+          capability: "tts", streaming: false,
+          description: "Most expressive ElevenLabs model (alpha).",
+          paramsSchema: {
+            stability: {
+              type: "enum", values: [0, 0.5, 1], default: 0.5, label: "Stability",
+              labels: { "0": "Creative", "0.5": "Natural", "1": "Robust" },
+            },
+            similarity_boost: { type: "number", min: 0, max: 1, step: 0.05, default: 1, label: "Similarity boost" },
+          },
+        },
       ] : [],
     )) as never);
   vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
@@ -81,7 +107,7 @@ function installDefaultMocks(settings: Record<string, unknown> = SETTINGS) {
         voice("vp-shubh", "Shubh", ["en-IN", "hi-IN"], ["bulbul:v3", "bulbul:v2"]),
         voice("vp-anushka", "Anushka", ["hi-IN"], ["bulbul:v3"]),
       ] : provider === "elevenlabs" ? [
-        voice("vp-rachel", "Rachel", ["en-IN"], ["eleven_flash_v2_5"], "elevenlabs"),
+        voice("vp-rachel", "Rachel", ["en-IN"], ["eleven_flash_v2_5", "eleven_v3"], "elevenlabs"),
       ] : [],
     )) as never);
   vi.mocked(api.getModelLanguages).mockResolvedValue(
@@ -281,5 +307,170 @@ describe("VoiceTab — Per-language voices", () => {
     installDefaultMocks({ ...SETTINGS, languageVoiceMap: {} });
     render(<VoiceTab bot={{ ...BOT, languages: [] } as unknown as VoiceBot} />);
     await screen.findByText(/no languages yet/);
+  });
+});
+
+describe("VoiceTab — ElevenLabs model selection", () => {
+  const ELEVEN_SETTINGS = {
+    ...SETTINGS,
+    ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+    ttsSettings: { stability: 0, speed: 1.1 },
+    languageVoiceMap: { default: "en-IN" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installDefaultMocks(ELEVEN_SETTINGS);
+  });
+
+  const ttsModelSelect = () => screen.getByLabelText("TTS model") as HTMLSelectElement;
+
+  it("offers both ElevenLabs models in the default engine dropdown", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    const labels = within(ttsModelSelect()).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toContain("Eleven Flash v2.5 (default)");
+    expect(labels).toContain("Eleven v3 (expressive)");
+  });
+
+  it("selecting eleven_v3 swaps to its schema: discrete stability, no speed field", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    // Delivery tuning owns speed — the provider duplicate never renders on
+    // the bot page, even for models that support it (flash).
+    expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Stability")).toBeInTheDocument();
+
+    await user.selectOptions(ttsModelSelect(), ["eleven_v3"]);
+    expect(ttsModelSelect()).toHaveValue("eleven_v3");
+    // Unsupported params disappear; still-valid values are preserved.
+    await waitFor(() => expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument());
+    const stability = screen.getByLabelText("Stability") as HTMLSelectElement;
+    expect(stability.tagName).toBe("SELECT"); // enum, not a slider
+    const labels = within(stability).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toEqual(["Creative (0)", "Natural (0.5)", "Robust (1)"]);
+    // The saved flash stability value (0) is still valid on the v3 grid.
+    expect(stability).toHaveValue("0");
+    // The model description/capability hint is surfaced.
+    expect(screen.getByText(/Most expressive ElevenLabs model/)).toBeInTheDocument();
+    expect(screen.getByText(/No realtime streaming/)).toBeInTheDocument();
+  });
+
+  it("the model choice survives an edit round-trip (reset restores it)", async () => {
+    installDefaultMocks({ ...ELEVEN_SETTINGS, ttsModel: "eleven_v3", ttsSettings: { stability: 0.5 } });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_v3"));
+  });
+
+  it("fallback and per-language dropdowns offer only realtime-streaming models", async () => {
+    const user = userEvent.setup();
+    installDefaultMocks({
+      ...SETTINGS,
+      fallbackProvider: "elevenlabs", fallbackModel: "eleven_flash_v2_5", fallbackVoice: "vp-rachel",
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    const fallbackModel = await screen.findByLabelText("Fallback model");
+    await waitFor(() => expect(fallbackModel).toHaveValue("eleven_flash_v2_5"));
+    const fallbackLabels = within(fallbackModel).getAllByRole("option").map((o) => o.textContent);
+    expect(fallbackLabels).toContain("Eleven Flash v2.5 (default)");
+    expect(fallbackLabels).not.toContain("Eleven v3 (expressive)");
+
+    const hi = langRow("Hindi");
+    await user.selectOptions(within(hi).getByLabelText("Voice provider for hi-IN"), ["elevenlabs"]);
+    await waitFor(() => expect(within(hi).getByLabelText("Voice model for hi-IN")).toHaveValue("eleven_flash_v2_5"));
+    const rowLabels = within(within(hi).getByLabelText("Voice model for hi-IN"))
+      .getAllByRole("option").map((o) => o.textContent);
+    expect(rowLabels).not.toContain("Eleven v3 (expressive)");
+  });
+});
+
+describe("VoiceTab — Delivery tuning", () => {
+  class FakeAudio {
+    onended: (() => void) | null = null;
+    paused = true;
+    constructor(public src: string) {}
+    play() { this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("Audio", FakeAudio);
+    installDefaultMocks();
+  });
+
+  it("hides duplicate provider speed params but keeps other provider settings", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    // Sarvam bulbul:v3 schema ships a `pace` param — it must not render on
+    // the bot page; the technical min_buffer_size setting still does.
+    expect((await screen.findAllByLabelText("Min buffer size")).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Pace")).not.toBeInTheDocument();
+    // The one canonical speed control lives in Delivery tuning.
+    expect(screen.getByLabelText("Speaking speed")).toBeInTheDocument();
+    expect(screen.getByText(/single speed control/)).toBeInTheDocument();
+    expect(screen.getByText(/Silence inserted between assistant sentences/)).toBeInTheDocument();
+    expect(screen.getByText(/wording and acknowledgement/)).toBeInTheDocument();
+    expect(screen.getByText(/native voice support varies by provider/)).toBeInTheDocument();
+  });
+
+  it("saves delivery values and strips legacy speed from ttsSettings", async () => {
+    const user = userEvent.setup();
+    installDefaultMocks({
+      ...SETTINGS,
+      speed: 1.2, pauseMs: 500, empathy: 80, energy: 20,
+      ttsSettings: { pace: 0.7, min_buffer_size: 60 },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).toMatchObject({ speed: 1.2, pauseMs: 500, empathy: 80, energy: 20 });
+    // The legacy pace duplicate is gone; unrelated settings survive.
+    expect(payload.ttsSettings).toEqual({ min_buffer_size: 60 });
+  });
+
+  it("delivery sliders update the save payload", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    const pause = screen.getByLabelText("Pause between sentences") as HTMLInputElement;
+    // range inputs accept programmatic value change via fireEvent-style typing
+    await user.click(pause);
+    pause.stepUp(); // 350 → 400
+    pause.dispatchEvent(new Event("change", { bubbles: true }));
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.pauseMs).toBe(400);
+  });
+
+  it("preview sends the delivery tuning alongside the engine selection", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.generateTtsPreview).mockResolvedValue({
+      audioBase64: "AAAA", mimeType: "audio/wav", sampleRate: 16000,
+      ttfaMs: 12, totalMs: 40, provider: "sarvam", voice: "vp-shubh",
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    // The modal explains exactly what the preview can and cannot apply.
+    expect(within(dialog).getByText(/Applies your Delivery tuning/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/not this fixed text/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.generateTtsPreview).mock.calls[0][0]).toMatchObject({
+      provider: "sarvam", model: "bulbul:v3", voice: "vp-shubh",
+      speed: 1, pauseMs: 350, energy: 50,
+    });
   });
 });

@@ -128,11 +128,16 @@ async def test_full_flow(client, store, mock_embedder, knowledge_service, pg_cle
         # 16-17: greeting → KB skipped
         await worker.queue_frame(TranscriptionFrame("thank you", "caller", "t2"))
         await asyncio.sleep(0.5)
-        # 18-20: barge-in cancels active work (interrupt lands mid-retrieval —
-        # real pgvector retrieval takes tens of ms, so 20 ms in is in-flight)
+        # 18-20: barge-in cancels active work. Turn-taking debounces STT
+        # finals, so wait until the turn actually STARTS (its route_decision
+        # is recorded before retrieval), then interrupt while the pgvector
+        # retrieval (tens of ms) is still in flight.
         await worker.queue_frame(
             TranscriptionFrame("tell me about the renewal policy terms", "caller", "t3"))
-        await asyncio.sleep(0.02)
+        for _ in range(600):
+            await asyncio.sleep(0.002)
+            if sum(1 for e in recorder.events if e["kind"] == "route_decision") >= 3:
+                break
         await worker.queue_frame(InterruptionFrame())
         await asyncio.sleep(0.3)
         # 21-22: multi-step workflow with persisted state

@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { flagConversation, listConversations, simulateAction } from "@/services/api";
-import type { Conversation } from "@/types/domain";
-import { Button, Drawer, MenuButton, StatusChip, Tabs } from "@/components/ui";
+import { flagConversation, getConversation, listConversations, simulateAction } from "@/services/api";
+import { getToken } from "@/services/http";
+import { downloadFile } from "@/services/fileDownload";
+import type { Conversation, ConversationRecording } from "@/types/domain";
+import { Button, Drawer, EmptyState, ErrorState, MenuButton, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { ExportControls } from "@/components/ExportControls";
 import { Icon, type IconName } from "@/components/Icon";
@@ -141,8 +143,18 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
   const [transcriptBusy, setTranscriptBusy] = useState(false);
+  const convId = conv?.id ?? null;
+  // Transcript and recording live on the detail endpoint (Mongo-backed);
+  // list rows carry only the relational metadata.
+  const detailQ = useAsync<Conversation | null>(
+    async () => (convId ? getConversation(convId) : null),
+    [convId],
+  );
 
   if (!conv) return null;
+
+  const transcript = detailQ.data?.transcript ?? [];
+  const recording = detailQ.data?.recording ?? null;
 
   const qa = conv.qaScore ?? 0;
   const scorecard = [
@@ -215,19 +227,12 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
       }
     >
       <div className="col gap-16">
-        {/* Recording */}
-        <div className="row gap-10 card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10 }}>
-          <button className="btn-icon" style={{ background: "var(--brand-500)", color: "#fff", borderRadius: "50%" }}
-            aria-label="Play recording"
-            onClick={() => toast(flags.recordingPlayback ? "Playing…" : "Recording playback pending signed-URL backend (TODO_BACKEND #4)", "info")}>
-            <Icon name="play" size={13} />
-          </button>
-          <div className="grow col gap-4">
-            <div className="progress" style={{ height: 5 }}><div className="progress-fill" style={{ width: "0%" }} /></div>
-            <span className="t-micro t-num">0:00 / {fmtDur(conv.durationSec)} · recording {flags.recordingPlayback ? "ready" : "available after backend hookup"}</span>
-          </div>
-          <span className="tag t-num">${conv.costUsd.toFixed(2)}</span>
-        </div>
+        <RecordingRow
+          conversationId={conv.id}
+          costUsd={conv.costUsd}
+          recording={recording}
+          loading={detailQ.loading}
+        />
 
         {!conv.contained && conv.escalationReason && (
           <div className="callout callout-warning">
@@ -251,13 +256,31 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
 
         {tab === "transcript" && (
           <div className="col gap-10">
-            {conv.transcript.map((s) => (
+            {detailQ.loading && (
+              <div className="col gap-8" aria-label="Loading transcript">
+                {[46, 72, 38].map((w, i) => (
+                  <span key={i} className="skeleton" style={{ height: 34, width: `${w}%`, alignSelf: i % 2 ? "flex-end" : "flex-start", borderRadius: 10 }} />
+                ))}
+              </div>
+            )}
+            {!detailQ.loading && detailQ.error && (
+              <ErrorState message={detailQ.error} onRetry={detailQ.reload} />
+            )}
+            {!detailQ.loading && !detailQ.error && transcript.length === 0 && (
+              <EmptyState
+                icon="message"
+                title="No transcript captured"
+                body="This call ended without any recorded turns — nothing was transcribed."
+              />
+            )}
+            {!detailQ.loading && !detailQ.error && transcript.map((s) => (
               <div key={s.turn} className="col" style={{ alignItems: s.speaker === "user" ? "flex-end" : "flex-start", gap: 2 }}>
                 <div className={`transcript-bubble ${s.speaker}`}>{s.text}</div>
                 <span className="transcript-meta">
-                  {s.speaker === "bot"
-                    ? <>bot · {s.intent ? <>intent <code>{s.intent}</code> {(s.confidence ? `${(s.confidence * 100).toFixed(0)}%` : "")} · </> : null}{s.latencyMs}ms</>
-                    : "caller"}
+                  {s.speaker === "bot" ? "bot" : "caller"}
+                  {s.at && <> · {new Date(s.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}</>}
+                  {s.speaker === "bot" && (s.intent || s.route) && <> · <code>{s.intent ?? s.route}</code>{s.confidence ? ` ${(s.confidence * 100).toFixed(0)}%` : ""}</>}
+                  {s.speaker === "bot" && s.latencyMs != null && <> · {s.latencyMs}ms</>}
                 </span>
               </div>
             ))}
@@ -266,11 +289,15 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
 
         {tab === "trace" && (
           <div className="col gap-8">
-            {conv.transcript.filter((s) => s.speaker === "bot").map((s) => (
+            {detailQ.loading && <span className="t-micro">Loading trace…</span>}
+            {!detailQ.loading && !detailQ.error && transcript.filter((s) => s.speaker === "bot").length === 0 && (
+              <span className="t-micro">No bot turns to trace for this call.</span>
+            )}
+            {!detailQ.loading && !detailQ.error && transcript.filter((s) => s.speaker === "bot").map((s) => (
               <div key={s.turn} className="card-pad-sm col gap-6" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
                 <span className="t-micro t-strong">Turn {s.turn}</span>
                 <div className="row gap-16 wrap" style={{ fontSize: 12.5 }}>
-                  <span className="row gap-4"><Icon name="target" size={12} style={{ color: "var(--ink-3)" }} />{s.intent ? <><code>{s.intent}</code> {s.confidence ? `${(s.confidence * 100).toFixed(0)}%` : ""}</> : "—"}</span>
+                  <span className="row gap-4"><Icon name="target" size={12} style={{ color: "var(--ink-3)" }} />{s.intent || s.route ? <><code>{s.intent ?? s.route}</code> {s.confidence ? `${(s.confidence * 100).toFixed(0)}%` : ""}</> : "—"}</span>
                   <span className="row gap-4"><Icon name="book" size={12} style={{ color: "var(--ink-3)" }} />{s.chunksUsed?.length ? s.chunksUsed.join("; ") : "no retrieval"}</span>
                   <span className="row gap-4">
                     <Icon name="zap" size={12} style={{ color: "var(--ink-3)" }} />
@@ -314,5 +341,117 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
         )}
       </div>
     </Drawer>
+  );
+}
+
+/* ---------- call recording ---------- */
+
+function RecordingRow({ conversationId, costUsd, recording, loading }: {
+  conversationId: string;
+  costUsd: number;
+  recording: ConversationRecording | null;
+  loading: boolean;
+}) {
+  const { toast } = useApp();
+  const [audioState, setAudioState] = useState<"loading" | "ready" | "error">("loading");
+  const [audioError, setAudioError] = useState("");
+  const [src, setSrc] = useState<string | null>(null);
+  const [retrySeq, setRetrySeq] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+  const objectUrlRef = useRef<string | null>(null);
+
+  // <audio src> cannot carry the Authorization header, so the file is fetched
+  // with the JWT and played from an object URL (same auth path as exports).
+  useEffect(() => {
+    if (!recording) return;
+    let cancelled = false;
+    setAudioState("loading");
+    setAudioError("");
+    void (async () => {
+      try {
+        const headers: Record<string, string> = {};
+        const token = getToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const resp = await fetch(recording.url, { headers });
+        if (!resp.ok) {
+          throw new Error(resp.status === 404
+            ? "The recording file is no longer available."
+            : `Could not load the recording (HTTP ${resp.status}).`);
+        }
+        const contentType = resp.headers.get("content-type")?.toLowerCase() ?? "";
+        if (contentType.includes("json")) throw new Error("The server did not return audio.");
+        const blob = await resp.blob();
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        objectUrlRef.current = url;
+        setSrc(url);
+        setAudioState("ready");
+      } catch (e) {
+        if (!cancelled) {
+          setAudioState("error");
+          setAudioError(e instanceof Error ? e.message : "Could not load the recording.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+      setSrc(null);
+    };
+  }, [recording, recording?.url, retrySeq]);
+
+  const download = async () => {
+    if (!recording || downloading) return;
+    setDownloading(true);
+    try {
+      const filename = await downloadFile({
+        url: `${recording.url}?download=true`,
+        fallbackFilename: `echosphere-call-${conversationId}.wav`,
+        accept: recording.mimeType,
+        expectedContentTypes: ["audio/"],
+      });
+      toast(`Downloaded ${filename}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Recording download failed.", "error");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="row gap-10 card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10 }}>
+      <span className="icon-tile neutral" style={{ width: 30, height: 30, flexShrink: 0 }}>
+        <Icon name="volume" size={14} />
+      </span>
+      <div className="grow col gap-4" style={{ minWidth: 0 }}>
+        {loading && <span className="t-micro">Checking for a call recording…</span>}
+        {!loading && !recording && (
+          <span className="t-micro">No call recording is available for this conversation.</span>
+        )}
+        {!loading && recording && audioState === "loading" && (
+          <span className="t-micro">Loading recording · {fmtDur(Math.round(recording.durationSec))}…</span>
+        )}
+        {!loading && recording && audioState === "error" && (
+          <span className="row gap-8" style={{ flexWrap: "wrap" }}>
+            <span className="t-micro" style={{ color: "var(--status-critical)" }}>{audioError}</span>
+            <Button size="sm" variant="ghost" icon="refresh" onClick={() => setRetrySeq((s) => s + 1)}>Retry</Button>
+          </span>
+        )}
+        {!loading && recording && audioState === "ready" && src && (
+          // Native controls provide play/pause, seeking, elapsed/total time
+          // and volume; download stays an explicit authorized action.
+          <audio controls controlsList="nodownload" src={src} style={{ width: "100%", height: 36 }} aria-label="Call recording" />
+        )}
+      </div>
+      {!loading && recording && (
+        <Button size="sm" variant="ghost" icon="download" busy={downloading} onClick={() => void download()}>
+          Download
+        </Button>
+      )}
+      <span className="tag t-num" style={{ flexShrink: 0 }}>${costUsd.toFixed(2)}</span>
+    </div>
   );
 }

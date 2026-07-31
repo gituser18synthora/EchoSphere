@@ -126,8 +126,6 @@ def tenant_analytics(
     total_contained = int(_sum(daily, "contained"))
     total_escalations = int(_sum(daily, "escalations"))
     containment = round(total_contained / total_calls * 100, 1) if total_calls else 0.0
-    csat_values = [d["csat"] for d in daily.values() if d.get("csat")]
-    avg_csat = round(sum(csat_values) / len(csat_values), 1) if csat_values else 0.0
     ai_cost = _ai_cost_sum(daily)
     total_cost = ai_cost + _sum(daily, "telephony")
     cost_per_call = round(total_cost / total_calls, 3) if total_calls else 0.0
@@ -140,8 +138,9 @@ def tenant_analytics(
 
     # Sentiment / language / intents from conversation metadata in the window.
     conv_stmt = select(
+        ConversationSession.started_at,
         ConversationSession.sentiment, ConversationSession.language,
-        ConversationSession.intents,
+        ConversationSession.intents, ConversationSession.csat,
     ).where(
         ConversationSession.tenant_id == tid,
         ConversationSession.is_deleted.is_(False),
@@ -153,13 +152,27 @@ def tenant_analytics(
     sentiments: Counter = Counter()
     languages: Counter = Counter()
     intent_counts: Counter = Counter()
-    for sentiment, language, intents in db.execute(conv_stmt).all():
+    csat_sum_by_day: dict[date, int] = {}
+    csat_count_by_day: dict[date, int] = {}
+    csat_sum = 0
+    csat_count = 0
+    for started_at, sentiment, language, intents, csat in db.execute(conv_stmt).all():
         sentiments[sentiment] += 1
         if language:
             languages[language] += 1
         for name in intents or []:
             intent_counts[name] += 1
+        if csat is not None:
+            csat_sum += csat
+            csat_count += 1
+            csat_day = started_at.date()
+            csat_sum_by_day[csat_day] = csat_sum_by_day.get(csat_day, 0) + csat
+            csat_count_by_day[csat_day] = csat_count_by_day.get(csat_day, 0) + 1
     total_conv = sum(sentiments.values())
+    avg_csat = round(csat_sum / csat_count, 1) if csat_count else 0.0
+    daily_csat = {
+        day: total / csat_count_by_day[day] for day, total in csat_sum_by_day.items()
+    }
 
     def pct(n: int) -> int:
         return round(n / total_conv * 100) if total_conv else 0
@@ -191,7 +204,7 @@ def tenant_analytics(
                  _delta(total_escalations, prev_escalations),
                  [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
             _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
-                 [round((daily.get(d, {}).get("csat") or 0) * 10) for d in dates][-14:], "up-good"),
+                 [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
             _kpi("AI cost", f"${ai_cost:,.0f}", _delta(ai_cost, prev_ai_cost),
                  [round(daily.get(d, {}).get("llm", 0)) for d in dates][-14:], "down-good"),
             _kpi("Avg cost / call", f"${cost_per_call:.3f}", None,

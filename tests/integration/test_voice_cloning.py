@@ -83,9 +83,29 @@ def _cleanup_voices():
                 "DELETE FROM audit_logs WHERE entity_type = 'voice_profile' AND entity_id IN "
                 "(SELECT id FROM voice_profiles WHERE provider_voice_id LIKE :p OR name LIKE :p)"
             ), {"p": pattern})
+            # Child rows first — voice_clone_audio.voice_id FKs voice_profiles.
+            conn.execute(sa_text(
+                "DELETE FROM voice_clone_audio WHERE voice_id IN "
+                "(SELECT id FROM voice_profiles WHERE provider_voice_id LIKE :p OR name LIKE :p)"
+            ), {"p": pattern})
             conn.execute(sa_text(
                 "DELETE FROM voice_profiles WHERE provider_voice_id LIKE :p OR name LIKE :p"
             ), {"p": pattern})
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _clone_audio_tmp_dir(tmp_path_factory):
+    """Source-audio files land in a tmp dir, never in repo storage. Module
+    scope so it outranks the class-scoped clone fixtures that create rows."""
+    from shared.config import get_settings
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(
+        get_settings(), "voice_clone_audio_dir",
+        str(tmp_path_factory.mktemp("voice_clone_audio")), raising=False,
+    )
+    yield
+    mp.undo()
 
 
 def _wav_bytes(payload: bytes = b"\x00\x01" * 512) -> bytes:
@@ -626,6 +646,212 @@ class TestCloneProviderDispatch:
             assert "no cloning integration" in response.text.lower()
         finally:
             _set_provider_cloning("sarvam", previous)
+
+
+# ── source-audio retention & playback ───────────────────────────────────────
+
+
+def _real_wav_bytes(seconds: float, rate: int = 8000) -> bytes:
+    """A genuine PCM wav (probe-able duration), unlike _wav_bytes()."""
+    import io
+    import math
+    import struct
+    import wave as wave_mod
+
+    buf = io.BytesIO()
+    with wave_mod.open(buf, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        frames = int(rate * seconds)
+        handle.writeframes(b"".join(
+            struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / rate)))
+            for i in range(frames)
+        ))
+    return buf.getvalue()
+
+
+def _storage_root():
+    from pathlib import Path
+
+    from shared.config import get_settings
+
+    return Path(get_settings().voice_clone_audio_dir)
+
+
+class TestSourceAudioRetention:
+    """The audio a clone was built from is stored, listed, playable by the
+    owning tenant only, and removed again when the clone is deleted."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _mock_cloning_enabled(self):
+        previous = _set_provider_cloning("mock", True)
+        yield
+        _set_provider_cloning("mock", previous)
+
+    def _create(self, client, headers, *, name, files, samples_meta=None):
+        data = {"provider": "mock", "name": name}
+        if samples_meta is not None:
+            data["samplesMeta"] = samples_meta
+        response = client.post(
+            f"{API}/voice-clones", headers=headers, data=data, files=files,
+        )
+        assert response.status_code == 201, response.text
+        return _data(response)
+
+    def test_create_stores_source_audio_with_metadata(self, client, tenant_a_admin):
+        import json as json_mod
+
+        wav = _real_wav_bytes(6.0)
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Retained {_SUFFIX}-mockclone",
+            files=[("files", ("take-1.wav", wav, "audio/wav"))],
+            samples_meta=json_mod.dumps([{"sourceType": "live_recording", "durationSec": 6.4}]),
+        )
+        try:
+            sources = created["sourceAudio"]
+            assert len(sources) == 1
+            audio = sources[0]
+            assert audio["originalFilename"] == "take-1.wav"
+            assert audio["sourceType"] == "live_recording"
+            assert audio["mimeType"] == "audio/wav"
+            assert audio["sizeBytes"] == len(wav)
+            # Probed from the stored bytes — beats the client-declared 6.4.
+            assert audio["durationSec"] == pytest.approx(6.0, abs=0.2)
+            assert audio["status"] == "stored"
+            assert audio["provider"] == "mock"
+            assert audio["url"].endswith(f"/voice-clones/{created['id']}/audio/{audio['id']}")
+            stored_file = _storage_root() / TENANT_A / created["id"] / f"{audio['id']}.wav"
+            assert stored_file.is_file() and stored_file.stat().st_size == len(wav)
+            # clone_metadata mirrors the provenance for audit/history.
+            sample_meta = created["cloneMetadata"]["samples"][0]
+            assert sample_meta["sourceType"] == "live_recording"
+            assert sample_meta["audioId"] == audio["id"]
+        finally:
+            client.delete(f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin)
+
+    def test_playback_streams_stored_bytes_with_auth(
+        self, client, tenant_a_admin, tenant_user, tenant_b_admin, super_admin
+    ):
+        wav = _real_wav_bytes(5.5)
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Playable {_SUFFIX}-mockclone",
+            files=[("files", ("upload.wav", wav, "audio/wav"))],
+        )
+        audio = created["sourceAudio"][0]
+        url = f"{API}/voice-clones/{created['id']}/audio/{audio['id']}"
+        try:
+            played = client.get(url, headers=tenant_a_admin)
+            assert played.status_code == 200
+            assert played.headers["content-type"].startswith("audio/wav")
+            assert played.content == wav
+
+            # Any member of the owning tenant may listen (view permission).
+            assert client.get(url, headers=tenant_user).status_code == 200
+            # Super admins may inspect; other tenants get a 404, never a 403.
+            assert client.get(url, headers=super_admin).status_code == 200
+            assert client.get(url, headers=tenant_b_admin).status_code == 404
+            assert client.get(url).status_code == 401
+
+            download = client.get(f"{url}?download=true", headers=tenant_a_admin)
+            assert download.status_code == 200
+            assert f"voice-source-{audio['id']}.wav" in download.headers["content-disposition"]
+        finally:
+            client.delete(f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin)
+
+    def test_short_sample_rejected_and_nothing_persisted(self, client, tenant_a_admin):
+        def _files_snapshot():
+            root = _storage_root() / TENANT_A
+            return {p for p in root.glob("**/*") if p.is_file()} if root.exists() else set()
+
+        before = _files_snapshot()
+        response = client.post(
+            f"{API}/voice-clones", headers=tenant_a_admin,
+            data={"provider": "mock", "name": f"Short {_SUFFIX}-mockclone"},
+            files=[("files", ("blip.wav", _real_wav_bytes(2.0), "audio/wav"))],
+        )
+        assert response.status_code == 422
+        payload = response.json()
+        assert payload["errors"][0]["field"] == "files"
+        assert "at least 5 seconds" in payload["message"]
+        listed = _data(client.get(f"{API}/voice-clones", headers=tenant_a_admin))
+        assert f"Short {_SUFFIX}-mockclone" not in {v["name"] for v in listed}
+        # The rejected sample was cleaned up — no new files remain on disk.
+        assert _files_snapshot() == before
+
+    def test_unprobeable_recording_keeps_client_duration(self, client, tenant_a_admin):
+        # EBML magic + junk: passes upload validation, but neither ffprobe nor
+        # a remux can read it — the client-declared duration is kept.
+        webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 128
+        import json as json_mod
+
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Webm {_SUFFIX}-mockclone",
+            files=[("files", ("recording-99.webm", webm, "audio/webm"))],
+            samples_meta=json_mod.dumps([{"sourceType": "live_recording", "durationSec": 12.0}]),
+        )
+        try:
+            audio = created["sourceAudio"][0]
+            assert audio["durationSec"] == pytest.approx(12.0)
+            assert audio["sourceType"] == "live_recording"
+        finally:
+            client.delete(f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin)
+
+    def test_malformed_samples_meta_is_tolerated(self, client, tenant_a_admin):
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Meta {_SUFFIX}-mockclone",
+            files=[("files", ("s.wav", _real_wav_bytes(5.2), "audio/wav"))],
+            samples_meta="not-json-at-all",
+        )
+        try:
+            audio = created["sourceAudio"][0]
+            assert audio["sourceType"] == "file_upload"  # safe default
+        finally:
+            client.delete(f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin)
+
+    def test_legacy_clone_without_rows_reports_unavailable(self, client, tenant_a_admin):
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Legacy {_SUFFIX}-mockclone",
+            files=[("files", ("old.wav", _real_wav_bytes(5.1), "audio/wav"))],
+        )
+        audio_id = created["sourceAudio"][0]["id"]
+        # Simulate a clone from before source retention: rows hard-removed.
+        with get_engine().begin() as conn:
+            conn.execute(sa_text(
+                "DELETE FROM voice_clone_audio WHERE voice_id = :v"), {"v": created["id"]})
+        try:
+            fetched = _data(client.get(
+                f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin))
+            assert fetched["sourceAudio"] == []
+            assert client.get(
+                f"{API}/voice-clones/{created['id']}/audio/{audio_id}",
+                headers=tenant_a_admin,
+            ).status_code == 404
+        finally:
+            client.delete(f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin)
+
+    def test_delete_clone_removes_stored_files(self, client, tenant_a_admin):
+        created = self._create(
+            client, tenant_a_admin,
+            name=f"Purge {_SUFFIX}-mockclone",
+            files=[("files", ("gone.wav", _real_wav_bytes(5.3), "audio/wav"))],
+        )
+        audio = created["sourceAudio"][0]
+        stored_file = _storage_root() / TENANT_A / created["id"] / f"{audio['id']}.wav"
+        assert stored_file.is_file()
+        deleted = _data(client.delete(
+            f"{API}/voice-clones/{created['id']}", headers=tenant_a_admin))
+        assert deleted["deleted"] is True
+        assert not stored_file.exists()
+        assert client.get(
+            f"{API}/voice-clones/{created['id']}/audio/{audio['id']}",
+            headers=tenant_a_admin,
+        ).status_code == 404
 
 
 # ── metering ─────────────────────────────────────────────────────────────────

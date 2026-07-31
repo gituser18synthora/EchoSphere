@@ -87,6 +87,42 @@ class TestSarvamProvider:
         assert "send_completion_event=true" in server.queries[0]["_raw"]
         assert server.texts() == ["नमस्ते दुनिया."]
 
+    async def test_delivery_energy_mapping_respects_model_capabilities(self, monkeypatch):
+        """apply_delivery_params + the adapter together guarantee the wire
+        contract: bulbul:v2 receives the conservative pitch/loudness energy
+        mapping, bulbul:v3 (which does not document them) receives neither —
+        even if a stale value sneaks into stored params."""
+        from shared.providers.tts.delivery import apply_delivery_params
+
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            v2_params = apply_delivery_params(
+                "sarvam", "bulbul:v2", {"min_buffer_size": 40}, speed=1.2, energy=90,
+            )
+            provider = SarvamWebSocketTTSProvider(
+                sarvam_settings(model="bulbul:v2", voice="anushka", params=v2_params)
+            )
+            await provider.connect()
+            await provider.close()
+        v2_config = server.configs[0]
+        assert v2_config["pace"] == 1.2
+        assert v2_config["pitch"] == 0.1 and v2_config["loudness"] == 1.3
+
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            v3_params = apply_delivery_params(
+                "sarvam", "bulbul:v3", {"pitch": 0.5}, speed=1.2, energy=90,
+            )
+            provider = SarvamWebSocketTTSProvider(
+                sarvam_settings(params=v3_params)
+            )
+            await provider.connect()
+            await provider.close()
+        v3_config = server.configs[0]
+        assert v3_config["pace"] == 1.2
+        # The stale v2-only field is filtered at the adapter — never on the wire.
+        assert "pitch" not in v3_config and "loudness" not in v3_config
+
     async def test_odia_language_alias(self, monkeypatch):
         async with MockSarvamTTSServer() as server:
             monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
@@ -252,6 +288,38 @@ class TestElevenLabsProvider:
             event = await provider.events.get()
             assert event.kind == "error" and event.error.category == "auth"
             await provider.close()
+
+    async def test_eleven_v3_rejected_before_connecting(self):
+        """The ElevenLabs realtime WebSocket does not support eleven_v3 —
+        the client refuses locally with a clear configuration error instead
+        of producing a cryptic server-side close (and never silently falls
+        back to another model)."""
+        provider = ElevenLabsWebSocketTTSProvider(eleven_settings(model="eleven_v3"))
+        with pytest.raises(ProviderError) as exc_info:
+            await provider.connect()
+        assert exc_info.value.category == "invalid_input"
+        assert "eleven_v3" in str(exc_info.value)
+        event = await provider.events.get()
+        assert event.kind == "error" and event.error.category == "invalid_input"
+        await provider.close()
+
+    async def test_language_code_only_for_enforcing_models(self, monkeypatch):
+        """language_code is a Flash/Turbo v2.5 parameter — other models must
+        not receive it on the URL."""
+        async with MockElevenLabsServer() as server:
+            monkeypatch.setattr(elevenlabs_ws, "_WS_BASE", server.url)
+            provider = ElevenLabsWebSocketTTSProvider(eleven_settings())
+            await provider.connect()
+            await provider.close()
+            assert "language_code=hi" in server.paths[0]
+
+            other = ElevenLabsWebSocketTTSProvider(
+                eleven_settings(model="eleven_multilingual_v2")
+            )
+            await other.connect()
+            await other.close()
+            assert "model_id=eleven_multilingual_v2" in server.paths[1]
+            assert "language_code" not in server.paths[1]
 
     async def test_error_message_categorized_rate_limit(self, monkeypatch):
         async with MockElevenLabsServer(behavior="error_message") as server:

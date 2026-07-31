@@ -20,6 +20,7 @@ from langgraph.graph import END, StateGraph
 
 from shared.config import get_settings
 from shared.orchestration.phrases import canned
+from shared.orchestration.router import classify_user_signal
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,10 @@ class WorkflowState(TypedDict, total=False):
     node_retries: dict[str, int]
     trace: list[str]  # node ids visited THIS turn (reset every turn)
     handoff_queue: str | None  # handover node's configured queue, if any
+    # Per-turn (recomputed every step, never carried over):
+    off_script: bool  # the turn was NOT consumed — node unchanged, no reply
+    awaiting_prompt: str | None  # question of the node the flow is paused at
+    signal: str | None  # semantic signal of the caller's utterance
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -482,6 +487,80 @@ def _edge_tokens(label: str) -> list[str]:
     return [t.strip().lower() for t in re.split(r"[/,|]", label or "") if t.strip()]
 
 
+# ── semantic edge selection for intent nodes ────────────────────────────────
+# A user turn advances an intent node ONLY when the node actually supports
+# what the caller said: an edge whose label carries the same semantic signal
+# (hardship edge for a hardship statement), or a literal token match. A
+# complaint/question/hardship the node has NO edge for never advances the
+# graph — the turn is reported as off-script so the caller gets a grounded
+# contextual reply while the workflow stays at the same node. The old
+# behavior (retry once, then blindly follow the FIRST edge) is gone: it made
+# every unrecognized utterance walk the script sequentially.
+
+# Signals that talk ABOUT the conversation (or ask something) rather than
+# answering the pending question — never advanced by literal keyword luck.
+_OFF_SCRIPT_SIGNALS = ("complaint", "clarify", "question")
+# Flow-answer signals that may still advance via literal tokens when no edge
+# declares the signal explicitly (the author spelled the words out instead).
+_LITERAL_FALLBACK_SIGNALS = ("refusal", "callback", "payment_intent", "affirm")
+# Signals meaningful enough that the utterance which TRIGGERED the workflow
+# should be consumed by its first intent node instead of being ignored (a
+# bare confirmation is not — it answered the greeting, not the first rung).
+_ENTRY_SIGNALS = ("hardship", "refusal", "callback", "already_paid",
+                  "wrong_person", "agent_request", "payment_intent")
+_COMPATIBLE_SIGNALS = {"affirm": ("payment_intent",),
+                       "payment_intent": ("affirm",)}
+
+
+def _edge_meta(edges: list[dict]) -> list[tuple[dict, list[str], set[str]]]:
+    """(edge, non-else tokens, semantic signals its tokens carry) per edge."""
+    meta = []
+    for edge in edges:
+        tokens = [t for t in _edge_tokens(edge.get("label", ""))
+                  if t not in _ELSE_LABELS]
+        signals = {s for s in (classify_user_signal(t) for t in tokens) if s}
+        meta.append((edge, tokens, signals))
+    return meta
+
+
+def _token_score(tokens: list[str], lowered: str) -> int:
+    """Longest edge token contained in the utterance (0 = none). Longer
+    tokens are more specific: "पैसे नहीं" (hardship) must beat "नहीं"."""
+    return max((len(t) for t in tokens if t and t in lowered), default=0)
+
+
+def _choose_intent_edge(
+    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None
+) -> tuple[dict | None, str]:
+    """Pick the outgoing edge the utterance actually supports.
+
+    Returns (edge, reason); edge None means nothing matched and reason says
+    why: "off_script" (a signal the node has no edge for — do not advance,
+    let the brain answer it) or "no_match" (no signal, no literal match —
+    the caller may retry or take an authored else/fallback edge).
+    """
+    lowered = (text or "").lower()
+    if signal:
+        wanted = (signal, *_COMPATIBLE_SIGNALS.get(signal, ()))
+        supporting = [
+            (edge, _token_score(tokens, lowered))
+            for edge, tokens, signals in meta
+            if any(w in signals for w in wanted)
+        ]
+        if supporting:
+            return max(supporting, key=lambda pair: pair[1])[0], "signal"
+        if signal not in _LITERAL_FALLBACK_SIGNALS:
+            return None, "off_script"
+    best, best_score = None, 0
+    for edge, tokens, _signals in meta:
+        score = _token_score(tokens, lowered)
+        if score > best_score:
+            best, best_score = edge, score
+    if best is not None:
+        return best, "token"
+    return None, "no_match"
+
+
 def _pick_edge_by_flag(out_edges: list[dict], result: bool) -> dict | None:
     """condition branching: true/yes edge vs false/no edge, positional fallback."""
     truthy, falsy = ("true", "yes"), ("false", "no")
@@ -570,6 +649,16 @@ def _ask_entity(node: dict, variable: str) -> dict:
     }
 
 
+def _ask_is_free_text(node: dict, variable: str) -> bool:
+    """A free-text ask accepts ANY utterance as its answer — it needs the
+    off-script guard so a complaint or question is not swallowed as a slot."""
+    entity = _ask_entity(node, variable)
+    has_matcher = bool(
+        entity.get("regexPattern") or entity.get("allowedValues") or entity.get("synonyms")
+    )
+    return str(entity.get("dataType") or "text") == "text" and not has_matcher
+
+
 def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
     from shared.orchestration.entity_extractor import extract_entity
 
@@ -603,6 +692,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         src = str(edge.get("from") or "")
         if src and str(edge.get("to") or "") in nodes_by_id:
             edges_from.setdefault(src, []).append(edge)
+    # (edge, tokens, semantic signals) per source node, computed once.
+    edge_meta_from: dict[str, list[tuple[dict, list[str], set[str]]]] = {
+        src: _edge_meta(edges) for src, edges in edges_from.items()
+    }
 
     start_node = next(
         (n for n in (definition.get("nodes") or []) if n.get("kind") == "start"), None
@@ -629,12 +722,20 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         status = "collecting"
         handoff_queue: str | None = None
         text = (state.get("user_text") or "").strip()
+        signal = classify_user_signal(text) if text else None
+        off_script = False
         current = state.get("current_node")
         awaiting = state.get("awaiting")
 
         if current not in nodes_by_id:
             current = str(start_node.get("id")) if start_node else None
             awaiting = None
+
+        # The utterance that STARTED the workflow (no node was awaiting it)
+        # may be consumed by the first intent node the walk reaches — a
+        # caller entering the flow with "paise nahi hain" must land on the
+        # hardship branch, not hear rung one's pitch. Single use.
+        entry_text = text if (not awaiting and text) else ""
 
         # 1. Feed the caller's utterance to the node that was waiting for it.
         if awaiting and awaiting in nodes_by_id:
@@ -647,13 +748,23 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             elif kind == "ask":
                 config = _node_config(node)
                 variable = str(config.get("variable") or node.get("id"))
-                value = _extract_ask_value(node, variable, text)
+                guarded = signal in _OFF_SCRIPT_SIGNALS or signal == "agent_request"
+                value = None if (guarded and _ask_is_free_text(node, variable)) \
+                    else _extract_ask_value(node, variable, text)
                 if value is not None:
                     slots[variable] = value
                     node_retries.pop(awaiting, None)
                     audit.append({"action": "slot_filled", "node": awaiting,
                                   "variable": variable})
                     current, awaiting = _next_of(awaiting), None
+                elif signal is not None and signal not in ("affirm",):
+                    # The caller said something meaningful that is NOT an
+                    # answer (hardship, complaint, a question...) — do not
+                    # burn a retry or advance; the brain answers in context.
+                    audit.append({"action": "off_script", "node": awaiting,
+                                  "signal": signal})
+                    off_script = True
+                    current = None  # stay awaiting
                 else:
                     retries = node_retries.get(awaiting, 0) + 1
                     node_retries[awaiting] = retries
@@ -674,28 +785,41 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         replies.append(_question(node, retrying=True, lang=lang))
                         current = None  # stay awaiting
             elif kind == "intent":
-                lowered = text.lower()
                 out_edges = edges_from.get(awaiting, [])
-                chosen = next(
-                    (e for e in out_edges
-                     if any(t and t in lowered for t in _edge_tokens(e.get("label", "")))),
-                    None,
-                ) or next(
-                    (e for e in out_edges
-                     if any(t in _ELSE_LABELS for t in _edge_tokens(e.get("label", "")))),
-                    None,
+                chosen, why = _choose_intent_edge(
+                    edge_meta_from.get(awaiting, []), text, signal
                 )
-                if chosen is None:
+                if chosen is None and why == "off_script":
+                    audit.append({"action": "off_script", "node": awaiting,
+                                  "signal": signal})
+                    off_script = True
+                    current = None  # stay awaiting
+                elif chosen is None:  # no signal, no literal match
                     retries = node_retries.get(awaiting, 0) + 1
                     node_retries[awaiting] = retries
-                    if retries > 1 and out_edges:
-                        chosen = out_edges[0]
+                    if retries > 1:
+                        # Only an AUTHORED fallback advances an unmatched
+                        # turn — never the positional first edge.
+                        chosen = next(
+                            (e for e in out_edges
+                             if any(t in _ELSE_LABELS
+                                    for t in _edge_tokens(e.get("label", "")))),
+                            None,
+                        )
+                        if chosen is None:
+                            audit.append({"action": "off_script",
+                                          "node": awaiting, "signal": signal})
+                            off_script = True
+                            current = None
+                        else:
+                            why = "else"
                     else:
                         replies.append(_question(node, retrying=True, lang=lang))
                         current = None
                 if chosen is not None:
                     audit.append({"action": "intent_branch", "node": awaiting,
-                                  "edge": chosen.get("label") or chosen.get("id")})
+                                  "edge": chosen.get("label") or chosen.get("id"),
+                                  "matched": why, "signal": signal})
                     node_retries.pop(awaiting, None)
                     current, awaiting = str(chosen.get("to")), None
             else:  # a stale awaiting pointer — resume from that node
@@ -719,6 +843,23 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 replies.append(_question(node, retrying=False, lang=lang))
                 awaiting, current = current, None
             elif kind == "intent":
+                if entry_text:
+                    # First intent node after a workflow entry: the utterance
+                    # that triggered the flow carries meaning of its own —
+                    # consume it when an edge explicitly supports its signal.
+                    entry_signal = classify_user_signal(entry_text)
+                    entry_text = ""  # single use, matched or not
+                    if entry_signal in _ENTRY_SIGNALS:
+                        chosen, why = _choose_intent_edge(
+                            edge_meta_from.get(current, []), text, entry_signal
+                        )
+                        if chosen is not None and why == "signal":
+                            audit.append({"action": "intent_entry_branch",
+                                          "node": current,
+                                          "edge": chosen.get("label") or chosen.get("id"),
+                                          "signal": entry_signal})
+                            current = str(chosen.get("to"))
+                            continue
                 prompt = _node_text(node, "prompt", "question", "text",
                                     fallback_label=False)
                 replies.append(prompt or "How can I help you today?")
@@ -797,6 +938,14 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             status = "error"
             replies.append(canned("wf_error", lang))
 
+        reply_text = " ".join(r for r in replies if r).strip()
+        if not reply_text and not off_script:
+            reply_text = "Is there anything else I can help you with?"
+        awaiting_prompt = (
+            _node_text(nodes_by_id[awaiting], "question", "prompt", "text",
+                       fallback_label=False)
+            if awaiting and awaiting in nodes_by_id else None
+        )
         return {
             **state,
             "slots": slots,
@@ -806,9 +955,11 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "current_node": awaiting or current,
             "awaiting": awaiting,
             "handoff_queue": handoff_queue,
+            "off_script": off_script,
+            "awaiting_prompt": awaiting_prompt,
+            "signal": signal,
             "status": status if not awaiting else "collecting",
-            "reply": " ".join(r for r in replies if r).strip()
-                     or "Is there anything else I can help you with?",
+            "reply": reply_text,
         }
 
     graph = StateGraph(WorkflowState)
@@ -957,8 +1108,10 @@ class WorkflowEngine:
             }
         status = state.get("status", "collecting")
         done = status in ("done", "handoff", "error")
+        off_script = bool(state.get("off_script"))
         return {
-            "reply": state.get("reply") or canned("wf_repeat", language),
+            "reply": "" if off_script
+                     else (state.get("reply") or canned("wf_repeat", language)),
             "done": done,
             "status": status,
             "source": source,
@@ -966,6 +1119,11 @@ class WorkflowEngine:
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
             "handoffQueue": state.get("handoff_queue"),
+            # Off-script: the turn was NOT consumed — the workflow stays at
+            # the same node and the caller (brain) must answer contextually.
+            "offScript": off_script,
+            "nodePrompt": state.get("awaiting_prompt"),
+            "signal": state.get("signal"),
         }
 
     async def aclose(self) -> None:

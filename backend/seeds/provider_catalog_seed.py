@@ -6,14 +6,25 @@ Populates:
 - voice_profiles: ElevenLabs voices and Sarvam bulbul:v3 speakers.
 
 Language codes inside PROVIDER_MODELS use the provider's wire form (Sarvam:
-``od-IN``; ElevenLabs: bare ISO 639-1). ``shared.providers.languages`` maps
-them to platform locale codes. Voice rows use platform locale codes.
+``od-IN``; ElevenLabs v2.5 family: bare ISO 639-1). ``shared.providers.
+languages`` maps them to platform locale codes. Voice rows use platform
+locale codes.
+
+Exception: ``eleven_v3`` stores PLATFORM locale codes (en-US, en-IN, hi-IN …)
+derived from the ``supported_languages`` catalog — the languages table is the
+source of truth for what tenants may pick, so the model row only ever lists
+locales that exist as catalog records AND are officially supported by the
+model. Enable/disable state is applied at read time (model_platform_languages
+serves enabled rows only). Locale codes are never sent to ElevenLabs for v3 —
+the model takes no language_code parameter.
 
 No API keys anywhere — providers reference credentials via ``env:`` secret
 references on provider_defs.
 """
 
 from __future__ import annotations
+
+from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +35,7 @@ from shared.models import (
     ApprovedModel,
     ProviderDef,
     ProviderModel,
+    SupportedLanguage,
     VoiceProfile,
 )
 
@@ -142,6 +154,31 @@ _SARVAM_TTS_V2_SCHEMA = {
     "send_completion_event": _SARVAM_TTS_V3_SCHEMA["send_completion_event"],
 }
 
+# Eleven v3 (alpha) exposes only the documented v3 voice settings: discrete
+# stability presets plus similarity/style. speed, use_speaker_boost and the
+# realtime WebSocket knobs (auto_mode, chunk_length_schedule, …) are not
+# supported by the model and are never offered nor sent.
+_ELEVENLABS_V3_TTS_SCHEMA = {
+    "stability": {
+        "type": "enum", "values": [0.0, 0.5, 1.0], "default": 0.5,
+        # Keys use the JS String() form of the parsed numbers (0.0 → "0").
+        "labels": {"0": "Creative", "0.5": "Natural", "1": "Robust"},
+        "label": "Stability",
+        "help": "Eleven v3 accepts three presets: Creative (expressive, may "
+                "hallucinate), Natural (balanced) or Robust (very stable).",
+    },
+    "similarity_boost": {
+        "type": "number", "min": 0.0, "max": 1.0, "default": 1.0, "step": 0.05,
+        "label": "Similarity boost",
+        "help": "How closely synthesis adheres to the original voice timbre.",
+    },
+    "style": {
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
+        "label": "Style", "advanced": True,
+        "help": "Style exaggeration. 0 is fastest and most stable.",
+    },
+}
+
 _ELEVENLABS_TTS_SCHEMA = {
     "stability": {
         "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
@@ -236,6 +273,151 @@ _ELEVEN_V2_5_LANGS = [
     "ms", "sk", "da", "uk", "ru", "hu", "no", "vi",
 ]
 
+# Official Eleven v3 supported languages as base ISO codes (639-1 where one
+# exists; "fil"/"ceb" have no two-letter form) — verified against
+# elevenlabs.io/docs models page 2026-07-30. Note: no Odia. This is the
+# PROVIDER capability matrix only; what tenants can actually pick is derived
+# below by intersecting it with the platform language catalog
+# (supported_languages), which stays the source of truth.
+ELEVEN_V3_ISO_CODES = frozenset({
+    "af", "ar", "hy", "as", "az", "be", "bn", "bs", "bg", "ca", "ceb", "ny",
+    "hr", "cs", "da", "nl", "en", "et", "fil", "fi", "fr", "gl", "ka", "de",
+    "el", "gu", "ha", "he", "hi", "hu", "is", "id", "ga", "it", "ja", "jv",
+    "kn", "kk", "ky", "ko", "lv", "ln", "lt", "lb", "mk", "ms", "ml", "zh",
+    "cmn", "mr", "ne", "no", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sr",
+    "sd", "sk", "sl", "so", "es", "sw", "sv", "ta", "te", "th", "tr", "uk",
+    "ur", "vi", "cy",
+})
+
+
+def eleven_v3_platform_locales(languages: Iterable[tuple[str, str | None]]) -> list[str]:
+    """Platform locale codes Eleven v3 may offer, from (code, iso_code) pairs.
+
+    A locale qualifies when its canonical base code (``iso_code``, falling
+    back to the code's own prefix) is officially supported by the model.
+    Locales without a catalog record never qualify — the languages table is
+    the source of truth. Order-preserving, duplicate-free.
+    """
+    locales: list[str] = []
+    for code, iso in languages:
+        code = (code or "").strip()
+        if not code or code in locales:
+            continue
+        base = (iso or code.split("-")[0]).strip().lower()
+        if base in ELEVEN_V3_ISO_CODES:
+            locales.append(code)
+    return locales
+
+
+def _eleven_v3_locales_from_db(db: Session) -> list[str]:
+    """Derive the offered v3 locales from the live supported_languages table.
+
+    Includes disabled rows on purpose: enable/disable is an availability
+    toggle applied at read time (model_platform_languages), not a removal —
+    re-enabling a language must not require touching the model row.
+    """
+    rows = db.execute(
+        select(SupportedLanguage.code, SupportedLanguage.iso_code)
+        .order_by(SupportedLanguage.sort_order, SupportedLanguage.code)
+    ).all()
+    return eleven_v3_platform_locales((code, iso) for code, iso in rows)
+
+
+def _base_seed_language_pairs() -> list[tuple[str, str | None]]:
+    # Lazy import: base_seed imports this module inside run_base_seed, so a
+    # module-level import back would be circular during that call path.
+    from backend.seeds.base_seed import LANGUAGES
+
+    return [(code, iso) for code, _, _, iso, _, _, _ in LANGUAGES]
+
+
+# Legacy shape of the eleven_v3 row before it became catalog-derived (bare ISO
+# codes). Rows still exactly matching it are provably unedited and safe to
+# convert; anything else is operator-managed and left alone.
+_LEGACY_ELEVEN_V3_BARE_CODES = [
+    "af", "ar", "hy", "as", "az", "be", "bn", "bs", "bg", "ca", "ceb", "ny",
+    "hr", "cs", "da", "nl", "en", "et", "fil", "fi", "fr", "gl", "ka", "de",
+    "el", "gu", "ha", "he", "hi", "hu", "is", "id", "ga", "it", "ja", "jv",
+    "kn", "kk", "ky", "ko", "lv", "ln", "lt", "lb", "mk", "ms", "ml", "zh",
+    "mr", "ne", "no", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sr", "sd",
+    "sk", "sl", "so", "es", "sw", "sv", "ta", "te", "th", "tr", "uk", "ur",
+    "vi", "cy",
+]
+
+# Catalog-derived platform locales for fresh inserts (seed data mirrors the
+# freshly seeded table; live databases are re-derived from the table itself
+# in seed_provider_catalog). Includes en-US and en-IN as separate records.
+_ELEVEN_V3_LANGS = eleven_v3_platform_locales(_base_seed_language_pairs())
+
+# Why the whole GPT-5 generation is catalogued inactive: the OpenAI LLM
+# provider calls chat.completions with `max_tokens` and temperature 0.3, both
+# of which that generation rejects (it takes `max_completion_tokens` and the
+# default temperature only). The rows exist so usage of these models can be
+# priced and validated; activating one before the provider sends the right
+# parameters would hand operators a model that fails on every turn.
+_GPT5_NOTE = (
+    "{summary}. Catalogued for pricing but inactive: the OpenAI LLM provider "
+    "still sends `max_tokens`/temperature, which the GPT-5 family rejects. "
+    "Activate only after the provider is updated."
+)
+
+# Concise operator-facing model summaries. Applied on insert and backfilled
+# onto existing rows only while their description is empty (operator text is
+# never overwritten).
+MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
+    ("elevenlabs", "tts", "eleven_v3"): (
+        "Most expressive ElevenLabs model (alpha): emotional range, audio tags, "
+        "70+ languages. High latency, 5,000-character limit, no realtime "
+        "streaming — synthesized per reply over REST; previews and non-realtime "
+        "use recommended."
+    ),
+    ("elevenlabs", "tts", "eleven_flash_v2_5"): (
+        "Ultra-low-latency model (~75 ms) for realtime conversation over the "
+        "streaming WebSocket. 32 languages, 40,000-character limit. "
+        "Recommended for live calls."
+    ),
+    ("elevenlabs", "tts", "eleven_turbo_v2_5"): (
+        "Deprecated quality/latency-balance model (32 languages). Superseded "
+        "by Eleven Flash v2.5."
+    ),
+    ("openai", "llm", "gpt-4.1"): (
+        "Full GPT-4.1: strongest of the 4.1 family for instruction following "
+        "and long context. Higher cost/latency than 4.1 mini — prefer it for "
+        "complex reasoning turns rather than every realtime reply."
+    ),
+    ("openai", "llm", "gpt-4.1-nano"): (
+        "Cheapest GPT-4.1 variant and the lowest-latency OpenAI chat model. "
+        "Suited to classification, routing and short scripted replies."
+    ),
+    ("openai", "llm", "gpt-5.6-sol"): _GPT5_NOTE.format(
+        summary="Flagship GPT-5.6 model: highest quality of the generation, "
+                "priced accordingly"),
+    ("openai", "llm", "gpt-5.6-terra"): _GPT5_NOTE.format(
+        summary="Mid-tier GPT-5.6 model balancing quality and cost"),
+    ("openai", "llm", "gpt-5.6-luna"): _GPT5_NOTE.format(
+        summary="Smallest, cheapest GPT-5.6 model for high-volume turns"),
+    ("openai", "llm", "gpt-5.1"): _GPT5_NOTE.format(
+        summary="GPT-5.1 general-purpose model"),
+    ("openai", "llm", "gpt-5"): _GPT5_NOTE.format(
+        summary="GPT-5 general-purpose model"),
+    ("openai", "llm", "gpt-5-mini"): _GPT5_NOTE.format(
+        summary="Cost-reduced GPT-5 variant"),
+    ("openai", "llm", "gpt-5-nano"): _GPT5_NOTE.format(
+        summary="Smallest and cheapest GPT-5 variant"),
+    ("openai", "stt", "gpt-transcribe"): (
+        "Current OpenAI batch transcription model and the cheapest of the "
+        "family. Inactive under platform governance: STT is Sarvam-only."
+    ),
+    ("openai", "stt", "gpt-4o-transcribe"): (
+        "GPT-4o transcription (batch/REST). Inactive under platform "
+        "governance: STT is Sarvam-only."
+    ),
+    ("openai", "stt", "gpt-4o-mini-transcribe"): (
+        "Cheaper GPT-4o mini transcription (batch/REST). Inactive under "
+        "platform governance: STT is Sarvam-only."
+    ),
+}
+
 # (provider, capability, code, display, languages, codecs, rates, streaming,
 #  schema, is_default, status, sort)
 PROVIDER_MODELS = [
@@ -258,15 +440,29 @@ PROVIDER_MODELS = [
     ("elevenlabs", "tts", "eleven_flash_v2_5", "Eleven Flash v2.5",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _ELEVENLABS_TTS_SCHEMA, True, "active", 0),
+    # Eleven v3 is not supported on the ElevenLabs realtime WebSocket
+    # (streaming=False) — live calls synthesize it segment-by-segment over
+    # REST; fallback/per-language engines require a streaming model instead.
+    ("elevenlabs", "tts", "eleven_v3", "Eleven v3 (expressive)",
+     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], False,
+     _ELEVENLABS_V3_TTS_SCHEMA, False, "active", 1),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "Eleven Turbo v2.5 (deprecated)",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
-     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 1),
+     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 2),
     ("mock", "tts", "mock", "Mock TTS", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # OpenAI Whisper — REST/segmented (non-streaming), language auto-detect.
     # Inactive under platform governance: STT is Sarvam-only.
     ("openai", "stt", "whisper-1", "Whisper (whisper-1)",
      [], ["linear16"], [8000, 16000, 24000], False, {}, True, "inactive", 0),
+    # Current OpenAI transcription models — same governance as whisper-1
+    # (STT is Sarvam-only); catalogued so their usage can be priced.
+    ("openai", "stt", "gpt-transcribe", "GPT Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 1),
+    ("openai", "stt", "gpt-4o-transcribe", "GPT-4o Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 2),
+    ("openai", "stt", "gpt-4o-mini-transcribe", "GPT-4o mini Transcribe",
+     [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 3),
     # Deepgram — streaming STT; inactive under the same governance. Catalogued
     # so provider-model pricing can be configured/validated ahead of rollout.
     ("deepgram", "stt", "nova-3", "Nova-3 (streaming)",
@@ -285,6 +481,25 @@ PROVIDER_MODELS = [
      _OPENAI_LLM_SCHEMA, False, "active", 1),
     ("openai", "llm", "gpt-4.1-mini", "GPT-4.1 mini", [], None, None, True,
      _OPENAI_LLM_SCHEMA, False, "active", 2),
+    ("openai", "llm", "gpt-4.1", "GPT-4.1", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 3),
+    ("openai", "llm", "gpt-4.1-nano", "GPT-4.1 nano", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 4),
+    # GPT-5 generation — inactive by design, see _GPT5_NOTE above.
+    ("openai", "llm", "gpt-5.6-sol", "GPT-5.6 Sol", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 5),
+    ("openai", "llm", "gpt-5.6-terra", "GPT-5.6 Terra", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 6),
+    ("openai", "llm", "gpt-5.6-luna", "GPT-5.6 Luna", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 7),
+    ("openai", "llm", "gpt-5.1", "GPT-5.1", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 8),
+    ("openai", "llm", "gpt-5", "GPT-5", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 9),
+    ("openai", "llm", "gpt-5-mini", "GPT-5 mini", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 10),
+    ("openai", "llm", "gpt-5-nano", "GPT-5 nano", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "inactive", 11),
     ("mock", "llm", "mock", "Mock LLM", [], None, None, True, {}, True, "active", 99),
     # ── Embedding ────────────────────────────────────────────────────────
     ("openai", "embedding", "text-embedding-3-small", "text-embedding-3-small (1536d)",
@@ -345,6 +560,13 @@ def seed_provider_catalog(db: Session) -> dict:
 
     for (provider, capability, code, display, langs, codecs, rates, streaming,
          schema, is_default, status, sort) in PROVIDER_MODELS:
+        description = MODEL_DESCRIPTIONS.get((provider, capability, code))
+        is_eleven_v3 = (provider, capability, code) == ("elevenlabs", "tts", "eleven_v3")
+        if is_eleven_v3:
+            # The languages table is the source of truth: derive the offered
+            # locales from it (fresh installs fall back to the seed-derived
+            # constant while the table is still empty).
+            langs = _eleven_v3_locales_from_db(db) or list(_ELEVEN_V3_LANGS)
         exists = db.scalar(
             select(ProviderModel).where(
                 ProviderModel.provider_code == provider,
@@ -355,11 +577,23 @@ def seed_provider_catalog(db: Session) -> dict:
         if exists is None:
             db.add(ProviderModel(
                 id=new_id("pm"), provider_code=provider, capability=capability,
-                code=code, display_name=display, languages=langs, codecs=codecs,
+                code=code, display_name=display, description=description,
+                languages=langs, codecs=codecs,
                 sample_rates=rates, streaming=streaming, params_schema=schema,
                 is_default=is_default, status=status, sort_order=sort,
             ))
             created["provider_models"] += 1
+        else:
+            if description and not exists.description:
+                # Safe-metadata backfill only: fills an empty description,
+                # never replaces operator-entered text or any other field.
+                exists.description = description
+            if is_eleven_v3 and exists.languages == _LEGACY_ELEVEN_V3_BARE_CODES and langs:
+                # One-time conversion of the pre-catalog bare-ISO list to the
+                # table-derived locale list. Only a row still exactly equal to
+                # the legacy constant is converted — anything else has been
+                # operator-managed (master data) and is left untouched.
+                exists.languages = langs
 
     for vid, name, gender, provider_voice_id in ELEVENLABS_VOICES:
         if db.get(VoiceProfile, vid) is None:
@@ -371,7 +605,7 @@ def seed_provider_catalog(db: Session) -> dict:
                 accent="Indian", styles=["Natural"], latency_ms=180, premium=True,
                 sample_text=_SAMPLE_TEXT, provider="elevenlabs",
                 provider_voice_id=provider_voice_id,
-                model_codes=["eleven_flash_v2_5", "eleven_turbo_v2_5"],
+                model_codes=["eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3"],
                 provider_settings=dict(_ELEVEN_DEFAULT_VOICE_SETTINGS),
             ))
             created["provider_voices"] += 1

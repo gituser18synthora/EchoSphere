@@ -81,6 +81,18 @@ def wav_to_pcm(wav_bytes: bytes) -> tuple[bytes, int]:
     return pcm, sample_rate
 
 
+def silence_pcm(sample_rate: int, duration_ms: int) -> bytes:
+    """Deterministic 16-bit mono PCM silence of ``duration_ms`` at ``sample_rate``.
+
+    Byte length is ``sample_rate * duration_ms / 1000 * 2`` rounded down to a
+    whole sample, so the result always frame-aligns with surrounding audio.
+    """
+    if sample_rate <= 0 or duration_ms <= 0:
+        return b""
+    samples = int(sample_rate * duration_ms / 1000)
+    return b"\x00\x00" * samples
+
+
 def resample_pcm(pcm: bytes, from_rate: int, to_rate: int) -> bytes:
     """Resample 16-bit mono PCM between arbitrary rates (numpy linear interpolation)."""
     if from_rate <= 0 or to_rate <= 0:

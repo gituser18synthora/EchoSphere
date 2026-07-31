@@ -86,8 +86,9 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     # platform (curated catalog) | cloned (tenant-created via a provider
     # voice-cloning API — provider_voice_id is the provider clone id).
     source: Mapped[str] = mapped_column(String(20), default="platform", nullable=False)
-    # Clone provenance: sample file names/sizes, requires_verification, the
-    # provider options used. Training audio itself is never stored.
+    # Clone provenance: sample file names/sizes/durations, source types,
+    # requires_verification, the provider options used. The audio itself is
+    # retained in voice_clone_audio rows (files under VOICE_CLONE_AUDIO_DIR).
     clone_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     gender: Mapped[str] = mapped_column(String(10), default="neutral", nullable=False)
@@ -111,6 +112,35 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     model_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Per-voice default provider parameters (e.g. ElevenLabs VoiceSettings).
     provider_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class VoiceCloneAudio(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Source audio a cloned voice was built from — retained after cloning so
+    tenants can replay exactly what was sent to the provider. One row per
+    sample; files live under VOICE_CLONE_AUDIO_DIR at storage_path (relative,
+    server-generated — user filenames never form the on-disk path)."""
+
+    __tablename__ = "voice_clone_audio"
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    voice_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("voice_profiles.id"), nullable=False, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # live_recording (browser microphone) | file_upload
+    source_type: Mapped[str] = mapped_column(
+        String(20), default="file_upload", nullable=False
+    )
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="stored", nullable=False)
 
 
 class SupportedLanguage(Base, TimestampMixin, AuditByMixin):

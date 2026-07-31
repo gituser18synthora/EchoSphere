@@ -5,6 +5,7 @@ uninstalled optional SDK only fails when that provider is actually selected.
 """
 
 import importlib
+import json
 import threading
 
 from shared.providers.base import LLMProvider, ProviderConfig, ProviderError, STTProvider, TTSProvider
@@ -50,7 +51,11 @@ def _build(kind: str, config: ProviderConfig):
 
 
 def _cached(kind: str, config: ProviderConfig):
-    cache_key = f"{kind}:{config.provider}:{config.model}:{config.voice}:{config.language}"
+    # extra carries model-specific synthesis parameters (e.g. ElevenLabs
+    # voice settings) — a config edit must not reuse an instance built with
+    # the old parameters.
+    extra_key = json.dumps(config.extra, sort_keys=True, default=str) if config.extra else ""
+    cache_key = f"{kind}:{config.provider}:{config.model}:{config.voice}:{config.language}:{extra_key}"
     instance = _cache.get(cache_key)
     if instance is None:
         with _lock:

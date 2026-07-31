@@ -92,6 +92,19 @@ class TestWorkflowPriority:
         assert decision.kind == RouteKind.WORKFLOW
         assert decision.action == "appointment_booking"
 
+    def test_configured_yes_beats_generic_smalltalk(self):
+        router = make_router(
+            intents=[{
+                "name": "call_opening_response",
+                "samples": ["yes", "haan", "aage badho"],
+                "route": "workflow:collection_call",
+                "confidence_threshold": 0.3,
+            }]
+        )
+        decision = router.decide("Yes")
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.action == "collection_call"
+
 
 class TestExplicitIntentRoutes:
     """Intent route values "knowledge" and "handoff" — used by locale-specific
@@ -221,3 +234,74 @@ class TestMultilingualHangup:
         assert decision.kind == RouteKind.CALL_CONTROL
         assert decision.action == "hangup"
         assert decision.intent == "hangup_semantic"
+
+
+class TestUserSignalClassifier:
+    """Semantic signals (Hindi / Hinglish / English) that gate workflow
+    transitions: a hardship statement, complaint or refusal must be
+    recognized BEFORE the workflow layer picks the next scripted step."""
+
+    def _signal(self, text):
+        from shared.orchestration.router import classify_user_signal
+        return classify_user_signal(text)
+
+    def test_financial_hardship_hindi_and_hinglish(self):
+        for text in (
+            "पर मेरे पास पैसे नहीं हैं।",
+            "mere paas paise nahi hain",
+            "main abhi payment nahi kar sakta",
+            "पेमेंट नहीं कर पाऊंगा",
+            "salary nahi aayi hai",
+            "I have no money right now",
+            "मैं बीमार हूँ, अस्पताल में हूँ",
+        ):
+            assert self._signal(text) == "hardship", text
+
+    def test_complaint_bot_not_listening(self):
+        for text in (
+            "aap meri baat sun nahi rahe ho",
+            "आप सुन ही नहीं रहे",
+            "you are not listening to me",
+            "baar baar wahi baat bol rahe ho",
+            "aap samajh nahi rahe",
+        ):
+            assert self._signal(text) == "complaint", text
+
+    def test_refusal_is_not_payment_intent(self):
+        # "karunga" alone is a commitment — negated it must NOT be.
+        for text in ("नहीं करूंगा", "main payment nahi karunga", "abhi nahi", "नहीं"):
+            assert self._signal(text) in ("refusal", "hardship"), text
+
+    def test_positive_commitment(self):
+        for text in ("payment kar dunga abhi", "haan upi se kar deta hun",
+                     "अभी कर दूंगा", "ready to pay"):
+            assert self._signal(text) in ("payment_intent",), text
+
+    def test_callback_and_busy(self):
+        for text in ("abhi busy hun, baad mein call karna", "kal karunga call",
+                     "मीटिंग में हूँ", "abhi baat nahi kar sakta"):
+            assert self._signal(text) == "callback", text
+
+    def test_neutral_text_has_no_signal(self):
+        assert self._signal("mausam accha hai aaj") is None
+        assert self._signal("पता नहीं") is None  # "don't know" ≠ refusal
+
+    def test_workflow_decision_carries_signal(self):
+        router = make_router()
+        decision = router.decide(
+            "mere paas paise nahi hain", active_workflow="edas_collection_call"
+        )
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.signal == "hardship"
+
+    def test_intent_workflow_entry_carries_signal(self):
+        router = make_router(intents=[{
+            "name": "payment_difficulty",
+            "route": "workflow:edas_collection_call",
+            "samples": ["paise nahi", "पैसे नहीं"],
+            "confidence_threshold": 0.05,
+        }])
+        decision = router.decide("पर मेरे पास पैसे नहीं हैं।")
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.action == "edas_collection_call"
+        assert decision.signal == "hardship"

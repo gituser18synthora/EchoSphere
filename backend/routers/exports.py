@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.transcripts import find_transcript_doc, ui_turns
 from backend.core.deps import (
     assert_tenant_access,
     has_permission,
@@ -33,7 +34,6 @@ from backend.reports.operational import (
     build_subscriptions_export,
     build_transcript_export,
 )
-from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
 from shared.errors import ApiError, ForbiddenError, NotFoundError
 from shared.models import ConversationSession, Invoice, Plan, Tenant, User, VoiceBot
@@ -295,13 +295,8 @@ async def export_conversation_transcript(
     conversation, bot_name = row
     bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
-    transcript_doc = await Mongo.transcripts().find_one(
-        {
-            "session_id": conversation.id,
-            "tenant_id": conversation.tenant_id,
-        }
-    )
-    report = build_transcript_export((transcript_doc or {}).get("turns", []))
+    transcript_doc = await find_transcript_doc(conversation)
+    report = build_transcript_export(ui_turns((transcript_doc or {}).get("turns")))
     record_audit(
         db,
         user=user,

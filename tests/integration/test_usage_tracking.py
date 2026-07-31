@@ -142,7 +142,10 @@ def _data(response):
 # ── metering engine ───────────────────────────────────────────────────────────
 
 
-def test_llm_usage_costed_from_seeded_blended_price(tenants):
+def test_llm_usage_costed_from_seeded_split_price(tenants):
+    """OpenAI publishes input and output rates separately, and the seed
+    mirrors that: input and output tokens are costed from their own price
+    rows, not from one blended per-token rate."""
     from shared.billing.metering import record_usage_event
 
     session = _session()
@@ -151,13 +154,17 @@ def test_llm_usage_costed_from_seeded_blended_price(tenants):
             session, tenant_id=tenants["a"]["id"], capability="llm",
             provider_code="openai", model_code="gpt-4o-mini",
             input_tokens=1000, output_tokens=500,
-            request_id=f"test:{_SUFFIX}:llm-blended",
+            request_id=f"test:{_SUFFIX}:llm-seeded-split",
         )
-        # Seeded blended price: 0.0006 / 1k tokens → 1500 tokens = 0.0009.
+        # Seeded gpt-4o-mini prices per 1M tokens: $0.15 in, $0.60 out.
+        # 1000 × 0.15/1M = 0.00015; 500 × 0.60/1M = 0.0003 → 0.00045.
         assert event is not None
-        assert Decimal(str(event.cost_usd)) == Decimal("0.0009")
+        assert Decimal(str(event.cost_usd)) == Decimal("0.00045")
         assert event.pricing_status == "priced"
-        assert Decimal(event.pricing_snapshot["input_tokens"]["unitPrice"]) == Decimal("0.0006")
+        snapshot = event.pricing_snapshot
+        assert Decimal(snapshot["input_tokens"]["unitPrice"]) == Decimal("0.15")
+        assert Decimal(snapshot["output_tokens"]["unitPrice"]) == Decimal("0.60")
+        assert snapshot["input_tokens"]["unit"] == "per_1m_tokens"
         assert event.total_tokens == 1500
     finally:
         session.close()
@@ -204,7 +211,7 @@ def test_embedding_usage_costed(tenants):
             provider_code="openai", model_code="text-embedding-3-small",
             total_tokens=100_000, request_id=f"test:{_SUFFIX}:embed",
         )
-        # Seeded: 0.00002 / 1k tokens → 100k tokens = 0.002.
+        # Seeded: $0.02 / 1M tokens → 100k tokens = 0.002.
         assert Decimal(str(event.cost_usd)) == Decimal("0.002")
     finally:
         session.close()
@@ -296,7 +303,8 @@ def test_rollup_updates_tenant_daily_record(tenants):
                 UsageRecord.date == datetime.utcnow().date(),
             )
         ).scalar_one()
-        assert Decimal(str(rollup.cost_llm)) == Decimal("0.006")
+        # 10,000 input tokens at the seeded gpt-4o-mini rate of $0.15 / 1M.
+        assert Decimal(str(rollup.cost_llm)) == Decimal("0.0015")
         assert Decimal(str(rollup.cost_embedding)) == 0
     finally:
         session.close()

@@ -232,3 +232,182 @@ class TestLocalizedEngineStrings:
         )
         assert result["reply"] == canned("wf_missing", "hi-IN")
         assert result["status"] == "error"
+
+
+# ── collection-ladder semantics (the eDAS loan-recovery bug class) ──────────
+# A ladder workflow where every rung is an intent node whose generic tokens
+# ("nahi") used to swallow hardship statements and complaints, and whose
+# forced first-edge fallback used to walk the script sequentially no matter
+# what the caller said.
+
+LADDER = {
+    "id": "wf_ladder", "version": 1, "name": "Collection ladder",
+    "nodes": [
+        {"id": "n_start", "kind": "start", "label": "Call connected"},
+        {"id": "n_push", "kind": "intent", "label": "Rung 1",
+         "config": {"prompt": "कृपया अभी UPI से payment कर दीजिए। "
+                              "क्या आप अभी payment करेंगे?"}},
+        {"id": "n_benefits", "kind": "intent", "label": "Rung 2",
+         "config": {"prompt": "अभी payment करने पर cashback मिल सकता है। "
+                              "क्या आप payment करेंगे?"}},
+        {"id": "n_hardship", "kind": "intent", "label": "Hardship",
+         "config": {"prompt": "मैं समझ रहा हूँ, अफ़सोस है। "
+                              "क्या हम बाद में बात करें?"}},
+        {"id": "n_ptype", "kind": "ask", "label": "Full or partial",
+         "config": {"question": "पूरा payment करेंगे या partial?",
+                    "variable": "payment_type", "entityType": "list",
+                    "synonyms": {"full": ["poora", "पूरा", "full"],
+                                 "partial": ["partial", "आधा", "aadha"]}}},
+        {"id": "n_refuse_end", "kind": "end", "label": "Refusal close",
+         "config": {"text": "ठीक है, धन्यवाद।"}},
+        {"id": "n_callback_end", "kind": "end", "label": "Callback close",
+         "config": {"text": "हम बाद में कॉल करेंगे।"}},
+        {"id": "n_done", "kind": "end", "label": "Close",
+         "config": {"text": "धन्यवाद, शुभ दिन!"}},
+    ],
+    "edges": [
+        {"from": "n_start", "to": "n_push"},
+        {"from": "n_push", "to": "n_hardship",
+         "label": "paise nahi,no money,पैसे नहीं,पेमेंट नहीं कर"},
+        {"from": "n_push", "to": "n_benefits", "label": "nahi,नहीं,baad,कल"},
+        {"from": "n_push", "to": "n_ptype",
+         "label": "haan,हाँ,kar dunga,करूंगा,upi,यूपीआई"},
+        {"from": "n_push", "to": "n_benefits", "label": "else"},
+        {"from": "n_benefits", "to": "n_hardship",
+         "label": "paise nahi,no money,पैसे नहीं"},
+        {"from": "n_benefits", "to": "n_refuse_end", "label": "nahi,नहीं"},
+        {"from": "n_benefits", "to": "n_ptype", "label": "haan,हाँ,kar dunga,करूंगा"},
+        {"from": "n_hardship", "to": "n_callback_end",
+         "label": "haan,बाद में,baad mein"},
+        {"from": "n_hardship", "to": "n_refuse_end", "label": "else"},
+        {"from": "n_ptype", "to": "n_done", "label": "next"},
+    ],
+}
+
+
+async def _ladder_turn(engine, text, session):
+    return await engine.handle_turn_detailed(
+        session_id=session, tenant_id="tn_x", bot_id="bot_x",
+        workflow_name="collection_ladder", user_text=text, language="hi-IN",
+    )
+
+
+class TestLadderSignals:
+    async def test_hardship_entry_skips_the_pitch(self, engine, monkeypatch):
+        """The utterance that TRIGGERS the workflow must be evaluated — a
+        caller entering with "no money" lands on the hardship branch instead
+        of hearing rung one's UPI push."""
+        _use_definition(monkeypatch, LADDER)
+        result = await _ladder_turn(engine, "पर मेरे पास पैसे नहीं हैं।", "lh-1")
+        assert result["trace"] == ["n_start", "n_push", "n_hardship"]
+        assert "अफ़सोस" in result["reply"]
+        assert "UPI से payment" not in result["reply"]
+
+    async def test_positive_entry_skips_to_payment_type(self, engine, monkeypatch):
+        _use_definition(monkeypatch, LADDER)
+        result = await _ladder_turn(engine, "payment kar dunga abhi", "lp-1")
+        assert result["trace"] == ["n_start", "n_push", "n_ptype"]
+        assert "पूरा payment" in result["reply"]
+
+    async def test_bare_confirmation_entry_still_hears_rung_one(
+        self, engine, monkeypatch
+    ):
+        """"haan" answered the greeting, not rung one — no jump."""
+        _use_definition(monkeypatch, LADDER)
+        result = await _ladder_turn(engine, "haan ji", "lc-1")
+        assert result["trace"] == ["n_start", "n_push"]
+        assert "क्या आप अभी payment करेंगे" in result["reply"]
+
+    async def test_hardship_beats_generic_nahi_edge(self, engine, monkeypatch):
+        """"पैसे नहीं" (hardship edge) must win over the single generic token
+        "नहीं" on the next-rung ladder edge."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "lg-1")  # → awaiting rung 1
+        result = await _ladder_turn(engine, "मेरे पास पैसे नहीं हैं", "lg-1")
+        assert result["trace"] == ["n_push", "n_hardship"]
+        assert "अफ़सोस" in result["reply"]
+
+    async def test_complaint_is_off_script_and_keeps_the_node(
+        self, engine, monkeypatch
+    ):
+        """"You are not listening" contains "nahi" but must NOT descend the
+        ladder — the turn is off-script, the node unchanged, and the next
+        real answer is still consumed by the SAME node."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "lo-1")
+        complaint = await _ladder_turn(engine, "aap meri baat sun nahi rahe ho", "lo-1")
+        assert complaint["offScript"] is True
+        assert complaint["reply"] == ""
+        assert complaint["signal"] == "complaint"
+        assert "क्या आप अभी payment करेंगे" in (complaint["nodePrompt"] or "")
+        assert complaint["done"] is False
+        followup = await _ladder_turn(engine, "haan theek hai", "lo-1")
+        assert followup["trace"] == ["n_push", "n_ptype"]  # node was retained
+
+    async def test_repeated_refusal_never_becomes_payment_intent(
+        self, engine, monkeypatch
+    ):
+        """"nahi karunga" contains the positive-edge token "karunga" — the
+        refusal signal must still route it down the refusal edge."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "lr-1")
+        first = await _ladder_turn(engine, "abhi nahi", "lr-1")
+        assert first["trace"] == ["n_push", "n_benefits"]  # one authored rung
+        second = await _ladder_turn(engine, "nahi karunga bola na", "lr-1")
+        assert second["trace"] == ["n_benefits", "n_refuse_end"]
+        assert second["done"] is True
+        assert "पूरा payment" not in second["reply"]  # never the positive path
+
+    async def test_gibberish_retries_then_takes_authored_else(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "lz-1")
+        retry = await _ladder_turn(engine, "ghar par sab jama hue", "lz-1")
+        assert retry["trace"] == ["n_push"]  # re-ask, no transition
+        assert "क्या आप अभी payment करेंगे" in retry["reply"]
+        second = await _ladder_turn(engine, "ghar par sab jama hue", "lz-1")
+        assert second["trace"][:2] == ["n_push", "n_benefits"]  # authored else
+
+    async def test_gibberish_without_else_goes_off_script_not_first_edge(
+        self, engine, monkeypatch
+    ):
+        """n_benefits has NO else edge: unmatched input must never blindly
+        follow the first outgoing edge (the old sequential-script bug)."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "lf-1")
+        await _ladder_turn(engine, "abhi nahi", "lf-1")  # → awaiting n_benefits
+        await _ladder_turn(engine, "ghar par sab jama hue", "lf-1")  # retry 1
+        result = await _ladder_turn(engine, "ghar par sab jama hue", "lf-1")
+        assert result["offScript"] is True
+        assert result["done"] is False
+
+    async def test_hardship_at_ask_node_is_off_script(self, engine, monkeypatch):
+        """An ask node must not burn retries (or advance) on a hardship
+        statement — off-script, and the ask still accepts the next answer."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "la-1")
+        await _ladder_turn(engine, "haan", "la-1")  # → awaiting n_ptype
+        hardship = await _ladder_turn(engine, "mere paas paise nahi hain", "la-1")
+        assert hardship["offScript"] is True and hardship["done"] is False
+        answer = await _ladder_turn(engine, "poora kar dunga", "la-1")
+        assert answer["slots"]["payment_type"] == "full"
+        assert answer["done"] is True
+
+    async def test_hardship_then_callback_closes_respectfully(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "पर मेरे पास पैसे नहीं हैं।", "lb-1")
+        result = await _ladder_turn(engine, "haan baad mein baat karte hain", "lb-1")
+        assert result["trace"] == ["n_hardship", "n_callback_end"]
+        assert result["done"] is True
+
+    async def test_ladder_state_isolated_per_session(self, engine, monkeypatch):
+        """A new call starts at the top — no leakage from other sessions."""
+        _use_definition(monkeypatch, LADDER)
+        await _ladder_turn(engine, "namaste", "li-1")
+        await _ladder_turn(engine, "abhi nahi", "li-1")  # session 1 at rung 2
+        fresh = await _ladder_turn(engine, "namaste", "li-2")
+        assert fresh["trace"] == ["n_start", "n_push"]
+        assert "क्या आप अभी payment करेंगे" in fresh["reply"]

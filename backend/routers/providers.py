@@ -46,7 +46,8 @@ from backend.core.provider_catalog import (
     validate_voice_settings,
 )
 from backend.core.responses import ok
-from shared.audio.pcm import pcm_to_wav_bytes
+from shared.audio.pcm import pcm_to_wav_bytes, silence_pcm
+from shared.providers.tts.delivery import apply_delivery_params
 from shared.config import get_settings
 from shared.db.mysql import get_db
 from shared.errors import ApiError, NotFoundError
@@ -84,6 +85,7 @@ def _serialize_model(row) -> dict:
     return {
         "code": row.code,
         "displayName": row.display_name,
+        "description": row.description,
         "provider": row.provider_code,
         "capability": row.capability,
         "languages": row.languages or [],
@@ -364,36 +366,81 @@ class PreviewRequest(BaseModel):
     language: str
     text: str = Field(min_length=1, max_length=_PREVIEW_MAX_CHARS)
     params: dict = Field(default_factory=dict)
+    # Delivery tuning (optional, same ranges as the voice-settings API). The
+    # mapping onto provider parameters is shared with live calls
+    # (shared.providers.tts.delivery), so a preview always sounds like the
+    # runtime would.
+    speed: float | None = Field(default=None, ge=0.5, le=2.0)
+    pause_ms: int | None = Field(default=None, alias="pauseMs", ge=0, le=5000)
+    energy: int | None = Field(default=None, ge=0, le=100)
+
+    model_config = {"populate_by_name": True}
 
 
-async def _collect_preview_audio(provider_client, text: str) -> tuple[bytes, float | None]:
-    """Stream a preview generation and return (pcm, time-to-first-audio-ms)."""
+async def _preview_sentences(text: str, pause_ms: int | None) -> list[str]:
+    """Sentence segments for a preview — the runtime aggregator's rules.
+
+    Without a pause there is nothing to insert between segments, so the text
+    synthesizes in one piece exactly as before.
+    """
+    if not pause_ms or pause_ms <= 0:
+        return [text]
+    from voice_runtime.aggregator import split_sentences  # lazy: pulls pipecat
+
+    return await split_sentences(text) or [text]
+
+
+async def _collect_preview_audio(
+    provider_client, sentences: list[str], *, pause_ms: int | None, sample_rate: int
+) -> tuple[bytes, float | None]:
+    """Stream a preview and return (pcm, time-to-first-audio-ms).
+
+    Each sentence is one provider generation; segments are joined with the
+    same deterministic silence live calls insert (never before the first or
+    after the last sentence).
+    """
     started = time.perf_counter()
     await provider_client.connect()
-    await provider_client.synthesize_stream(text, generation_id="preview")
-    await provider_client.flush("preview")
-    await provider_client.finish("preview")
 
-    chunks: list[bytes] = []
+    segments: list[bytes] = []
     ttfa_ms: float | None = None
     deadline = started + _PREVIEW_TIMEOUT_S
-    while True:
-        remaining = deadline - time.perf_counter()
-        if remaining <= 0:
-            raise ProviderError(provider_client.name, "timeout", "Preview timed out")
-        try:
-            event = await asyncio.wait_for(provider_client.events.get(), timeout=remaining)
-        except (TimeoutError, asyncio.TimeoutError):
-            raise ProviderError(provider_client.name, "timeout", "Preview timed out") from None
-        if event.kind == "audio":
-            if ttfa_ms is None:
-                ttfa_ms = (time.perf_counter() - started) * 1000
-            chunks.append(event.audio)
-        elif event.kind == "final":
-            break
-        elif event.kind == "error" and event.error is not None:
-            raise event.error
-    return b"".join(chunks), ttfa_ms
+    for index, sentence in enumerate(sentences):
+        generation_id = f"preview-{index + 1}"
+        await provider_client.synthesize_stream(sentence, generation_id=generation_id)
+        await provider_client.flush(generation_id)
+        await provider_client.finish(generation_id)
+        chunks: list[bytes] = []
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise ProviderError(provider_client.name, "timeout", "Preview timed out")
+            try:
+                event = await asyncio.wait_for(provider_client.events.get(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                raise ProviderError(provider_client.name, "timeout", "Preview timed out") from None
+            if event.kind == "audio":
+                if ttfa_ms is None:
+                    ttfa_ms = (time.perf_counter() - started) * 1000
+                chunks.append(event.audio)
+            elif event.kind == "final":
+                break
+            elif event.kind == "error" and event.error is not None:
+                raise event.error
+        if chunks:
+            if segments and pause_ms:
+                segments.append(silence_pcm(sample_rate, pause_ms))
+            segments.append(b"".join(chunks))
+    return b"".join(segments), ttfa_ms
+
+
+def _join_preview_segments(
+    segments: list[bytes], *, pause_ms: int | None, sample_rate: int
+) -> bytes:
+    """Join REST-synthesized sentence segments with the shared silence gap."""
+    audible = [segment for segment in segments if segment]
+    gap = silence_pcm(sample_rate, pause_ms or 0)
+    return gap.join(audible) if gap else b"".join(audible)
 
 
 @router.post("/providers/tts-preview")
@@ -424,14 +471,75 @@ async def tts_preview(
     wire_voice = voice_row.provider_voice_id or voice_row.name if voice_row else body.voice
     started = time.perf_counter()
 
+    # Delivery tuning uses the SAME provider mapping as live calls: canonical
+    # speed overrides legacy pace/speed params; Energy maps only onto controls
+    # the selected model documents. Empathy (and the conversational half of
+    # Energy) shape LLM-generated replies and cannot rewrite fixed preview text.
+    params = apply_delivery_params(
+        body.provider, body.model, body.params,
+        speed=body.speed, energy=body.energy,
+    )
+    sentences = await _preview_sentences(body.text, body.pause_ms)
+
     if body.provider == "mock":
         from shared.providers.base import ProviderConfig
         from shared.providers.tts.mock import MockTTS
 
-        result = await MockTTS(ProviderConfig(provider="mock")).synthesize(
-            body.text, voice=wire_voice, language=body.language
+        mock_client = MockTTS(ProviderConfig(provider="mock"))
+        segments = []
+        for sentence in sentences:
+            result = await mock_client.synthesize(
+                sentence, voice=wire_voice, language=body.language,
+                speed=body.speed or 1.0,
+            )
+            segments.append(result.audio)
+        sample_rate = result.sample_rate
+        pcm = _join_preview_segments(
+            segments, pause_ms=body.pause_ms, sample_rate=sample_rate
         )
-        pcm, sample_rate, ttfa_ms = result.audio, result.sample_rate, 1.0
+        ttfa_ms = 1.0
+    elif not model_row.streaming and body.provider == "elevenlabs":
+        # Models without realtime WebSocket support (Eleven v3) synthesize
+        # previews over REST with the dynamically selected model — one call
+        # per sentence when a pause gap has to be inserted.
+        from shared.providers.base import ProviderConfig
+        from shared.providers.tts.elevenlabs import ElevenLabsTTS
+
+        reference = provider_row.secret_ref or f"env:{provider_row.code.upper()}_API_KEY"
+        if not _provider_secret(provider_row):
+            raise ApiError(
+                f"No API key configured for {provider_row.name} — set the referenced "
+                "environment variable to enable previews.", 422,
+            )
+        client = ElevenLabsTTS(ProviderConfig(
+            provider="elevenlabs",
+            model=body.model,
+            voice=wire_voice,
+            language=body.language,
+            api_key_reference=reference,
+            timeout_seconds=_PREVIEW_TIMEOUT_S,
+            extra=params,
+        ))
+        try:
+            segments = []
+            ttfa_ms = None
+            for sentence in sentences:
+                result = await client.synthesize(
+                    sentence, voice=wire_voice, language=body.language,
+                    speed=body.speed or 1.0,
+                )
+                if ttfa_ms is None:
+                    # single-shot REST: first audio == first full response
+                    ttfa_ms = result.duration_ms
+                segments.append(result.audio)
+        except ProviderError as exc:
+            raise ApiError(f"{provider_row.name} preview failed: {exc.category}.", 502) from exc
+        finally:
+            await client.aclose()
+        sample_rate = result.sample_rate
+        pcm = _join_preview_segments(
+            segments, pause_ms=body.pause_ms, sample_rate=sample_rate
+        )
     else:
         key = _provider_secret(provider_row)
         if not key:
@@ -447,7 +555,7 @@ async def tts_preview(
             language=body.language,
             sample_rate=sample_rate,
             codec="linear16" if body.provider == "sarvam" else "pcm",
-            params=body.params,
+            params=params,
             api_key=key,
             timeout_seconds=_TEST_TIMEOUT_S,
         )
@@ -460,7 +568,9 @@ async def tts_preview(
             raise ApiError(f"Preview is not supported for provider '{body.provider}'.", 422)
         client = client_cls(stream_settings)
         try:
-            pcm, ttfa_ms = await _collect_preview_audio(client, body.text)
+            pcm, ttfa_ms = await _collect_preview_audio(
+                client, sentences, pause_ms=body.pause_ms, sample_rate=sample_rate
+            )
         except ProviderError as exc:
             raise ApiError(f"{provider_row.name} preview failed: {exc.category}.", 502) from exc
         finally:

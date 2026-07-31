@@ -366,36 +366,76 @@ CURRENCIES = [
 #   ("beta pricing") = ₹3 per 1K; bulbul:v2 ₹15/10K = ₹1.5 per 1K.
 #   INR prices convert to USD via the Super-Admin-managed exchange rate at
 #   usage time — rates are never hardcoded here.
-# - OpenAI (developers.openai.com/api/docs/models/whisper-1):
-#   whisper-1 $0.006 per minute.
+# - OpenAI (developers.openai.com/api/docs/pricing, re-verified 2026-07-31):
+#   text models are quoted per 1M tokens split three ways — input, cached
+#   input and output — so they are priced with the matching split components
+#   rather than one blended per-token rate (see OPENAI_LLM_PRICES).
+#   Embeddings $0.02/1M (3-small) and $0.13/1M (3-large). Transcription is
+#   per minute of audio: whisper-1 and gpt-4o-transcribe $0.006,
+#   gpt-transcribe $0.0045, gpt-4o-mini-transcribe $0.003. TTS is per
+#   character: tts-1 $15/1M, tts-1-hd $30/1M.
 # - Deepgram (deepgram.com/pricing): nova-3 streaming pay-as-you-go
 #   $0.0058/min multilingual (mono-English is $0.0048/min — the platform is
 #   multilingual, so the multilingual rate applies); nova-2 streaming
 #   $0.35/hour (FAQ: "unchanged rates for existing deployments"); true
 #   per-second billing, no round-up.
 # - ElevenLabs (elevenlabs.io/pricing/api): Flash/Turbo v2.5 API usage
-#   $0.05 per 1K characters, billed in USD.
+#   $0.05 per 1K characters (0.5 credits/char); Eleven v3 bills 1 credit/char
+#   — twice the Flash rate — so $0.10 per 1K characters. Billed in USD.
 # Super Admin updates these under Platform Configuration → Provider Pricing;
 # usage events snapshot the price they were costed with, so historical costs
 # never change.
+# OpenAI text-model list prices in USD per 1M tokens, as published:
+# (model_code, input, cached input, output). A None cached rate means the
+# model has no discounted cached-input tier — no row is created for it.
+OPENAI_LLM_PRICES = [
+    ("gpt-5.6-sol", "5.00", "0.50", "30.00"),
+    ("gpt-5.6-terra", "2.00", "0.20", "12.00"),
+    ("gpt-5.6-luna", "0.20", "0.02", "1.20"),
+    ("gpt-5.1", "1.25", "0.125", "10.00"),
+    ("gpt-5", "1.25", "0.125", "10.00"),
+    ("gpt-5-mini", "0.25", "0.025", "2.00"),
+    ("gpt-5-nano", "0.05", "0.005", "0.40"),
+    ("gpt-4.1", "2.00", "0.50", "8.00"),
+    ("gpt-4.1-mini", "0.40", "0.10", "1.60"),
+    ("gpt-4.1-nano", "0.10", "0.025", "0.40"),
+    ("gpt-4o", "2.50", "1.25", "10.00"),
+    ("gpt-4o-mini", "0.15", "0.075", "0.60"),
+]
+
 PROVIDER_PRICING = [
     # (provider_code, capability, model_code, component, unit, unit_price, currency)
-    ("openai", "llm", "gpt-4o-mini", "tokens", "per_1k_tokens", "0.0006", "USD"),
-    ("openai", "llm", "gpt-4o", "tokens", "per_1k_tokens", "0.005", "USD"),
-    ("openai", "llm", "gpt-4.1-mini", "tokens", "per_1k_tokens", "0.0007", "USD"),
-    ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1k_tokens", "0.00002", "USD"),
-    ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1k_tokens", "0.00013", "USD"),
+    # ── LLM ──────────────────────────────────────────────────────────────
+    *[
+        ("openai", "llm", model, component, "per_1m_tokens", price, "USD")
+        for model, price_in, price_cached, price_out in OPENAI_LLM_PRICES
+        for component, price in (
+            ("input_tokens", price_in),
+            ("cached_input_tokens", price_cached),
+            ("output_tokens", price_out),
+        )
+        if price is not None
+    ],
+    # ── Embedding ────────────────────────────────────────────────────────
+    ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1m_tokens", "0.02", "USD"),
+    ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1m_tokens", "0.13", "USD"),
     # ── STT ──────────────────────────────────────────────────────────────
     ("sarvam", "stt", "saarika:v2.5", "audio_seconds", "per_hour", "30", "INR"),
     ("sarvam", "stt", "saaras:v3", "audio_seconds", "per_hour", "30", "INR"),
     ("openai", "stt", "whisper-1", "audio_seconds", "per_minute", "0.006", "USD"),
+    ("openai", "stt", "gpt-transcribe", "audio_seconds", "per_minute", "0.0045", "USD"),
+    ("openai", "stt", "gpt-4o-transcribe", "audio_seconds", "per_minute", "0.006", "USD"),
+    ("openai", "stt", "gpt-4o-mini-transcribe", "audio_seconds", "per_minute", "0.003", "USD"),
     ("deepgram", "stt", "nova-3", "audio_seconds", "per_minute", "0.0058", "USD"),
     ("deepgram", "stt", "nova-2", "audio_seconds", "per_hour", "0.35", "USD"),
     # ── TTS ──────────────────────────────────────────────────────────────
     ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "3", "INR"),
     ("sarvam", "tts", "bulbul:v2", "characters", "per_1k_characters", "1.5", "INR"),
     ("elevenlabs", "tts", "eleven_flash_v2_5", "characters", "per_1k_characters", "0.05", "USD"),
+    ("elevenlabs", "tts", "eleven_v3", "characters", "per_1k_characters", "0.10", "USD"),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "characters", "per_1k_characters", "0.05", "USD"),
+    ("openai", "tts", "tts-1", "characters", "per_1m_characters", "15.00", "USD"),
+    ("openai", "tts", "tts-1-hd", "characters", "per_1m_characters", "30.00", "USD"),
 ]
 
 SYSTEM_SETTINGS = [

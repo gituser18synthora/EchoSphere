@@ -54,6 +54,13 @@ _CLOSE_HANDSHAKE_TIMEOUT = 2.0
 # Models that accept the language_code enforcement query parameter.
 _LANGUAGE_ENFORCING_MODELS = {"eleven_flash_v2_5", "eleven_turbo_v2_5"}
 
+# Models the ElevenLabs realtime WebSocket does not accept (official docs:
+# "That endpoint does not support the eleven_v3 model"). Configurations with
+# these models must run the REST adapter (shared/providers/tts/elevenlabs.py);
+# rejecting here turns a misrouted config into a clear error instead of a
+# cryptic server-side close.
+_WS_UNSUPPORTED_MODELS = {"eleven_v3"}
+
 _VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style",
                        "use_speaker_boost", "speed")
 
@@ -81,6 +88,15 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
     async def connect(self) -> None:
         if self._closed:
             raise RuntimeError("provider is closed")
+        model = self._settings.model or ""
+        if model in _WS_UNSUPPORTED_MODELS:
+            message = (
+                f"ElevenLabs model '{model}' is not supported on the realtime "
+                "WebSocket — use a streaming model (e.g. eleven_flash_v2_5) "
+                "for live synthesis"
+            )
+            await self._emit_error("invalid_input", message)
+            raise ProviderError(self.name, "invalid_input", message)
         if self._ws is not None and self._ws.state is State.OPEN:
             return
         url = self._build_url()

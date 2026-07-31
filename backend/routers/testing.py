@@ -215,6 +215,12 @@ async def chat_test(
                 user_text=body.message,
             )
             reply, done = result["reply"], result["done"]
+            if result.get("offScript"):
+                # The workflow held its node; a live call answers this turn
+                # through the LLM, grounded in the paused step.
+                reply = ("(Off-script turn — the workflow stays at its "
+                         "current step; in a live call the assistant would "
+                         "answer the caller's message via the LLM.)")
             workflow_detail = {
                 "name": name,
                 "source": result["source"],
@@ -222,6 +228,8 @@ async def chat_test(
                 "workflowId": result["workflowId"],
                 "nodeTrace": result["trace"],
                 "slots": result["slots"],
+                "offScript": bool(result.get("offScript")),
+                "signal": result.get("signal"),
                 "done": done,
             }
             try:

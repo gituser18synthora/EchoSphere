@@ -258,8 +258,8 @@ _EDITABLE = {
         "config", "sort_order",
     },
     "provider-models": {
-        "display_name", "languages", "codecs", "sample_rates", "streaming",
-        "params_schema", "is_default", "sort_order",
+        "display_name", "description", "languages", "codecs", "sample_rates",
+        "streaming", "params_schema", "is_default", "sort_order",
     },
     "languages": {
         "name", "native_name", "iso_code", "script", "direction",

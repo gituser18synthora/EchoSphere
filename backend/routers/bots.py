@@ -374,6 +374,27 @@ _VOICE_SETTINGS_FIELDS = (
     "fallback_provider", "fallback_model", "fallback_voice", "audio_settings",
 )
 
+# Delivery tuning's speaking speed is the single canonical speed control:
+# per-provider duplicates in stored TTS parameters are stripped on save and
+# hidden on read (the runtime additionally overrides any value that survives
+# in old rows — see shared/providers/tts/delivery.py).
+_LEGACY_SPEED_PARAMS = ("pace", "speed")
+
+
+def _strip_legacy_speed(params: dict | None) -> dict:
+    return {k: v for k, v in (params or {}).items() if k not in _LEGACY_SPEED_PARAMS}
+
+
+def _sanitize_language_voice_map(lang_map: dict | None) -> dict | None:
+    if lang_map is None:
+        return None
+    sanitized: dict = {}
+    for locale, entry in lang_map.items():
+        if isinstance(entry, dict) and entry.get("params"):
+            entry = {**entry, "params": _strip_legacy_speed(entry["params"])}
+        sanitized[locale] = entry
+    return sanitized
+
 
 def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
     return {
@@ -383,7 +404,7 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "pauseMs": s.pause_ms,
         "empathy": s.empathy,
         "energy": s.energy,
-        "languageVoiceMap": s.language_voice_map or {},
+        "languageVoiceMap": _sanitize_language_voice_map(s.language_voice_map) or {},
         "sttProvider": s.stt_provider,
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
@@ -391,7 +412,7 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
-        "ttsSettings": s.tts_settings or {},
+        "ttsSettings": _strip_legacy_speed(s.tts_settings),
         "llmProvider": s.llm_provider,
         "llmModel": s.llm_model,
         "llmSettings": s.llm_settings or {},
@@ -450,6 +471,13 @@ def update_voice_settings(
                 )
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
+
+    # Sanitize legacy per-provider speed duplicates before validation and
+    # persistence — Delivery tuning's speed is the only speed control.
+    if body.tts_settings is not None:
+        body.tts_settings = _strip_legacy_speed(body.tts_settings)
+    if body.language_voice_map is not None:
+        body.language_voice_map = _sanitize_language_voice_map(body.language_voice_map)
 
     # The provider registry gates which adapters exist; the DB catalog gates
     # which provider/model/language/voice/parameter combinations are valid.

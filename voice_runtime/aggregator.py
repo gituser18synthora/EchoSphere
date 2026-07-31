@@ -77,3 +77,18 @@ class VoiceSentenceAggregator(SimpleTextAggregator):
     async def reset(self):
         self._held = ""
         await super().reset()
+
+
+async def split_sentences(text: str) -> list[str]:
+    """Split complete text into the same sentence segments live calls speak.
+
+    Runs the text through a fresh ``VoiceSentenceAggregator`` so previews and
+    tests share the exact boundary rules of the runtime (NLTK-confirmed ends;
+    abbreviations/decimals are not boundaries; short sentences merge forward).
+    """
+    aggregator = VoiceSentenceAggregator()
+    sentences = [aggregation.text async for aggregation in aggregator.aggregate(text)]
+    remaining = await aggregator.flush()
+    if remaining and remaining.text.strip():
+        sentences.append(remaining.text)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
