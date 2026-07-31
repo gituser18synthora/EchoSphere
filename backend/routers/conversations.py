@@ -10,6 +10,7 @@ stays in MySQL as the source of truth.
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -20,6 +21,12 @@ from backend.core.deps import (
     get_current_user,
     require_tenant_admin,
     resolve_tenant_id,
+)
+from backend.core.transcripts import (
+    find_transcript_doc,
+    recording_descriptor,
+    resolve_recording_path,
+    ui_turns,
 )
 from shared.errors import NotFoundError
 from shared.ids import new_id
@@ -99,10 +106,38 @@ async def get_conversation(
     if c is None or c.is_deleted:
         raise NotFoundError("Conversation")
     assert_tenant_access(user, c.tenant_id)
-    doc = await Mongo.transcripts().find_one({"session_id": c.id})
-    transcript = (doc or {}).get("turns", [])
+    doc = await find_transcript_doc(c)
+    transcript = ui_turns((doc or {}).get("turns"))
     names = _bot_names(db, [c.bot_id])
-    return ok(serialize_conversation(c, bot_name=names.get(c.bot_id, "—"), transcript=transcript))
+    return ok(serialize_conversation(
+        c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
+        recording=recording_descriptor(c, doc),
+    ))
+
+
+@router.get("/conversations/{conversation_id}/recording")
+async def get_conversation_recording(
+    conversation_id: str,
+    download: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream the call audio. Same visibility rules as the conversation itself;
+    the file reference always comes from the transcript document — clients
+    never pass paths."""
+    c = db.get(ConversationSession, conversation_id)
+    if c is None or c.is_deleted:
+        raise NotFoundError("Conversation")
+    assert_tenant_access(user, c.tenant_id)
+    doc = await find_transcript_doc(c)
+    info = (doc or {}).get("recording") or {}
+    full = resolve_recording_path(info.get("path"))
+    if full is None:
+        raise NotFoundError("Recording")
+    kwargs: dict = {"media_type": info.get("mimeType") or "audio/wav"}
+    if download:
+        kwargs["filename"] = f"echosphere-call-{c.id}{full.suffix or '.wav'}"
+    return FileResponse(full, **kwargs)
 
 
 class TurnPayload(BaseModel):

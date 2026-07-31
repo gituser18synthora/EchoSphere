@@ -13,7 +13,7 @@ from pipecat.services.tts_service import TTSService
 from pipecat.utils.time import time_now_iso8601
 
 from shared.providers.base import ProviderError, STTProvider, TTSProvider
-from shared.audio.pcm import wav_to_pcm
+from shared.audio.pcm import resample_pcm, silence_pcm, wav_to_pcm
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class EchoTTSService(TTSService):
         voice: str | None = None,
         language: str | None = None,
         speed: float = 1.0,
+        pause_ms: int = 0,
         sample_rate: int | None = None,
         recorder=None,
         model: str | None = None,
@@ -78,15 +79,33 @@ class EchoTTSService(TTSService):
         self._voice = voice
         self._language = language
         self._speed = speed
+        self._pause_ms = max(0, int(pause_ms or 0))
         self._recorder = recorder
         self._model = model or ""
+        # Sentence pause bookkeeping: sentences of one turn share a context id
+        # and synthesize strictly in sequence here, so "a previous sentence of
+        # this context produced audio" IS the sentence boundary. A new turn
+        # (or barge-in) gets a fresh context id, which resets the counter.
+        self._pause_context_id: str | None = None
+        self._spoken_in_context = 0
 
     def can_generate_metrics(self) -> bool:
         return True
 
     async def run_tts(self, text: str, context_id: str):
+        if context_id != self._pause_context_id:
+            self._pause_context_id = context_id
+            self._spoken_in_context = 0
+        # The gap is PREPENDED to the next sentence's first audio, so a turn
+        # never starts or ends with inserted silence, and interruption drops
+        # it together with the rest of the audio context.
+        gap_owed = self._pause_ms > 0 and self._spoken_in_context > 0
         try:
             await self.start_ttfb_metrics()
+            # REST providers emit a fixed rate (e.g. ElevenLabs pcm_16000);
+            # frames are stamped with the pipeline rate, so mismatching audio
+            # must be resampled or it plays at the wrong speed.
+            provider_rate = getattr(self._provider, "output_sample_rate", None)
             first = True
             async for chunk in self._provider.stream_synthesize(
                 text, voice=self._voice, language=self._language, speed=self._speed
@@ -96,6 +115,12 @@ class EchoTTSService(TTSService):
                 if first:
                     await self.stop_ttfb_metrics()
                     first = False
+                    self._spoken_in_context += 1
+                    if gap_owed:
+                        yield TTSAudioRawFrame(
+                            silence_pcm(self.sample_rate, self._pause_ms),
+                            self.sample_rate, 1, context_id=context_id,
+                        )
                     add_usage = getattr(self._recorder, "add_tts_usage", None)
                     if add_usage is not None:
                         # Billed once per synthesized segment, on first audio.
@@ -105,6 +130,8 @@ class EchoTTSService(TTSService):
                             voice=self._voice or "",
                             characters=len(text),
                         )
+                if provider_rate and provider_rate != self.sample_rate:
+                    chunk = resample_pcm(chunk, provider_rate, self.sample_rate)
                 yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
         except ProviderError as exc:
             logger.warning("TTS provider failure: %s", exc)

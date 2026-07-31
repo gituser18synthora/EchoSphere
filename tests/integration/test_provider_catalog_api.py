@@ -66,10 +66,54 @@ class TestCatalogReads:
         models = data(client.get(f"{API}/providers/tts/elevenlabs/models", headers=tenant_admin))
         codes = {m["code"] for m in models}
         assert "eleven_flash_v2_5" in codes
+        assert "eleven_v3" in codes
         assert "eleven_turbo_v2_5" not in codes  # seeded inactive
         flash = next(m for m in models if m["code"] == "eleven_flash_v2_5")
         assert flash["paramsSchema"]["stability"]["max"] == 1.0
         assert flash["isDefault"] is True
+
+    def test_both_elevenlabs_models_expose_verified_capabilities(self, client, tenant_admin):
+        """eleven_flash_v2_5 and eleven_v3 ship the officially documented
+        capabilities: flash streams realtime with the full settings schema;
+        v3 is REST-only with discrete stability and no realtime knobs."""
+        models = data(client.get(f"{API}/providers/tts/elevenlabs/models", headers=tenant_admin))
+        by_code = {m["code"]: m for m in models}
+
+        flash = by_code["eleven_flash_v2_5"]
+        assert flash["streaming"] is True
+        assert flash["provider"] == "elevenlabs" and flash["capability"] == "tts"
+        assert {"stability", "similarity_boost", "style", "use_speaker_boost",
+                "speed"} <= set(flash["paramsSchema"])
+        assert flash["description"]
+
+        v3 = by_code["eleven_v3"]
+        assert v3["streaming"] is False           # not on the realtime WebSocket
+        assert v3["isDefault"] is False           # flash stays the default
+        assert v3["provider"] == "elevenlabs" and v3["capability"] == "tts"
+        assert v3["description"]
+        # Catalog-derived platform locales (languages table = source of
+        # truth): en-US and en-IN are separate records; Indic locales flash
+        # lacks are covered; Odia is not officially supported by Eleven v3.
+        assert {"en-US", "en-IN", "hi-IN", "bn-IN", "mr-IN", "gu-IN", "te-IN",
+                "kn-IN", "ml-IN", "pa-IN"} <= set(v3["languages"])
+        assert "or-IN" not in v3["languages"]
+        # Locale codes, not bare ISO — every entry is a catalog-shaped code.
+        assert all("-" in code for code in v3["languages"])
+        # Only documented v3 settings — realtime/WS parameters are absent.
+        schema = v3["paramsSchema"]
+        assert set(schema) == {"stability", "similarity_boost", "style"}
+        assert schema["stability"]["type"] == "enum"
+        assert schema["stability"]["values"] == [0.0, 0.5, 1.0]
+        assert schema["stability"]["labels"] == {"0": "Creative", "0.5": "Natural", "1": "Robust"}
+
+    def test_elevenlabs_voices_compatible_with_both_models(self, client, tenant_admin):
+        """Seeded catalog voices (and backfilled clones) accept flash AND v3."""
+        seeded = {"Monika", "Raju", "Niraj", "Leo", "Viraj", "Shardul", "Anvi", "Shivank"}
+        for model in ("eleven_flash_v2_5", "eleven_v3"):
+            voices = data(client.get(
+                f"{API}/providers/tts/elevenlabs/voices?model={model}", headers=tenant_admin,
+            ))
+            assert {v["name"] for v in voices} >= seeded, f"missing voices for {model}"
 
     def test_bulbul_languages_intersected_with_platform(self, client, tenant_admin):
         payload = data(client.get(
@@ -147,6 +191,92 @@ class TestValidation:
         joined = " ".join(result["errors"])
         assert "'temperature' must be between" in joined
         assert "unknown parameter 'made_up'" in joined
+
+    def test_eleven_v3_default_engine_with_voice_is_valid(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {
+                "ttsProvider": "elevenlabs", "ttsModel": "eleven_v3",
+                "ttsVoice": "vp-el-monika",
+                "ttsSettings": {"stability": 0.5, "similarity_boost": 0.9, "style": 0.1},
+            },
+        }))
+        assert result["valid"], result["errors"]
+
+    def test_eleven_v3_rejects_unsupported_and_off_grid_settings(self, client, tenant_admin):
+        # speed is a flash/turbo setting — unknown for v3; stability is a
+        # discrete enum (0.0 / 0.5 / 1.0) so 0.7 is off-grid.
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {
+                "ttsProvider": "elevenlabs", "ttsModel": "eleven_v3",
+                "ttsVoice": "vp-el-monika",
+                "ttsSettings": {"speed": 1.1, "stability": 0.7},
+            },
+        }))
+        assert not result["valid"]
+        joined = " ".join(result["errors"])
+        assert "unknown parameter 'speed'" in joined
+        assert "'stability' must be one of 0.0, 0.5, 1.0" in joined
+
+    def test_eleven_v3_rejected_for_fallback_and_language_overrides(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {
+                "ttsProvider": "sarvam", "ttsModel": "bulbul:v3", "ttsVoice": "vp-sv-shubh",
+                "fallbackProvider": "elevenlabs", "fallbackModel": "eleven_v3",
+                "fallbackVoice": "vp-el-monika",
+            },
+        }))
+        assert not result["valid"]
+        assert any(
+            "Fallback TTS" in e and "does not support realtime streaming" in e
+            for e in result["errors"]
+        )
+
+    def test_eleven_v3_language_override_rejected(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {
+                "ttsProvider": "elevenlabs", "ttsModel": "eleven_flash_v2_5",
+                "ttsVoice": "vp-el-monika",
+                "languageVoiceMap": {
+                    "hi-IN": {"provider": "elevenlabs", "model": "eleven_v3",
+                              "voice": "vp-el-monika"},
+                },
+            },
+        }))
+        assert not result["valid"]
+        assert any(
+            "Voice mapping [hi-IN]" in e and "does not support realtime streaming" in e
+            for e in result["errors"]
+        )
+
+    def test_eleven_v3_default_with_overrides_warns_features_unavailable(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {
+                "ttsProvider": "elevenlabs", "ttsModel": "eleven_v3",
+                "ttsVoice": "vp-el-monika",
+                "fallbackProvider": "sarvam", "fallbackModel": "bulbul:v3",
+                "fallbackVoice": "vp-sv-shubh",
+            },
+        }))
+        assert result["valid"], result["errors"]
+        assert any(
+            "does not stream in realtime" in w and "fallback engine" in w
+            for w in result["warnings"]
+        )
+
+    def test_inactive_model_rejected(self, client, tenant_admin):
+        # eleven_turbo_v2_5 exists in the catalog but is seeded inactive.
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"ttsProvider": "elevenlabs", "ttsModel": "eleven_turbo_v2_5",
+                       "ttsVoice": "vp-el-monika"},
+        }))
+        assert not result["valid"]
+        assert any("does not belong to provider 'elevenlabs'" in e for e in result["errors"])
 
 
 class TestSecretsNeverLeak:
@@ -229,6 +359,36 @@ class TestPermissionsAndAudit:
             "text": "x" * 501,
         })
         assert response.status_code == 422
+
+    def test_preview_eleven_v3_uses_rest_with_selected_model(
+        self, client, tenant_admin, monkeypatch
+    ):
+        """eleven_v3 has no WebSocket support — previews synthesize over REST
+        and the request carries model_id=eleven_v3 (never another model)."""
+        from shared.providers.base import TTSResult
+        import shared.providers.tts.elevenlabs as elevenlabs_rest
+
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-preview-test")
+        seen: dict = {}
+
+        async def fake_synthesize(self, text, *, voice=None, language=None, speed=1.0):
+            seen["model"] = self._model
+            seen["params"] = dict(self._params)
+            seen["voice"] = voice
+            return TTSResult(audio=b"\x00\x01" * 320, sample_rate=16000, duration_ms=42.0)
+
+        monkeypatch.setattr(elevenlabs_rest.ElevenLabsTTS, "synthesize", fake_synthesize)
+
+        result = data(client.post(f"{API}/providers/tts-preview", headers=tenant_admin, json={
+            "provider": "elevenlabs", "model": "eleven_v3", "voice": "vp-el-monika",
+            "language": "hi-IN", "text": "Namaste!",
+            "params": {"stability": 0.5},
+        }))
+        assert seen["model"] == "eleven_v3"
+        assert seen["params"] == {"stability": 0.5}
+        assert seen["voice"] == "f1abxvIEijusskcPWE5x"  # wire id, not profile id
+        wav = base64.b64decode(result["audioBase64"])
+        assert wav[:4] == b"RIFF" and result["sampleRate"] == 16000
 
 
 class TestSarvamSpeakerConsistency:

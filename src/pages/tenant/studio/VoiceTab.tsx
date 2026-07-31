@@ -29,6 +29,19 @@ import { useApp } from "@/state/AppContext";
 
 const DEFAULT_SAMPLE_TEXT = "Hello! I'm your voice assistant. How can I help you today?";
 
+/* Delivery tuning's Speaking speed is the single canonical speed control for
+   a bot. The provider-specific duplicates (Sarvam `pace`, ElevenLabs `speed`)
+   are hidden from this page and stripped from saved values — the runtime maps
+   the canonical speed onto each engine. The admin voice catalog keeps the
+   full schema. */
+const DELIVERY_SPEED_PARAMS = ["pace", "speed"];
+
+function stripDeliverySpeedParams<T>(record: Record<string, T> | undefined): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record ?? {}).filter(([key]) => !DELIVERY_SPEED_PARAMS.includes(key)),
+  );
+}
+
 function voiceSupportsModel(v: VoiceOption, model: string): boolean {
   return !model || v.modelCodes.length === 0 || v.modelCodes.includes(model);
 }
@@ -60,6 +73,7 @@ interface FallbackState { provider: string; model: string; voice: string }
 
 interface PreviewContext {
   provider: string; model: string; voice: string; language: string; params?: ProviderSettings;
+  tuning?: VoiceTuning;
 }
 
 type TestState = Record<string, { busy: boolean; result: ProviderTestResult | null }>;
@@ -144,7 +158,9 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     setTuning({ speed: s.speed, pauseMs: s.pauseMs, empathy: s.empathy, energy: s.energy });
     setStt({ provider: s.sttProvider ?? "", model: s.sttModel ?? "", language: s.sttLanguage ?? "", settings: s.sttSettings ?? {} });
     setLlm({ provider: s.llmProvider ?? "", model: s.llmModel ?? "", settings: s.llmSettings ?? {} });
-    setTts({ provider: s.ttsProvider ?? "", model: s.ttsModel ?? "", voice: s.ttsVoice ?? "", settings: s.ttsSettings ?? {} });
+    /* Legacy pace/speed duplicates are dropped so Delivery tuning stays the
+       only speed control (they are also stripped server-side on save). */
+    setTts({ provider: s.ttsProvider ?? "", model: s.ttsModel ?? "", voice: s.ttsVoice ?? "", settings: stripDeliverySpeedParams(s.ttsSettings ?? {}) });
     setFallback({ provider: s.fallbackProvider ?? "", model: s.fallbackModel ?? "", voice: s.fallbackVoice ?? "" });
     setLangMap(() => {
       /* Keep only entries for the bot's current languages plus the "default" locale key. */
@@ -294,11 +310,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     void ensureVoices(provider);
     const def = await defaultModelOf("tts", provider);
     setTts((s) => (s.provider === provider && !s.model
-      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(stripDeliverySpeedParams(def?.paramsSchema)) }
       : s));
   };
   const changeTtsModel = (model: string) => {
-    const schema = modelInfo("tts", tts.provider, model)?.paramsSchema;
+    const schema = stripDeliverySpeedParams(modelInfo("tts", tts.provider, model)?.paramsSchema);
     setTts((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
   };
 
@@ -461,10 +477,14 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   const sttModels = modelsFor("stt", stt.provider);
   const llmModels = modelsFor("llm", llm.provider);
   const ttsModels = modelsFor("tts", tts.provider);
-  const fallbackModels = modelsFor("tts", fallback.provider);
+  /* Fallback synthesis happens inside the realtime streaming router — models
+     without realtime streaming (Eleven v3) are not offered; the backend
+     rejects them too. */
+  const fallbackModels = modelsFor("tts", fallback.provider).filter((m) => m.streaming);
   const sttSchema = modelInfo("stt", stt.provider, stt.model)?.paramsSchema;
   const llmSchema = modelInfo("llm", llm.provider, llm.model)?.paramsSchema;
-  const ttsSchema = modelInfo("tts", tts.provider, tts.model)?.paramsSchema;
+  /* Provider pace/speed never renders here — Delivery tuning owns speed. */
+  const ttsSchema = stripDeliverySpeedParams(modelInfo("tts", tts.provider, tts.model)?.paramsSchema);
 
   /* What an inheriting language actually uses — the primary TTS engine. */
   const primaryEngineSummary = tts.provider
@@ -495,7 +515,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={stt.provider} onChange={(v) => void changeSttProvider(v)}
             />
             <ModelSelect
-              label="Model" models={sttModels} value={stt.model}
+              label="Model" ariaLabel="STT model" models={sttModels} value={stt.model}
               disabled={!stt.provider} onChange={changeSttModel}
             />
             {stt.provider && stt.model && (
@@ -539,7 +559,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={llm.provider} onChange={(v) => void changeLlmProvider(v)}
             />
             <ModelSelect
-              label="Model" models={llmModels} value={llm.model}
+              label="Model" ariaLabel="LLM model" models={llmModels} value={llm.model}
               disabled={!llm.provider} onChange={changeLlmModel}
             />
             <ParamFields
@@ -564,7 +584,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               value={tts.provider} onChange={(v) => void changeTtsProvider(v)}
             />
             <ModelSelect
-              label="Model" models={ttsModels} value={tts.model}
+              label="Model" ariaLabel="TTS model" models={ttsModels} value={tts.model}
               disabled={!tts.provider} onChange={changeTtsModel}
             />
             {tts.provider && (
@@ -594,6 +614,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                 onClick={() => setPreview({
                   provider: tts.provider, model: tts.model, voice: tts.voice,
                   language: defaultLocale || bot.languages[0] || "", params: tts.settings,
+                  tuning,
                 })}
               >
                 Preview voice
@@ -607,12 +628,16 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           {/* Delivery tuning (compact) */}
           <SectionCard title="Delivery tuning" sub="How the assistant sounds, independent of engine">
             <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={1.4} step={0.05} fmt={(v) => `${v.toFixed(2)}×`}
+              hint="Applies across all voice providers — the single speed control for this bot."
               onChange={(v) => setTuning((t) => ({ ...t, speed: v }))} />
             <Slider label="Pause between sentences" value={tuning.pauseMs} min={100} max={900} step={50} fmt={(v) => `${v}ms`}
+              hint="Silence inserted between assistant sentences."
               onChange={(v) => setTuning((t) => ({ ...t, pauseMs: v }))} />
             <Slider label="Empathy" value={tuning.empathy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+              hint="Influences wording and acknowledgement in generated replies."
               onChange={(v) => setTuning((t) => ({ ...t, empathy: v }))} />
             <Slider label="Energy" value={tuning.energy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+              hint="How calm or lively replies feel; native voice support varies by provider."
               onChange={(v) => setTuning((t) => ({ ...t, energy: v }))} />
           </SectionCard>
 
@@ -643,7 +668,11 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                   const entry = langMap[locale];
                   const override = entry && typeof entry === "object" ? entry : null;
                   const legacy = typeof entry === "string" && entry ? entry : null;
-                  const rowModels = override ? modelsFor("tts", override.provider) : [];
+                  /* Per-language overrides run inside the realtime streaming
+                     router — only streaming-capable models are offered. */
+                  const rowModels = override
+                    ? modelsFor("tts", override.provider).filter((m) => m.streaming)
+                    : [];
                   const rowModelsLoaded = override ? modelsRef.current[`tts:${override.provider}`] !== undefined : false;
                   const providerKnown = !override || ttsProviders.some((p) => p.code === override.provider);
                   const modelKnown = !override?.model || rowModels.some((m) => m.code === override.model);
@@ -671,7 +700,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                             aria-label={`Preview voice for ${langLabel(locale)}`}
                             onClick={() => override && setPreview({
                               provider: override.provider, model: override.model, voice: override.voice,
-                              language: locale, params: override.params,
+                              language: locale, params: override.params, tuning,
                             })}
                           >
                             Preview
@@ -933,20 +962,33 @@ function ProviderSelect({ label, capability, providers, value, onChange }: {
   );
 }
 
-function ModelSelect({ label, models, value, onChange, disabled }: {
+function ModelSelect({ label, models, value, onChange, disabled, ariaLabel }: {
   label: string; models: ProviderModelInfo[]; value: string;
   onChange: (v: string) => void; disabled?: boolean;
+  /** Distinct accessible name — the visible label is "Model" in every engine section. */
+  ariaLabel?: string;
 }) {
+  /* Concise catalog description of the selected model, plus a realtime note
+     for TTS models the provider cannot stream over its realtime socket
+     (e.g. Eleven v3 — replies synthesize per segment over REST). */
+  const selected = models.find((m) => m.code === value);
+  const hint = selected
+    ? [selected.description, selected.capability === "tts" && !selected.streaming
+        ? "No realtime streaming — replies are synthesized per segment (higher latency)."
+        : null].filter(Boolean).join(" ") || undefined
+    : undefined;
   return (
-    <Field label={label} plain>
+    <Field label={label} plain hint={hint}>
       <select
-        className="select" value={value} disabled={disabled} aria-label={label}
+        className="select" value={value} disabled={disabled} aria-label={ariaLabel ?? label}
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{disabled ? "Provider default" : "Select model"}</option>
         {value && !models.some((m) => m.code === value) && <option value={value}>{value}</option>}
         {models.map((m) => (
-          <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " (default)" : ""}</option>
+          <option key={m.code} value={m.code} title={m.description ?? undefined}>
+            {m.displayName}{m.isDefault ? " (default)" : ""}
+          </option>
         ))}
       </select>
     </Field>
@@ -993,9 +1035,9 @@ function CleanupCallout({ items, onApply }: { items: string[]; onApply: () => vo
    Delivery tuning slider (kept from the previous tab)
    ============================================================ */
 
-function Slider({ label, value, min, max, step, fmt, onChange }: {
+function Slider({ label, value, min, max, step, fmt, hint, onChange }: {
   label: string; value: number; min: number; max: number; step: number;
-  fmt: (v: number) => string; onChange: (v: number) => void;
+  fmt: (v: number) => string; hint?: string; onChange: (v: number) => void;
 }) {
   return (
     <label className="col gap-6">
@@ -1010,6 +1052,7 @@ function Slider({ label, value, min, max, step, fmt, onChange }: {
         style={{ accentColor: "var(--brand-500)", width: "100%" }}
         aria-label={label}
       />
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }
@@ -1078,6 +1121,11 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         provider: form.provider, model: form.model, voice: form.voice,
         language: form.language, text: form.text.trim(),
         params: ctx && form.provider === ctx.provider && form.model === ctx.model ? ctx.params : undefined,
+        /* Delivery tuning: canonical speed, sentence pause and native energy
+           mapping are applied server-side with the live-call logic. */
+        speed: ctx?.tuning?.speed,
+        pauseMs: ctx?.tuning?.pauseMs,
+        energy: ctx?.tuning?.energy,
       });
       setResult(r);
       const audio = new Audio(`data:${r.mimeType};base64,${r.audioBase64}`);
@@ -1194,6 +1242,13 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
             onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
           />
         </Field>
+        {ctx?.tuning && (
+          <p className="t-micro" style={{ margin: 0 }}>
+            Applies your Delivery tuning: speaking speed {ctx.tuning.speed.toFixed(2)}× and a {ctx.tuning.pauseMs}ms
+            pause between sentences (plus native energy mapping where the provider supports it).
+            Empathy and conversational energy shape live LLM-generated replies, not this fixed text.
+          </p>
+        )}
         {error && <Callout tone="critical" title="Preview failed">{error}</Callout>}
         {result && (
           <div className="row gap-6 t-micro" style={{ alignItems: "center" }}>

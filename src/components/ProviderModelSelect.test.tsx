@@ -32,7 +32,10 @@ const MODELS: Record<string, { code: string; displayName: string; isDefault: boo
   "stt:sarvam": [{ code: "saaras:v3", displayName: "Saaras v3", isDefault: true }],
   "stt:deepgram": [],
   "tts:sarvam": [{ code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true }],
-  "tts:elevenlabs": [{ code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true }],
+  "tts:elevenlabs": [
+    { code: "eleven_flash_v2_5", displayName: "Eleven Flash v2.5", isDefault: true },
+    { code: "eleven_v3", displayName: "Eleven v3 (expressive)", isDefault: false },
+  ],
   "embedding:openai": [{ code: "text-embedding-3-small", displayName: "text-embedding-3-small", isDefault: true }],
 };
 
@@ -91,6 +94,19 @@ describe("ProviderModelSelect", () => {
     await user.selectOptions(await screen.findByLabelText("Provider"), ["Sarvam AI"]);
     expect(await screen.findByText("Bulbul v3 · default")).toBeInTheDocument();
     expect(screen.queryByText(/Eleven Flash/)).not.toBeInTheDocument();
+  });
+
+  it("offers both ElevenLabs models and selecting each keeps its code", async () => {
+    const user = userEvent.setup();
+    render(<Pair capability="tts" />);
+    await user.selectOptions(await screen.findByLabelText("Provider"), ["ElevenLabs"]);
+    expect(await screen.findByText("Eleven Flash v2.5 · default")).toBeInTheDocument();
+    expect(screen.getByText("Eleven v3 (expressive)")).toBeInTheDocument();
+    const model = screen.getByLabelText("Model");
+    await user.selectOptions(model, ["eleven_v3"]);
+    expect(model).toHaveValue("eleven_v3");
+    await user.selectOptions(model, ["eleven_flash_v2_5"]);
+    expect(model).toHaveValue("eleven_flash_v2_5");
   });
 
   it("changing provider clears an incompatible model", async () => {

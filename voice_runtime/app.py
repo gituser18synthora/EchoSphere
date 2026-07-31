@@ -44,6 +44,28 @@ validate_settings("voice-runtime")
 _active_sessions: dict[str, asyncio.Task] = {}
 
 
+async def _close_websocket(
+    websocket: WebSocket, code: int = 1000, reason: str | None = None
+) -> None:
+    """Idempotent WebSocket close — safe on every shutdown path.
+
+    The pipecat transport owns the socket during the call and usually sends
+    the close frame itself (client disconnect, cancellation, worker end).
+    Starlette raises ``RuntimeError: Cannot call "send" once a close message
+    has been sent`` on a second close, so this checks the server-side state
+    first and swallows the race where the transport closes in between.
+    """
+    if websocket.application_state == WebSocketState.DISCONNECTED:
+        return
+    try:
+        await websocket.close(code=code, reason=reason or "")
+    except RuntimeError:
+        # Close frame already sent (or the client vanished mid-close).
+        pass
+    except Exception:  # noqa: BLE001 — closing must never raise into teardown
+        logger.debug("websocket close failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await Mongo.connect()
@@ -100,18 +122,18 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
     from shared.telephony import SUPPORTED_PROVIDERS
 
     if provider not in SUPPORTED_PROVIDERS:
-        await websocket.close(code=4404, reason="unknown provider")
+        await _close_websocket(websocket, code=4404, reason="unknown provider")
         return
     session = await load_voice_session(session_id)
     if session is None:
-        await websocket.close(code=4401, reason="unknown or expired session")
+        await _close_websocket(websocket, code=4401, reason="unknown or expired session")
         return
     if session_id in _active_sessions:
         # Reject duplicates BEFORE the handshake read: a duplicate connection
         # that never sends `start` must not park inside receive_text() holding
         # a socket while the real stream is live. (_run_call re-checks.)
         await websocket.accept()
-        await websocket.close(code=4409, reason="session already active")
+        await _close_websocket(websocket, code=4409, reason="session already active")
         return
     await websocket.accept()
 
@@ -128,10 +150,10 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
                         start_message = message
                         break
         except Exception:  # noqa: BLE001 — timeout, disconnect or bad JSON
-            await websocket.close(code=4400, reason="invalid stream handshake")
+            await _close_websocket(websocket, code=4400, reason="invalid stream handshake")
             return
         if start_message is None:
-            await websocket.close(code=4400, reason="missing stream start message")
+            await _close_websocket(websocket, code=4400, reason="missing stream start message")
             return
     # Importing Pipecat and its serializers can take longer than the
     # mod_audio_stream WebSocket handshake timeout on the first call after a
@@ -146,7 +168,7 @@ async def telephony_session(websocket: WebSocket, provider: str, session_id: str
             transport=transport,
         )
     except ApiError as exc:
-        await websocket.close(code=4400, reason=exc.message[:100])
+        await _close_websocket(websocket, code=4400, reason=exc.message[:100])
         return
     await _run_call(
         websocket,
@@ -164,7 +186,7 @@ async def voice_session(websocket: WebSocket, session_id: str):
     tenant/bot mapping issued by the API."""
     session = await load_voice_session(session_id)
     if session is None:
-        await websocket.close(code=4401, reason="unknown or expired session")
+        await _close_websocket(websocket, code=4401, reason="unknown or expired session")
         return
     await websocket.accept()
     await _run_call(websocket, session_id, session)
@@ -181,7 +203,7 @@ async def _run_call(
 ):
     settings = get_settings()
     if len(_active_sessions) >= settings.voice_worker_concurrency:
-        await websocket.close(code=4429, reason="voice worker at capacity")
+        await _close_websocket(websocket, code=4429, reason="voice worker at capacity")
         return
     if session_id in _active_sessions:
         # A second live connection for the same session (telephony retry or
@@ -192,7 +214,7 @@ async def _run_call(
             "voice session %s already active — rejecting duplicate connection",
             session_id,
         )
-        await websocket.close(code=4409, reason="session already active")
+        await _close_websocket(websocket, code=4409, reason="session already active")
         return
     # Claim the session BEFORE any awaits so a concurrent connect can't slip
     # through between the check above and pipeline start.
@@ -208,14 +230,14 @@ async def _run_call(
     except Exception:  # noqa: BLE001
         logger.exception("bot config resolution failed for %s", session_id)
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4404, reason="bot configuration unavailable")
+        await _close_websocket(websocket, code=4404, reason="bot configuration unavailable")
         return
 
     # Defense-in-depth: the session's tenant must match the bot's tenant.
     if session["tenant_id"] != config.tenant_id:
         logger.error("tenant mismatch for session %s", session_id)
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4403, reason="forbidden")
+        await _close_websocket(websocket, code=4403, reason="forbidden")
         return
 
     from pipecat.pipeline.runner import PipelineRunner
@@ -314,7 +336,7 @@ async def _run_call(
         logger.exception("pipeline construction failed for %s", session_id)
         await recorder.flush_event("pipeline_build_failed")
         _active_sessions.pop(session_id, None)
-        await websocket.close(code=4500, reason="voice engine configuration error")
+        await _close_websocket(websocket, code=4500, reason="voice engine configuration error")
         return
 
     @transport.event_handler("on_client_connected")
@@ -353,8 +375,9 @@ async def _run_call(
         max_duration_handle.cancel()
         _active_sessions.pop(session_id, None)
         await end_voice_session(session_id)
-        if websocket.client_state == WebSocketState.CONNECTED:
-            await websocket.close()
+        # _close_websocket is idempotent: it no-ops when the transport (or a
+        # client disconnect) already completed the close handshake.
+        await _close_websocket(websocket)
         logger.info("voice session %s ended (turns=%d)", session_id, len(recorder.turns))
 
 

@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Governance from "@/pages/admin/Governance";
 import * as api from "@/services/api";
 
 vi.mock("@/services/api", () => ({
+  createMaster: vi.fn(),
   listMaster: vi.fn(),
   setMasterStatus: vi.fn(),
   listModels: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("@/state/AppContext", () => ({
 
 const listMaster = vi.mocked(api.listMaster);
 const setMasterStatus = vi.mocked(api.setMasterStatus);
+const createMaster = vi.mocked(api.createMaster);
 
 const paged = (items: Record<string, unknown>[]) => ({
   items,
@@ -58,6 +60,7 @@ function installMocks() {
     return Promise.resolve(paged([]));
   }) as never);
   setMasterStatus.mockResolvedValue({} as never);
+  createMaster.mockResolvedValue({} as never);
   vi.mocked(api.listModels).mockResolvedValue([] as never);
   vi.mocked(api.listGuardrails).mockResolvedValue([] as never);
   vi.mocked(api.listTemplates).mockResolvedValue([] as never);
@@ -126,6 +129,65 @@ describe("AI Governance — provider matrix", () => {
       expect(setMasterStatus).toHaveBeenCalledWith("provider-models", "pm_2", "inactive"));
   });
 
+  it("creates a provider model from the selected provider and refreshes the catalog", async () => {
+    const user = userEvent.setup();
+    render(<Governance />);
+    await screen.findByText("GPT-4o mini");
+    const callsBeforeCreate = listMaster.mock.calls.filter(([mtype]) => mtype === "provider-models").length;
+
+    await user.click(screen.getByRole("button", { name: "Add model" }));
+    const dialog = screen.getByRole("dialog", { name: "Add provider model" });
+    expect(within(dialog).getByLabelText("Capability")).toHaveValue("LLM");
+    expect(within(dialog).getByLabelText("Provider")).toHaveValue("OpenAI (openai)");
+
+    await user.type(within(dialog).getByLabelText("Model ID"), "gpt-5-mini");
+    await user.type(within(dialog).getByLabelText("Display name"), "GPT-5 mini");
+    await user.type(within(dialog).getByLabelText("Languages"), "en, hi-IN");
+    await user.type(within(dialog).getByLabelText("Sample rates"), "16000, 24000");
+    fireEvent.change(within(dialog).getByLabelText("Parameter schema (JSON)"), {
+      target: { value: '{"temperature":{"type":"number","default":0.2}}' },
+    });
+    await user.click(within(dialog).getByRole("switch", { name: "Streaming" }));
+    await user.click(within(dialog).getByRole("button", { name: "Add model" }));
+
+    await waitFor(() => expect(createMaster).toHaveBeenCalledWith("provider-models", {
+      code: "gpt-5-mini",
+      name: "GPT-5 mini",
+      description: "",
+      providerCode: "openai",
+      capability: "llm",
+      languages: ["en", "hi-IN"],
+      codecs: [],
+      sampleRates: [16000, 24000],
+      paramsSchema: { temperature: { type: "number", default: 0.2 } },
+      streaming: true,
+      isDefault: false,
+      sortOrder: 0,
+    }));
+    await waitFor(() => {
+      const callsAfterCreate = listMaster.mock.calls.filter(([mtype]) => mtype === "provider-models").length;
+      expect(callsAfterCreate).toBeGreaterThan(callsBeforeCreate);
+    });
+    expect(screen.queryByRole("dialog", { name: "Add provider model" })).not.toBeInTheDocument();
+  });
+
+  it("validates model metadata before calling the API", async () => {
+    const user = userEvent.setup();
+    render(<Governance />);
+    await screen.findByText("GPT-4o mini");
+    await user.click(screen.getByRole("button", { name: "Add model" }));
+    const dialog = screen.getByRole("dialog", { name: "Add provider model" });
+
+    await user.type(within(dialog).getByLabelText("Model ID"), "gpt-5-mini");
+    await user.type(within(dialog).getByLabelText("Display name"), "GPT-5 mini");
+    await user.clear(within(dialog).getByLabelText("Parameter schema (JSON)"));
+    await user.type(within(dialog).getByLabelText("Parameter schema (JSON)"), "not-json");
+    await user.click(within(dialog).getByRole("button", { name: "Add model" }));
+
+    expect(await within(dialog).findByText("Enter valid JSON, for example {}.")).toBeInTheDocument();
+    expect(createMaster).not.toHaveBeenCalled();
+  });
+
   it("moves a deactivated provider model to the bottom after the refetch", async () => {
     const user = userEvent.setup();
     let flipped = false;
@@ -159,5 +221,45 @@ describe("AI Governance — provider matrix", () => {
       expect(setMasterStatus).toHaveBeenCalledWith("provider-models", "pm_1", "inactive"));
     // No manual refresh: the models table refetched and the inactive model dropped last.
     await waitFor(() => expect(modelOrder()).toEqual(["gpt4o", "mini"]));
+  });
+});
+
+describe("AI Governance — approved models", () => {
+  it("keeps deprecated models below approved and testing models", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listModels).mockResolvedValue([
+      {
+        id: "model_deprecated_1", name: "Legacy Alpha", provider: "OpenAI",
+        purpose: "conversation", status: "deprecated", tenantsUsing: 0,
+        costPer1k: 0.01, latencyP50: 900,
+      },
+      {
+        id: "model_testing", name: "Testing Beta", provider: "OpenAI",
+        purpose: "conversation", status: "testing", tenantsUsing: 1,
+        costPer1k: 0.02, latencyP50: 700,
+      },
+      {
+        id: "model_approved", name: "Approved Gamma", provider: "OpenAI",
+        purpose: "conversation", status: "approved", tenantsUsing: 3,
+        costPer1k: 0.03, latencyP50: 500,
+      },
+      {
+        id: "model_deprecated_2", name: "Legacy Delta", provider: "OpenAI",
+        purpose: "conversation", status: "deprecated", tenantsUsing: 0,
+        costPer1k: 0.01, latencyP50: 1000,
+      },
+    ]);
+
+    render(<Governance />);
+    await screen.findByText("GPT-4o mini");
+    await user.click(screen.getByRole("tab", { name: "Approved Models" }));
+    await screen.findByText("Approved Gamma");
+
+    const order = screen.getAllByRole("row")
+      .map((row) => ["Testing Beta", "Approved Gamma", "Legacy Alpha", "Legacy Delta"]
+        .find((name) => within(row).queryByText(name)))
+      .filter(Boolean);
+
+    expect(order).toEqual(["Testing Beta", "Approved Gamma", "Legacy Alpha", "Legacy Delta"]);
   });
 });

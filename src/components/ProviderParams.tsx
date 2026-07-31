@@ -94,18 +94,28 @@ export function ParamField({ spec, value, onChange }: {
           />
         </div>
       );
-    case "enum":
+    case "enum": {
+      /* Numeric enums (e.g. Eleven v3 stability 0.0/0.5/1.0) must stay
+         numbers on the wire — the backend validates by identity against the
+         schema values. Optional labels give values readable names. */
+      const numeric = (spec.values ?? []).every((v) => typeof v === "number");
+      const display = (v: string | number) => spec.labels?.[String(v)]
+        ? `${spec.labels[String(v)]} (${v})`
+        : String(v);
       return (
         <Field label={spec.label} plain hint={spec.help}>
           <select
             className="select" aria-label={spec.label}
             value={String(value ?? spec.default ?? "")}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onChange(numeric ? Number(e.target.value) : e.target.value)}
           >
-            {(spec.values ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+            {(spec.values ?? []).map((v) => (
+              <option key={String(v)} value={String(v)}>{display(v)}</option>
+            ))}
           </select>
         </Field>
       );
+    }
     case "number":
     case "integer":
       return <NumberParam spec={spec} value={value} onChange={onChange} />;

@@ -96,3 +96,5 @@ desktop.ini
 *.p12
 *.pfx
 .devrun
+# Generated voice clone recordings
+storage/voice_clones/

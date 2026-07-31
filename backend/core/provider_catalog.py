@@ -21,6 +21,7 @@ from shared.models import (
     ProviderDef,
     ProviderModel,
     SupportedLanguage,
+    VoiceBotSetting,
     VoiceProfile,
 )
 from shared.providers.languages import matches_model_language
@@ -190,6 +191,15 @@ def has_credentials(provider: ProviderDef) -> bool:
     return bool(get_settings().resolve_secret(reference))
 
 
+def get_platform_language(db: Session, code: str | None) -> SupportedLanguage | None:
+    """Language catalog record for a platform locale code (any enabled state)."""
+    if not code or not str(code).strip():
+        return None
+    return db.scalar(
+        select(SupportedLanguage).where(SupportedLanguage.code == str(code).strip())
+    )
+
+
 # ── parameter-schema validation ──────────────────────────────────────────────
 
 def validate_params(schema: dict | None, params: dict | None, *, prefix: str) -> list[str]:
@@ -265,6 +275,7 @@ def _validate_engine(
     warnings: list[str],
     require_voice: bool = False,
     tenant_id: str | None = None,
+    require_streaming: bool = False,
 ) -> ProviderModel | None:
     """Validate one TTS engine selection (provider+model+voice+language+params)."""
     if not provider:
@@ -283,6 +294,14 @@ def _validate_engine(
         model_row = get_model(db, "tts", provider, model)
         if model_row is None:
             errors.append(f"{prefix}: model '{model}' does not belong to provider '{provider}'.")
+        elif require_streaming and not model_row.streaming:
+            # Fallback and per-language engines exist only inside the realtime
+            # streaming router — a model without realtime streaming support
+            # (e.g. ElevenLabs eleven_v3) can never serve them.
+            errors.append(
+                f"{prefix}: model '{model}' does not support realtime streaming — "
+                "choose a streaming model (e.g. eleven_flash_v2_5)."
+            )
     elif require_voice:
         errors.append(f"{prefix}: a model is required.")
     if voice:
@@ -298,6 +317,22 @@ def _validate_engine(
             )
     elif require_voice:
         errors.append(f"{prefix}: a voice is required.")
+    if language:
+        # The languages table is the source of truth: the locale must be a
+        # catalog record. A record an admin disabled AFTER it was configured
+        # stays usable (bot languages are enabled-checked when added), but is
+        # flagged so the operator sees the legacy state.
+        lang_row = get_platform_language(db, language)
+        if lang_row is None:
+            errors.append(
+                f"{prefix}: language '{language}' is not in the platform language catalog."
+            )
+        elif not lang_row.enabled:
+            warnings.append(
+                f"{prefix}: language '{language}' is disabled on the platform — "
+                "the existing configuration keeps working, but re-enable the "
+                "language or remove this selection."
+            )
     if model_row is not None:
         if language and not matches_model_language(provider, language, model_row.languages):
             errors.append(
@@ -321,6 +356,12 @@ def validate_voice_settings(
     # Voice lookups are scoped to the bot's tenant: platform voices plus the
     # tenant's own clones. Another tenant's cloned voice must fail validation.
     tenant_id = getattr(bot, "tenant_id", None)
+    # Persisted settings distinguish a NEW language selection (rejected when
+    # the language is missing/disabled) from an unchanged legacy one
+    # (preserved with a warning).
+    persisted = db.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id)
+    )
 
     bot_languages = set(db.scalars(
         select(BotLanguage.language_code).where(BotLanguage.bot_id == bot.id)
@@ -349,6 +390,34 @@ def validate_voice_settings(
                         f"STT model '{model}' does not belong to provider '{stt_provider}'."
                     )
             stt_language = payload.get("stt_language")
+            if stt_language and stt_language != "unknown":
+                # Catalog check: the language must exist and be active. An
+                # unchanged persisted value is grandfathered (warning) so a
+                # later-deactivated language never bricks an existing config;
+                # a NEW selection of a missing/disabled language is rejected.
+                lang_row = get_platform_language(db, stt_language)
+                unchanged = (
+                    persisted is not None
+                    and (persisted.stt_language or "") == stt_language
+                )
+                if lang_row is None:
+                    message = (
+                        f"STT language '{stt_language}' is not in the platform "
+                        "language catalog."
+                    )
+                    if unchanged:
+                        warnings.append(message + " Existing configuration preserved.")
+                    else:
+                        errors.append(message)
+                elif not lang_row.enabled:
+                    message = f"STT language '{stt_language}' is disabled on the platform."
+                    if unchanged:
+                        warnings.append(
+                            message + " The existing configuration keeps working; "
+                            "re-enable the language or pick an active one."
+                        )
+                    else:
+                        errors.append(message + " Choose an active language.")
             if stt_language and model_row is not None:
                 if (stt_language != "unknown"
                         and not matches_model_language(
@@ -389,8 +458,9 @@ def validate_voice_settings(
 
     # ── TTS (default engine) ──
     tts_provider = payload.get("tts_provider")
+    tts_model_row = None
     if tts_provider:
-        _validate_engine(
+        tts_model_row = _validate_engine(
             db,
             provider=tts_provider,
             model=payload.get("tts_model"),
@@ -419,7 +489,25 @@ def validate_voice_settings(
             errors=errors,
             warnings=warnings,
             tenant_id=tenant_id,
+            require_streaming=True,
         )
+
+    # A non-streaming default engine (ElevenLabs eleven_v3) runs the segmented
+    # REST pipeline, which has no fallback and no per-language switching —
+    # surface that those configured features will not apply on live calls.
+    if tts_model_row is not None and not tts_model_row.streaming:
+        lang_overrides = [k for k in (payload.get("language_voice_map") or {}) if k != "default"]
+        unavailable = []
+        if fallback_provider:
+            unavailable.append("the fallback engine")
+        if lang_overrides:
+            unavailable.append("per-language voice overrides")
+        if unavailable:
+            warnings.append(
+                f"TTS: model '{tts_model_row.code}' does not stream in realtime — "
+                f"live calls synthesize each reply over REST and "
+                f"{' and '.join(unavailable)} will not apply."
+            )
 
     # ── Per-language voice map ──
     if lang_map:
@@ -444,6 +532,7 @@ def validate_voice_settings(
                     errors=errors,
                     warnings=warnings,
                     tenant_id=tenant_id,
+                    require_streaming=bool(entry.get("model")),
                 )
             elif isinstance(entry, str):
                 voice_row = db.get(VoiceProfile, entry)

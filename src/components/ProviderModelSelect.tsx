@@ -16,6 +16,8 @@ export interface ModelOption {
   code: string;
   displayName: string;
   isDefault: boolean;
+  /** Concise catalog summary shown as the option tooltip. */
+  description?: string | null;
 }
 
 /* Module-level caches: the catalog is small and stable within a session, and
@@ -90,7 +92,10 @@ export function useModelOptions(capability: VoiceCapability, provider: string | 
   const { models, loading, error } = useModelInfos(capability, provider);
   return {
     models: models === null ? null
-      : models.map((m): ModelOption => ({ code: m.code, displayName: m.displayName, isDefault: m.isDefault })),
+      : models.map((m): ModelOption => ({
+          code: m.code, displayName: m.displayName, isDefault: m.isDefault,
+          description: m.description,
+        })),
     loading,
     error,
   };
@@ -156,7 +161,9 @@ export function ModelSelect({ capability, provider, value, onChange, disabled, l
           warning; the backend rejects it on save. */}
       {value && provider && !loading && !known && <option value={value}>{value} (unavailable — inactive)</option>}
       {(models ?? []).map((m) => (
-        <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " · default" : ""}</option>
+        <option key={m.code} value={m.code} title={m.description ?? undefined}>
+          {m.displayName}{m.isDefault ? " · default" : ""}
+        </option>
       ))}
     </select>
   );

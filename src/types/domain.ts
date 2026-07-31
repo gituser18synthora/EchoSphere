@@ -122,7 +122,10 @@ export interface ParamSpec {
   max?: number;
   step?: number;
   default?: ProviderSettingValue;
-  values?: string[];
+  /** Enum choices; numeric values stay numbers on the wire (e.g. Eleven v3 stability 0.0/0.5/1.0). */
+  values?: (string | number)[];
+  /** Optional display names per enum value, keyed by String(value) (e.g. {"0.5": "Natural"}). */
+  labels?: Record<string, string>;
   label: string;
   help?: string;
   advanced?: boolean;
@@ -135,6 +138,8 @@ export interface ParamSpec {
 export interface ProviderModelInfo {
   code: string;
   displayName: string;
+  /** Concise operator-facing summary (quality/latency/streaming traits). */
+  description?: string | null;
   provider: string;
   capability: VoiceCapability;
   /** Provider-native language codes; [] = language-agnostic. */
@@ -766,6 +771,9 @@ export interface PromptTestResult {
 export interface VoiceCloneSampleMeta {
   fileName: string;
   sizeBytes: number;
+  sourceType?: "live_recording" | "file_upload";
+  durationSec?: number | null;
+  audioId?: string;
 }
 
 export interface VoiceCloneMetadata {
@@ -773,6 +781,24 @@ export interface VoiceCloneMetadata {
   requiresVerification?: boolean;
   removeBackgroundNoise?: boolean;
   samples?: VoiceCloneSampleMeta[];
+}
+
+/** A stored source-audio sample a cloned voice was built from. */
+export interface VoiceCloneSourceAudio {
+  id: string;
+  voiceId: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationSec: number | null;
+  sourceType: "live_recording" | "file_upload";
+  provider: string;
+  providerVoiceId: string;
+  status: string;
+  createdBy?: string | null;
+  createdAt?: string | null;
+  /** Authenticated playback endpoint (fetch with the JWT, play as blob). */
+  url: string;
 }
 
 /** Provider-specific clone option rendered dynamically by the Clone Voice UI. */
@@ -796,6 +822,13 @@ export interface VoiceCloneProviderInfo {
   reason: string | null;
 }
 
+export interface VoiceCloneRecordingConfig {
+  minSeconds: number;
+  recommendedMinSeconds: number;
+  recommendedMaxSeconds: number;
+  maxSeconds: number;
+}
+
 export interface VoiceCloneConfig {
   providers: VoiceCloneProviderInfo[];
   allowedExtensions: string[];
@@ -803,6 +836,7 @@ export interface VoiceCloneConfig {
   maxFiles: number;
   maxFileMb: number;
   maxTotalMb: number;
+  recording?: VoiceCloneRecordingConfig;
 }
 
 export interface VoiceProfile {
@@ -830,6 +864,9 @@ export interface VoiceProfile {
   providerSettings?: Record<string, unknown>;
   usageCount?: number;
   updatedAt?: string;
+  /** Stored source samples (cloned voices only; empty for clones created
+   *  before source-audio retention). */
+  sourceAudio?: VoiceCloneSourceAudio[];
 }
 
 export interface VoiceTuning {
@@ -1080,6 +1117,7 @@ export interface ProviderModelMaster extends MasterCommon {
   code: string;
   name: string;
   displayName: string;
+  description?: string | null;
   providerCode: string;
   capability: VoiceCapability;
   languages: string[];
@@ -1267,6 +1305,8 @@ export interface TraceStep {
   promptVersion?: string;
   latencyMs?: number;
   costUsd?: number;
+  /** Wall-clock time of the turn (ISO), present for live voice calls. */
+  at?: string;
 }
 
 export interface TestScenario {
@@ -1323,6 +1363,15 @@ export interface Conversation {
   qaScore?: number;
   flagged: boolean;
   transcript: TraceStep[];
+  /** Present (non-null) only when the call's audio file is available. */
+  recording?: ConversationRecording | null;
+}
+
+export interface ConversationRecording {
+  url: string;
+  mimeType: string;
+  durationSec: number;
+  sizeBytes: number;
 }
 
 /* ---------- Monitoring, security, misc ---------- */

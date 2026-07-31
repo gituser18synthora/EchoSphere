@@ -9,8 +9,6 @@ export const flags = {
   voiceSamplePlayback: false,
   /** Scheduled publish (server-side cron) */
   scheduledPublish: false,
-  /** Recording audio playback (signed URLs) */
-  recordingPlayback: false,
   /** Knowledge connector OAuth flows (Zendesk, Confluence…) */
   knowledgeConnectors: false,
   /** Per-conversation cost visibility for tenant admins */

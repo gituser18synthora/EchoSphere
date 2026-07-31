@@ -45,6 +45,7 @@ from shared.models import (
     TestScenario,
     User,
     VoiceBot,
+    VoiceCloneAudio,
     VoiceProfile,
     Workflow,
 )
@@ -202,6 +203,7 @@ def serialize_provider_model(row: ProviderModel, *, usage: int = 0, names: dict 
         "code": row.code,
         "name": row.display_name,
         "displayName": row.display_name,
+        "description": row.description,
         "providerCode": row.provider_code,
         "capability": row.capability,
         "languages": row.languages or [],
@@ -443,6 +445,26 @@ def serialize_voice(v: VoiceProfile, *, usage: int = 0) -> dict:
     }
 
 
+def serialize_clone_audio(a: VoiceCloneAudio) -> dict:
+    """Stored source-audio sample of a cloned voice. url is the authenticated
+    playback endpoint — the storage path itself is never exposed."""
+    return {
+        "id": a.id,
+        "voiceId": a.voice_id,
+        "originalFilename": a.original_filename,
+        "mimeType": a.mime_type,
+        "sizeBytes": a.size_bytes,
+        "durationSec": a.duration_sec,
+        "sourceType": a.source_type,
+        "provider": a.provider or "",
+        "providerVoiceId": a.provider_voice_id or "",
+        "status": a.status,
+        "createdBy": a.created_by,
+        "createdAt": iso(a.created_at),
+        "url": f"/api/v1/voice-clones/{a.voice_id}/audio/{a.id}",
+    }
+
+
 def serialize_language(lang: SupportedLanguage, *, usage: int = 0) -> dict:
     return {
         "id": lang.id,
@@ -630,7 +652,8 @@ def serialize_release(r: Release) -> dict:
 
 
 def serialize_conversation(c: ConversationSession, *, bot_name: str,
-                           transcript: list | None = None) -> dict:
+                           transcript: list | None = None,
+                           recording: dict | None = None) -> dict:
     return {
         "id": c.id,
         "botId": c.bot_id,
@@ -649,6 +672,8 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "qaScore": c.qa_score,
         "flagged": c.flagged,
         "transcript": transcript or [],
+        # Present only when the audio file is actually available on disk.
+        "recording": recording,
     }
 
 

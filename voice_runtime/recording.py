@@ -8,11 +8,14 @@
 import asyncio
 import logging
 import time
+import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from shared.bot_config import ResolvedBotConfig
 from shared.db.mongo import Mongo
+from shared.ids import new_id
 from shared.knowledge.security import mask_pii
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,27 @@ class SessionRecorder:
         # Conversation language, live: starts at the bot default and follows
         # the caller (the brain updates it on every detected switch).
         self.language: str = config.language
+        # Control-plane row id, fixed up front so the Mongo transcript and the
+        # MySQL conversation_sessions row are created already linked (the API
+        # looks the transcript up by this id).
+        self.control_plane_id: str = new_id("cv")
+        # Set by CallRecordingWriter when call audio was captured.
+        self.recording_info: dict | None = None
+        # The active audio writer (if recording is enabled) — finalized here
+        # because pipeline teardown does not reliably deliver Cancel/End frames
+        # to processors sitting after the output transport.
+        self.recording_writer: "CallRecordingWriter | None" = None
+
+    def set_recording(self, *, path: str, duration_sec: float, sample_rate: int,
+                      channels: int, size_bytes: int) -> None:
+        self.recording_info = {
+            "path": path,
+            "mimeType": "audio/wav",
+            "durationSec": round(duration_sec, 1),
+            "sampleRate": sample_rate,
+            "channels": channels,
+            "sizeBytes": size_bytes,
+        }
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
@@ -95,6 +119,10 @@ class SessionRecorder:
         """Persist transcript + session summary. Called once at call end."""
         self.end_reason = reason
         duration = int(time.time() - self.started_at)
+        if self.recording_writer is not None:
+            # Flush the audio tail and wrap the WAV — idempotent with the
+            # pipeline's own stop hook, whichever fires first.
+            await self.recording_writer.close()
         transcript = [
             {
                 "role": t.role,
@@ -108,25 +136,27 @@ class SessionRecorder:
             for t in self.turns
         ]
         try:
+            payload = {
+                "session_id": self.session_id,
+                "control_plane_id": self.control_plane_id,
+                "tenant_id": self.config.tenant_id,
+                "bot_id": self.config.bot_id,
+                "channel": self.channel,
+                "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc),
+                "duration_sec": duration,
+                "end_reason": reason,
+                "turns": transcript,
+                "events": self.events,
+                "usage": self.usage,
+                "tts_usage": list(self.tts_usage.values()),
+                "bot_version": self.config.version,
+                "language": self.language,
+            }
+            if self.recording_info:
+                payload["recording"] = self.recording_info
             await Mongo.transcripts().update_one(
                 {"session_id": self.session_id},
-                {
-                    "$set": {
-                        "session_id": self.session_id,
-                        "tenant_id": self.config.tenant_id,
-                        "bot_id": self.config.bot_id,
-                        "channel": self.channel,
-                        "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc),
-                        "duration_sec": duration,
-                        "end_reason": reason,
-                        "turns": transcript,
-                        "events": self.events,
-                        "usage": self.usage,
-                        "tts_usage": list(self.tts_usage.values()),
-                        "bot_version": self.config.version,
-                        "language": self.language,
-                    }
-                },
+                {"$set": payload},
                 upsert=True,
             )
         except Exception:  # noqa: BLE001
@@ -139,17 +169,16 @@ class SessionRecorder:
 
         from shared.billing.metering import record_usage_event, rollup_call
         from shared.db.mysql import get_sessionmaker
-        from shared.ids import new_id
         from shared.models import ConversationSession
 
         session = get_sessionmaker()()
         try:
-            existing = session.get(ConversationSession, self.session_id)
+            existing = session.get(ConversationSession, self.control_plane_id)
             if existing is not None:
                 return  # finalize already persisted this call — never re-bill
             escalated = any(e.get("kind") == "handoff" for e in self.events)
             row = ConversationSession(
-                id=new_id("cv"),
+                id=self.control_plane_id,
                 tenant_id=self.config.tenant_id,
                 bot_id=self.config.bot_id,
                 channel="voice" if self.channel != "browser" else "web",
@@ -277,3 +306,109 @@ class SessionRecorder:
             )
 
         return total
+
+
+class CallRecordingWriter:
+    """Streams the call's merged audio to disk and registers the finished WAV.
+
+    Fed by an AudioBufferProcessor at the end of the pipeline (stereo: caller
+    left, bot right). Chunks are appended to a ``.pcm.part`` file off the audio
+    path (thread executor); on stop the raw PCM is wrapped into a WAV next to
+    it and the reference is handed to the SessionRecorder, which persists it on
+    the transcript document. Any failure disables the writer for the rest of
+    the call — recording must never break audio.
+    """
+
+    def __init__(self, recorder: SessionRecorder) -> None:
+        from shared.config import get_settings
+
+        self._recorder = recorder
+        self._relative = f"{recorder.config.tenant_id}/{recorder.session_id}.wav"
+        self._wav_path = Path(get_settings().voice_recordings_dir) / self._relative
+        self._part_path = self._wav_path.with_suffix(".pcm.part")
+        self._sample_rate = 0
+        self._channels = 1
+        self._bytes = 0
+        self._failed = False
+        self._finalized = False
+        # Serializes appends against finalize — the buffer processor delivers
+        # events as detached tasks, so ordering is enforced here.
+        self._lock = asyncio.Lock()
+        # The AudioBufferProcessor feeding this writer; used by close() to
+        # flush its tail buffer, since pipeline teardown does not reliably
+        # deliver Cancel/End frames past the output transport.
+        self.audiobuffer = None
+
+    def _append_sync(self, audio: bytes) -> None:
+        self._part_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._part_path, "ab") as fh:
+            fh.write(audio)
+
+    async def append(self, audio: bytes, sample_rate: int, num_channels: int) -> None:
+        async with self._lock:
+            if self._failed or self._finalized or not audio:
+                return
+            self._sample_rate = sample_rate
+            self._channels = num_channels
+            try:
+                await asyncio.to_thread(self._append_sync, audio)
+                self._bytes += len(audio)
+            except Exception:  # noqa: BLE001
+                self._failed = True
+                logger.warning("call recording write failed for %s — recording disabled",
+                               self._recorder.session_id, exc_info=True)
+
+    def _wrap_wav_sync(self) -> None:
+        with wave.open(str(self._wav_path), "wb") as wav:
+            wav.setnchannels(self._channels)
+            wav.setsampwidth(2)
+            wav.setframerate(self._sample_rate)
+            with open(self._part_path, "rb") as raw:
+                while chunk := raw.read(1 << 20):
+                    wav.writeframes(chunk)
+        self._part_path.unlink(missing_ok=True)
+
+    async def close(self) -> None:
+        """Flush the processor's tail audio, then finalize the WAV.
+
+        Called by SessionRecorder.finalize() at call end (the authoritative
+        path); the processor's own on_recording_stopped hook finalizes too
+        when a graceful EndFrame reaches it first — both are idempotent.
+        """
+        buffer = self.audiobuffer
+        if buffer is not None:
+            try:
+                # Emits the remaining buffered audio through on_audio_data and
+                # fires on_recording_stopped. Handlers are pinned to sync
+                # dispatch in the pipeline, so this awaits the actual writes.
+                await buffer.stop_recording()
+            except Exception:  # noqa: BLE001
+                logger.warning("audio buffer stop failed for %s",
+                               self._recorder.session_id, exc_info=True)
+        await self.finalize()
+
+    async def finalize(self) -> None:
+        """Wrap the streamed PCM into a WAV. Idempotent."""
+        async with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            if self._failed or self._bytes == 0 or self._sample_rate <= 0:
+                await asyncio.to_thread(self._part_path.unlink, missing_ok=True)
+                return
+            try:
+                await asyncio.to_thread(self._wrap_wav_sync)
+                frame_bytes = 2 * self._channels
+                duration = self._bytes / (self._sample_rate * frame_bytes)
+                self._recorder.set_recording(
+                    path=self._relative,
+                    duration_sec=duration,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    size_bytes=self._wav_path.stat().st_size,
+                )
+                logger.info("call recording saved for %s (%.1fs)",
+                            self._recorder.session_id, duration)
+            except Exception:  # noqa: BLE001
+                logger.warning("call recording finalize failed for %s",
+                               self._recorder.session_id, exc_info=True)

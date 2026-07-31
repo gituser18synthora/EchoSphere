@@ -120,13 +120,19 @@ const unitLabel = (unit: unknown): string =>
   PRICING_UNITS.find((u) => u.value === String(unit ?? ""))?.label
     ?? String(unit ?? "").replaceAll("_", " ");
 
-/** "$0.006 per minute" — amount with its currency symbol and unit. */
+/** "$0.006 per minute" — amount with its currency symbol and unit.
+ *
+ * Two minimum decimals so whole and one-decimal list prices read as money
+ * ($15.00, $1.60 — not $15, $1.6); the high maximum keeps sub-cent rates
+ * like $0.0058 per minute intact rather than rounding them to nothing. */
 function PriceCell({ amount, currency, unit }: { amount: unknown; currency: unknown; unit: unknown }) {
   if (amount === null || amount === undefined || amount === "") return <span className="t-sub">—</span>;
   return (
     <span className="t-num">
       {currencySymbol(currency) || String(currency ?? "")}
-      {Number(amount).toLocaleString(undefined, { maximumFractionDigits: 10 })}{" "}
+      {Number(amount).toLocaleString(undefined, {
+        minimumFractionDigits: 2, maximumFractionDigits: 10,
+      })}{" "}
       <span className="t-micro">{unitLabel(unit)}</span>
     </span>
   );

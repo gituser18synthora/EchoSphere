@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field as dc_field
 
 from pipecat.frames.frames import (
@@ -38,10 +39,11 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
-from shared.audio.pcm import resample_pcm
+from shared.audio.pcm import resample_pcm, silence_pcm
 from shared.audio.text import sanitize_for_tts
 from shared.config import get_settings
 from shared.providers.base import ProviderError
+from shared.providers.tts.delivery import apply_delivery_params
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import (
@@ -82,6 +84,17 @@ def is_streaming_tts_provider(provider: str) -> bool:
 
 
 @dataclass
+class _Sentence:
+    """One aggregated sentence queued for pause-aware dispatch.
+
+    ``pause_after`` is False for mid-sentence flush-hint fragments — the gap
+    between a fragment and its continuation is not a sentence boundary."""
+
+    text: str
+    pause_after: bool = True
+
+
+@dataclass
 class _Generation:
     """Book-keeping for one bot reply (== audio context)."""
 
@@ -94,6 +107,19 @@ class _Generation:
     watchdog: asyncio.Task | None = None
     audio_bytes: int = 0   # post-resample bytes delivered downstream
     audio_chunks: int = 0
+    # Pause-aware sentence serialization (active when pause_ms > 0): sentences
+    # wait here until the provider confirms the previous one finished, so
+    # inserted silence always lands BETWEEN complete sentence audio segments.
+    pending: deque = dc_field(default_factory=deque)
+    active: str | None = None            # provider sub-generation id in flight
+    active_pause_after: bool = True
+    active_got_audio: bool = False
+    # A sentence finished audibly and the next one owes a leading pause. The
+    # gap is materialized right before the NEXT dispatch, so a turn that ends
+    # here never gets trailing silence.
+    gap_pending: bool = False
+    turn_complete: bool = False
+    seq: int = 0
 
 
 class StreamingTTSRouter(TTSService):
@@ -103,6 +129,8 @@ class StreamingTTSRouter(TTSService):
         tts_config: dict,
         language: str,
         speed: float = 1.0,
+        pause_ms: int = 0,
+        energy: int | None = None,
         sample_rate: int = 24000,
         recorder=None,
         provider_factory=None,
@@ -142,6 +170,8 @@ class StreamingTTSRouter(TTSService):
         self._base_params: dict = tts_config.get("settings") or {}
         self._current_language = language
         self._speed = speed
+        self._pause_ms = max(0, int(pause_ms or 0))
+        self._energy = energy
         self._recorder = recorder
         self._provider_factory = provider_factory or self._default_provider_factory
         self._first_audio_timeout = first_audio_timeout
@@ -149,6 +179,10 @@ class StreamingTTSRouter(TTSService):
         self._providers: dict[tuple, StreamingTTSProvider] = {}
         self._pumps: dict[tuple, asyncio.Task] = {}
         self._generations: dict[str, _Generation] = {}
+        # Pause mode: provider sub-generation id → pipecat audio-context id.
+        self._subgenerations: dict[str, str] = {}
+        # True while a flush-hint fragment is being pushed (see _Sentence).
+        self._mid_turn_flush = False
         self._fatal_call_ended = False
 
     def can_generate_metrics(self) -> bool:
@@ -174,9 +208,13 @@ class StreamingTTSRouter(TTSService):
     def _stream_settings(self, engine: dict, locale: str) -> TTSStreamSettings:
         provider = engine.get("provider") or "sarvam"
         params = {**self._base_params, **(engine.get("params") or {})}
-        if self._speed and self._speed != 1.0:
-            speed_key = "pace" if provider == "sarvam" else "speed"
-            params.setdefault(speed_key, self._speed)
+        # Canonical Delivery tuning: speed OVERRIDES any legacy pace/speed left
+        # in stored settings; Energy fills only fields the operator left unset
+        # and only ones the model documents (shared.providers.tts.delivery).
+        params = apply_delivery_params(
+            provider, engine.get("model") or "", params,
+            speed=self._speed, energy=self._energy,
+        )
         supported = _SUPPORTED_RATES.get(provider, {self.sample_rate})
         rate = self.sample_rate if self.sample_rate in supported else max(supported)
         reference = engine.get("api_key_reference") or ""
@@ -247,11 +285,17 @@ class StreamingTTSRouter(TTSService):
         """Mid-turn flush: release buffered text and push it to the provider."""
         remaining = await self._text_aggregator.flush()
         if remaining and remaining.text.strip():
-            await self._push_tts_frames(
-                AggregatedTextFrame(
-                    remaining.text, remaining.type, raw_text=remaining.text
+            # The fragment ends mid-sentence: its continuation must not get a
+            # sentence pause in front of it.
+            self._mid_turn_flush = True
+            try:
+                await self._push_tts_frames(
+                    AggregatedTextFrame(
+                        remaining.text, remaining.type, raw_text=remaining.text
+                    )
                 )
-            )
+            finally:
+                self._mid_turn_flush = False
         context_id = self._turn_context_id
         if context_id and self.audio_context_available(context_id):
             await self.flush_audio(context_id)
@@ -283,7 +327,16 @@ class StreamingTTSRouter(TTSService):
                 state = _Generation(engine=engine, provider=provider)
                 self._generations[context_id] = state
             state.texts.append(text)
-            await state.provider.synthesize_stream(text, generation_id=context_id)
+            if self._pause_ms > 0:
+                # Pause mode: sentences are serialized so the provider's
+                # per-sentence completion marks where silence is inserted.
+                state.pending.append(
+                    _Sentence(text=text, pause_after=not self._mid_turn_flush)
+                )
+                if state.active is None:
+                    await self._dispatch_next_sentence(context_id, state)
+            else:
+                await state.provider.synthesize_stream(text, generation_id=context_id)
         except ProviderError as exc:
             handled = await self._try_fallback(context_id, exc)
             if not handled:
@@ -308,10 +361,13 @@ class StreamingTTSRouter(TTSService):
         if state is None:
             return
         state.flushed = True
-        try:
-            await state.provider.flush(flush_id)
-        except (ConnectionError, OSError):
-            pass
+        if self._pause_ms <= 0:
+            # Pause mode flushes per sentence at dispatch — an extra turn-level
+            # flush would fabricate a spurious burst/final on Sarvam.
+            try:
+                await state.provider.flush(flush_id)
+            except (ConnectionError, OSError):
+                pass
         if not state.got_audio and state.watchdog is None:
             state.watchdog = self.create_task(self._first_audio_watchdog(flush_id))
 
@@ -319,20 +375,33 @@ class StreamingTTSRouter(TTSService):
         context_id = self._turn_context_id
         await super().on_turn_context_completed()
         state = self._generations.get(context_id) if context_id else None
-        if state is not None:
-            try:
-                await state.provider.finish(context_id)
-            except (ConnectionError, OSError):
-                pass
+        if state is None:
+            return
+        if self._pause_ms > 0:
+            state.turn_complete = True
+            if state.active is None and not state.pending:
+                # The last sentence's final already arrived — close out now.
+                await self._finalize_generation(context_id, failed=False)
+            return
+        try:
+            await state.provider.finish(context_id)
+        except (ConnectionError, OSError):
+            pass
 
     async def on_audio_context_interrupted(self, context_id: str):
-        """Barge-in: cancel provider synthesis and drop the generation."""
+        """Barge-in: cancel provider synthesis and drop the generation.
+
+        Queued sentences and any not-yet-played silence die with the audio
+        context — a cancelled generation can never emit late audio or pauses.
+        """
         state = self._generations.pop(context_id, None)
+        self._drop_subgenerations(context_id)
         if state is not None:
             if state.watchdog is not None:
                 state.watchdog.cancel()
+            state.pending.clear()
             try:
-                await state.provider.cancel(context_id)
+                await state.provider.cancel(state.active or context_id)
             except (ConnectionError, OSError):
                 pass
         await super().on_audio_context_interrupted(context_id)
@@ -350,6 +419,7 @@ class StreamingTTSRouter(TTSService):
             if state.watchdog is not None:
                 state.watchdog.cancel()
         self._generations.clear()
+        self._subgenerations.clear()
         pumps, self._pumps = self._pumps, {}
         for task in pumps.values():
             await self.cancel_task(task)
@@ -371,14 +441,20 @@ class StreamingTTSRouter(TTSService):
 
     async def _dispatch_event(self, key: tuple, event: TTSStreamEvent):
         generation = event.generation_id
-        state = self._generations.get(generation) if generation else None
+        # Pause mode dispatches per-sentence sub-generations; events map back
+        # to the owning pipecat audio context here.
+        context_id = self._subgenerations.get(generation, generation) if generation else None
+        state = self._generations.get(context_id) if context_id else None
 
         if event.kind == "audio":
             # Reject late audio: unknown/cancelled generations are dropped.
-            if state is None or not self.audio_context_available(generation):
+            if state is None or not self.audio_context_available(context_id):
                 return
+            if self._pause_ms > 0 and generation != state.active:
+                return  # audio from a completed/replaced sentence dispatch
             audio = event.audio
             provider_rate = state.provider.settings.sample_rate
+            state.active_got_audio = True
             if not state.got_audio:
                 state.got_audio = True
                 await self.stop_ttfb_metrics()
@@ -392,7 +468,7 @@ class StreamingTTSRouter(TTSService):
                     "provider_rate=%d router_rate=%d resample=%s "
                     "chunk_bytes=%d (mono s16le)",
                     self._recorder.session_id if self._recorder else "?",
-                    str(generation)[:8], state.engine.get("provider"),
+                    str(context_id)[:8], state.engine.get("provider"),
                     provider_rate, self.sample_rate,
                     provider_rate != self.sample_rate, len(audio),
                 )
@@ -401,25 +477,108 @@ class StreamingTTSRouter(TTSService):
             state.audio_bytes += len(audio)
             state.audio_chunks += 1
             await self.append_to_audio_context(
-                generation,
-                TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=generation),
+                context_id,
+                TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=context_id),
             )
         elif event.kind == "final":
             if state is None:
                 return
-            await self._finalize_generation(generation, failed=False)
+            if self._pause_ms > 0:
+                await self._on_sentence_final(context_id, generation, state)
+            else:
+                await self._finalize_generation(context_id, failed=False)
         elif event.kind == "error":
             error = event.error or ProviderError("tts", "upstream", "unknown TTS error")
             if generation and state is not None:
-                handled = await self._try_fallback(generation, error)
+                handled = await self._try_fallback(context_id, error)
                 if not handled:
                     self._log_engine_failure(state.engine, error, "provider stream")
                     await self.push_error(error_msg=f"tts_failure:{error.category}")
-                    await self._finalize_generation(generation, failed=True)
+                    await self._finalize_generation(context_id, failed=True)
                     await self._maybe_end_call_fatal(error.category)
             else:
                 logger.warning("tts-router: provider error outside generation: %s", error)
         # "disconnected" events are informational — reconnects are lazy.
+
+    # ── pause-aware sentence serialization (pause_ms > 0) ───────────────
+    async def _dispatch_next_sentence(self, context_id: str, state: _Generation):
+        """Send exactly one queued sentence as its own provider generation.
+
+        flush+finish immediately so the provider emits a per-sentence final —
+        the completion boundary at which _on_sentence_final inserts silence
+        and releases the next sentence. Raises like synthesize_stream; callers
+        handle fallback/error routing.
+        """
+        await self._materialize_gap(context_id, state)
+        sentence: _Sentence = state.pending.popleft()
+        state.seq += 1
+        sub_id = f"{context_id}~{state.seq}"
+        self._subgenerations[sub_id] = context_id
+        state.active = sub_id
+        state.active_pause_after = sentence.pause_after
+        state.active_got_audio = False
+        await state.provider.synthesize_stream(sentence.text, generation_id=sub_id)
+        await state.provider.flush(sub_id)
+        await state.provider.finish(sub_id)
+
+    async def _materialize_gap(self, context_id: str, state: _Generation):
+        """Insert the owed inter-sentence silence right before a dispatch.
+
+        Positioning is exact by construction: the previous sentence's audio
+        has fully arrived (its final released the gap) and the next sentence
+        has not been sent to the provider yet.
+        """
+        if not state.gap_pending:
+            return
+        state.gap_pending = False
+        if not self.audio_context_available(context_id):
+            return
+        silence = silence_pcm(self.sample_rate, self._pause_ms)
+        if silence:
+            state.audio_bytes += len(silence)
+            state.audio_chunks += 1
+            await self.append_to_audio_context(
+                context_id,
+                TTSAudioRawFrame(silence, self.sample_rate, 1, context_id=context_id),
+            )
+
+    async def _on_sentence_final(self, context_id: str, sub_id: str, state: _Generation):
+        """One sentence finished rendering: pause, continue, or close out."""
+        self._subgenerations.pop(sub_id, None)
+        if state.active != sub_id:
+            return  # stale final from a replaced (fallback) dispatch
+        state.active = None
+        # Only an audibly-completed real sentence owes the next one a pause —
+        # never a mid-sentence flush fragment, never a silent segment, and a
+        # turn that ends here drops the flag (no trailing silence).
+        if state.active_pause_after and state.active_got_audio:
+            state.gap_pending = True
+        if state.pending:
+            try:
+                await self._dispatch_next_sentence(context_id, state)
+            except ProviderError as exc:
+                await self._handle_sentence_dispatch_failure(context_id, state, exc)
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                await self._handle_sentence_dispatch_failure(
+                    context_id, state,
+                    ProviderError("tts", "upstream", str(exc)[:200]),
+                )
+        elif state.turn_complete:
+            await self._finalize_generation(context_id, failed=False)
+
+    async def _handle_sentence_dispatch_failure(
+        self, context_id: str, state: _Generation, error: ProviderError
+    ):
+        handled = await self._try_fallback(context_id, error)
+        if not handled:
+            self._log_engine_failure(state.engine, error, "sentence dispatch")
+            await self.push_error(error_msg=f"tts_failure:{error.category}")
+            await self._finalize_generation(context_id, failed=True)
+            await self._maybe_end_call_fatal(error.category)
+
+    def _drop_subgenerations(self, context_id: str) -> None:
+        for sub_id in [s for s, ctx in self._subgenerations.items() if ctx == context_id]:
+            self._subgenerations.pop(sub_id, None)
 
     async def _maybe_end_call_fatal(self, category: str) -> None:
         """End the call after an unrecoverable TTS configuration failure.
@@ -443,6 +602,7 @@ class StreamingTTSRouter(TTSService):
 
     async def _finalize_generation(self, context_id: str, *, failed: bool):
         state = self._generations.pop(context_id, None)
+        self._drop_subgenerations(context_id)
         if state is None:
             return
         if state.watchdog is not None:
@@ -520,12 +680,15 @@ class StreamingTTSRouter(TTSService):
             self._fallback_engine.get("provider"),
         )
         try:
-            await state.provider.cancel(context_id)
+            await state.provider.cancel(state.active or context_id)
         except (ConnectionError, OSError):
             pass
         if state.watchdog is not None:
             state.watchdog.cancel()
             state.watchdog = None
+        # Sub-generations of the failed engine are dead — their late events
+        # must not be attributed to the replayed generation.
+        self._drop_subgenerations(context_id)
 
         try:
             provider = await self._get_provider(self._fallback_engine, self._current_language)
@@ -533,12 +696,24 @@ class StreamingTTSRouter(TTSService):
             state.provider = provider
             state.fallback_used = True
             state.got_audio = False
-            for text in state.texts:
-                await provider.synthesize_stream(text, generation_id=context_id)
-            if state.flushed:
-                await provider.flush(context_id)
-                await provider.finish(context_id)
-                state.watchdog = self.create_task(self._first_audio_watchdog(context_id))
+            if self._pause_ms > 0:
+                # Replay every sentence through the same pause-aware
+                # serializer, so the fallback engine gets identical pauses.
+                state.pending = deque(_Sentence(text=t) for t in state.texts)
+                state.active = None
+                state.gap_pending = False  # replay restarts — no leading gap
+                await self._dispatch_next_sentence(context_id, state)
+                if state.flushed and state.watchdog is None:
+                    state.watchdog = self.create_task(
+                        self._first_audio_watchdog(context_id)
+                    )
+            else:
+                for text in state.texts:
+                    await provider.synthesize_stream(text, generation_id=context_id)
+                if state.flushed:
+                    await provider.flush(context_id)
+                    await provider.finish(context_id)
+                    state.watchdog = self.create_task(self._first_audio_watchdog(context_id))
         except (ProviderError, ConnectionError, OSError, TimeoutError) as exc:
             logger.warning("tts-router: fallback dispatch failed: %s", exc)
             return False

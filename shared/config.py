@@ -174,6 +174,14 @@ class Settings(BaseSettings):
     voice_session_timeout: int = 900
     max_call_duration: int = 3600
     default_silence_timeout: int = 12
+    # Per-call audio recording (stereo WAV: caller left, bot right). Written by
+    # the voice worker, served by /conversations/{id}/recording.
+    voice_call_recording_enabled: bool = True
+    voice_recordings_dir: str = "storage/recordings"
+    # Source audio that tenant voice clones were built from (uploaded files or
+    # in-browser recordings). Written by /voice-clones, served back by
+    # /voice-clones/{id}/audio/{audio_id}.
+    voice_clone_audio_dir: str = "storage/voice_clones"
 
     # ── Telephony ────────────────────────────────────────────────
     freeswitch_host: str = "127.0.0.1"

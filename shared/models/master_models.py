@@ -161,6 +161,9 @@ class ProviderModel(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     capability: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # stt | tts | llm
     code: Mapped[str] = mapped_column(String(80), nullable=False)  # e.g. bulbul:v3, eleven_flash_v2_5
     display_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    # Concise operator-facing summary (quality/latency/streaming traits) shown
+    # next to model dropdowns. Nullable — older rows may not have one.
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Provider-native language codes ("hi-IN" for Sarvam, "hi" for ElevenLabs).
     # Empty list => language-agnostic (LLMs).
     languages: Mapped[list | None] = mapped_column(JSON, nullable=True)
