@@ -3,10 +3,10 @@
    Synthora-aligned brand (#6A5AF9).
 
    Theme strategy
-   - Light is the primary experience.
-   - Dark is a lighter soft-dim mirror of the same hierarchy — elevated lavender-gray, not near-black.
-   - Only essential tokens flip (page / surfaces / ink / borders / shadows /
-     status tints). Brand chrome (topbar, sidebar) stays Synthora purple.
+   - Light is the primary experience (Synthora chrome + surfaces).
+   - Dark uses Aurexion navy / purple (page, chrome, accents).
+   - Light :root tokens are never altered by dark overrides except
+     via :root[data-theme="dark"].
    ============================================================ */
 
 :root {
@@ -115,70 +115,78 @@
   color-scheme: light;
 }
 
-/* Soft light-dim theme — elevated lavender-gray, not near-black */
+/* Aurexion dark theme — deep navy surfaces + purple chrome */
 :root[data-theme="dark"] {
-  /* Lighter surfaces (same roles as light, raised vs previous dim) */
-  --page: #34364a;
-  --surface: #404358;
-  --surface-2: #4a4d63;
-  --surface-3: #565970;
-  --chart-surface: #404358;
+  /* Surfaces — Deep Navy / Midnight Blue / Navy Slate */
+  --page: #040917;
+  --surface: #091026;
+  --surface-2: #19203c;
+  --surface-3: #3a3f57;
+  --chart-surface: #091026;
 
-  /* Soft lavender ink steps */
-  --ink: #f5f4fa;
-  --ink-2: #d0cedc;
-  --ink-3: #a8a6b8;
-  --border: rgba(245, 244, 250, 0.12);
-  --border-strong: rgba(245, 244, 250, 0.2);
-  --hairline: #52556a;
-  --grid-line: #52556a;
-  --axis-line: #6a6d82;
+  /* Ink — White + lavender support steps */
+  --ink: #fefefe;
+  --ink-2: #acbae4;
+  --ink-3: #8588b7;
+  --border: rgba(254, 254, 254, 0.1);
+  --border-strong: rgba(254, 254, 254, 0.18);
+  --hairline: #3a3f57;
+  --grid-line: #3a3f57;
+  --axis-line: #61677b;
 
-  /* Gentle elevation — parallel to light shadows */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.12);
-  --shadow-2: 0 2px 10px rgba(0, 0, 0, 0.16);
-  --shadow-3: 0 10px 28px rgba(0, 0, 0, 0.2);
-  --shadow-pop: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  /* Elevation on deep navy */
+  --shadow-1: 0 1px 2px rgba(4, 9, 23, 0.45);
+  --shadow-2: 0 2px 12px rgba(4, 9, 23, 0.55);
+  --shadow-3: 0 12px 32px rgba(4, 9, 23, 0.65);
+  --shadow-pop: 0 8px 28px rgba(4, 9, 23, 0.7), 0 0 0 1px rgba(150, 114, 220, 0.18);
 
-  /* Soft brand tints for focus / chips (keep brand-500 the same) */
-  --brand-50: #3d3a5c;
-  --brand-100: #4a4670;
+  /* Brand — Aurexion Purple scale for dark */
+  --brand-50: #19203c;
+  --brand-100: #2a2458;
+  --brand-200: #412cab;
+  --brand-300: #9672dc;
+  --brand-400: #9672dc;
+  --brand-500: #412cab;
+  --brand-600: #5e2fa0;
+  --brand-700: #772f93;
+  --brand-800: #412cab;
+  --brand-900: #19203c;
 
-  /* Status — same hues, soft translucent backgrounds */
+  /* Status — readable on deep navy */
   --status-good: #4caf50;
-  --status-good-bg: rgba(76, 175, 80, 0.18);
+  --status-good-bg: rgba(76, 175, 80, 0.16);
   --status-warning: #d4a017;
-  --status-warning-bg: rgba(212, 160, 23, 0.18);
+  --status-warning-bg: rgba(212, 160, 23, 0.16);
   --status-serious: #e07a45;
-  --status-serious-bg: rgba(224, 122, 69, 0.18);
+  --status-serious-bg: rgba(224, 122, 69, 0.16);
   --status-critical: #e85a5a;
-  --status-critical-bg: rgba(232, 90, 90, 0.18);
-  --status-info: #5b8fd9;
-  --status-info-bg: rgba(91, 143, 217, 0.18);
-  --status-neutral: #a09eb0;
-  --status-neutral-bg: rgba(160, 158, 176, 0.16);
+  --status-critical-bg: rgba(232, 90, 90, 0.16);
+  --status-info: #95b8ec;
+  --status-info-bg: rgba(149, 184, 236, 0.16);
+  --status-neutral: #8588b7;
+  --status-neutral-bg: rgba(133, 136, 183, 0.16);
 
-  /* Charts stay readable on soft dark surfaces */
-  --series-1: #8f84f7;
-  --series-2: #2db88a;
+  /* Charts — CTA / icon accent palette */
+  --series-1: #9672dc;
+  --series-2: #95b8ec;
   --series-3: #e0a020;
-  --series-4: #4d93e8;
+  --series-4: #5e2fa0;
   --series-5: #ef6f75;
   --series-6: #2aa34a;
-  --series-7: #e06498;
+  --series-7: #772f93;
   --series-8: #e8743c;
 
-  --seq-100: #3d3a5c;
-  --seq-200: #4a4670;
-  --seq-300: #5a4d9a;
-  --seq-400: #6a5af9;
-  --seq-500: #8f84f7;
-  --seq-600: #b0a6fb;
-  --seq-700: #d2ccfd;
+  --seq-100: #19203c;
+  --seq-200: #2a2458;
+  --seq-300: #412cab;
+  --seq-400: #5e2fa0;
+  --seq-500: #9672dc;
+  --seq-600: #acbae4;
+  --seq-700: #95b8ec;
 
   --div-neg: #ef6f75;
-  --div-mid: #52556a;
-  --div-pos: #4d93e8;
+  --div-mid: #3a3f57;
+  --div-pos: #95b8ec;
 
   --viz-good: #4caf50;
   --viz-warning: #d4a017;
@@ -186,6 +194,19 @@
   --viz-critical: #e85a5a;
 
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-400);
+
+  /* Aurexion chrome (header + sidebar) — dark only */
+  --topbar-bg: linear-gradient(90deg, #19203c 0%, #412cab 58%, #5e2fa0 100%);
+  --topbar-base: #040917;
+  --topbar-ink: #fefefe;
+  --sidebar-bg: linear-gradient(180deg, #091026 0%, #412cab 52%, #5e2fa0 100%);
+  --sidebar-ink: rgba(254, 254, 254, 0.92);
+  --sidebar-ink-strong: #fefefe;
+  --sidebar-active: linear-gradient(90deg, #19203c 0%, #412cab 100%);
+  --sidebar-active-border: #5e2fa0;
+  --sidebar-item-border: rgba(150, 114, 220, 0.45);
+  --sidebar-border: rgba(254, 254, 254, 0.16);
+  --sidebar-collapse-bg: linear-gradient(135deg, #412cab 0%, #5e2fa0 100%);
 
   color-scheme: dark;
 }

@@ -7,6 +7,7 @@ import { useAsync } from "@/hooks/useAsync";
 import { listAlerts, listBots, listTenants } from "@/services/api";
 import type { Role } from "@/types/domain";
 import aurexionLogo from "@/assets/brand/Aurexion-logo.svg";
+import aurexionLogoWhite from "@/assets/brand/Aurexion-logo-white.svg";
 
 interface NavEntry {
   to: string;
@@ -194,7 +195,7 @@ export default function AppShell() {
     <div className="shell">
       <header className="topbar" ref={popRef}>
         <Link to={homeTo} className="topbar-brand">
-          <img src={aurexionLogo} alt="Aurexion" className="topbar-logo" />
+          <img src={theme === "dark" ? aurexionLogoWhite : aurexionLogo} alt="Aurexion" className="topbar-logo" />
           <span className="topbar-brand-sep" aria-hidden />
           <div className="topbar-product">
             <span className="topbar-product-name">EchoSphere</span>
