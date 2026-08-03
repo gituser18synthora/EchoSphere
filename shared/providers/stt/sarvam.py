@@ -92,9 +92,14 @@ class SarvamSTT(STTProvider):
             raise _categorize(self.name, exc) from exc
 
         raw_detected = getattr(response, "language_code", None)
+        # Present only in auto-detect mode ("unknown"); None when pinned.
+        raw_probability = getattr(response, "language_probability", None)
         return STTResult(
             text=(getattr(response, "transcript", "") or "").strip(),
             language=_sarvam_lang_to_internal(raw_detected, lang),
+            language_probability=(
+                float(raw_probability) if raw_probability is not None else None
+            ),
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 
