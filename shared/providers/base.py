@@ -54,7 +54,11 @@ class STTResult:
     language: str | None = None
     confidence: float | None = None
     is_final: bool = True
-    duration_ms: float = 0.0
+    duration_ms: float = 0.0  # request latency, NOT audio duration
+    # Optional quality metadata (provider-dependent) consumed by the voice
+    # runtime's transcript gate; None whenever the provider doesn't report it.
+    language_probability: float | None = None
+    no_speech_prob: float | None = None
 
 
 @dataclass

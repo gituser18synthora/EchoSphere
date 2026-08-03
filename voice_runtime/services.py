@@ -34,16 +34,33 @@ class EchoSTTService(SegmentedSTTService):
         """`audio` arrives as a WAV container (wants_wav_segments default)."""
         try:
             pcm, rate = wav_to_pcm(audio)
+            audio_seconds = len(pcm) / (rate * 2) if rate else 0.0
             if self._recorder is not None and rate:
                 # Billable audio duration from the actual PCM16 payload.
                 usage = self._recorder.usage
-                usage["stt_seconds"] = usage.get("stt_seconds", 0) + len(pcm) / (rate * 2)
+                usage["stt_seconds"] = usage.get("stt_seconds", 0) + audio_seconds
                 usage["stt_requests"] = usage.get("stt_requests", 0) + 1
             result = await self._provider.transcribe(
                 pcm, sample_rate=rate, language=self._language
             )
             if result.text:
-                yield TranscriptionFrame(result.text, "caller", time_now_iso8601())
+                # Quality metadata rides on the frame so the transcript gate
+                # can judge the segment (fields are provider-dependent; the
+                # exact segment duration comes from the PCM itself).
+                yield TranscriptionFrame(
+                    result.text,
+                    "caller",
+                    time_now_iso8601(),
+                    language=result.language,
+                    result={
+                        "provider": getattr(self._provider, "name", "stt"),
+                        "language": result.language,
+                        "confidence": result.confidence,
+                        "language_probability": result.language_probability,
+                        "no_speech_prob": result.no_speech_prob,
+                        "audio_seconds": audio_seconds or None,
+                    },
+                )
         except ProviderError as exc:
             logger.warning("STT provider failure: %s", exc)
             yield ErrorFrame(error=f"stt_failure:{exc.category}")

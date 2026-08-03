@@ -28,18 +28,25 @@ buffering, workflows and the LLM — see shared.orchestration.router
 ``detect_hangup``): current audio is interrupted, a short acknowledgement in
 the caller's language plays, the worker ends, and no later STT event can
 produce another reply.
+
+Every final segment is quality-gated BEFORE buffering (see
+voice_runtime.transcript_gate): background noise, sub-word fragments and
+unsupported-language hallucinations are rejected using the provider's own
+quality metadata plus script analysis, so they never reach conversation
+history, workflows, the LLM or stored transcripts. Interim/partial STT
+results only ever feed the live client UI — they never become turns.
 """
 
 import asyncio
 import json
 import logging
-import re
 import time
 
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndWorkerFrame,
     Frame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -72,6 +79,12 @@ from shared.providers.languages import to_platform_language
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.frames import SwitchVoiceLanguageFrame, TTSFlushHintFrame
 from voice_runtime.recording import SessionRecorder, TurnRecord
+from voice_runtime.transcript_gate import (
+    assess_transcript,
+    resolve_allowed_languages,
+    script_supports_language,  # noqa: F401 — re-exported (tests, language following)
+    segment_quality,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,42 +136,10 @@ _VOICE_STYLE_INSTRUCTION = (
 # the language the STT detected.
 _MIN_SWITCH_WORDS = 2
 _LANGUAGE_SWITCH_CONFIRMATIONS = 2
-_DEVANAGARI_CHARS = re.compile(r"[ऀ-ॿ]")
-_LATIN_CHARS = re.compile(r"[A-Za-z]")
-_BENGALI_CHARS = re.compile(r"[ঀ-৿]")
-_GURMUKHI_CHARS = re.compile(r"[਀-੿]")
-_GUJARATI_CHARS = re.compile(r"[઀-૿]")
-_ORIYA_CHARS = re.compile(r"[଀-୿]")
-_TAMIL_CHARS = re.compile(r"[஀-௿]")
-_TELUGU_CHARS = re.compile(r"[ఀ-౿]")
-_KANNADA_CHARS = re.compile(r"[ಀ-೿]")
-_MALAYALAM_CHARS = re.compile(r"[ഀ-ൿ]")
-_ARABIC_CHARS = re.compile(r"[\u0600-\u06ff\u0750-\u077f]")
-_SCRIPT_PATTERNS = {
-    "hi": _DEVANAGARI_CHARS,
-    "mr": _DEVANAGARI_CHARS,
-    "ne": _DEVANAGARI_CHARS,
-    "bn": _BENGALI_CHARS,
-    "as": _BENGALI_CHARS,
-    "pa": _GURMUKHI_CHARS,
-    "gu": _GUJARATI_CHARS,
-    "or": _ORIYA_CHARS,
-    "ta": _TAMIL_CHARS,
-    "te": _TELUGU_CHARS,
-    "kn": _KANNADA_CHARS,
-    "ml": _MALAYALAM_CHARS,
-    "ur": _ARABIC_CHARS,
-}
-# Romanized-Hindi (Hinglish) marker words: when the STT reports Hindi but the
-# text is fully Latin (translit/codemix STT modes), these confirm the STT's
-# verdict so a Hinglish speaker still gets Hindi replies and a Hindi voice.
-_HINGLISH_HINTS = re.compile(
-    r"\b(haa?n|nahin?|nhi|abhi|aaj|paisa|paise|rupay[ae]?|bhai|"
-    r"theek|thik|karo|karu(?:nga|ngi)?|kar (?:do|de|dunga|dungi)|hai|hain|"
-    r"mera|mere|meri|aap|kyun?|kaise|kitna|batao|bolo|dijiye)\b",
-    re.I,
-)
-
+# A rejected foreign-language segment might still be a REAL caller speaking an
+# unsupported language — after this many consecutive rejections of the same
+# language the client is notified (same event the language follower emits).
+_UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
 _LANGUAGE_LABELS = {
     "hi": "Hindi", "en": "English", "bn": "Bengali", "ta": "Tamil",
     "te": "Telugu", "mr": "Marathi", "gu": "Gujarati", "kn": "Kannada",
@@ -171,44 +152,6 @@ def language_label(locale: str | None) -> str:
     if not locale:
         return ""
     return _LANGUAGE_LABELS.get(locale.split("-")[0].lower(), locale)
-
-
-def script_supports_language(text: str, locale: str) -> bool:
-    """Whether an utterance's dominant script is consistent with a locale.
-
-    Hindi speech is transcribed in Devanagari (borrowed English words stay
-    Latin, so code-mixed text still counts as Hindi when Devanagari holds a
-    meaningful share). Fully-Latin text still counts as Hindi when it reads
-    as romanized Hinglish — the STT's language verdict plus marker words.
-    English must be clearly Latin-dominant. Other supported Indian languages
-    must be dominated by their own Unicode script. Unknown scripts fail
-    closed: one noisy STT language label must not change the conversation.
-    """
-    counts = {
-        base: len(pattern.findall(text))
-        for base, pattern in _SCRIPT_PATTERNS.items()
-    }
-    # hi/mr/ne and bn/as share a script; only count each script once.
-    script_total = sum({
-        id(pattern): len(pattern.findall(text))
-        for pattern in _SCRIPT_PATTERNS.values()
-    }.values())
-    lat = len(_LATIN_CHARS.findall(text))
-    total = script_total + lat
-    if total == 0:
-        return False
-    base = locale.split("-")[0].lower()
-    if base == "hi":
-        dev = counts["hi"]
-        if dev / total >= 0.4:
-            return True
-        return dev == 0 and bool(_HINGLISH_HINTS.search(text))
-    if base == "en":
-        return lat / total >= 0.7
-    pattern = _SCRIPT_PATTERNS.get(base)
-    if pattern is None:
-        return False
-    return counts[base] / total >= 0.6
 
 
 class ConversationBrain(FrameProcessor):
@@ -270,6 +213,13 @@ class ConversationBrain(FrameProcessor):
         self._language_candidate: str | None = None
         self._language_candidate_count = 0
         self._notified_unsupported_languages: set[str] = set()
+        # Transcript gate: STT languages this bot accepts (platform default
+        # hi+en; stt_settings.allowed_languages overrides) and the streak of
+        # consecutive foreign-language rejections per detected language.
+        self._allowed_stt_languages = resolve_allowed_languages(
+            (config.stt or {}).get("settings")
+        )
+        self._unsupported_streak: dict[str, int] = {}
         llm_settings = (config.llm or {}).get("settings") or {}
         self._llm_temperature: float = float(llm_settings.get("temperature", 0.3))
         self._llm_max_tokens: int = int(llm_settings.get("max_tokens", 256))
@@ -308,6 +258,16 @@ class ConversationBrain(FrameProcessor):
             if self._pending_greeting:
                 self._pending_greeting = False
                 self._generation = self.create_task(self._open_session())
+            return
+
+        if isinstance(frame, InterimTranscriptionFrame):
+            # Partial STT results feed the live client UI only: they never
+            # become segments, turns or LLM work, and they stop here (the
+            # final transcript follows through the gated path below).
+            if not self._closing and (frame.text or "").strip():
+                await self._notify_client(
+                    {"type": "partial_transcript", "text": frame.text.strip()}
+                )
             return
 
         if self._closing:
@@ -366,6 +326,17 @@ class ConversationBrain(FrameProcessor):
         text = (frame.text or "").strip()
         if not text:
             return
+        # Quality gate: noise, sub-word fragments and unsupported-language
+        # hallucinations are rejected BEFORE buffering, so they can never
+        # become history entries, workflow/LLM turns or stored transcripts.
+        quality = segment_quality(
+            frame, provider=(self._config.stt or {}).get("provider", "")
+        )
+        verdict = assess_transcript(text, quality, self._allowed_stt_languages)
+        if not verdict.accepted:
+            await self._reject_segment(text, quality, verdict)
+            return
+        self._unsupported_streak.clear()
         raw = getattr(frame, "language", None)
         if raw is not None:
             self._pending_language = getattr(raw, "value", str(raw))
@@ -382,6 +353,58 @@ class ConversationBrain(FrameProcessor):
         # No open user turn: VAD missed a quiet utterance or STT finalized
         # after the turn closed. Debounce — more finals may still be coming.
         await self._schedule_finalize()
+
+    async def _reject_segment(self, text: str, quality, verdict) -> None:
+        """Drop one gated-out STT segment, keeping an audit trail.
+
+        The segment is recorded as an event (never as a turn). A caller
+        REALLY speaking an unsupported language looks identical to repeated
+        hallucination, so after consecutive same-language rejections the
+        client gets the same language_unsupported notice the language
+        follower emits — without the text ever reaching the LLM.
+        """
+        logger.info(
+            "turn[%s] stt segment rejected (%s): %r",
+            self._recorder.session_id, verdict.reason, text[:120],
+        )
+        detail = {
+            key: value
+            for key, value in (
+                ("language", quality.language),
+                ("language_probability", quality.language_probability),
+                ("confidence", quality.confidence),
+                ("no_speech_prob", quality.no_speech_prob),
+                ("audio_seconds", quality.audio_seconds),
+                ("provider", quality.provider),
+            )
+            if value not in (None, "")
+        }
+        self._recorder.add_event(
+            "stt_segment_rejected", reason=verdict.reason, text=text[:200], **detail
+        )
+        if verdict.reason not in ("unsupported_language", "unsupported_script"):
+            self._unsupported_streak.clear()
+            return
+        language = verdict.language
+        if not language:
+            return
+        streak = self._unsupported_streak.get(language, 0) + 1
+        self._unsupported_streak = {language: streak}
+        if streak < _UNSUPPORTED_NOTIFY_CONFIRMATIONS:
+            return
+        if language in self._notified_unsupported_languages:
+            return
+        self._notified_unsupported_languages.add(language)
+        self._recorder.add_event(
+            "language_unsupported",
+            language=language,
+            current=self._conversation_language,
+        )
+        await self._notify_client({
+            "type": "event",
+            "name": "language_unsupported",
+            "language": language,
+        })
 
     # ── turn finalization (debounced) ─────────────────────────────────────
 
