@@ -33,6 +33,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError
 from shared.providers.factory import get_llm_provider, get_stt_provider, get_tts_provider
+from shared.turn_detection import TURN_DETECTION_BOUNDS, TURN_DETECTION_DEFAULTS
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.brain import ConversationBrain
@@ -55,38 +56,10 @@ logger = logging.getLogger(__name__)
 # and the first response waits on the provider's own slow endpointing.
 #
 # Per-bot overrides live in voice settings: stt_settings.turn_detection.
-TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
-    "browser": {
-        "confidence": 0.7,
-        "start_secs": 0.3,
-        "stop_secs": 0.2,
-        "min_volume": 0.6,
-        "user_speech_timeout": 1.2,
-        "finalize_grace": 0.3,
-    },
-    "telephony": {
-        "confidence": 0.6,
-        "start_secs": 0.2,
-        "stop_secs": 0.2,
-        "min_volume": 0.4,
-        "user_speech_timeout": 0.8,
-        "finalize_grace": 0.3,
-    },
-}
-
 # Misconfiguration must never produce an unusable call (e.g. a 30 s endpoint
 # or a VAD that triggers on line noise).
-_TURN_BOUNDS: dict[str, tuple[float, float]] = {
-    "confidence": (0.3, 0.95),
-    "start_secs": (0.1, 1.0),
-    "stop_secs": (0.1, 2.0),
-    "min_volume": (0.0, 1.0),
-    "user_speech_timeout": (0.2, 3.0),
-    # Post-turn-close wait for straggler STT finals before the LLM runs (the
-    # brain's end-of-turn debounce) — bounded so a typo can't add seconds of
-    # response latency or disable fragment merging entirely.
-    "finalize_grace": (0.0, 1.5),
-}
+# Bounds are shared with backend validation (``shared.turn_detection``), so a
+# value accepted by the Voice API is guaranteed to be safe in this worker.
 
 
 def resolve_turn_detection(
@@ -100,7 +73,8 @@ def resolve_turn_detection(
     defaults = TURN_DETECTION_DEFAULTS.get(
         transport_kind, TURN_DETECTION_DEFAULTS["browser"]
     )
-    overrides = ((config.stt or {}).get("settings") or {}).get("turn_detection") or {}
+    raw_overrides = ((config.stt or {}).get("settings") or {}).get("turn_detection")
+    overrides = raw_overrides if isinstance(raw_overrides, dict) else {}
     resolved: dict[str, float] = {}
     for key, default in defaults.items():
         value = overrides.get(key, default)
@@ -112,7 +86,7 @@ def resolve_turn_detection(
                 key, value, default,
             )
             value = default
-        low, high = _TURN_BOUNDS[key]
+        low, high = TURN_DETECTION_BOUNDS[key]
         resolved[key] = min(max(value, low), high)
     return resolved
 

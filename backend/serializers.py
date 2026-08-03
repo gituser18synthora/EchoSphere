@@ -326,7 +326,8 @@ def serialize_plan(p: Plan, *, usage: int = 0, names: dict | None = None) -> dic
 
 
 def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
-                  calls_today: int, calls_month: int) -> dict:
+                  calls_today: int, calls_month: int,
+                  avg_cost_per_call: float) -> dict:
     return {
         "id": b.id,
         "tenantId": b.tenant_id,
@@ -342,7 +343,9 @@ def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
         "containment": b.containment,
         "callsToday": calls_today,
         "callsMonth": calls_month,
-        "avgCostPerCall": float(b.avg_cost_per_call),
+        # Month-to-date metered AI cost / calls (usage_records rollup) — the
+        # static voice_bots.avg_cost_per_call column is demo-seed-only.
+        "avgCostPerCall": round(float(avg_cost_per_call), 4),
         "csat": b.csat,
         "channels": channels,
         "voiceId": b.voice_id,
@@ -777,6 +780,7 @@ def serialize_phone_number(p: PhoneNumber, *, tenant_name: str | None,
         "bot": bot_name,
         "provider": p.provider or "",
         "status": p.status,
+        "isActive": bool(p.is_active),
         "monthlyCost": float(p.monthly_cost),
     }
 

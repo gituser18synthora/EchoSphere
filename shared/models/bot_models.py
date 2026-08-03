@@ -256,6 +256,9 @@ class PhoneNumber(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(20), default="available", nullable=False
     )  # assigned | available | porting | error
     monthly_cost: Mapped[float] = mapped_column(Numeric(8, 2), default=0, nullable=False)
+    # Admin gate: an inactive number keeps its current assignment/routing but
+    # cannot be claimed for NEW bot/channel assignments.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class SipTrunk(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):

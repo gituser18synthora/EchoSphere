@@ -70,11 +70,34 @@ def other_admin():
     return _bearer("alex.rivera@aurexion.com")  # different-org context (super admin)
 
 
+def _enabled_language() -> str:
+    """Any currently-enabled platform language (shared dev DB is user-curated,
+    so a hardcoded 'en-US' can be disabled at any time — never assume it)."""
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import SupportedLanguage
+
+    session = get_sessionmaker()()
+    try:
+        codes = session.scalars(
+            select(SupportedLanguage.code).where(SupportedLanguage.enabled.is_(True))
+        ).all()
+        for preferred in ("en-US", "en-IN", "hi-IN"):
+            if preferred in codes:
+                return preferred
+        assert codes, "no enabled platform language to create a test bot with"
+        return codes[0]
+    finally:
+        session.close()
+
+
 @pytest.fixture(scope="module")
 def test_bot(client, tenant_admin):
     """A dedicated tn-001 bot, forced to published so activation paths work."""
     created = _data(client.post(f"{API}/bots", headers=tenant_admin, json={
-        "name": f"Channel Test Bot {_SUFFIX}", "useCase": "channels", "languages": ["en-US"],
+        "name": f"Channel Test Bot {_SUFFIX}", "useCase": "channels",
+        "languages": [_enabled_language()],
     }))
     bot_id = created["id"]
 
@@ -253,7 +276,7 @@ def test_activate_deactivate_cycle(client, tenant_admin, test_bot):
 def test_activate_requires_published_bot(client, tenant_admin):
     """Voice/WhatsApp/SMS need a published bot before going live."""
     draft = _data(client.post(f"{API}/bots", headers=tenant_admin, json={
-        "name": f"Draft Bot {_SUFFIX}", "useCase": "x", "languages": ["en-US"]}))
+        "name": f"Draft Bot {_SUFFIX}", "useCase": "x", "languages": [_enabled_language()]}))
     draft_id = draft["id"]
     try:
         _data(client.put(f"{API}/bots/{draft_id}/channels/sms", headers=tenant_admin, json={

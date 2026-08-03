@@ -79,8 +79,14 @@ def quantities_for(
     seconds = Decimal(str(audio_seconds))
     out: dict[str, Decimal] = {}
     if capability == "llm":
-        if input_tokens:
-            out["input_tokens"] = Decimal(input_tokens)
+        # `input_tokens` is the provider's GROSS prompt count INCLUDING the
+        # cached portion (the LLMStreamUsage convention; OpenAI/Gemini report
+        # it that way natively, the Anthropic adapter normalizes). Cache hits
+        # are billed at the cached rate ONLY — they must be netted out of the
+        # full-rate input component or the cached tokens are charged twice.
+        billable_input = max(input_tokens - cached_tokens, 0)
+        if billable_input:
+            out["input_tokens"] = Decimal(billable_input)
         if output_tokens:
             out["output_tokens"] = Decimal(output_tokens)
         if cached_tokens:

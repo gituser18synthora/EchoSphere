@@ -18,6 +18,7 @@ from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import (
     ApprovedModel,
+    ChannelConfig,
     Guardrail,
     HealthMetric,
     PhoneNumber,
@@ -220,6 +221,105 @@ class PhoneNumberRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PhoneNumberUpdateRequest(BaseModel):
+    """PATCH body — only provided fields change (tenant/bot accept null to clear)."""
+
+    number: str | None = Field(default=None, min_length=5, max_length=30)
+    country: str | None = Field(default=None, max_length=5)
+    provider: str | None = Field(default=None, max_length=50)
+    tenant_id: str | None = Field(default=None, alias="tenantId")
+    bot_id: str | None = Field(default=None, alias="botId")
+    status: str | None = Field(default=None, pattern="^(assigned|available|porting|error)$")
+    monthly_cost: float | None = Field(default=None, alias="monthlyCost", ge=0)
+
+    model_config = {"populate_by_name": True}
+
+
+def _validated_e164(number: str) -> str:
+    """Trimmed number, after checking its normalized form is E.164."""
+    from backend.routers.channels import _E164_RE, _norm_phone
+
+    trimmed = number.strip()
+    if not _E164_RE.match(_norm_phone(trimmed)):
+        raise ApiError(
+            "Enter a valid E.164 number, e.g. +14155550119.", 422,
+            errors=[{"field": "number", "message": "Invalid E.164 number."}],
+        )
+    return trimmed
+
+
+def _number_conflict(db: Session, number: str, *, exclude_id: str | None = None) -> bool:
+    """True when another (non-deleted) row holds the same number in any formatting."""
+    from backend.routers.channels import _norm_phone
+
+    normalized = _norm_phone(number)
+    for candidate in db.scalars(
+        select(PhoneNumber).where(PhoneNumber.is_deleted.is_(False))
+    ):
+        if candidate.id != exclude_id and _norm_phone(candidate.number) == normalized:
+            return True
+    return False
+
+
+def _voice_channel_claim(db: Session, row: PhoneNumber) -> ChannelConfig | None:
+    """The voice ChannelConfig that claimed this number, if any.
+
+    A claimed number's identity and assignment are owned by the bot's channel
+    configuration — admins must edit them there, so the trusted inbound
+    routing map and the channel config can never disagree.
+    """
+    from backend.routers.channels import _norm_phone
+
+    if not row.bot_id:
+        return None
+    channel = db.scalar(select(ChannelConfig).where(
+        ChannelConfig.bot_id == row.bot_id,
+        ChannelConfig.type == "voice",
+        ChannelConfig.is_deleted.is_(False),
+    ))
+    if channel is None:
+        return None
+    claimed = (channel.config or {}).get("phoneNumber") or ""
+    return channel if _norm_phone(claimed) == _norm_phone(row.number) else None
+
+
+def _validated_assignment(
+    db: Session, tenant_id: str | None, bot_id: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve/validate a tenant+bot assignment pair."""
+    bot = None
+    if bot_id:
+        bot = db.get(VoiceBot, bot_id)
+        if bot is None or bot.is_deleted:
+            raise ApiError("Unknown bot for this assignment.", 422,
+                           errors=[{"field": "botId", "message": "Unknown bot."}])
+        tenant_id = tenant_id or bot.tenant_id
+        if bot.tenant_id != tenant_id:
+            raise ApiError("Bot does not belong to the selected tenant.", 422,
+                           errors=[{"field": "botId", "message": "Bot belongs to another tenant."}])
+    if tenant_id:
+        tenant = db.get(Tenant, tenant_id)
+        if tenant is None or getattr(tenant, "is_deleted", False):
+            raise ApiError("Unknown tenant for this assignment.", 422,
+                           errors=[{"field": "tenantId", "message": "Unknown tenant."}])
+    return tenant_id, bot_id
+
+
+def _phone_number_or_404(db: Session, number_id: str) -> PhoneNumber:
+    row = db.get(PhoneNumber, number_id)
+    if row is None or row.is_deleted:
+        raise NotFoundError("Phone number")
+    return row
+
+
+def _serialized_number(db: Session, row: PhoneNumber) -> dict:
+    tenant_name = db.scalar(select(Tenant.name).where(Tenant.id == row.tenant_id)) \
+        if row.tenant_id else None
+    bot_name = db.scalar(select(VoiceBot.name).where(VoiceBot.id == row.bot_id)) \
+        if row.bot_id else None
+    return serialize_phone_number(row, tenant_name=tenant_name, bot_name=bot_name)
+
+
 @router.post("/phone-numbers", status_code=201)
 def create_phone_number(
     body: PhoneNumberRequest,
@@ -227,26 +327,131 @@ def create_phone_number(
     user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    if db.scalar(select(PhoneNumber).where(PhoneNumber.number == body.number)):
+    number = _validated_e164(body.number)
+    if _number_conflict(db, number):
         raise ApiError("This phone number already exists.", 409)
+    tenant_id, bot_id = _validated_assignment(db, body.tenant_id, body.bot_id)
     row = PhoneNumber(
-        id=new_id("pn"), number=body.number, country=body.country,
-        provider=body.provider, tenant_id=body.tenant_id, bot_id=body.bot_id,
-        status="assigned" if body.tenant_id else body.status,
+        id=new_id("pn"), number=number, country=body.country,
+        provider=body.provider, tenant_id=tenant_id, bot_id=bot_id,
+        status="assigned" if tenant_id else body.status,
         monthly_cost=body.monthly_cost, created_by=user.id,
     )
     db.add(row)
     record_audit(
         db, user=user, action="Added phone number", entity_type="phone_number",
-        entity_id=row.id, target_label=row.number, tenant_id=body.tenant_id,
+        entity_id=row.id, target_label=row.number, tenant_id=tenant_id,
         request=request,
     )
     db.commit()
-    tenant_names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
-    bot_names = dict(db.execute(select(VoiceBot.id, VoiceBot.name)).all())
-    return ok(serialize_phone_number(
-        row, tenant_name=tenant_names.get(row.tenant_id), bot_name=bot_names.get(row.bot_id)
-    ))
+    return ok(_serialized_number(db, row))
+
+
+@router.patch("/phone-numbers/{number_id}")
+def update_phone_number(
+    number_id: str,
+    body: PhoneNumberUpdateRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    from backend.routers.channels import _norm_phone
+
+    row = _phone_number_or_404(db, number_id)
+    claim = _voice_channel_claim(db, row)
+
+    if body.number is not None and _norm_phone(body.number) != _norm_phone(row.number):
+        if claim is not None:
+            raise ApiError(
+                "This number is claimed by a bot's voice channel — change it "
+                "from that bot's Channels tab.", 409,
+            )
+        number = _validated_e164(body.number)
+        if _number_conflict(db, number, exclude_id=row.id):
+            raise ApiError("This phone number already exists.", 409)
+        row.number = number
+
+    provided = body.model_fields_set
+    if "tenant_id" in provided or "bot_id" in provided:
+        new_tenant = body.tenant_id if "tenant_id" in provided else row.tenant_id
+        new_bot = body.bot_id if "bot_id" in provided else row.bot_id
+        if new_tenant is None:
+            new_bot = None  # clearing the tenant releases the bot too
+        if (new_tenant, new_bot) != (row.tenant_id, row.bot_id):
+            if claim is not None:
+                raise ApiError(
+                    "This number is claimed by a bot's voice channel — release "
+                    "it from that bot's Channels tab first.", 409,
+                )
+            new_tenant, new_bot = _validated_assignment(db, new_tenant, new_bot)
+            if new_tenant and not row.is_active:
+                raise ApiError(
+                    "This phone number is inactive and cannot take new "
+                    "assignments. Activate it first.", 409,
+                )
+            row.tenant_id, row.bot_id = new_tenant, new_bot
+            row.status = "assigned" if new_tenant else "available"
+
+    if body.country is not None:
+        row.country = body.country
+    if body.provider is not None:
+        row.provider = body.provider
+    if body.monthly_cost is not None:
+        row.monthly_cost = body.monthly_cost
+    if body.status is not None:
+        if body.status == "assigned" and not row.tenant_id:
+            raise ApiError("An unassigned number cannot be marked assigned.", 422,
+                           errors=[{"field": "status", "message": "Assign a tenant first."}])
+        row.status = body.status
+
+    row.updated_by = user.id
+    record_audit(
+        db, user=user, action="Updated phone number", entity_type="phone_number",
+        entity_id=row.id, target_label=row.number, tenant_id=row.tenant_id,
+        request=request,
+    )
+    db.commit()
+    return ok(_serialized_number(db, row))
+
+
+def _set_phone_number_active(
+    db: Session, request: Request, user: User, number_id: str, active: bool
+) -> dict:
+    row = _phone_number_or_404(db, number_id)
+    if bool(row.is_active) != active:
+        row.is_active = active
+        row.updated_by = user.id
+        record_audit(
+            db, user=user,
+            action="Activated phone number" if active else "Deactivated phone number",
+            entity_type="phone_number", entity_id=row.id, target_label=row.number,
+            tenant_id=row.tenant_id, request=request,
+        )
+        db.commit()
+    return ok(_serialized_number(db, row))
+
+
+@router.post("/phone-numbers/{number_id}/activate")
+def activate_phone_number(
+    number_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    return _set_phone_number_active(db, request, user, number_id, True)
+
+
+@router.post("/phone-numbers/{number_id}/deactivate")
+def deactivate_phone_number(
+    number_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Deactivation blocks NEW assignments only — the current assignment and
+    live routing are preserved (deliberate: deactivating must never silently
+    break an existing deployment)."""
+    return _set_phone_number_active(db, request, user, number_id, False)
 
 
 # ── SIP trunks ───────────────────────────────────────────────────────────────

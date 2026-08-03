@@ -2,7 +2,7 @@
 
 import pytest
 
-from backend.core.provider_catalog import validate_params
+from backend.core.provider_catalog import validate_params, validate_stt_settings
 from shared.providers.languages import (
     matches_model_language,
     to_platform_language,
@@ -63,6 +63,31 @@ class TestValidateParams:
 
     def test_none_values_ignored(self):
         assert self.check({"pace": None, "dict_id": None}) == []
+
+
+class TestValidateSttSettings:
+    SCHEMA = {"mode": {"type": "enum", "values": ["transcribe", "translate"]}}
+
+    def test_turn_detection_is_accepted_outside_provider_schema(self):
+        assert validate_stt_settings(self.SCHEMA, {
+            "mode": "transcribe",
+            "turn_detection": {
+                "user_speech_timeout": 0.7,
+                "finalize_grace": 0.15,
+            },
+        }) == []
+
+    @pytest.mark.parametrize("turn_detection", [
+        {"user_speech_timeout": 0.1},
+        {"finalize_grace": 2},
+        {"user_speech_timeout": "fast"},
+        {"unknown": 1},
+        "fast",
+    ])
+    def test_invalid_turn_detection_is_rejected(self, turn_detection):
+        assert validate_stt_settings(
+            self.SCHEMA, {"mode": "transcribe", "turn_detection": turn_detection}
+        )
 
 
 class TestLanguageMapping:

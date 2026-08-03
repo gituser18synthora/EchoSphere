@@ -340,6 +340,13 @@ def _assign_phone_number(db: Session, bot: VoiceBot, config: dict, user: User) -
     if row.tenant_id and row.tenant_id != bot.tenant_id:
         raise ApiError("This phone number is already assigned to another channel.", 409,
                        errors=[{"field": "phoneNumber", "message": "Number already in use."}])
+    if not row.is_active and row.bot_id != bot.id:
+        # New claims on a deactivated number are rejected; a bot re-saving the
+        # channel that already holds the number keeps working (deactivation
+        # must never break an existing deployment).
+        raise ApiError("This phone number is deactivated and cannot take new "
+                       "assignments. Ask a platform admin to activate it.", 409,
+                       errors=[{"field": "phoneNumber", "message": "Number is inactive."}])
     row.tenant_id = bot.tenant_id
     row.bot_id = bot.id
     row.status = "assigned"

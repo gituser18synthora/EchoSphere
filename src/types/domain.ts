@@ -52,8 +52,10 @@ export interface SipTrunk {
 }
 
 /* Provider-specific settings object, validated server-side against the model's paramsSchema. */
-export type ProviderSettingValue = string | number | boolean | number[];
-export type ProviderSettings = Record<string, ProviderSettingValue>;
+export type ProviderSettingValue = string | number | boolean | number[] | ProviderSettings;
+export interface ProviderSettings {
+  [key: string]: ProviderSettingValue;
+}
 
 /** Per-language voice override; legacy entries may still be plain voice-id strings. */
 export interface LanguageVoiceOverride {
@@ -1449,6 +1451,8 @@ export interface PhoneNumber {
   bot?: string;
   provider: string;
   status: "assigned" | "available" | "porting" | "error";
+  /** Admin gate: inactive numbers keep existing routing but reject new assignments. */
+  isActive: boolean;
   monthlyCost: number;
 }
 

@@ -41,7 +41,7 @@ const chipTone: Record<string, string> = {
   needs_samples: "warning", disabled: "neutral",
   acknowledged: "info", resolved: "good",
   assigned: "good", porting: "warning",
-  invited: "info", deactivated: "neutral",
+  invited: "info", deactivated: "neutral", inactive: "neutral",
   deprecated: "neutral",
   positive: "good", neutral: "neutral", negative: "critical",
   good: "good", warning: "warning", serious: "serious", critical: "critical",

@@ -25,6 +25,7 @@ from shared.models import (
     VoiceProfile,
 )
 from shared.providers.languages import matches_model_language
+from shared.turn_detection import validate_turn_detection
 
 CAPABILITIES = ("stt", "tts", "llm", "embedding")
 
@@ -260,6 +261,27 @@ def validate_params(schema: dict | None, params: dict | None, *, prefix: str) ->
     return errors
 
 
+def validate_stt_settings(
+    schema: dict | None, params: dict | None, *, prefix: str = "STT"
+) -> list[str]:
+    """Validate provider parameters plus platform-owned turn timing.
+
+    ``turn_detection`` controls the EchoSphere pipeline rather than the STT
+    provider, so it intentionally does not belong to a provider model's
+    ``params_schema``.  Validate it against the shared runtime contract and
+    keep the remaining settings under the normal strict provider validation.
+    """
+    params = params or {}
+    errors = validate_turn_detection(
+        params.get("turn_detection"), prefix=f"{prefix} turn detection"
+    )
+    provider_params = {
+        key: value for key, value in params.items() if key != "turn_detection"
+    }
+    errors.extend(validate_params(schema, provider_params, prefix=prefix))
+    return errors
+
+
 # ── full voice-settings validation ───────────────────────────────────────────
 
 def _validate_engine(
@@ -427,7 +449,7 @@ def validate_voice_settings(
                         f"{stt_provider}/{model}."
                     )
             if model_row is not None:
-                errors.extend(validate_params(
+                errors.extend(validate_stt_settings(
                     model_row.params_schema, payload.get("stt_settings"), prefix="STT"
                 ))
 

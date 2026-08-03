@@ -22,6 +22,7 @@ API = "/api/v1"
 _SUFFIX = uuid.uuid4().hex[:8]
 _MODEL = f"billing-test-{_SUFFIX}"
 _created: list[tuple[str, str]] = []
+_tenant_ids: list[str] = []
 
 
 def _session():
@@ -38,9 +39,23 @@ def client():
 
     from shared.db.mysql import get_engine
 
+    # Children-first sweep: usage rows created after the last _track_events
+    # call (e.g. by a test that failed before registering them) would block
+    # the tenant deletes below on the FK.
     with get_engine().begin() as conn:
+        for tenant_id in _tenant_ids:
+            for table in ("usage_events", "usage_records"):
+                conn.execute(sa_text(f"DELETE FROM `{table}` WHERE tenant_id = :t"),
+                             {"t": tenant_id})
+    # Best-effort per-row deletes: one blocked row must not roll back the
+    # whole teardown and leak every other row into the shared dev DB.
+    with get_engine().connect() as conn:
         for tenant_kind, row_id in reversed(_created):
-            conn.execute(sa_text(f"DELETE FROM `{tenant_kind}` WHERE id = :id"), {"id": row_id})
+            try:
+                conn.execute(sa_text(f"DELETE FROM `{tenant_kind}` WHERE id = :id"), {"id": row_id})
+                conn.commit()
+            except Exception:  # noqa: BLE001 — keep deleting the rest
+                conn.rollback()
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +82,7 @@ def tenants(client):
             # Teardown deletes in reverse order — children (users) come last.
             _created.append(("tenants", tenant.id))
             _created.append(("users", user.id))
+            _tenant_ids.append(tenant.id)
             out[label] = {
                 "id": tenant.id,
                 "headers": {"Authorization": f"Bearer {create_access_token(user_id=user.id, role='tenant_admin', tenant_id=tenant.id)}"},
@@ -445,15 +461,41 @@ def test_selling_price_produces_tenant_charge(tenants, super_admin, client, cata
 
 def test_session_cost_breakdown_keeps_stt_and_tts_auditable(tenants, super_admin, client):
     """One voice call: STT + TTS + LLM events under a session id; the session
-    endpoint returns each event separately and the STT+TTS subtotal."""
+    endpoint returns each event separately and the STT+TTS subtotal.
+
+    The STT price row is owned by this test: the shared dev DB's seeded STT
+    rows (whisper-1, nova-*) are user-curated master data and can be
+    deactivated at any time — never assert against them."""
     from shared.billing.metering import record_usage_event
+    from shared.ids import new_id
+    from shared.models import ProviderModel
+
+    stt_model = f"billing-test-stt-{_SUFFIX}"
+    session = _session()
+    try:
+        catalog_row = ProviderModel(
+            id=new_id("pm"), provider_code="openai", capability="stt",
+            code=stt_model, display_name=f"Billing STT {_SUFFIX}", status="inactive",
+        )
+        session.add(catalog_row)
+        session.commit()
+        _created.append(("provider_models", catalog_row.id))
+    finally:
+        session.close()
+    price = _data(client.post(f"{API}/master/provider-pricing", headers=super_admin, json={
+        "providerCode": "openai", "capability": "stt", "modelCode": stt_model,
+        "component": "audio_seconds", "unit": "per_minute", "unitPrice": "0.006",
+        "currencyCode": "USD",
+        "effectiveFrom": (datetime.utcnow() - timedelta(days=1)).isoformat(timespec="seconds"),
+    }))
+    _created.append(("provider_pricing", price["id"]))
 
     session_id = f"sess-{_SUFFIX}"
     session = _session()
     try:
         record_usage_event(
             session, tenant_id=tenants["a"]["id"], capability="stt",
-            provider_code="openai", model_code="whisper-1",
+            provider_code="openai", model_code=stt_model,
             session_id=session_id, audio_seconds=90,
             request_id=f"test:{_SUFFIX}:sess:stt",
         )
@@ -565,3 +607,107 @@ def test_summary_conversion_uses_configured_rate(client, super_admin, tenants):
 
     rates = _data(client.get(f"{API}/currency/rates", headers=tenants["a"]["headers"]))
     assert rates["rates"]["INR"] == pytest.approx(86.50)
+
+
+# ── provider-exact costing (cached tokens, Sarvam TTS, Decimal precision) ────
+
+
+def _own_inr_rate(client, super_admin, seconds_extra: int):
+    """A 96.00 USD→INR rate that outranks every earlier test's rate row.
+
+    Earlier tests in this module create their own USD→INR rows (one of them
+    at 86.50 effective ``now − 5min``). These tests run LAST among the
+    rate-sensitive ones, so their row uses ``now − 4min`` — strictly newer
+    than anything created before it in this run, while ``seconds_extra``
+    keeps each call site's effective_from unique (the API rejects duplicate
+    effective dates per pair)."""
+    rate = _data(client.post(f"{API}/master/exchange-rates", headers=super_admin, json={
+        "baseCode": "USD", "targetCode": "INR", "rate": "96.00",
+        "effectiveFrom": (datetime.utcnow() - timedelta(minutes=4, seconds=seconds_extra))
+        .isoformat(timespec="seconds"),
+    }))
+    _created.append(("exchange_rates", rate["id"]))
+
+
+def test_cached_tokens_billed_once_at_cached_rate(tenants):
+    """input_tokens is the provider's GROSS prompt count INCLUDING the cached
+    subset (OpenAI/Gemini semantics). The cached portion must be billed at
+    the cached rate ONLY — netted out of the full-rate input component."""
+    from shared.billing.metering import record_usage_event
+
+    session = _session()
+    try:
+        event = record_usage_event(
+            session, tenant_id=tenants["a"]["id"], capability="llm",
+            provider_code="openai", model_code="gpt-4o-mini",
+            input_tokens=1000, cached_tokens=400, output_tokens=500,
+            request_id=f"test:{_SUFFIX}:llm-cached-net",
+        )
+        # (1000−400)×$0.15/1M + 400×$0.075/1M + 500×$0.60/1M
+        #   = 0.00009 + 0.00003 + 0.0003 = $0.00042 (NOT 0.00048 double-billed).
+        assert event is not None and event.pricing_status == "priced"
+        assert Decimal(str(event.cost_usd)) == Decimal("0.00042")
+        snapshot = event.pricing_snapshot
+        assert snapshot["input_tokens"]["quantity"] == "600"
+        assert snapshot["cached_input_tokens"]["quantity"] == "400"
+        assert Decimal(snapshot["cached_input_tokens"]["unitPrice"]) == Decimal("0.075")
+        # total = gross prompt + completion (provider's own definition).
+        assert event.total_tokens == 1500
+        # Raw usage figures stay as the provider reported them (audit).
+        assert event.input_tokens == 1000 and event.cached_tokens == 400
+    finally:
+        session.close()
+    _track_events(tenants["a"]["id"])
+
+
+def test_sarvam_tts_costed_per_1k_characters_in_inr(tenants, super_admin, client):
+    """Sarvam bulbul:v3 bills characters at ₹30/10K (₹3/1K) — the INR-native
+    price converts through the configured USD→INR rate, never through
+    another provider's formula."""
+    from shared.billing.metering import record_usage_event
+
+    _own_inr_rate(client, super_admin, seconds_extra=17)
+    session = _session()
+    try:
+        event = record_usage_event(
+            session, tenant_id=tenants["a"]["id"], capability="tts",
+            provider_code="sarvam", model_code="bulbul:v3",
+            voice_code="anushka", characters=1000,
+            request_id=f"test:{_SUFFIX}:tts-sarvam-inr",
+        )
+        # 1000 chars × ₹3/1K = ₹3.00 → ₹3.00 / 96.00 = $0.031250.
+        assert event.pricing_status == "priced"
+        assert Decimal(str(event.cost_usd)) == Decimal("0.03125")
+        snapshot = event.pricing_snapshot["characters"]
+        assert snapshot["unit"] == "per_1k_characters"
+        assert Decimal(snapshot["unitPrice"]) == Decimal("3")
+        assert snapshot["currency"] == "INR"
+        assert Decimal(snapshot["fxRate"]) == Decimal("96")
+    finally:
+        session.close()
+    _track_events(tenants["a"]["id"])
+
+
+def test_stt_subsecond_duration_decimal_precision(tenants, super_admin, client):
+    """A 1.1 s Sarvam final (metrics.audio_duration) is stored with its raw
+    precision and costed with Decimal arithmetic: ₹30/h × 1.1 s / 96 INR/USD
+    = $0.0000954861… → $0.000095 at the 6-decimal event quantum."""
+    from shared.billing.metering import record_usage_event
+
+    _own_inr_rate(client, super_admin, seconds_extra=31)
+    session = _session()
+    try:
+        event = record_usage_event(
+            session, tenant_id=tenants["a"]["id"], capability="stt",
+            provider_code="sarvam", model_code="saaras:v3",
+            audio_seconds=Decimal("1.1"),
+            request_id=f"test:{_SUFFIX}:stt-decimal",
+            usage_metadata={"basis": "provider_metrics"},
+        )
+        assert event.pricing_status == "priced"
+        assert Decimal(str(event.audio_seconds)) == Decimal("1.100")
+        assert Decimal(str(event.cost_usd)) == Decimal("0.000095")
+        assert event.usage_metadata == {"basis": "provider_metrics"}
+    finally:
+        session.close()
+    _track_events(tenants["a"]["id"])

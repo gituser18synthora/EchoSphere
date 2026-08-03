@@ -10,11 +10,21 @@ from shared.billing.pricing import _UNIT_DIVISORS, quantities_for
 
 class TestQuantitiesFor:
     def test_llm_split_components(self):
+        # input_tokens is the provider's GROSS prompt count (includes the
+        # cached subset); the cached portion is billed at the cached rate
+        # only, so it is netted out of the full-rate input component.
         q = quantities_for("llm", input_tokens=1200, output_tokens=340, cached_tokens=100)
         assert q == {
-            "input_tokens": Decimal(1200),
+            "input_tokens": Decimal(1100),
             "output_tokens": Decimal(340),
             "cached_input_tokens": Decimal(100),
+        }
+
+    def test_llm_fully_cached_prompt_has_no_full_rate_input(self):
+        q = quantities_for("llm", input_tokens=500, output_tokens=10, cached_tokens=500)
+        assert q == {
+            "output_tokens": Decimal(10),
+            "cached_input_tokens": Decimal(500),
         }
 
     def test_llm_blended_fallback_uses_total(self):
