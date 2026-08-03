@@ -11,6 +11,7 @@ import time
 import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from shared.bot_config import ResolvedBotConfig
@@ -47,9 +48,17 @@ class SessionRecorder:
         self.usage: dict[str, float] = {
             "stt_seconds": 0.0, "stt_requests": 0,
             "llm_input_tokens": 0, "llm_output_tokens": 0,
-            "llm_cached_tokens": 0, "llm_requests": 0, "llm_usage_estimated": 0,
+            "llm_cached_tokens": 0, "llm_reasoning_tokens": 0,
+            "llm_requests": 0, "llm_usage_estimated": 0,
             "tts_characters": 0, "kb_searches": 0,
         }
+        # Billable STT audio, accumulated as Decimal from what the provider
+        # actually reported (Sarvam finals carry metrics.audio_duration; the
+        # segmented REST path measures the exact PCM). The usage dict above
+        # mirrors it as float for the Mongo transcript document only.
+        self._stt_seconds = Decimal(0)
+        self._stt_basis: str | None = None  # provider_metrics | pcm
+        self._stt_request_ids: set[str] = set()
         # Per-engine TTS breakdown ("provider|model|voice" → counters) so a
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
@@ -81,6 +90,37 @@ class SessionRecorder:
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
+
+    def add_stt_usage(
+        self,
+        *,
+        seconds: "Decimal | float | str",
+        request_id: str | None = None,
+        basis: str = "provider_metrics",
+    ) -> bool:
+        """Fold one final STT result's billable audio duration into the call.
+
+        ``seconds`` is the provider-reported duration (Sarvam final
+        ``metrics.audio_duration``) or the exact PCM length on the segmented
+        REST path. Deduplicated by provider ``request_id`` so an SDK callback
+        replay or reconnect re-delivery of the same final never double-bills.
+        Returns True when the duration was counted.
+        """
+        if request_id:
+            if request_id in self._stt_request_ids:
+                return False
+            self._stt_request_ids.add(request_id)
+        try:
+            duration = Decimal(str(seconds))
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+        if duration <= 0:
+            return False
+        self._stt_seconds += duration
+        self._stt_basis = self._stt_basis or basis
+        self.usage["stt_seconds"] = float(self._stt_seconds)
+        self.usage["stt_requests"] = int(self.usage.get("stt_requests", 0)) + 1
+        return True
 
     def add_tts_usage(self, *, provider: str, model: str, voice: str, characters: int) -> None:
         """Called by the TTS router once per completed generation."""
@@ -253,20 +293,26 @@ class SessionRecorder:
                 input_tokens=int(usage.get("llm_input_tokens") or 0),
                 output_tokens=int(usage.get("llm_output_tokens") or 0),
                 cached_tokens=int(usage.get("llm_cached_tokens") or 0),
+                reasoning_tokens=int(usage.get("llm_reasoning_tokens") or 0),
                 usage_source="estimated" if usage.get("llm_usage_estimated") else "provider",
             )
             if event is not None:
                 total += Decimal(str(event.cost_usd))
 
         stt_conf = self.config.stt or {}
-        stt_seconds = float(usage.get("stt_seconds") or 0)
-        stt_source = "provider"
+        stt_seconds = self._stt_seconds
+        stt_source, stt_basis = "provider", self._stt_basis
         if stt_seconds <= 0 and any(t.role == "user" for t in self.turns):
-            # Realtime WS STT streams audio for the whole call; the connection
-            # duration is the documented billing estimate when the provider
-            # reports no per-utterance duration.
-            stt_seconds = float(duration)
-            stt_source = "estimated"
+            # Fallback of last resort: transcripts exist but no final ever
+            # carried a usable duration (and no PCM was measured). Bill the
+            # connection duration and mark the event clearly as estimated.
+            stt_seconds = Decimal(duration)
+            stt_source, stt_basis = "estimated", "connection_duration"
+            logger.warning(
+                "stt usage fallback for %s: no provider-reported audio "
+                "duration; billing connection duration (%ss)",
+                self.session_id, duration,
+            )
         if stt_seconds > 0:
             event = _record(
                 capability="stt",
@@ -274,8 +320,9 @@ class SessionRecorder:
                 model_code=stt_conf.get("model") or "",
                 request_id=f"{self.session_id}:stt",
                 requests=int(usage.get("stt_requests") or 1),
-                audio_seconds=round(stt_seconds, 3),
+                audio_seconds=stt_seconds.quantize(Decimal("0.001")),
                 usage_source=stt_source,
+                usage_metadata={"basis": stt_basis} if stt_basis else None,
             )
             if event is not None:
                 total += Decimal(str(event.cost_usd))

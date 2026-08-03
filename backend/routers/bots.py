@@ -70,9 +70,24 @@ def _bot_extras(db: Session, bots: list[VoiceBot]) -> dict[str, dict]:
             .group_by(UsageRecord.bot_id)
         ).all()
     )
-    month_calls = dict(
-        db.execute(
-            select(UsageRecord.bot_id, func.coalesce(func.sum(UsageRecord.calls), 0))
+    # Calls and AI cost for the current calendar month, from the metering
+    # rollup (usage_records is written per call at finalize) — never from the
+    # static voice_bots columns, which only demo seeds ever populated.
+    month_cost = (
+        func.coalesce(func.sum(UsageRecord.cost_llm), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_tts), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_stt), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_telephony), 0)
+        + func.coalesce(func.sum(UsageRecord.cost_embedding), 0)
+    )
+    month_usage = {
+        bot_id: (int(calls or 0), float(cost or 0))
+        for bot_id, calls, cost in db.execute(
+            select(
+                UsageRecord.bot_id,
+                func.coalesce(func.sum(UsageRecord.calls), 0),
+                month_cost,
+            )
             .where(
                 UsageRecord.bot_id.in_(ids),
                 func.extract("year", UsageRecord.date) == today.year,
@@ -80,22 +95,25 @@ def _bot_extras(db: Session, bots: list[VoiceBot]) -> dict[str, dict]:
             )
             .group_by(UsageRecord.bot_id)
         ).all()
-    )
+    }
     owner_ids = [b.owner_user_id for b in bots if b.owner_user_id]
     owners = {}
     if owner_ids:
         owners = dict(
             db.execute(select(User.id, User.name).where(User.id.in_(owner_ids))).all()
         )
-    return {
-        b.id: {
+    extras = {}
+    for b in bots:
+        calls_month, cost_month = month_usage.get(b.id, (0, 0.0))
+        extras[b.id] = {
             "channels": channels.get(b.id, []),
             "calls_today": int(today_calls.get(b.id, 0)),
-            "calls_month": int(month_calls.get(b.id, 0)),
+            "calls_month": calls_month,
+            # Cost per answered call this month, from actual metered usage.
+            "avg_cost_per_call": (cost_month / calls_month) if calls_month else 0.0,
             "owner": owners.get(b.owner_user_id, "—"),
         }
-        for b in bots
-    }
+    return extras
 
 
 def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
@@ -107,6 +125,7 @@ def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
             channels=extras[b.id]["channels"],
             calls_today=extras[b.id]["calls_today"],
             calls_month=extras[b.id]["calls_month"],
+            avg_cost_per_call=extras[b.id]["avg_cost_per_call"],
         )
         for b in bots
     ]

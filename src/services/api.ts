@@ -355,6 +355,12 @@ export const listGuardrails = (): Promise<Guardrail[]> => http.get("/guardrails"
 export const updateGuardrail = (id: string, body: { enabled?: boolean; enforcement?: string }) =>
   http.patch<Guardrail>(`/guardrails/${id}`, body);
 export const listPhoneNumbers = (): Promise<PhoneNumber[]> => http.get("/phone-numbers");
+export const updatePhoneNumber = (
+  id: string,
+  body: Partial<{ number: string; country: string; provider: string; monthlyCost: number; status: string }>,
+): Promise<PhoneNumber> => http.patch(`/phone-numbers/${id}`, body);
+export const setPhoneNumberActive = (id: string, active: boolean): Promise<PhoneNumber> =>
+  http.post(`/phone-numbers/${id}/${active ? "activate" : "deactivate"}`, {});
 export const listSipTrunks = (): Promise<SipTrunk[]> => http.get("/sip-trunks");
 export const getPlatformHealth = (): Promise<HealthMetric[]> => http.get("/health-metrics");
 export const listTemplates = (kind: string): Promise<Record<string, unknown>[]> =>

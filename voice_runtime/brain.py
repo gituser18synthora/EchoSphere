@@ -262,13 +262,19 @@ class ConversationBrain(FrameProcessor):
 
         if isinstance(frame, InterimTranscriptionFrame):
             # Partial STT results feed the live client UI only: they never
-            # become segments, turns or LLM work, and they stop here (the
-            # final transcript follows through the gated path below).
+            # become segments, turns, LLM work or billable usage — the final
+            # covering the same audio carries the billable duration.
             if not self._closing and (frame.text or "").strip():
                 await self._notify_client(
                     {"type": "partial_transcript", "text": frame.text.strip()}
                 )
             return
+
+        if isinstance(frame, TranscriptionFrame):
+            # Billable STT audio is tracked for EVERY final — including ones
+            # the quality gate rejects or that arrive during hang-up: the
+            # provider processed that audio either way.
+            self._track_stt_usage(frame)
 
         if self._closing:
             # Disconnect has started: STT events must not produce responses,
@@ -321,6 +327,37 @@ class ConversationBrain(FrameProcessor):
             return
 
         await self.push_frame(frame, direction)
+
+    def _track_stt_usage(self, frame: TranscriptionFrame) -> None:
+        """Record the billable audio duration of one streaming-STT final.
+
+        Sarvam finals carry the actual processed audio length at
+        ``result.data.metrics.audio_duration`` — the official billing metric
+        ("₹/hour billed per second of audio"). Only that shape is counted
+        here; the segmented REST path measures its own PCM in EchoSTTService
+        and attaches a flat result dict, which is deliberately ignored so the
+        same audio is never billed twice. Deduplication is by the provider's
+        ``request_id`` (recorder-side), so a replayed final is a no-op.
+        """
+        result = getattr(frame, "result", None)
+        if not isinstance(result, dict):
+            return
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return  # flat REST shape — already billed at capture
+        if data.get("is_final") is False:
+            return  # partial callbacks are not billed; the final covers them
+        metrics = data.get("metrics")
+        duration = metrics.get("audio_duration") if isinstance(metrics, dict) else None
+        if duration is None:
+            return  # recorder falls back (marked estimated) if none arrive
+        add_usage = getattr(self._recorder, "add_stt_usage", None)
+        if add_usage is not None:
+            add_usage(
+                seconds=duration,
+                request_id=str(data.get("request_id") or "") or None,
+                basis="provider_metrics",
+            )
 
     async def _on_transcription(self, frame: TranscriptionFrame) -> None:
         text = (frame.text or "").strip()
@@ -994,6 +1031,11 @@ class ConversationBrain(FrameProcessor):
             usage["llm_output_tokens"] += reported.output_tokens
             usage["llm_cached_tokens"] = (
                 usage.get("llm_cached_tokens", 0) + reported.cached_tokens
+            )
+            # Included in output_tokens by every provider that reports them —
+            # recorded for observability, never billed separately.
+            usage["llm_reasoning_tokens"] = (
+                usage.get("llm_reasoning_tokens", 0) + reported.reasoning_tokens
             )
         elif reply:
             usage["llm_output_tokens"] += len(reply) // 4

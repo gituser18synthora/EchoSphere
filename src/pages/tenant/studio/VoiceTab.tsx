@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AudioSettings, LanguageVoiceOverride, ModelLanguagesInfo, ProviderInfo,
-  ProviderModelInfo, ProviderSettings, ProviderTestResult,
+  ParamSpec, ProviderModelInfo, ProviderSettings, ProviderTestResult,
   TtsPreviewResult, VoiceBot, VoiceCapability, VoiceOption, VoiceSettings, VoiceTuning,
 } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
@@ -35,6 +35,32 @@ const DEFAULT_SAMPLE_TEXT = "Hello! I'm your voice assistant. How can I help you
    the canonical speed onto each engine. The admin voice catalog keeps the
    full schema. */
 const DELIVERY_SPEED_PARAMS = ["pace", "speed"];
+
+/* Platform turn timing is stored alongside STT provider settings, but is not
+   a provider-native parameter. It therefore gets its own stable UI/contract
+   instead of being added to every provider model's paramsSchema. */
+const TURN_DETECTION_SCHEMA: Record<string, ParamSpec> = {
+  user_speech_timeout: {
+    type: "number", min: 0.2, max: 3, step: 0.05, default: 1.2,
+    label: "User pause window", help: "Seconds of silence before the bot closes the caller's turn. Browser default: 1.2s; telephony default: 0.8s. Setting a value overrides both.",
+  },
+  finalize_grace: {
+    type: "number", min: 0, max: 1.5, step: 0.05, default: 0.3,
+    label: "Transcript finalization grace", help: "Extra seconds allowed for late STT transcript fragments before routing and response generation begin.",
+  },
+};
+
+function turnDetectionValues(settings: ProviderSettings): ProviderSettings {
+  const value = settings.turn_detection;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function preserveTurnDetection(next: ProviderSettings, previous: ProviderSettings): ProviderSettings {
+  const value = previous.turn_detection;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...next, turn_detection: value }
+    : next;
+}
 
 function stripDeliverySpeedParams<T>(record: Record<string, T> | undefined): Record<string, T> {
   return Object.fromEntries(
@@ -279,16 +305,20 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   };
 
   const changeSttProvider = async (provider: string) => {
-    setStt({ provider, model: "", language: "", settings: {} });
+    setStt((s) => ({ provider, model: "", language: "", settings: preserveTurnDetection({}, s.settings) }));
     if (!provider) return;
     const def = await defaultModelOf("stt", provider);
     setStt((s) => (s.provider === provider && !s.model
-      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      ? { ...s, model: def?.code ?? "", settings: preserveTurnDetection(schemaDefaults(def?.paramsSchema), s.settings) }
       : s));
   };
   const changeSttModel = (model: string) => {
     const schema = modelInfo("stt", stt.provider, model)?.paramsSchema;
-    setStt((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+    setStt((s) => ({
+      ...s,
+      model,
+      settings: preserveTurnDetection(reconcileSettings(schema, s.settings), s.settings),
+    }));
   };
 
   const changeLlmProvider = async (provider: string) => {
@@ -538,6 +568,22 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               schema={sttSchema} values={stt.settings}
               onChange={(next) => setStt((s) => ({ ...s, settings: next }))}
             />
+            <details>
+              <summary className="t-label" style={{ cursor: "pointer" }}>Turn response timing</summary>
+              <div className="col gap-12" style={{ marginTop: 10 }}>
+                <span className="field-hint">
+                  Lower values respond faster; values that are too low can cut off callers who pause mid-sentence.
+                </span>
+                <ParamFields
+                  schema={TURN_DETECTION_SCHEMA}
+                  values={turnDetectionValues(stt.settings)}
+                  onChange={(next) => setStt((s) => ({
+                    ...s,
+                    settings: { ...s.settings, turn_detection: next },
+                  }))}
+                />
+              </div>
+            </details>
             <CleanupCallout
               items={sttIssues}
               onApply={() => setStt((s) => ({ ...s, language: "" }))}

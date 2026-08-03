@@ -70,8 +70,10 @@ def record_usage_event(
     # and fall outside an occurred_at <= now() summary window queried in the
     # same instant.
     occurred_at = (occurred_at or datetime.utcnow()).replace(microsecond=0)
-    if not total_tokens and (input_tokens or output_tokens or cached_tokens):
-        total_tokens = input_tokens + output_tokens + cached_tokens
+    if not total_tokens and (input_tokens or output_tokens):
+        # input_tokens is gross (includes the cached portion), matching the
+        # providers' own total = prompt + completion definition.
+        total_tokens = input_tokens + output_tokens
 
     if request_id:
         existing = db.execute(

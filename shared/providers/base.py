@@ -78,6 +78,15 @@ class LLMStreamUsage:
     streaming API; callers that need billing-grade numbers read it right
     after the stream ends (one generation at a time per provider instance —
     the realtime voice path never runs concurrent generations on one call).
+
+    Normalized convention (billing depends on it):
+    - ``input_tokens`` is the GROSS prompt count INCLUDING ``cached_tokens``
+      (OpenAI prompt_tokens and Gemini prompt_token_count already are;
+      Anthropic reports cache reads separately, so its adapter adds them in).
+    - ``cached_tokens`` is the cache-hit subset, billed at the cached rate;
+      pricing nets it out of the full-rate input component.
+    - ``reasoning_tokens`` are informational: providers include them in
+      ``output_tokens``, so they are never billed separately.
     """
 
     input_tokens: int = 0

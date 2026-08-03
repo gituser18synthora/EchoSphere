@@ -107,6 +107,12 @@ class _Generation:
     watchdog: asyncio.Task | None = None
     audio_bytes: int = 0   # post-resample bytes delivered downstream
     audio_chunks: int = 0
+    # Characters actually SENT to the current engine — the provider's billing
+    # basis (both Sarvam and ElevenLabs charge for submitted text, played or
+    # not). Reset when a fallback switches engines, so exactly one engine is
+    # ever billed for a given sentence; pause-mode sentences still waiting in
+    # `pending` are not included until they are dispatched.
+    dispatched_chars: int = 0
     # Pause-aware sentence serialization (active when pause_ms > 0): sentences
     # wait here until the provider confirms the previous one finished, so
     # inserted silence always lands BETWEEN complete sentence audio segments.
@@ -337,6 +343,7 @@ class StreamingTTSRouter(TTSService):
                     await self._dispatch_next_sentence(context_id, state)
             else:
                 await state.provider.synthesize_stream(text, generation_id=context_id)
+                state.dispatched_chars += len(text)
         except ProviderError as exc:
             handled = await self._try_fallback(context_id, exc)
             if not handled:
@@ -388,11 +395,41 @@ class StreamingTTSRouter(TTSService):
         except (ConnectionError, OSError):
             pass
 
+    def _bill_generation(self, state: _Generation, *, interrupted: bool = False) -> None:
+        """Record the generation's dispatched characters as billable usage.
+
+        Both Sarvam and ElevenLabs charge for text submitted for synthesis
+        whether or not the caller heard all of it, so an interrupted
+        generation bills exactly what was already sent — never the sentences
+        still queued locally. Idempotent per generation by construction: the
+        state is popped from ``_generations`` before/with every billing site.
+        """
+        if self._recorder is None or state.dispatched_chars <= 0:
+            return
+        add_usage = getattr(self._recorder, "add_tts_usage", None)
+        if add_usage is None:
+            return
+        add_usage(
+            provider=state.engine.get("provider") or "",
+            model=state.engine.get("model") or "",
+            voice=state.engine.get("voice") or "",
+            characters=state.dispatched_chars,
+        )
+        state.dispatched_chars = 0
+        if interrupted:
+            self._recorder.add_event(
+                "tts_generation_interrupted",
+                provider=state.engine.get("provider"),
+                voice=state.engine.get("voice"),
+            )
+
     async def on_audio_context_interrupted(self, context_id: str):
         """Barge-in: cancel provider synthesis and drop the generation.
 
         Queued sentences and any not-yet-played silence die with the audio
         context — a cancelled generation can never emit late audio or pauses.
+        Text already sent to the provider was synthesized (and is billed by
+        the provider) regardless of the cancel, so it is still counted.
         """
         state = self._generations.pop(context_id, None)
         self._drop_subgenerations(context_id)
@@ -400,6 +437,7 @@ class StreamingTTSRouter(TTSService):
             if state.watchdog is not None:
                 state.watchdog.cancel()
             state.pending.clear()
+            self._bill_generation(state, interrupted=True)
             try:
                 await state.provider.cancel(state.active or context_id)
             except (ConnectionError, OSError):
@@ -418,6 +456,10 @@ class StreamingTTSRouter(TTSService):
         for state in self._generations.values():
             if state.watchdog is not None:
                 state.watchdog.cancel()
+            # Call teardown with a generation still in flight (e.g. hang-up
+            # mid-goodbye): the dispatched text was synthesized and is billed
+            # by the provider — count it before the state is dropped.
+            self._bill_generation(state, interrupted=True)
         self._generations.clear()
         self._subgenerations.clear()
         pumps, self._pumps = self._pumps, {}
@@ -518,6 +560,7 @@ class StreamingTTSRouter(TTSService):
         state.active_pause_after = sentence.pause_after
         state.active_got_audio = False
         await state.provider.synthesize_stream(sentence.text, generation_id=sub_id)
+        state.dispatched_chars += len(sentence.text)
         await state.provider.flush(sub_id)
         await state.provider.finish(sub_id)
 
@@ -619,18 +662,13 @@ class StreamingTTSRouter(TTSService):
                 self.sample_rate, state.fallback_used,
             )
         if self._recorder is not None:
-            # Billable characters: counted once per generation against the
-            # engine that actually delivered audio (fallback replays the same
-            # texts on the new engine — never double-counted). Failed
-            # generations produced no audio and are not billed.
-            add_usage = getattr(self._recorder, "add_tts_usage", None)
-            if add_usage is not None and not failed and state.texts:
-                add_usage(
-                    provider=state.engine.get("provider") or "",
-                    model=state.engine.get("model") or "",
-                    voice=state.engine.get("voice") or "",
-                    characters=sum(len(t) for t in state.texts),
-                )
+            # Billable characters: the text actually DISPATCHED to the engine
+            # that owned the generation at the end (a fallback resets the
+            # counter and replays, so exactly one engine is billed). Failed
+            # generations are not billed — no audio was delivered and the
+            # transient-failure categories are not charged by the providers.
+            if not failed:
+                self._bill_generation(state)
             await self._recorder.flush_event(
                 "tts_provider_used",
                 provider=state.engine.get("provider"),
@@ -696,6 +734,9 @@ class StreamingTTSRouter(TTSService):
             state.provider = provider
             state.fallback_used = True
             state.got_audio = False
+            # The replay re-dispatches every sentence on the NEW engine; the
+            # dispatch counter restarts so exactly one engine is billed.
+            state.dispatched_chars = 0
             if self._pause_ms > 0:
                 # Replay every sentence through the same pause-aware
                 # serializer, so the fallback engine gets identical pauses.
@@ -710,6 +751,7 @@ class StreamingTTSRouter(TTSService):
             else:
                 for text in state.texts:
                     await provider.synthesize_stream(text, generation_id=context_id)
+                    state.dispatched_chars += len(text)
                 if state.flushed:
                     await provider.flush(context_id)
                     await provider.finish(context_id)

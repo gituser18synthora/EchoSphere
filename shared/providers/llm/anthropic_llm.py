@@ -177,12 +177,17 @@ class AnthropicLLM(LLMProvider):
                     if usage is not None:
                         from shared.providers.base import LLMStreamUsage
 
+                        # Anthropic's input_tokens EXCLUDES cache reads (they
+                        # are reported separately) — normalize to the gross-
+                        # including-cached convention LLMStreamUsage defines.
+                        cache_read = int(
+                            getattr(usage, "cache_read_input_tokens", 0) or 0
+                        )
                         self.last_stream_usage = LLMStreamUsage(
-                            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                            input_tokens=int(getattr(usage, "input_tokens", 0) or 0)
+                            + cache_read,
                             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                            cached_tokens=int(
-                                getattr(usage, "cache_read_input_tokens", 0) or 0
-                            ),
+                            cached_tokens=cache_read,
                         )
                 except Exception:  # noqa: BLE001 — usage capture must not break the call
                     pass

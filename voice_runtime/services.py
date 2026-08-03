@@ -35,11 +35,16 @@ class EchoSTTService(SegmentedSTTService):
         try:
             pcm, rate = wav_to_pcm(audio)
             audio_seconds = len(pcm) / (rate * 2) if rate else 0.0
-            if self._recorder is not None and rate:
-                # Billable audio duration from the actual PCM16 payload.
-                usage = self._recorder.usage
-                usage["stt_seconds"] = usage.get("stt_seconds", 0) + audio_seconds
-                usage["stt_requests"] = usage.get("stt_requests", 0) + 1
+            if self._recorder is not None and audio_seconds > 0:
+                # Billable audio duration measured from the actual PCM16
+                # payload — exactly the audio sent to the provider.
+                add_usage = getattr(self._recorder, "add_stt_usage", None)
+                if add_usage is not None:
+                    add_usage(seconds=audio_seconds, basis="pcm")
+                else:  # legacy/stub recorders
+                    usage = self._recorder.usage
+                    usage["stt_seconds"] = usage.get("stt_seconds", 0) + audio_seconds
+                    usage["stt_requests"] = usage.get("stt_requests", 0) + 1
             result = await self._provider.transcribe(
                 pcm, sample_rate=rate, language=self._language
             )
