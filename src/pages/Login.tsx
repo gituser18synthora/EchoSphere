@@ -5,10 +5,11 @@ import { PasswordInput } from "@/components/ui";
 import { useApp } from "@/state/AppContext";
 import * as api from "@/services/api";
 import aurexionLogo from "@/assets/brand/Aurexion-logo.svg";
+import aurexionLogoWhite from "@/assets/brand/Aurexion-logo-white.svg";
 import robotMascot from "@/assets/brand/synthora-ai-front-view.png";
 
 export default function Login() {
-  const { signIn } = useApp();
+  const { signIn, theme } = useApp();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,7 +58,11 @@ export default function Login() {
         <div className="auth-card">
           <div className="auth-card-inner">
             <div className="auth-brand">
-              <img src={aurexionLogo} alt="Aurexion" className="auth-brand-logo" />
+              <img
+                src={theme === "dark" ? aurexionLogoWhite : aurexionLogo}
+                alt="Aurexion"
+                className="auth-brand-logo"
+              />
               <div className="auth-brand-divider" aria-hidden />
               <div className="auth-brand-product">
                 <span className="auth-brand-name">EchoSphere</span>
