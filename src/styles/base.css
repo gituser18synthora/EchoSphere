@@ -34,10 +34,10 @@ a:hover {
   text-decoration: underline;
 }
 :root[data-theme="dark"] a {
-  color: var(--brand-300);
+  color: var(--brand-400);
 }
 :root[data-theme="dark"] a:hover {
-  color: var(--brand-200);
+  color: var(--brand-300);
 }
 
 button {
@@ -80,6 +80,13 @@ code, .mono {
 }
 
 /* Text helpers */
+.text-sm {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+.font-medium {
+  font-weight: 500;
+}
 .t-title {
   font-size: 20px;
   font-weight: 700;

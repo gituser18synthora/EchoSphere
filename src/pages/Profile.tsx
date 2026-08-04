@@ -195,14 +195,41 @@ export default function Profile() {
               <Callout tone="critical">{pwError || pwLocalError}</Callout>
             )}
             <Field label="Current password" required>
-              <PasswordInput autoComplete="current-password" value={currentPw} onChange={setCurrentPw} />
+              {/* Give password managers a real username target so they skip the header search */}
+              <input
+                type="text"
+                name="username"
+                autoComplete= "off"
+                autoCorrect= "off"
+                autoCapitalize= "off"
+                spellCheck= "false"
+                data-lpignore= "true"
+                data-1p-ignore= "true"
+                data-bwignore= "true"
+                data-form-type= "other"
+                value={user?.email ?? ""}
+                readOnly
+                tabIndex={-1}
+                aria-hidden="true"
+                style={{
+                  position: "absolute",
+                  opacity: 0,
+                  height: 0,
+                  width: 0,
+                  border: 0,
+                  padding: 0,
+                  margin: 0,
+                  pointerEvents: "none",
+                }}
+              />
+              <PasswordInput autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" value={currentPw} onChange={setCurrentPw} />
             </Field>
             <Field label="New password" required
               hint="At least 8 characters with an uppercase letter, a lowercase letter and a digit.">
-              <PasswordInput autoComplete="new-password" value={newPw} onChange={setNewPw} />
+              <PasswordInput autoComplete="new-password" autoCorrect="off" autoCapitalize="off" spellCheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" value={newPw} onChange={setNewPw} />
             </Field>
             <Field label="Confirm new password" required>
-              <PasswordInput autoComplete="new-password" value={confirmPw} onChange={setConfirmPw} />
+              <PasswordInput autoComplete="new-password" autoCorrect="off" autoCapitalize="off" spellCheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" value={confirmPw} onChange={setConfirmPw} />
             </Field>
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button
