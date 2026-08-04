@@ -256,6 +256,22 @@ def _get_channel(db: Session, bot: VoiceBot, channel_type: str) -> ChannelConfig
     )
 
 
+def _get_archived_channel(db: Session, bot: VoiceBot, channel_type: str) -> ChannelConfig | None:
+    """The archived row for this (bot, type), if any.
+
+    Archiving is a soft delete, so the row keeps occupying the
+    `uq_channel_bot_type` unique key. Re-configuring the channel must revive
+    that row — inserting a second one raises a duplicate-key IntegrityError,
+    which the global handler turns into an opaque 409.
+    """
+    return db.scalar(
+        select(ChannelConfig).where(
+            ChannelConfig.bot_id == bot.id, ChannelConfig.type == channel_type,
+            ChannelConfig.is_deleted.is_(True),
+        )
+    )
+
+
 def _binding(db: Session, bot: VoiceBot) -> dict:
     """What this channel routes to: tenant, bot, published config, prompt,
     knowledge access and language/voice settings."""
@@ -352,6 +368,13 @@ def _assign_phone_number(db: Session, bot: VoiceBot, config: dict, user: User) -
     row.status = "assigned"
     row.provider = config.get("telephonyProvider") or row.provider
     row.updated_by = user.id
+    if row.is_deleted:
+        # Claiming a soft-deleted row must undelete it: inbound routing resolves
+        # numbers with is_deleted = false, so leaving the flag set would save a
+        # channel that passes its test but drops every real call.
+        row.is_deleted = False
+        row.deleted_at = None
+        row.deleted_by = None
 
 
 def _refresh_readiness(db: Session, bot: VoiceBot) -> None:
@@ -436,7 +459,10 @@ def upsert_channel(
 
     row = _get_channel(db, bot, channel_type)
     created = row is None
-    previous_config = dict(row.config or {}) if row else {}
+    # An archived channel still holds the (bot, type) unique key, so a re-create
+    # revives it instead of inserting a colliding row.
+    archived = _get_archived_channel(db, bot, channel_type) if created else None
+    previous_config = dict((row or archived).config or {}) if (row or archived) else {}
 
     if channel_type == "voice":
         old_number = previous_config.get("phoneNumber")
@@ -445,11 +471,18 @@ def upsert_channel(
         _assign_phone_number(db, bot, config, user)
 
     if created:
-        row = ChannelConfig(
-            id=new_id("ch"), tenant_id=bot.tenant_id, bot_id=bot.id,
-            type=channel_type, created_by=user.id, enabled=True,
-        )
-        db.add(row)
+        if archived is not None:
+            row = archived
+            row.is_deleted = False
+            row.deleted_at = None
+            row.deleted_by = None
+            row.enabled = True
+        else:
+            row = ChannelConfig(
+                id=new_id("ch"), tenant_id=bot.tenant_id, bot_id=bot.id,
+                type=channel_type, created_by=user.id, enabled=True,
+            )
+            db.add(row)
     row.config = config
     row.detail = _derive_detail(channel_type, config)
     row.status = "configured"

@@ -1,18 +1,42 @@
-"""Deterministic structured-prompt compiler.
+"""Deterministic prompt compiler — structured and full/unified modes.
 
-A structured prompt configuration (sectioned JSON authored in the prompt
-builder) compiles to the final runtime system prompt HERE, on the backend —
-the frontend only previews what this module produces. The same config always
-produces the same output.
+Two authoring modes compile to ONE runtime interface (`compiled_prompt`):
 
-Sections (fixed order): identity → conversation start → behavior → knowledge →
-tool rules → confusion recovery → safety → human handoff → conversation end →
-special situations → advanced instructions.
+- **structured** — a sectioned JSON configuration (prompt builder) compiles
+  deterministically here, on the backend; the frontend only previews what
+  this module produces. The same config always produces the same output.
+  Sections (fixed order): identity → conversation start → behavior →
+  knowledge → tool rules → confusion recovery → safety → human handoff →
+  conversation end → special situations → advanced instructions.
+- **full** — the tenant authors the complete voice-agent prompt as one
+  document (role, objective, flow, tone, business rules, intents, tools,
+  objections, escalation, compliance, closing — whatever the domain needs).
+  It is stored verbatim and IS the compiled prompt: nothing is forced into
+  the structured sections, and nothing is silently truncated — an oversized
+  full prompt is a validation error, because cutting a compliance rule mid-
+  sentence is worse than rejecting the save.
+
+Both modes may carry runtime variables ({customer_name}, {{amount}}) resolved
+per call from the runtime context — `extract_variables` and `render_preview`
+use the SAME grammar and key normalization as the runtime resolver
+(shared.orchestration.placeholders), so what the preview reports as missing
+is exactly what a live call would fail to resolve.
 """
 
 from typing import Any
 
+from shared.orchestration.placeholders import (
+    iter_placeholders,
+    normalize_placeholder_key,
+    resolve_placeholders,
+)
+
 MAX_COMPILED_CHARS = 24_000
+# Full prompts are authored whole (compliance rules, flows, objection
+# handling); rejecting an oversized one beats truncating it mid-rule.
+MAX_FULL_PROMPT_CHARS = 32_000
+
+PROMPT_MODES = ("structured", "full")
 
 SECTION_ORDER = (
     "identity", "conversationStart", "behavior", "knowledge", "tools",
@@ -55,6 +79,85 @@ def validate_config(config: dict[str, Any]) -> list[dict]:
 def estimate_tokens(text: str) -> int:
     """Rough token estimate (chars/4) — good enough for a builder-side budget."""
     return max(1, len(text) // 4)
+
+
+def validate_full_prompt(text: str | None) -> list[dict]:
+    """Field-level validation errors for a full/unified prompt."""
+    errors: list[dict] = []
+    stripped = (text or "").strip()
+    if not stripped:
+        errors.append({
+            "field": "fullPrompt",
+            "message": "The full prompt cannot be empty.",
+        })
+    elif len(stripped) > MAX_FULL_PROMPT_CHARS:
+        errors.append({
+            "field": "fullPrompt",
+            "message": (
+                f"The full prompt is {len(stripped):,} characters; the maximum "
+                f"is {MAX_FULL_PROMPT_CHARS:,}. Move reference material to the "
+                "knowledge base instead of the prompt."
+            ),
+        })
+    return errors
+
+
+def extract_variables(text: str | None) -> list[str]:
+    """Distinct runtime-variable keys used in a prompt, in first-use order."""
+    seen: dict[str, None] = {}
+    for item in iter_placeholders(text or ""):
+        seen.setdefault(item["key"], None)
+    return list(seen)
+
+
+def compile_source(
+    mode: str,
+    *,
+    structured_config: dict[str, Any] | None = None,
+    full_prompt: str | None = None,
+) -> tuple[list[dict], str]:
+    """Compile either authoring mode into the runtime prompt.
+
+    Returns ``(errors, compiled)``; compiled is "" when errors exist. This is
+    the ONE entry point the API uses, so the two modes cannot drift: whatever
+    is stored in ``compiled_prompt`` is exactly what the runtime speaks from.
+    """
+    if mode == "full":
+        errors = validate_full_prompt(full_prompt)
+        return errors, "" if errors else (full_prompt or "").strip()
+    if mode == "structured":
+        config = structured_config or {}
+        errors = validate_config(config)
+        return errors, "" if errors else compile_prompt(config)
+    return [{
+        "field": "promptMode",
+        "message": f"Prompt mode must be one of {list(PROMPT_MODES)}.",
+    }], ""
+
+
+def render_preview(compiled: str, test_values: dict | None) -> dict:
+    """Render a compiled prompt against sample runtime-context values.
+
+    Uses the runtime resolver itself, so the preview IS the live behavior:
+    - ``rendered``   — the prompt with every resolvable variable substituted;
+      unresolved variables are left visible (the runtime states unknowns
+      explicitly rather than inventing values, and so does the preview);
+    - ``variables``  — every distinct variable the prompt uses;
+    - ``missing``    — variables the supplied test data does not cover;
+    - ``unusedTestKeys`` — test-data keys the prompt never references.
+    """
+    variables = extract_variables(compiled)
+    rendered = resolve_placeholders(compiled, test_values)
+    still_unresolved = {item["key"] for item in iter_placeholders(rendered)}
+    missing = [v for v in variables if v in still_unresolved]
+    supplied = {normalize_placeholder_key(str(k)) for k in (test_values or {})}
+    unused = sorted(supplied - set(variables))
+    return {
+        "rendered": rendered,
+        "variables": variables,
+        "missing": missing,
+        "unusedTestKeys": unused,
+    }
 
 
 def _line(parts: list[str], text: str | None, prefix: str = "- ") -> None:

@@ -31,6 +31,7 @@ from voice_runtime.transcript_gate import (
     meaningful_short_reply,
     resolve_allowed_languages,
     segment_quality,
+    weak_noise_signals,
 )
 
 os.environ.setdefault("FAKE_TEST_KEY", "test-key")
@@ -140,6 +141,98 @@ class TestNoiseRejection:
         assert assess_transcript(
             "मैं कल सुबह पूरा पैसा जमा कर दूंगा", q(audio_seconds=3.1)
         ).accepted
+
+
+class TestCorroboratedWeakEvidence:
+    """No weak signal rejects alone; a corroborated pair does.
+
+    This is what keeps the gate from degenerating into "short transcripts are
+    noise" — duration and length are votes, never the rule.
+    """
+
+    def test_single_weak_signal_never_rejects(self):
+        for quality in (
+            q(language="hi-IN", snr_db=2.0),                 # low_snr only
+            q(language="hi-IN", confidence=0.5),             # low_confidence only
+            q(language="hi-IN", during_bot_audio=True),      # overlap only
+            q(language="hi-IN", audio_seconds=0.4),          # short_audio only
+        ):
+            verdict = assess_transcript("कल सुबह घर पर", quality)
+            assert verdict.accepted, quality
+
+    def test_two_weak_signals_reject(self):
+        verdict = assess_transcript(
+            "कल सुबह घर पर",
+            q(language="hi-IN", snr_db=2.0, confidence=0.5),
+        )
+        assert not verdict.accepted
+        assert verdict.reason.startswith("weak_signal:")
+        assert "low_snr" in verdict.reason
+        assert "low_confidence" in verdict.reason
+
+    def test_lone_token_at_the_noise_floor_is_rejected(self):
+        # The classic hallucination: one invented word out of hiss.
+        verdict = assess_transcript("क्या", q(language="hi-IN", snr_db=1.0))
+        assert not verdict.accepted
+        assert "single_token" in verdict.reason
+
+    def test_same_lone_token_at_healthy_level_is_accepted(self):
+        assert assess_transcript("क्या", q(language="hi-IN", snr_db=24.0)).accepted
+
+    def test_bot_audio_overlap_plus_low_snr_rejects_echo(self):
+        verdict = assess_transcript(
+            "आपका पेमेंट बाकी है",
+            q(language="hi-IN", snr_db=3.0, during_bot_audio=True),
+        )
+        assert not verdict.accepted
+        assert "bot_audio_overlap" in verdict.reason
+
+    def test_loud_speech_during_bot_audio_is_a_real_barge_in(self):
+        assert assess_transcript(
+            "रुकिए मुझे बात करनी है",
+            q(language="hi-IN", snr_db=22.0, during_bot_audio=True),
+        ).accepted
+
+    def test_short_replies_are_exempt_from_the_combination(self):
+        # "haan" on a noisy handset trips low_snr, single_token AND short_audio.
+        for text in ("हाँ", "नहीं", "haan", "nahi", "ji", "ok", "yes", "no"):
+            verdict = assess_transcript(
+                text,
+                q(language="hi-IN", snr_db=1.0, audio_seconds=0.3, confidence=0.5),
+            )
+            assert verdict.accepted, text
+
+    def test_unstable_transcript_is_only_a_weak_vote(self):
+        # A final that disagrees with its partials may be a legitimate revision
+        # or a translate-mode rewrite, so it never rejects on its own.
+        assert assess_transcript(
+            "मैं कल पेमेंट कर दूंगा", q(language="hi-IN", interim_agreement=0.0)
+        ).accepted
+        assert not assess_transcript(
+            "मैं कल पेमेंट कर दूंगा",
+            q(language="hi-IN", interim_agreement=0.0, snr_db=2.0),
+        ).accepted
+
+    def test_absent_partials_never_count_against_a_segment(self):
+        # Sarvam's streaming mode emits no partials at all.
+        assert assess_transcript(
+            "मैं कल पेमेंट कर दूंगा",
+            q(language="hi-IN", interim_agreement=None, snr_db=2.0),
+        ).accepted
+
+    def test_weak_signal_names_are_reported_for_diagnostics(self):
+        signals = weak_noise_signals(
+            "क्या", q(snr_db=1.0, confidence=0.4, audio_seconds=0.2,
+                     during_bot_audio=True, interim_agreement=0.0)
+        )
+        assert set(signals) == {
+            "low_snr", "low_confidence", "short_audio", "bot_audio_overlap",
+            "unstable_transcript", "single_token",
+        }
+
+    def test_no_local_evidence_still_fails_open(self):
+        # Browser calls without the gate supply no snr; a plain final must pass.
+        assert assess_transcript("मैं कल पेमेंट कर दूंगा", q(language="hi-IN")).accepted
 
 
 class TestUnsupportedLanguage:

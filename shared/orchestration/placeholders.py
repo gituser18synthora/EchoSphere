@@ -41,8 +41,13 @@ _KEY_NORMALIZER = re.compile(r"[^a-z0-9ऀ-ॿ]+")
 _MAX_HOLD_CHARS = 64
 
 
-def _normalize_key(key: str) -> str:
+def normalize_placeholder_key(key: str) -> str:
+    """Canonical variable-key form ("Customer Name" / {customer-name} → customer_name)."""
     return _KEY_NORMALIZER.sub("_", key.strip().lower()).strip("_")
+
+
+# Internal alias kept for the module's own call sites.
+_normalize_key = normalize_placeholder_key
 
 
 def _normalized_values(values: dict | None) -> dict[str, str]:
@@ -75,6 +80,23 @@ def resolve_placeholders(text: str, values: dict | None) -> str:
         return text
     normalized = _normalized_values(values)
     return _PLACEHOLDER.sub(lambda m: _substitute(m, normalized, strip=False), text)
+
+
+def iter_placeholders(text: str) -> list[dict]:
+    """Every placeholder in ``text``, in order: raw form + normalized key.
+
+    The authoring side (variable lists, missing-variable warnings, rendered
+    previews) MUST see placeholders through the same grammar the runtime
+    resolves them with — this is that shared view. Duplicates are preserved;
+    callers de-duplicate on ``key`` when they need the distinct set.
+    """
+    found: list[dict] = []
+    for match in _PLACEHOLDER.finditer(text or ""):
+        inner = next(g for g in match.groups() if g is not None)
+        if not _looks_like_placeholder(inner):
+            continue
+        found.append({"raw": match.group(0), "key": _normalize_key(inner)})
+    return found
 
 
 def sanitize_spoken_text(text: str, values: dict | None = None) -> str:

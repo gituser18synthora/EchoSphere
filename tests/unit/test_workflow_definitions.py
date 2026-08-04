@@ -358,14 +358,19 @@ class TestLadderSignals:
         assert second["done"] is True
         assert "पूरा payment" not in second["reply"]  # never the positive path
 
-    async def test_gibberish_retries_then_takes_authored_else(
+    async def test_gibberish_goes_off_script_then_takes_authored_else(
         self, engine, monkeypatch
     ):
+        """First unmatched turn: off-script (the brain answers the caller's
+        actual words — never a canned "didn't catch that" + repeated pitch).
+        A SECOND unmatched turn on the same node takes the authored else edge
+        so the flow still progresses."""
         _use_definition(monkeypatch, LADDER)
         await _ladder_turn(engine, "namaste", "lz-1")
-        retry = await _ladder_turn(engine, "ghar par sab jama hue", "lz-1")
-        assert retry["trace"] == ["n_push"]  # re-ask, no transition
-        assert "क्या आप अभी payment करेंगे" in retry["reply"]
+        first = await _ladder_turn(engine, "ghar par sab jama hue", "lz-1")
+        assert first["offScript"] is True
+        assert first["trace"] == ["n_push"]  # no transition, no canned repeat
+        assert first["reply"] == ""
         second = await _ladder_turn(engine, "ghar par sab jama hue", "lz-1")
         assert second["trace"][:2] == ["n_push", "n_benefits"]  # authored else
 

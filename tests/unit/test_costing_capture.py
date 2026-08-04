@@ -116,6 +116,68 @@ class TestSarvamSttCapture:
         # Decimal accumulation: 1.1 + 2.3 + 0.4 is EXACTLY 3.8 (floats drift).
         assert recorder._stt_seconds == Decimal("3.8")
 
+    async def test_finals_sharing_one_connection_id_all_bill(self):
+        """THE under-billing regression.
+
+        Sarvam's ``request_id`` identifies the socket CONNECTION, not the
+        utterance — one live call showed three consecutive finals
+        ('ಆಯ್ತು', 'ಖಂಡಿತ.', 'मुझे धर्मेश से बात करना है।') under a single id.
+        Keying dedup on it billed the FIRST final and silently discarded the
+        rest, so a 17-turn call recorded stt_requests=1 and 1.728s of audio.
+        The tests above all passed because they invented a unique id per final,
+        which is not what the provider does.
+        """
+        recorder = make_recorder()
+        brain = make_brain(recorder)
+        for text, duration in (("पहला", 1.5), ("दूसरा", 2.0), ("तीसरा", 0.5)):
+            await brain.process_frame(
+                sarvam_final(text, duration=duration, request_id="one-connection"),
+                FrameDirection.DOWNSTREAM,
+            )
+        assert recorder._stt_seconds == Decimal("4.0")
+        assert recorder.usage["stt_requests"] == 3
+
+    async def test_reconnect_mid_call_keeps_billing_every_segment(self):
+        # A socket reconnect issues a NEW connection id; audio either side of
+        # it is all billable.
+        recorder = make_recorder()
+        brain = make_brain(recorder)
+        await brain.process_frame(
+            sarvam_final("before", duration=1.0, request_id="conn-a"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await brain.process_frame(
+            sarvam_final("after", duration=2.0, request_id="conn-b"),
+            FrameDirection.DOWNSTREAM,
+        )
+        assert recorder._stt_seconds == Decimal("3.0")
+
+    async def test_identical_replayed_payload_still_bills_once(self):
+        # Dedup must survive the fix: a re-delivered message has the same
+        # connection id, text AND metrics, unlike a distinct utterance.
+        recorder = make_recorder()
+        brain = make_brain(recorder)
+        for _ in range(3):
+            await brain.process_frame(
+                sarvam_final("हाँ", duration=0.9, request_id="conn-x"),
+                FrameDirection.DOWNSTREAM,
+            )
+        assert recorder._stt_seconds == Decimal("0.9")
+        assert recorder.usage["stt_requests"] == 1
+
+    async def test_same_words_at_a_different_moment_are_billed_separately(self):
+        # A caller genuinely repeating themselves is not a replay: the
+        # provider's own per-segment measurements differ.
+        recorder = make_recorder()
+        brain = make_brain(recorder)
+        await brain.process_frame(
+            sarvam_final("हाँ", duration=0.9, request_id="conn-y"),
+            FrameDirection.DOWNSTREAM,
+        )
+        frame = sarvam_final("हाँ", duration=1.1, request_id="conn-y")
+        await brain.process_frame(frame, FrameDirection.DOWNSTREAM)
+        assert recorder._stt_seconds == Decimal("2.0")
+
     async def test_non_final_response_not_billed(self):
         recorder = make_recorder()
         brain = make_brain(recorder)

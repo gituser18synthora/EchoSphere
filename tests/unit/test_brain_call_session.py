@@ -138,7 +138,7 @@ class TestFragmentAggregation:
         generated = []
         release = asyncio.Event()
 
-        async def _generate(text, decision, started):
+        async def _generate(text, decision, started, extra_system=""):
             generated.append(text)
             if not release.is_set():
                 await asyncio.sleep(30)
@@ -160,17 +160,19 @@ class TestFragmentAggregation:
         assert "turn_merged_late_final" in brain._recorder.event_kinds()
 
     async def test_clarify_fragment_is_rewound_when_utterance_completes(self):
-        # A too-short fragment gets the canned clarification; when the rest of
-        # the utterance arrives the exchange is rewound: the LLM sees ONE
-        # complete user message and no clarify message pollutes the history.
+        # A too-short SIGNAL-LESS fragment gets the canned clarification;
+        # when the rest of the utterance arrives the exchange is rewound: the
+        # LLM sees ONE complete user message and no clarify message pollutes
+        # the history. (A short fragment that carries a semantic signal — a
+        # bare "नहीं" refusal, "haan" — now routes to the LLM instead.)
         brain = make_brain()
         generated = []
 
-        async def _generate(text, decision, started):
+        async def _generate(text, decision, started, extra_system=""):
             generated.append(text)
 
         brain._generate_reply = _generate
-        await brain.process_frame(transcript("नहीं,"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("मेरा मतलब,"), FrameDirection.DOWNSTREAM)
         await settle_turn()
         # Fragment routed to CLARIFY: canned line spoken, nothing generated.
         assert generated == []
@@ -180,7 +182,7 @@ class TestFragmentAggregation:
         await brain.process_frame(
             transcript("मैं पार्ट पेमेंट भी नहीं कर सकता"), FrameDirection.DOWNSTREAM)
         await settle_turn()
-        merged = "नहीं, मैं पार्ट पेमेंट भी नहीं कर सकता"
+        merged = "मेरा मतलब, मैं पार्ट पेमेंट भी नहीं कर सकता"
         assert generated == [merged]
         assert user_history(brain) == [merged]
         assert all(m["content"] != clarify_texts[0] for m in brain._history)

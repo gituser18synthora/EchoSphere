@@ -25,7 +25,7 @@ from shared.models import (
     VoiceProfile,
 )
 from shared.providers.languages import matches_model_language
-from shared.turn_detection import validate_turn_detection
+from shared.turn_detection import validate_noise_gate, validate_turn_detection
 
 CAPABILITIES = ("stt", "tts", "llm", "embedding")
 
@@ -266,17 +266,23 @@ def validate_stt_settings(
 ) -> list[str]:
     """Validate provider parameters plus platform-owned turn timing.
 
-    ``turn_detection`` controls the EchoSphere pipeline rather than the STT
-    provider, so it intentionally does not belong to a provider model's
-    ``params_schema``.  Validate it against the shared runtime contract and
-    keep the remaining settings under the normal strict provider validation.
+    ``turn_detection`` and ``noise_gate`` control the EchoSphere pipeline rather
+    than the STT provider, so they intentionally do not belong to a provider
+    model's ``params_schema``.  Validate them against the shared runtime
+    contract and keep the remaining settings under the normal strict provider
+    validation.
     """
     params = params or {}
     errors = validate_turn_detection(
         params.get("turn_detection"), prefix=f"{prefix} turn detection"
     )
+    errors.extend(
+        validate_noise_gate(params.get("noise_gate"), prefix=f"{prefix} noise gate")
+    )
     provider_params = {
-        key: value for key, value in params.items() if key != "turn_detection"
+        key: value
+        for key, value in params.items()
+        if key not in ("turn_detection", "noise_gate")
     }
     errors.extend(validate_params(schema, provider_params, prefix=prefix))
     return errors

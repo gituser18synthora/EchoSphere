@@ -63,6 +63,17 @@ class SessionRecorder:
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
         self.end_reason: str | None = None
+        # Call outcome captured by the conversation policy (promise_to_pay,
+        # payment_claimed, wrong_number, account_disputed, callback_requested,
+        # complaint_recorded, escalated, …) — updated live by the brain.
+        self.disposition: str | None = None
+        # The customer_contexts row this call ran against, plus the
+        # call-state fields to write back to it at finalize.
+        self.customer_context_id: str | None = None
+        # The generic runtime_context_records row (tenant-defined context),
+        # when the call ran on one — call_state merges into its JSON blob.
+        self.runtime_context_record_id: str | None = None
+        self.call_state: dict = {}
         # Conversation language, live: starts at the bot default and follows
         # the caller (the brain updates it on every detected switch).
         self.language: str = config.language
@@ -191,6 +202,13 @@ class SessionRecorder:
                 "tts_usage": list(self.tts_usage.values()),
                 "bot_version": self.config.version,
                 "language": self.language,
+                "disposition": self.disposition,
+                "customer_context_id": self.customer_context_id,
+                "runtime_context_record_id": self.runtime_context_record_id,
+                # Which published prompt version this call actually spoke from.
+                "prompt_id": self.config.prompt_id or None,
+                "prompt_version": self.config.prompt_version,
+                "prompt_mode": self.config.prompt_mode or None,
             }
             if self.recording_info:
                 payload["recording"] = self.recording_info
@@ -203,6 +221,27 @@ class SessionRecorder:
             logger.exception("transcript persistence failed for %s", self.session_id)
 
         await asyncio.to_thread(self._write_control_plane_row, duration, reason)
+
+        if self.customer_context_id and self.call_state:
+            # Record verification/dispute/complaint/payment/callback state
+            # back onto the customer context row (whitelisted fields only).
+            from shared.customer_context import record_call_state_sync
+
+            await asyncio.to_thread(
+                record_call_state_sync,
+                self.customer_context_id,
+                last_call_id=self.session_id,
+                **self.call_state,
+            )
+        if self.runtime_context_record_id and self.call_state:
+            # Same state, generic path: merged into the record's call_state
+            # JSON — never into the tenant-owned data payload.
+            from shared.runtime_context import record_context_call_state
+
+            await record_context_call_state(
+                self.runtime_context_record_id,
+                {**self.call_state, "last_call_id": self.session_id},
+            )
 
     def _write_control_plane_row(self, duration: int, reason: str) -> None:
         from decimal import Decimal
@@ -219,6 +258,9 @@ class SessionRecorder:
             escalated = any(e.get("kind") == "handoff" for e in self.events)
             row = ConversationSession(
                 id=self.control_plane_id,
+                # The link to this call's usage events — without it the stored
+                # cost cannot be audited or recomputed later.
+                session_id=self.session_id,
                 tenant_id=self.config.tenant_id,
                 bot_id=self.config.bot_id,
                 channel="voice" if self.channel != "browser" else "web",
@@ -229,13 +271,18 @@ class SessionRecorder:
                 escalation_reason="human_handoff" if escalated else None,
                 language=self.language,
                 status="completed",
+                disposition=self.disposition,
+                prompt_id=self.config.prompt_id or None,
+                prompt_version=self.config.prompt_version,
             )
             session.add(row)
 
-            ai_cost = self._record_usage_events(
+            # Every billable component of the call, telephony included: the
+            # stored total must equal the sum of this call's usage events or the
+            # list view and the auditable breakdown disagree.
+            row.cost_usd = self._record_usage_events(
                 session, record_usage_event, duration
             )
-            row.cost_usd = ai_cost
 
             occurred = datetime.fromtimestamp(self.started_at, tz=timezone.utc)
             rollup_call(
@@ -342,8 +389,12 @@ class SessionRecorder:
                 total += Decimal(str(event.cost_usd))
 
         if self.channel not in ("browser", "web") and duration > 0:
-            # Telephony minutes are tracked/priced separately from AI usage.
-            _record(
+            # Telephony minutes are metered on the connection duration (not on
+            # speech), and are folded into the same total as AI usage — a
+            # self-hosted trunk simply prices to zero. Excluding them here made
+            # the stored conversation total silently differ from the sum of its
+            # own usage events the moment a telephony rate was configured.
+            event = _record(
                 capability="telephony",
                 provider_code=self.channel,
                 model_code="",
@@ -351,6 +402,8 @@ class SessionRecorder:
                 audio_seconds=duration,
                 usage_metadata={"direction": "inbound"},
             )
+            if event is not None:
+                total += Decimal(str(event.cost_usd))
 
         return total
 

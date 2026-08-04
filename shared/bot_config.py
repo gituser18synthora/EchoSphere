@@ -266,6 +266,12 @@ class ResolvedBotConfig:
     language: str = "en"
     greeting: str = "Hello! How can I help you today?"
     system_prompt: str = ""
+    # Provenance of system_prompt: the published Prompt row/version the call
+    # runs on (stored per conversation for auditability), and its authoring
+    # mode. Empty/None when the generic fallback persona is in use.
+    prompt_id: str = ""
+    prompt_version: int | None = None
+    prompt_mode: str = ""
     stt: dict = field(default_factory=dict)
     tts: dict = field(default_factory=dict)
     llm: dict = field(default_factory=dict)
@@ -385,9 +391,17 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         intents = [
             {
                 "name": intent.name,
+                "description": intent.description or "",
                 "samples": intent.samples or [],
                 "route": intent.route,
                 "confidence_threshold": intent.confidence_threshold,
+                # Entity slots + tool binding feed the hybrid intent pipeline:
+                # the classifier extracts these keys; the tool executor
+                # validates against the bound connection.
+                "entities": intent.entities or [],
+                "optional_entities": intent.optional_entities or [],
+                "api_connection_id": intent.api_connection_id,
+                "workflow_id": intent.workflow_id,
             }
             for intent in session.execute(
                 select(Intent).where(
@@ -413,9 +427,11 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             )
         ).scalars().all()
 
-        # Published structured system prompt wins; the generic fallback below
+        # Published system prompt wins (structured or full mode — both store
+        # their runtime form in compiled_prompt); the generic fallback below
         # covers bots that have not authored one yet.
         system_prompt = ""
+        prompt_id, prompt_version, prompt_mode = "", None, ""
         system_row = session.execute(
             select(Prompt).where(
                 Prompt.bot_id == bot_id,
@@ -429,6 +445,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             for version in system_row.versions:
                 if version.version == target and version.compiled_prompt:
                     system_prompt = version.compiled_prompt
+                    prompt_id = system_row.id
+                    prompt_version = version.version
+                    prompt_mode = version.prompt_mode or "structured"
                     break
         if not system_prompt:
             system_prompt = (
@@ -550,6 +569,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             language=default_language,
             greeting=greeting or f"Hello! You've reached {bot.name}. How can I help you today?",
             system_prompt=system_prompt,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            prompt_mode=prompt_mode,
             stt={
                 "provider": stt_provider,
                 "model": stt_model,
