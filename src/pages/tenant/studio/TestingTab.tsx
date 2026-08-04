@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import type { TraceStep, VoiceBot } from "@/types/domain";
+import type { Prompt, SimulateTrace, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listPrompts, listScenarios, runSuite as runSuiteApi, testBotChat } from "@/services/api";
+import { listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
 import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
-import { Button, CardSkeleton, ErrorState, StatusChip } from "@/components/ui";
+import { Button, Callout, CardSkeleton, ErrorState, Field, StatusChip, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
+import { JsonView } from "@/components/JsonView";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 
@@ -372,6 +373,9 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
         </div>
       </div>
 
+      {/* Full-pipeline runtime simulator */}
+      <RuntimeSimulator bot={bot} prompts={promptsQ.data ?? []} />
+
       {/* Scenarios & regression suite */}
       <div className="card">
         <div className="card-header">
@@ -421,6 +425,385 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Runtime simulator — one turn through the FULL pipeline
+   (runtime context → prompt render → routing/intent → policy →
+   mocked tools → workflow or LLM) with the complete trace.
+   ============================================================ */
+
+const simPreStyle: CSSProperties = {
+  margin: 0, padding: 12, background: "var(--surface-2)", borderRadius: 10,
+  fontSize: 12, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word",
+  maxHeight: 320, overflow: "auto",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+};
+
+const chipValue = (v: unknown): string =>
+  v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
+
+function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }) {
+  const { toast } = useApp();
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [trace, setTrace] = useState<SimulateTrace | null>(null);
+  const sessionRef = useRef<string | undefined>(undefined);
+
+  const [promptId, setPromptId] = useState("");
+  const [promptVersion, setPromptVersion] = useState("");
+  const [contextSource, setContextSource] = useState<"saved" | "manual" | "api_mock" | "none">("saved");
+  const [contextJson, setContextJson] = useState('{\n  "customer_name": "Rahul Sharma"\n}');
+  const [language, setLanguage] = useState("");
+  const [isFinal, setIsFinal] = useState(true);
+  const [interrupted, setInterrupted] = useState(false);
+  const [mockToolsJson, setMockToolsJson] = useState("{}");
+
+  const selectedPrompt = prompts.find((p) => p.id === promptId);
+
+  const parseJsonObject = (text: string, label: string): Record<string, unknown> | null => {
+    if (!text.trim()) return {};
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+      return parsed as Record<string, unknown>;
+    } catch {
+      toast(`${label} must be a JSON object`, "error");
+      return null;
+    }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    let contextPayload: Record<string, unknown> | undefined;
+    if (contextSource === "manual" || contextSource === "api_mock") {
+      const parsed = parseJsonObject(contextJson, "Context payload");
+      if (parsed === null) return;
+      contextPayload = parsed;
+    }
+    const mockToolResults = parseJsonObject(mockToolsJson, "Mock tool results");
+    if (mockToolResults === null) return;
+    setBusy(true);
+    try {
+      const result = await simulateTurn(bot.id, {
+        message: text,
+        messages,
+        ...(promptId ? { promptId } : {}),
+        ...(promptId && promptVersion ? { promptVersion: Number(promptVersion) } : {}),
+        contextSource,
+        ...(contextPayload !== undefined ? { contextPayload } : {}),
+        ...(language ? { language } : {}),
+        isFinal,
+        interrupted,
+        mockToolResults,
+        ...(sessionRef.current ? { sessionId: sessionRef.current } : {}),
+      });
+      setTrace(result);
+      if (result.sessionId) sessionRef.current = result.sessionId;
+      if (!result.heldForFinal) {
+        setMessages((m) => [
+          ...m,
+          { role: "user" as const, content: text },
+          ...(result.response ? [{ role: "assistant" as const, content: result.response }] : []),
+        ]);
+        setInput("");
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Simulation failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = () => {
+    setMessages([]);
+    setTrace(null);
+    setInput("");
+    sessionRef.current = undefined;
+  };
+
+  return (
+    <details className="card">
+      <summary className="card-header" style={{ cursor: "pointer", listStyle: "none" }}>
+        <div className="col gap-2">
+          <span className="card-title">Runtime simulator</span>
+          <span className="t-micro">
+            One turn through the full pipeline — runtime context, prompt render, intent, policy, mocked tools and workflow, with the complete trace.
+          </span>
+        </div>
+        <Icon name="chevron-down" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }} />
+      </summary>
+      <div className="col gap-12" style={{ padding: 16, borderTop: "1px solid var(--hairline)" }}>
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <Field label="Prompt" hint="Which system prompt the simulated call runs on.">
+            <select
+              className="select" value={promptId} aria-label="Simulator prompt"
+              onChange={(e) => { setPromptId(e.target.value); setPromptVersion(""); }}
+            >
+              <option value="">Published (live)</option>
+              {prompts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Prompt version" hint={selectedPrompt ? "Any saved version — approval state is ignored here." : "Pick a prompt to choose a version."}>
+            <select
+              className="select" value={promptVersion} disabled={!selectedPrompt} aria-label="Simulator prompt version"
+              onChange={(e) => setPromptVersion(e.target.value)}
+            >
+              <option value="">Default (published/active)</option>
+              {(selectedPrompt?.versions ?? []).map((v) => (
+                <option key={v.version} value={v.version}>
+                  v{v.version}{selectedPrompt && v.version === selectedPrompt.activeVersion ? " (active)" : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Context source" hint="Where the caller's runtime context comes from for this turn.">
+            <select
+              className="select" value={contextSource} aria-label="Simulator context source"
+              onChange={(e) => setContextSource(e.target.value as typeof contextSource)}
+            >
+              <option value="saved">Saved config</option>
+              <option value="manual">Manual JSON</option>
+              <option value="api_mock">Mock API response</option>
+              <option value="none">None</option>
+            </select>
+          </Field>
+          <Field label="Language">
+            <select className="select" value={language} aria-label="Simulator language" onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">Bot default</option>
+              <option value="en-US">English (en-US)</option>
+              <option value="hi-IN">Hindi (hi-IN)</option>
+            </select>
+          </Field>
+        </div>
+
+        {(contextSource === "manual" || contextSource === "api_mock") && (
+          <Field label={contextSource === "manual" ? "Context payload (JSON)" : "Mock User Details API response (JSON)"}>
+            <textarea
+              className="textarea mono" rows={4} value={contextJson}
+              style={{ fontSize: 12 }}
+              onChange={(e) => setContextJson(e.target.value)}
+            />
+          </Field>
+        )}
+
+        <div className="row gap-16 wrap">
+          <span className="row gap-8">
+            <Toggle checked={isFinal} onChange={setIsFinal} label="Final transcript" />
+            <span className="t-sub" style={{ fontSize: 12.5 }}>Final transcript</span>
+          </span>
+          <span className="row gap-8">
+            <Toggle checked={interrupted} onChange={setInterrupted} label="Caller interrupted the bot" />
+            <span className="t-sub" style={{ fontSize: 12.5 }}>Caller interrupted the bot</span>
+          </span>
+        </div>
+
+        <details>
+          <summary className="t-micro" style={{ cursor: "pointer", fontWeight: 650 }}>
+            Mock tool results — {"{tool_name: payload}"} replaces live HTTP for tools and workflows
+          </summary>
+          <textarea
+            className="textarea mono mt-8" rows={4} value={mockToolsJson}
+            aria-label="Mock tool results JSON"
+            placeholder={'{\n  "payment_status": { "status": "paid", "amount": 4500 }\n}'}
+            style={{ fontSize: 12, width: "100%" }}
+            onChange={(e) => setMockToolsJson(e.target.value)}
+          />
+        </details>
+
+        {messages.length > 0 && (
+          <div className="col gap-8" style={{ maxHeight: 220, overflowY: "auto" }}>
+            {messages.map((m, i) => (
+              <div key={i} className={`transcript-bubble ${m.role === "user" ? "user" : "bot"}`}>{m.content}</div>
+            ))}
+          </div>
+        )}
+
+        <div className="row gap-8">
+          <input
+            className="input"
+            placeholder="Caller message — runs one full runtime turn"
+            value={input}
+            aria-label="Runtime simulator input"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void send()}
+          />
+          <Button variant="primary" icon="play" busy={busy} disabled={!input.trim()} onClick={() => void send()}>
+            Simulate
+          </Button>
+          <Button variant="ghost" icon="refresh" disabled={busy || (messages.length === 0 && !trace)} onClick={reset}>
+            Reset
+          </Button>
+        </div>
+
+        {trace && <SimulateTraceView trace={trace} />}
+      </div>
+    </details>
+  );
+}
+
+function SimulateTraceView({ trace }: { trace: SimulateTrace }) {
+  const intent = trace.intent;
+  const entities = Object.entries(intent?.entities ?? {}).filter(([, v]) => v !== null && v !== undefined);
+  const confidencePct = intent ? Math.round(intent.confidence <= 1 ? intent.confidence * 100 : intent.confidence) : 0;
+
+  if (trace.heldForFinal) {
+    return (
+      <Callout tone="info" title="Held — waiting for the final transcript">
+        {trace.note ?? "Partial transcripts never become turns; send with “Final transcript” on to run the pipeline."}
+      </Callout>
+    );
+  }
+
+  return (
+    <div className="col gap-10" data-testid="simulate-trace">
+      <div className="card-pad-sm" style={{ background: "var(--surface-2)", borderRadius: 10 }}>
+        <span className="t-label">Response</span>
+        <p className="t-body" style={{ whiteSpace: "pre-wrap", margin: "8px 0 0" }}>{trace.response || "—"}</p>
+      </div>
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <TraceRow icon="git" label="Route">
+          <div className="col gap-4" style={{ fontSize: 12.5 }}>
+            <span className="row gap-6 wrap">
+              <code>{trace.route ?? "—"}</code>
+              {trace.action && <span className="chip chip-neutral">{trace.action}</span>}
+            </span>
+            {trace.routerDecision && (
+              <span className="t-micro">
+                router: {trace.routerDecision.route} · {trace.routerDecision.reason} · {Math.round(trace.routerDecision.confidence * 100)}%
+              </span>
+            )}
+          </div>
+        </TraceRow>
+
+        <TraceRow icon="target" label="Intent">
+          {intent ? (
+            <div className="col gap-4" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <code>{intent.intent ?? "none"}</code>
+                <span className={`t-num t-strong ${confidencePct < 70 ? "t-bad" : "t-good"}`}>{confidencePct}%</span>
+                {intent.source && <span className="chip chip-neutral">{intent.source}</span>}
+                {intent.below_threshold && <span className="chip chip-warning">below threshold</span>}
+              </span>
+              {trace.signal && <span className="t-micro">signal: {trace.signal}</span>}
+              {entities.length > 0 && (
+                <span className="row gap-4 wrap">
+                  {entities.map(([k, v]) => (
+                    <span key={k} className="chip chip-info">{k}={chipValue(v)}</span>
+                  ))}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="t-micro">
+              deterministic turn — no classification ran{trace.signal ? ` · signal: ${trace.signal}` : ""}
+            </span>
+          )}
+        </TraceRow>
+
+        {trace.policy && (
+          <TraceRow icon="shield" label="Call policy">
+            <div className="col gap-4" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <span className="chip chip-brand">phase: {trace.policy.phase}</span>
+                {trace.policy.handoff && <span className="chip chip-warning">handoff</span>}
+                {trace.policy.closeAfterReply && <span className="chip chip-neutral">close after reply</span>}
+                {trace.policy.forceLlm && <span className="chip chip-neutral">force LLM</span>}
+              </span>
+              {trace.policy.blockers.length > 0 && (
+                <span className="t-micro">blockers: {trace.policy.blockers.join(", ")}</span>
+              )}
+              {(trace.dispositionAfterTurn ?? trace.policy.disposition) && (
+                <span className="t-micro">disposition: {trace.dispositionAfterTurn ?? trace.policy.disposition}</span>
+              )}
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.workflow && (
+          <TraceRow icon="workflow" label="Workflow">
+            <div className="col gap-4" style={{ fontSize: 12 }}>
+              <span className="row gap-6">
+                <code>{trace.workflow.name}</code>
+                <span className={`chip ${trace.workflow.done ? "chip-neutral" : "chip-good"}`}>
+                  {trace.workflow.done ? "finished" : trace.workflow.status}
+                </span>
+                {trace.workflow.offScript && <span className="chip chip-warning">off-script</span>}
+              </span>
+              {trace.workflow.nodeTrace.length > 0 && (
+                <span className="t-micro">nodes: {trace.workflow.nodeTrace.join(" → ")}</span>
+              )}
+              {Object.keys(trace.workflow.slots).length > 0 && (
+                <span className="t-micro">
+                  collected: {Object.entries(trace.workflow.slots).map(([k, v]) => `${k}=${chipValue(v)}`).join(", ")}
+                </span>
+              )}
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.runtimeContext && (
+          <TraceRow icon="database" label="Runtime context">
+            <div className="col gap-4" style={{ fontSize: 12 }}>
+              {trace.runtimeContext.values.length === 0
+                ? <span className="t-micro">no values on this call</span>
+                : (
+                  <span className="row gap-4 wrap">
+                    {trace.runtimeContext.values.map((v) => (
+                      <span key={v.key} className="chip chip-neutral">{v.key}={chipValue(v.value)}</span>
+                    ))}
+                  </span>
+                )}
+              {trace.runtimeContext.missingRequired.length > 0 && (
+                <span className="t-micro" style={{ color: "var(--status-warning)" }}>
+                  missing required: {trace.runtimeContext.missingRequired.join(", ")}
+                </span>
+              )}
+              <span className="t-micro">domain policy: {trace.runtimeContext.domainPolicy}</span>
+            </div>
+          </TraceRow>
+        )}
+
+        {trace.tool && (
+          <TraceRow icon="zap" label="Tool call">
+            <div className="col gap-6" style={{ fontSize: 12.5 }}>
+              <span className="row gap-6 wrap">
+                <code>{chipValue(trace.tool.request.tool ?? "")}</code>
+                <StatusChip status={trace.tool.ok ? "good" : "failed"} label={trace.tool.ok ? "OK" : "Failed"} />
+                {trace.tool.status != null && <span className="tag t-num">HTTP {trace.tool.status}</span>}
+                {trace.tool.mocked && <span className="chip chip-neutral">mocked</span>}
+                {trace.tool.latencyMs != null && <span className="t-micro t-num">{trace.tool.latencyMs}ms</span>}
+              </span>
+              {trace.tool.error && <span className="t-micro" style={{ color: "var(--status-critical)" }}>{trace.tool.error}</span>}
+              <JsonView value={{ request: trace.tool.request, response: trace.tool.response }} />
+            </div>
+          </TraceRow>
+        )}
+      </div>
+
+      {trace.renderedPrompt && (
+        <details>
+          <summary className="t-micro" style={{ cursor: "pointer", fontWeight: 650 }}>
+            Rendered prompt — exactly what the LLM received ({trace.renderedPrompt.length.toLocaleString()} chars)
+          </summary>
+          <pre className="mt-8" style={simPreStyle}>{trace.renderedPrompt}</pre>
+        </details>
+      )}
+
+      <span className="t-micro t-num row gap-8 wrap">
+        {trace.language && <span>{trace.language}</span>}
+        <span>{trace.latencyMs}ms</span>
+        {trace.promptVersion != null
+          ? <span>prompt v{trace.promptVersion}{trace.promptMode ? ` (${trace.promptMode})` : ""}{trace.promptState ? ` · ${trace.promptState}` : ""}</span>
+          : <span>prompt: built-in default</span>}
+        {trace.provider && <span>{providerName(trace.provider)}</span>}
+        {trace.paymentVerification && <span>payment: {trace.paymentVerification}</span>}
+      </span>
     </div>
   );
 }

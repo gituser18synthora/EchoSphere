@@ -1,12 +1,19 @@
 import { useMemo, useState } from "react";
-import type { ApiConnection, ApiTestResult, Intent, VoiceBot, Workflow } from "@/types/domain";
+import type {
+  ApiConnection, ApiTestResult, Intent, RuntimeContextConfig, RuntimeContextField,
+  RuntimeContextFieldType, RuntimeContextRecord, RuntimeContextValidateResult,
+  VoiceBot, Workflow,
+} from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  createApi, deleteApi, duplicateApi, listApis, listIntents, listWorkflows,
-  testApiConnection, updateApi,
+  createApi, createContextRecord, deleteApi, deleteContextRecord, duplicateApi,
+  getRuntimeContext, listApis, listContextRecords, listIntents, listWorkflows,
+  saveRuntimeContext, testApiConnection, updateApi, updateContextRecord,
+  validateRuntimeContext,
 } from "@/services/api";
 import {
-  Button, Callout, ConfirmModal, Drawer, Field, MenuButton, StatusChip, Toggle,
+  Button, Callout, CardSkeleton, ConfirmModal, Drawer, ErrorState, Field,
+  MenuButton, Modal, StatusChip, Toggle,
 } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { Icon } from "@/components/Icon";
@@ -196,6 +203,13 @@ export default function ApisTab({ bot }: { bot: VoiceBot }) {
 
   return (
     <div className="col gap-16">
+      <RuntimeContextSection
+        bot={bot}
+        connections={q.data ?? []}
+        canManage={canManage}
+        managePermTitle={managePermTitle}
+      />
+
       <div className="row-between">
         <span className="t-sub">Endpoints this bot may call mid-conversation. Secrets are stored as masked references — raw values never reach the browser.</span>
         <Button variant="primary" size="sm" icon="plus" disabled={!canManage} title={managePermTitle} onClick={() => setCreating(true)}>
@@ -696,5 +710,522 @@ function ApiBuilderDrawer({ botId, conn, intents, workflows, canManage, canTest,
         )}
       </div>
     </Drawer>
+  );
+}
+
+/* ============================================================
+   Runtime context / User details — the schema of customer data
+   every call knows about, its source, masking and test payload
+   ============================================================ */
+
+const CONTEXT_FIELD_TYPES: RuntimeContextFieldType[] = [
+  "string", "number", "integer", "boolean", "date", "object", "array",
+];
+/* Provenance chip tones: api=info, test=neutral, record=brand, session=warn, system=neutral. */
+const SOURCE_CHIP_TONE: Record<string, string> = {
+  api: "info", test: "neutral", record: "brand", session: "warning", system: "neutral",
+};
+
+const ctxValueText = (v: unknown): string =>
+  v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
+
+function RuntimeContextSection({ bot, connections, canManage, managePermTitle }: {
+  bot: VoiceBot; connections: ApiConnection[]; canManage: boolean; managePermTitle?: string;
+}) {
+  const q = useAsync(() => getRuntimeContext(bot.id), [bot.id]);
+  return (
+    <details className="card">
+      <summary className="row-between card-pad-sm" style={{ cursor: "pointer", listStyle: "none", gap: 12 }}>
+        <span className="col" style={{ gap: 1 }}>
+          <span className="t-strong" style={{ fontSize: 13.5 }}>Runtime context / User details</span>
+          <span className="t-micro">The customer/session data available to prompts, workflows and tools on every call.</span>
+        </span>
+        <span className="row gap-6" style={{ flexShrink: 0 }}>
+          {q.data && (q.data.configured ? (
+            <>
+              <span className="chip chip-good">configured</span>
+              <span className="chip chip-neutral">{q.data.sourceMode === "api" ? "API response" : "manual JSON"}</span>
+              <span className="chip chip-neutral t-num">{q.data.fields.length} field{q.data.fields.length === 1 ? "" : "s"}</span>
+            </>
+          ) : (
+            <span className="chip chip-neutral">not configured</span>
+          ))}
+          <Icon name="chevron-down" size={14} style={{ color: "var(--ink-3)" }} />
+        </span>
+      </summary>
+      <div className="col gap-16" style={{ padding: "4px 16px 16px", borderTop: "1px solid var(--hairline)" }}>
+        {q.loading && !q.data && <CardSkeleton rows={3} />}
+        {!q.loading && q.error && <ErrorState message={q.error} onRetry={q.reload} />}
+        {q.data && (
+          <RuntimeContextEditor
+            key={`${bot.id}:${q.data.id ?? "new"}`}
+            bot={bot}
+            config={q.data}
+            connections={connections}
+            canManage={canManage}
+            managePermTitle={managePermTitle}
+            onSaved={q.reload}
+          />
+        )}
+      </div>
+    </details>
+  );
+}
+
+function RuntimeContextEditor({ bot, config, connections, canManage, managePermTitle, onSaved }: {
+  bot: VoiceBot; config: RuntimeContextConfig; connections: ApiConnection[];
+  canManage: boolean; managePermTitle?: string; onSaved: () => void;
+}) {
+  const { toast } = useApp();
+  const [sourceMode, setSourceMode] = useState<"api" | "manual">(config.sourceMode);
+  const [apiConnectionId, setApiConnectionId] = useState(config.apiConnectionId ?? "");
+  const [responsePath, setResponsePath] = useState(config.responsePath ?? "");
+  const [domainPolicy, setDomainPolicy] = useState<"generic" | "collections">(config.domainPolicy);
+  const [fields, setFields] = useState<RuntimeContextField[]>(
+    () => config.fields.map((f) => ({ ...f })),
+  );
+  const [allowAdditional, setAllowAdditional] = useState(config.allowAdditional);
+  const [missingValuePolicy, setMissingValuePolicy] = useState(config.missingValuePolicy ?? "");
+  const [testJson, setTestJson] = useState(() =>
+    config.testPayload ? JSON.stringify(config.testPayload, null, 2) : "",
+  );
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
+  const [validateErr, setValidateErr] = useState<string | null>(null);
+  const [validation, setValidation] = useState<RuntimeContextValidateResult | null>(null);
+
+  const patchField = (i: number, patch: Partial<RuntimeContextField>) =>
+    setFields((rows) => rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const cleanFields = (): RuntimeContextField[] =>
+    fields.filter((f) => f.key.trim()).map((f) => ({
+      ...f, key: f.key.trim(), label: f.label?.trim() || undefined,
+    }));
+
+  const parseTestJson = (): Record<string, unknown> | null | "invalid" => {
+    if (!testJson.trim()) return null;
+    try {
+      const parsed: unknown = JSON.parse(testJson);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "invalid";
+      return parsed as Record<string, unknown>;
+    } catch {
+      return "invalid";
+    }
+  };
+
+  const runValidate = async () => {
+    const payload = parseTestJson();
+    if (payload === "invalid") {
+      setValidateErr("The test payload must be a JSON object.");
+      setValidation(null);
+      return;
+    }
+    setValidating(true);
+    setValidateErr(null);
+    try {
+      setValidation(await validateRuntimeContext(bot.id, {
+        payload: payload ?? {}, fields: cleanFields(), allowAdditional,
+      }));
+    } catch (e) {
+      setValidateErr(errMsg(e, "Validation failed"));
+      setValidation(null);
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const save = async () => {
+    const testPayload = parseTestJson();
+    if (testPayload === "invalid") { setSaveErr("Fix the test payload JSON before saving."); return; }
+    if (sourceMode === "api" && !apiConnectionId) { setSaveErr("Select the API connection that returns user details."); return; }
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      await saveRuntimeContext(bot.id, {
+        name: config.name,
+        sourceMode,
+        apiConnectionId: sourceMode === "api" ? apiConnectionId : null,
+        responsePath: responsePath.trim() || null,
+        fields: cleanFields(),
+        allowAdditional,
+        testPayload,
+        missingValuePolicy: missingValuePolicy.trim() || null,
+        domainPolicy,
+      });
+      toast("Runtime context saved");
+      onSaved();
+    } catch (e) {
+      setSaveErr(errMsg(e, "Could not save the runtime context"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="col gap-16">
+      {saveErr && <Callout tone="critical" title="Could not save">{saveErr}</Callout>}
+
+      {/* Source */}
+      <SectionTitle>Source</SectionTitle>
+      <div className="grid grid-2" style={{ gap: 12 }}>
+        <Field
+          label="Source mode"
+          hint={sourceMode === "api"
+            ? "Live calls fetch user details from the selected API connection."
+            : "Live calls use the test JSON below (or a stored record matched by phone)."}
+        >
+          <select className="select" value={sourceMode} onChange={(e) => setSourceMode(e.target.value as "api" | "manual")}>
+            <option value="api">API response</option>
+            <option value="manual">Manual test JSON</option>
+          </select>
+        </Field>
+        <Field label="Domain policy" hint="Collections adds the deterministic call policy (verification, phased flow, dispositions).">
+          <select className="select" value={domainPolicy} onChange={(e) => setDomainPolicy(e.target.value as "generic" | "collections")}>
+            <option value="generic">Generic (prompt-driven)</option>
+            <option value="collections">Collections (deterministic call policy)</option>
+          </select>
+        </Field>
+        {sourceMode === "api" && (
+          <>
+            <Field label="User Details API" required hint="One of this bot's API connections.">
+              <select className="select" value={apiConnectionId} onChange={(e) => setApiConnectionId(e.target.value)}>
+                <option value="">Select a connection…</option>
+                {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Response path" hint="Where the customer object sits in the response, e.g. data.customer">
+              <input className="input mono" value={responsePath} placeholder="data.customer" onChange={(e) => setResponsePath(e.target.value)} />
+            </Field>
+          </>
+        )}
+      </div>
+
+      {/* Fields */}
+      <SectionTitle>Fields</SectionTitle>
+      <div className="col gap-6">
+        {fields.length === 0 && (
+          <span className="t-micro">No fields declared — any payload is accepted as-is. Declare fields to get type checks, required-value warnings and masking.</span>
+        )}
+        {fields.map((f, i) => (
+          <div key={i} className="row gap-8 wrap" style={{ alignItems: "center" }}>
+            <input
+              className="input mono" style={{ flex: 1.1, minWidth: 130 }} value={f.key}
+              placeholder="field_key" aria-label={`Field ${i + 1} key`}
+              onChange={(e) => patchField(i, { key: e.target.value })}
+            />
+            <input
+              className="input" style={{ flex: 1.1, minWidth: 130 }} value={f.label ?? ""}
+              placeholder="Label (optional)" aria-label={`Field ${i + 1} label`}
+              onChange={(e) => patchField(i, { label: e.target.value })}
+            />
+            <select
+              className="select" style={{ width: 104, flexShrink: 0 }} value={f.type}
+              aria-label={`Field ${i + 1} type`}
+              onChange={(e) => patchField(i, { type: e.target.value as RuntimeContextFieldType })}
+            >
+              {CONTEXT_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <span className="row gap-4" style={{ flexShrink: 0 }}>
+              <Toggle checked={!!f.required} onChange={(v) => patchField(i, { required: v })} label={`Field ${i + 1} required`} />
+              <span className="t-micro">required</span>
+            </span>
+            <span className="row gap-4" style={{ flexShrink: 0 }}>
+              <Toggle checked={!!f.sensitive} onChange={(v) => patchField(i, { sensitive: v })} label={`Field ${i + 1} sensitive`} />
+              <span className="t-micro">sensitive</span>
+            </span>
+            <button className="btn-icon" aria-label={`Remove field ${i + 1}`} onClick={() => setFields((rows) => rows.filter((_, j) => j !== i))}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        ))}
+        <div>
+          <Button size="sm" icon="plus" onClick={() => setFields((rows) => [...rows, { key: "", type: "string" }])}>Add field</Button>
+        </div>
+      </div>
+      <div className="field">
+        <span className="field-label">Accept fields not listed here</span>
+        <div className="row gap-8" style={{ minHeight: 34 }}>
+          <Toggle checked={allowAdditional} onChange={setAllowAdditional} label="Accept fields not listed here" />
+          <span className="t-sub" style={{ fontSize: 12.5 }}>
+            {allowAdditional ? "Extra payload keys pass through to the call" : "Payloads with undeclared keys are rejected"}
+          </span>
+        </div>
+      </div>
+      <Field label="Missing-value policy" hint="How should the bot handle missing values? Included in the prompt's caller-context block.">
+        <input
+          className="input" value={missingValuePolicy}
+          placeholder="e.g. Say you don't have it and offer a callback"
+          onChange={(e) => setMissingValuePolicy(e.target.value)}
+        />
+      </Field>
+
+      {/* Test payload */}
+      <SectionTitle>Test payload</SectionTitle>
+      <Field
+        label="Test payload (JSON)"
+        hint={sourceMode === "api"
+          ? "Paste a sample User Details API response body to check it against the schema."
+          : "The user details test calls run with when no stored record matches."}
+      >
+        <textarea
+          className="textarea mono" rows={6} value={testJson}
+          placeholder={'{\n  "customer_name": "Rahul Sharma",\n  "amount_due": 4500\n}'}
+          style={{ fontSize: 12 }}
+          onChange={(e) => setTestJson(e.target.value)}
+        />
+      </Field>
+      <div className="row gap-8">
+        <Button size="sm" icon="check-circle" busy={validating} onClick={() => void runValidate()}>Validate</Button>
+        <span className="t-micro">Validates against the field definitions above (including unsaved edits) and previews the effective context.</span>
+      </div>
+
+      {validateErr && <Callout tone="critical" title="Validation failed">{validateErr}</Callout>}
+      {validation && (
+        validation.valid ? (
+          <Callout tone="good" title="Valid">
+            The payload matches the schema.
+            {validation.missingRequired.length > 0 && (
+              <> Required fields still missing: {validation.missingRequired.join(", ")}.</>
+            )}
+          </Callout>
+        ) : (
+          <Callout tone="critical" title="Payload issues">
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {validation.errors.map((e, i) => (
+                <li key={i}><code>{e.field}</code> — {e.message}</li>
+              ))}
+            </ul>
+          </Callout>
+        )
+      )}
+      {validation && validation.effective.length > 0 && (
+        <div className="col gap-4">
+          <span className="t-label">Effective context (what the call sees — sensitive values masked)</span>
+          {validation.effective.map((v) => (
+            <div key={v.key} className="row gap-8" style={{ alignItems: "center" }}>
+              <code className="tag" style={{ minWidth: 150 }}>{v.key}</code>
+              <span className="grow mono truncate" style={{ fontSize: 12 }}>{ctxValueText(v.value)}</span>
+              {v.sensitive && <Icon name="lock" size={11} style={{ color: "var(--ink-3)", flexShrink: 0 }} />}
+              <span className={`chip chip-${SOURCE_CHIP_TONE[v.source] ?? "neutral"}`} style={{ flexShrink: 0 }}>{v.source}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="row gap-8" style={{ justifyContent: "flex-end" }}>
+        <Button variant="primary" icon="check" busy={saving} disabled={!canManage} title={managePermTitle} onClick={() => void save()}>
+          Save runtime context
+        </Button>
+      </div>
+
+      <ContextRecordsPanel botId={bot.id} canManage={canManage} managePermTitle={managePermTitle} />
+    </div>
+  );
+}
+
+/* ---------- Stored per-customer records (optional, any domain) ---------- */
+
+function ContextRecordsPanel({ botId, canManage, managePermTitle }: {
+  botId: string; canManage: boolean; managePermTitle?: string;
+}) {
+  const [opened, setOpened] = useState(false);
+  return (
+    <details
+      style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}
+      onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) setOpened(true); }}
+    >
+      <summary className="row-between card-pad-sm" style={{ cursor: "pointer", listStyle: "none", gap: 12 }}>
+        <span className="col" style={{ gap: 1 }}>
+          <span className="t-strong" style={{ fontSize: 13 }}>Stored records</span>
+          <span className="t-micro">Per-customer payloads matched by phone when a call starts (manual source).</span>
+        </span>
+        <Icon name="chevron-down" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }} />
+      </summary>
+      {opened && <ContextRecordsTable botId={botId} canManage={canManage} managePermTitle={managePermTitle} />}
+    </details>
+  );
+}
+
+function ContextRecordsTable({ botId, canManage, managePermTitle }: {
+  botId: string; canManage: boolean; managePermTitle?: string;
+}) {
+  const { toast } = useApp();
+  const [page, setPage] = useState(1);
+  const q = useAsync(() => listContextRecords(botId, { page, pageSize: 10 }), [botId, page]);
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<RuntimeContextRecord | null>(null);
+  const [deleting, setDeleting] = useState<RuntimeContextRecord | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const rows = q.data?.items ?? [];
+  const meta = q.data?.meta;
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    setDeleteBusy(true);
+    try {
+      await deleteContextRecord(deleting.id);
+      toast(`Record “${deleting.customerRef ?? deleting.id}” deleted`);
+      setDeleting(null);
+      q.reload();
+    } catch (e) {
+      toast(errMsg(e, "Could not delete the record"), "error");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  return (
+    <div className="col gap-10" style={{ padding: "4px 12px 12px", borderTop: "1px solid var(--hairline)" }}>
+      <div className="row-between">
+        <span className="t-micro">{meta ? `${meta.total} record${meta.total === 1 ? "" : "s"}` : "Loading…"}</span>
+        <Button size="sm" icon="plus" disabled={!canManage} title={managePermTitle} onClick={() => setCreating(true)}>
+          New record
+        </Button>
+      </div>
+      {q.error && <ErrorState message={q.error} onRetry={q.reload} />}
+      {!q.error && rows.length === 0 && !q.loading && (
+        <span className="t-micro">No stored records yet — live calls fall back to the schema's test payload.</span>
+      )}
+      {rows.length > 0 && (
+        <div className="table-wrap" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+          <table className="table">
+            <thead>
+              <tr><th>Customer ref</th><th>Phone</th><th className="num">Fields</th><th>Updated</th><th></th></tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td><span className="t-strong">{r.customerRef || "—"}</span></td>
+                  <td><span className="mono" style={{ fontSize: 12 }}>{r.phoneMasked ?? "—"}</span></td>
+                  <td className="num t-num">{Object.keys(r.data).length}</td>
+                  <td className="t-sub">{r.updatedAt ? new Date(r.updatedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"}</td>
+                  <td>
+                    <div className="row gap-4" style={{ justifyContent: "flex-end" }}>
+                      <Button size="sm" variant="ghost" icon="edit" disabled={!canManage} title={managePermTitle} onClick={() => setEditing(r)}>Edit</Button>
+                      <button className="btn-icon" aria-label={`Delete record ${r.customerRef ?? r.id}`} disabled={!canManage} title={managePermTitle} onClick={() => setDeleting(r)}>
+                        <Icon name="trash" size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {meta && meta.totalPages > 1 && (
+        <div className="row gap-8" style={{ justifyContent: "flex-end", alignItems: "center" }}>
+          <Button size="sm" variant="ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</Button>
+          <span className="t-micro t-num">page {meta.page} / {meta.totalPages}</span>
+          <Button size="sm" variant="ghost" disabled={page >= meta.totalPages} onClick={() => setPage((p) => p + 1)}>Next</Button>
+        </div>
+      )}
+
+      {(creating || editing) && (
+        <ContextRecordModal
+          key={editing?.id ?? "new-record"}
+          botId={botId}
+          record={editing}
+          onClose={() => { setCreating(false); setEditing(null); }}
+          onSaved={() => { setCreating(false); setEditing(null); q.reload(); }}
+        />
+      )}
+
+      <ConfirmModal
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => void confirmDelete()}
+        danger busy={deleteBusy}
+        title="Delete record?"
+        confirmLabel="Delete"
+        body={<>“{deleting?.customerRef ?? deleting?.id}” will no longer be matched when calls start.</>}
+      />
+    </div>
+  );
+}
+
+function ContextRecordModal({ botId, record, onClose, onSaved }: {
+  botId: string; record: RuntimeContextRecord | null; onClose: () => void; onSaved: () => void;
+}) {
+  const { toast } = useApp();
+  const [customerRef, setCustomerRef] = useState(record?.customerRef ?? "");
+  const [phone, setPhone] = useState("");
+  const [dataJson, setDataJson] = useState(() => JSON.stringify(record?.data ?? {}, null, 2));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    let data: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(dataJson || "{}");
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+      data = parsed as Record<string, unknown>;
+    } catch {
+      setError("Data must be a JSON object.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const body = {
+      ...(customerRef.trim() ? { customerRef: customerRef.trim() } : {}),
+      ...(phone.trim() ? { phone: phone.trim() } : {}),
+      data,
+    };
+    try {
+      if (record) {
+        await updateContextRecord(record.id, body);
+        toast("Record updated");
+      } else {
+        await createContextRecord(botId, body);
+        toast("Record created");
+      }
+      onSaved();
+    } catch (e) {
+      setError(errMsg(e, "Could not save the record"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={record ? "Edit record" : "New record"}
+      sub="A per-customer context payload — matched by phone when a call starts."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" icon="check" busy={busy} onClick={() => void save()}>
+            {record ? "Save changes" : "Create record"}
+          </Button>
+        </>
+      }
+    >
+      <div className="col gap-12">
+        {error && <Callout tone="critical" title="Could not save">{error}</Callout>}
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <Field label="Customer ref" hint="Your identifier — loan id, patient id, lead id…">
+            <input className="input" value={customerRef} onChange={(e) => setCustomerRef(e.target.value)} placeholder="LN-1042" />
+          </Field>
+          <Field label="Phone" hint={record ? "Leave blank to keep the current number." : "Matched against the caller id."}>
+            <input className="input mono" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98765 43210" />
+          </Field>
+        </div>
+        <Field
+          label="Data (JSON)"
+          hint={record
+            ? "Sensitive fields display masked — re-enter their real values before saving."
+            : "Validated against the schema's field definitions."}
+        >
+          <textarea
+            className="textarea mono" rows={8} value={dataJson}
+            style={{ fontSize: 12 }}
+            onChange={(e) => setDataJson(e.target.value)}
+          />
+        </Field>
+      </div>
+    </Modal>
   );
 }

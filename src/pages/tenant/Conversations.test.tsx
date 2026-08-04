@@ -11,6 +11,9 @@ vi.mock("@/services/api", () => ({
   getConversation: vi.fn(),
   flagConversation: vi.fn(),
   simulateAction: vi.fn(),
+  // Cost rendering goes through the shared display-currency hook, which loads
+  // the backend's rate table.
+  getCurrencyRates: vi.fn(),
 }));
 vi.mock("@/services/exportDownload", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/services/exportDownload")>();
@@ -68,11 +71,58 @@ async function openDrawer(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole("dialog");
 }
 
+const CURRENCY_RATES = {
+  baseCurrency: "USD",
+  currencies: [
+    { code: "USD", name: "US Dollar", symbol: "$", decimalPlaces: 2, isBase: true, hasRate: true },
+    { code: "INR", name: "Indian Rupee", symbol: "₹", decimalPlaces: 2, isBase: false, hasRate: true },
+  ],
+  rates: { INR: 96.5 },
+};
+
+/* The breakdown the detail endpoint returns: rebuilt server-side from the
+   call's usage events and the rate snapshot recorded at the time. */
+const COST = {
+  sessionId: "vs_test",
+  baseCurrency: "USD",
+  totalUsd: "0.120000",
+  displayCurrency: "USD",
+  displayTotal: "0.120000",
+  displayRate: null,
+  byCapability: {
+    tts: { label: "Text to speech", costUsd: "0.100000" },
+    llm: { label: "Language model", costUsd: "0.020000" },
+  },
+  lines: [
+    {
+      capability: "tts", capabilityLabel: "Text to speech", provider: "elevenlabs",
+      model: "eleven_flash_v2_5", voice: null, component: "characters",
+      componentLabel: "Characters", quantity: "2000", unit: "per_1k_characters",
+      unitPrice: "0.05", rateCurrency: "USD", fxRate: null, costUsd: "0.100000",
+      priced: true, note: null,
+    },
+    {
+      capability: "telephony", capabilityLabel: "Telephony", provider: "freeswitch",
+      model: "", voice: null, component: "call_seconds", componentLabel: "Call time",
+      quantity: "75", unit: "", unitPrice: "0", rateCurrency: "USD", fxRate: null,
+      costUsd: "0", priced: false,
+      note: "No active price configured — usage recorded but not costed.",
+    },
+  ],
+  unpriced: ["telephony:freeswitch:call_seconds"],
+  eventCount: 3,
+  highCost: false,
+  highCostThresholdUsd: "0.5",
+  storedTotalUsd: "0.120000",
+  reconciled: true,
+};
+
 describe("Tenant conversation review", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.listConversations).mockResolvedValue([CONVERSATION] as never);
-    vi.mocked(api.getConversation).mockResolvedValue(DETAIL as never);
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, cost: COST } as never);
+    vi.mocked(api.getCurrencyRates).mockResolvedValue(CURRENCY_RATES as never);
     vi.mocked(exportApi.downloadOperationalExport).mockResolvedValue("conversations.xlsx");
     vi.mocked(exportApi.downloadConversationTranscript).mockResolvedValue("transcript.csv");
   });
@@ -112,7 +162,8 @@ describe("Tenant conversation review", () => {
     const user = userEvent.setup();
     const dialog = await openDrawer(user);
 
-    expect(api.getConversation).toHaveBeenCalledWith("cv-001");
+    // The display currency is passed so the breakdown comes back converted.
+    expect(api.getConversation).toHaveBeenCalledWith("cv-001", "USD");
     expect(await within(dialog).findByText("Namaste, this is Billing Bot.")).toBeInTheDocument();
     expect(within(dialog).getByText("I was charged twice.")).toBeInTheDocument();
     expect(within(dialog).getByText("Let me check that for you.")).toBeInTheDocument();
@@ -197,5 +248,106 @@ describe("Tenant conversation review", () => {
     expect(await within(dialog).findByText(/no longer available/)).toBeInTheDocument();
     expect(dialog.querySelector("audio")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+});
+
+describe("Conversation costing display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listConversations).mockResolvedValue([CONVERSATION] as never);
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, cost: COST } as never);
+    vi.mocked(api.getCurrencyRates).mockResolvedValue(CURRENCY_RATES as never);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("shows the metered cost in the list, headed with the display currency", async () => {
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    expect(await screen.findByRole("columnheader", { name: /Cost \(USD\)/ })).toBeInTheDocument();
+    expect(screen.getByText("$0.12")).toBeInTheDocument();
+  });
+
+  it("renders the list, recording row and breakdown from ONE backend total", async () => {
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    // 0.12 formatted identically wherever it appears — the client never
+    // recomputes it, so the three places cannot disagree.
+    const shown = await within(dialog).findAllByText("$0.12");
+    expect(shown.length).toBeGreaterThan(1);
+    expect(within(dialog).getByText("Cost breakdown")).toBeInTheDocument();
+  });
+
+  it("converts to the selected currency using the backend rate", async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    await screen.findByText("$0.12");
+    await user.selectOptions(await screen.findByLabelText("Display currency"), "INR");
+
+    // 0.12 USD × 96.5 = ₹11.58, and the column header follows the selection.
+    expect(await screen.findByRole("columnheader", { name: /Cost \(INR\)/ })).toBeInTheDocument();
+    expect(screen.getByText("₹11.58")).toBeInTheDocument();
+    expect(screen.queryByText("$0.12")).not.toBeInTheDocument();
+  });
+
+  it("re-requests the breakdown when the display currency changes", async () => {
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await within(dialog).findByText("Cost breakdown");
+    await user.selectOptions(screen.getByLabelText("Display currency"), "INR");
+    await waitFor(() =>
+      expect(api.getConversation).toHaveBeenCalledWith("cv-001", "INR"),
+    );
+  });
+
+  it("itemises components, rates and unpriced usage on demand", async () => {
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await user.click(await within(dialog).findByRole("button", { name: "Details" }));
+
+    expect(within(dialog).getByText("elevenlabs / eleven_flash_v2_5")).toBeInTheDocument();
+    expect(within(dialog).getByText(/per 1k characters/)).toBeInTheDocument();
+    expect(within(dialog).getByText("2,000")).toBeInTheDocument();
+    // An unpriced component is shown with its reason, never hidden.
+    expect(within(dialog).getByText(/No active price configured/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Not costed \(no configured price\)/)).toBeInTheDocument();
+    // Rounding is stated rather than left for the reader to infer.
+    expect(within(dialog).getByText(/4 decimal places/)).toBeInTheDocument();
+  });
+
+  it("flags an unusually expensive call instead of rendering it as normal", async () => {
+    vi.mocked(api.listConversations).mockResolvedValue(
+      [{ ...CONVERSATION, costUsd: 0.9 }] as never,
+    );
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL, costUsd: 0.9,
+      cost: { ...COST, totalUsd: "0.900000", storedTotalUsd: "0.900000", highCost: true },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    expect(await within(dialog).findByText(/Unusually high/)).toBeInTheDocument();
+  });
+
+  it("warns when the stored total and the recomputed sum disagree", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      cost: { ...COST, storedTotalUsd: "0.050000", reconciled: false },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await user.click(await within(dialog).findByRole("button", { name: "Details" }));
+    expect(within(dialog).getByText(/Stored total differs/)).toBeInTheDocument();
+  });
+
+  it("degrades quietly when a call has no metered usage", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL, costUsd: 0,
+      cost: { ...COST, totalUsd: "0", byCapability: {}, lines: [], eventCount: 0 },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    expect(await within(dialog).findByText(/No metered usage recorded/)).toBeInTheDocument();
   });
 });

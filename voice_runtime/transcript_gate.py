@@ -23,7 +23,13 @@ audio duration — providers differ, every field is optional). Evidence order:
 3. a foreign language LABEL rejects only when the text itself does not read as
    Hindi/English/Hinglish (or the provider is highly confident and the script
    is ambiguous romanized text) — a mislabel must never drop valid speech;
-4. everything else is ACCEPTED — the gate fails open: a transcript with no
+4. CORROBORATED weak evidence rejects: signals that each fire on real speech
+   too often to trust alone (speech barely above this line's noise floor, the
+   bot speaking while the audio was captured, middling provider confidence,
+   sub-word duration, a final that disagrees with its own partials, a context
+   free lone token) are counted, and only a pair rejects
+   (:func:`weak_noise_signals`);
+5. everything else is ACCEPTED — the gate fails open: a transcript with no
    metadata and a plausible script is treated as a real utterance.
 
 Legitimate short replies ("haan", "nahi", "yes", "no", "ok", "नहीं") are
@@ -36,6 +42,7 @@ import re
 from dataclasses import dataclass
 
 from shared.orchestration.router import classify_user_signal, detect_hangup
+from voice_runtime.endpointing import is_short_complete_reply
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,26 @@ MIN_UTTERANCE_SECONDS = 0.25
 MAX_WORDS_PER_SECOND = 9.0
 _RATE_CHECK_MIN_WORDS = 6
 
+# ── weak-evidence combination ───────────────────────────────────────────────
+# None of the signals below is trustworthy alone — each one also fires on real
+# speech often enough that rejecting on it would drop genuine callers. They are
+# counted instead, and only a CORROBORATED pair rejects. This is what keeps the
+# gate from degenerating into "short transcripts are noise": duration is one
+# vote among several, never the rule.
+WEAK_EVIDENCE_REJECT_COUNT = 2
+# Speech this close to the line's own noise floor is as likely to be the floor.
+WEAK_SNR_DB = 6.0
+# Above MIN_TRANSCRIPT_CONFIDENCE (which rejects outright) but well below what
+# clean speech scores.
+WEAK_CONFIDENCE = 0.6
+# Below the duration of a spoken word plus VAD padding, but not impossibly so.
+WEAK_DURATION_SECONDS = 0.45
+# A final sharing almost nothing with the partials that preceded it is a
+# revision, a translation, or a hallucination — only the last is noise, so this
+# never votes alone. (Translate-mode STT legitimately rewrites the text, which
+# is precisely why this is a weak signal.)
+WEAK_INTERIM_AGREEMENT = 0.25
+
 # ── script heuristics (shared with the brain's language following) ──────────
 _DEVANAGARI_CHARS = re.compile(r"[ऀ-ॿ]")
 _LATIN_CHARS = re.compile(r"[A-Za-z]")
@@ -93,6 +120,39 @@ _SCRIPT_PATTERNS = {
     "ml": _MALAYALAM_CHARS,
     "ur": _ARABIC_CHARS,
 }
+# ── short-utterance script rescue ───────────────────────────────────────────
+# Sarvam in language auto-detect mode regularly mislabels SHORT Hindi
+# interjections as another Indian language and then writes them in that
+# language's script: a caller's "hmm" comes back as Punjabi "ਹਮ।", "okay ji"
+# as "ਓਕੇ ਜੀ।". Rejecting those as unsupported_script silently drops a real
+# caller turn — the single worst failure a collections call can have, because
+# the workflow then re-reads its pitch as if the caller had said nothing.
+#
+# The northern Indic scripts are ISCII-aligned with Devanagari (same layout,
+# fixed block offset), so a per-character offset transliteration recovers the
+# Hindi the caller actually spoke well enough for the router/LLM. Applied
+# ONLY to utterances of up to _TRANSLITERATE_MAX_WORDS words — long foreign-
+# script text is far more likely to be a genuinely foreign speaker (which the
+# language_unsupported flow must keep handling) or a hallucinated sentence.
+_TRANSLITERATABLE_BLOCKS = (0x0980, 0x0A00, 0x0A80, 0x0B00)  # bn, pa, gu, or
+_DEVANAGARI_BASE = 0x0900
+_TRANSLITERATE_MAX_WORDS = 3
+
+
+def transliterate_to_devanagari(text: str) -> str:
+    """Offset-map Bengali/Gurmukhi/Gujarati/Oriya glyphs onto Devanagari."""
+    out: list[str] = []
+    for ch in text:
+        point = ord(ch)
+        for base in _TRANSLITERATABLE_BLOCKS:
+            if base <= point < base + 0x80:
+                out.append(chr(_DEVANAGARI_BASE + (point - base)))
+                break
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 # Romanized-Hindi (Hinglish) marker words: when the STT reports Hindi but the
 # text is fully Latin (translit/codemix STT modes), these confirm the STT's
 # verdict so a Hinglish speaker still gets Hindi replies and a Hindi voice.
@@ -176,6 +236,13 @@ class SegmentQuality:
     language_probability / metrics.audio_duration; the segmented REST path
     (EchoSTTService) attaches provider confidence, no-speech probability and
     the exact PCM duration; the mock provider only reports confidence.
+
+    The last three fields are measured by EchoSphere itself rather than by a
+    provider: the caller-audio gate supplies the segment's speech level and the
+    noise floor it was measured against (so "loud" is relative to THIS line),
+    whether the bot was speaking while the audio was captured (echo risk), and
+    the brain supplies how well the final agrees with the partial hypotheses
+    that preceded it.
     """
 
     provider: str = ""
@@ -184,6 +251,9 @@ class SegmentQuality:
     confidence: float | None = None
     no_speech_prob: float | None = None
     audio_seconds: float | None = None
+    snr_db: float | None = None  # speech level above the measured noise floor
+    during_bot_audio: bool = False  # captured while the bot was speaking
+    interim_agreement: float | None = None  # 0..1 token overlap with partials
 
 
 def _as_float(value) -> float | None:
@@ -245,6 +315,9 @@ class GateVerdict:
     accepted: bool
     reason: str = "ok"
     language: str | None = None  # normalized base code of the detected language
+    # Set when the gate rescued a short misdetected segment by transliterating
+    # it into an allowed script — the brain must use THIS text for the turn.
+    normalized_text: str | None = None
 
 
 def meaningful_short_reply(text: str) -> bool:
@@ -311,6 +384,30 @@ def assess_transcript(
     # dominated by any other script is a hallucination or misdetection.
     foreign_chars, foreign_share = _foreign_script_share(stripped, allowed_languages)
     if foreign_chars and foreign_share >= FOREIGN_SCRIPT_DOMINANCE:
+        # Short-utterance rescue: an auto-detect mislabel writes a real Hindi
+        # interjection in the mislabeled language's script ("ਹਮ।", "ਓਕੇ ਜੀ।").
+        # Recover it by offset transliteration instead of dropping the turn.
+        if (
+            "hi" in allowed_languages
+            and len(stripped.split()) <= _TRANSLITERATE_MAX_WORDS
+        ):
+            recovered = transliterate_to_devanagari(stripped)
+            if (
+                recovered != stripped
+                and script_supports_language(recovered, "hi")
+                # Only rescue text that READS as a known meaningful reply
+                # after transliteration ("हम।", "ओके जी।", "हाँ जी") — an
+                # arbitrary short foreign sentence stays rejected, so real
+                # unsupported-language callers still get the notice flow.
+                and (
+                    meaningful_short_reply(recovered)
+                    or is_short_complete_reply(recovered)
+                )
+            ):
+                return GateVerdict(
+                    True, "transliterated_short_reply", language,
+                    normalized_text=recovered,
+                )
         return GateVerdict(False, "unsupported_script", language)
 
     # 4. Language label outside the allowed set: reject when the text does
@@ -347,4 +444,53 @@ def assess_transcript(
         ):
             return GateVerdict(False, "impossible_rate", language)
 
+    # 6. Corroborated weak evidence: no single signal below is decisive, so a
+    # pair of independent ones is required.
+    #
+    # The exemption here is deliberately NARROWER than `short_reply` above:
+    # that one matches the router's semantic signals anywhere in a sentence
+    # (so "मैं कल पेमेंट कर दूंगा" counts as one), which would exempt almost
+    # every meaningful-looking hallucination and leave this rule inert. What
+    # must be protected is the genuinely self-contained reply — "haan", "nahi",
+    # "ji", "yes", "no", "ok" — which trips several of these signals by nature.
+    if not is_short_complete_reply(stripped):
+        weak = weak_noise_signals(stripped, quality)
+        if len(weak) >= WEAK_EVIDENCE_REJECT_COUNT:
+            return GateVerdict(False, "weak_signal:" + "+".join(weak), language)
+
     return GateVerdict(True, "ok", language)
+
+
+def weak_noise_signals(text: str, quality: SegmentQuality) -> list[str]:
+    """Names of the weak noise indicators this segment trips.
+
+    Exposed separately so diagnostics can record exactly which signals
+    corroborated a rejection without storing audio.
+    """
+    signals: list[str] = []
+    if quality.snr_db is not None and quality.snr_db < WEAK_SNR_DB:
+        signals.append("low_snr")
+    if quality.during_bot_audio:
+        # The bot was speaking while this audio was captured, so speaker
+        # bleed/echo is a live alternative explanation for the transcript.
+        signals.append("bot_audio_overlap")
+    if (
+        quality.confidence is not None
+        and quality.confidence < WEAK_CONFIDENCE
+    ):
+        signals.append("low_confidence")
+    if (
+        quality.audio_seconds is not None
+        and 0 < quality.audio_seconds < WEAK_DURATION_SECONDS
+    ):
+        signals.append("short_audio")
+    if (
+        quality.interim_agreement is not None
+        and quality.interim_agreement < WEAK_INTERIM_AGREEMENT
+    ):
+        signals.append("unstable_transcript")
+    if len(text.split()) <= 1:
+        # A lone token carries no linguistic context to sanity-check against;
+        # meaningful one-word replies are already exempt by the caller.
+        signals.append("single_token")
+    return signals

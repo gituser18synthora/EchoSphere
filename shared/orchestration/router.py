@@ -78,7 +78,7 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     # Claims the payment was already made.
     ("already_paid", re.compile(
         r"already paid"
-        r"|(?:payment|पेमेंट|paisa|paise|पैसा|पैसे|amount)\W+(?:\w+\W+)?"
+        r"|(?:payment|पेमेंट|paisa|paise|पैसा|पैसे|amount)\W+(?:\w+\W+){0,4}"
         r"(?:kar (?:di|diya|chuka|chuki)|ho (?:gaya|gayi|chuka|chuki)|"
         r"kat (?:gaya|gayi)|bhar (?:diya|di)|कर (?:दी|दिया|चुका|चुकी)|"
         r"हो (?:गया|गई|चुका|चुकी)|कट (?:गया|गई)|भर (?:दिया|दी))"
@@ -122,6 +122,10 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("callback", re.compile(
         r"call ?back|baad (?:mein|me|में)|बाद में"
         r"|(?:kal|parso|कल|परसों)\s+(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
+        # "शाम को कॉल करना", "subah call karo" — a time + an imperative call.
+        r"|(?:shaam|sham|subah|dopahar|शाम|सुबह|दोपहर)\s*(?:ko|को)?\s*"
+        r"(?:call|कॉल|phone|फोन)"
+        r"|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)"
         r"|\bbusy\b|meeting|vyast|व्यस्त|मीटिंग|gaadi chala|गाड़ी चला|driv(?:e|ing)"
         r"|(?:baat|बात)\s+(?:nahi|nahin|नहीं|नही)\s+kar\s+(?:sakta|sakti|सकता|सकती)"
         r"|time chahiye|samay chahiye|समय चाहिए|टाइम चाहिए|more time"
@@ -158,9 +162,10 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
     # A bare confirmation ("haan", "theek hai") — meaningful only in context.
     ("affirm", re.compile(
-        r"^\W*(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?|"
+        r"^\W*(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
         r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
-        r"हाँ|हां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?)\W*$",
+        r"हाँ|हां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
+        r"ओके(?: जी)?|अच्छा)\W*$",
         re.I,
     )),
 ]
@@ -247,6 +252,70 @@ def detect_hangup(text: str) -> bool:
     return any(p.search(stripped) for p in _HANGUP_PATTERNS)
 
 
+# ── do-not-call / emergency / consent refusal (platform-critical) ────────────
+# Like hang-up these are deterministic, multilingual and checked before any
+# workflow, intent model or LLM: a caller revoking contact consent or
+# reporting an emergency must never receive another pitch first.
+
+_DNC_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        r"\b(?:do ?n[o']t|never|stop) call(?:ing)?( me| again| back)?\b"
+        r"|\bremove (?:my|this) number\b|\bstop (?:these|the) calls\b"
+        r"|\btake me off\b|\bunsubscribe\b",
+        re.I,
+    ),
+    # "dobara/phir/aage call mat karna", "फिर मत करना कॉल"
+    re.compile(
+        r"(?:dobara|dubara|phir|firse|fir se|aage|kabhi|दोबारा|दुबारा|फिर|आगे|कभी)\s*"
+        r"(?:se\s*|से\s*)?(?:call|phone|कॉल|फोन)?\s*(?:mat|मत|na|नहीं|nahi)\s*"
+        r"(?:kar|कर|karna|करना|karo|करो)",
+        re.I,
+    ),
+    re.compile(
+        r"(?:call|phone|कॉल|फोन)\s*(?:mat|मत)\s*(?:kar|कर)\w*"
+        r"|(?:mat|मत)\s*(?:karo|करो|karna|करना)\s*(?:call|phone|कॉल|फोन)",
+        re.I,
+    ),
+]
+
+
+def detect_do_not_call(text: str) -> bool:
+    """Deterministic 'never call me again' consent revocation."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return any(p.search(stripped) for p in _DNC_PATTERNS)
+
+
+_EMERGENCY = re.compile(
+    r"\bemergency\b|\bambulance\b|\bpolice\b|heart attack|accident (?:ho|हो)"
+    r"|(?:mar|मर) (?:raha|rahi|रहा|रही)|suicide|khudkushi|आत्महत्या"
+    r"|एम्बुलेंस|इमरजेंसी|पुलिस|एक्सीडेंट",
+    re.I,
+)
+
+
+def detect_emergency(text: str) -> bool:
+    """Emergency / safety language — escalate to a human, never a pitch."""
+    stripped = (text or "").strip()
+    return bool(stripped) and bool(_EMERGENCY.search(stripped))
+
+
+# "don't record", "recording band karo" — consent refusal for recording.
+_CONSENT_REFUSAL = re.compile(
+    r"(?:do ?n[o']t|stop|no)\s+record(?:ing)?"
+    r"|record(?:ing)?\s*(?:mat|मत|band|बंद)\s*(?:kar|कर)?"
+    r"|रिकॉर्ड(?:िंग)?\s*(?:मत|बंद)"
+    r"|consent\s+(?:nahi|नहीं|withdraw)",
+    re.I,
+)
+
+
+def detect_consent_refusal(text: str) -> bool:
+    stripped = (text or "").strip()
+    return bool(stripped) and bool(_CONSENT_REFUSAL.search(stripped))
+
+
 _CALL_CONTROL: list[tuple[re.Pattern, str]] = [
     # hang-up lives in detect_hangup() (multilingual + negation-guarded),
     # checked before this list ever runs.
@@ -302,6 +371,15 @@ class TurnRouter:
         if detect_hangup(stripped):
             return RouteDecision(kind=RouteKind.CALL_CONTROL, action="hangup",
                                  reason="hangup_phrase")
+
+        # 0b. Consent revocation ("never call me again") and emergencies are
+        # platform-critical: deterministic, ahead of workflows and the LLM.
+        if detect_do_not_call(stripped):
+            return RouteDecision(kind=RouteKind.CALL_CONTROL, action="do_not_call",
+                                 reason="dnc_phrase")
+        if detect_emergency(stripped):
+            return RouteDecision(kind=RouteKind.HANDOFF, action="transfer",
+                                 reason="emergency")
 
         # 0. Safety: caller reading out secrets — refuse/deflect, never store.
         if _UNSAFE.search(stripped):
@@ -380,10 +458,17 @@ class TurnRouter:
                 return RouteDecision(kind=RouteKind.KNOWLEDGE, confidence=0.8,
                                      reason="kb_signals", considered_kb=True)
 
-        # 6. Very short, ambiguous input → one concise clarification.
+        # 6. Very short input: only truly AMBIGUOUS shorts earn a canned
+        # clarification. A short utterance that carries a semantic signal
+        # ("haan", "नहीं", "busy", "ओके") is a meaningful reply to whatever
+        # the bot just asked — the LLM answers it in context.
         if len(stripped.split()) <= 2:
-            return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.4, reason="too_short",
-                                 considered_kb=True)
+            signal = classify_user_signal(stripped)
+            if signal is None:
+                return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.4,
+                                     reason="too_short", considered_kb=True)
+            return RouteDecision(kind=RouteKind.CHAT, confidence=0.5,
+                                 reason="short_signal", signal=signal)
 
         return RouteDecision(kind=RouteKind.CHAT, confidence=0.6, reason="default_chat",
                              considered_kb=self._has_kbs)

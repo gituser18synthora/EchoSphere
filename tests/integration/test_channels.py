@@ -20,6 +20,8 @@ pytestmark = pytest.mark.integration
 
 API = "/api/v1"
 _SUFFIX = uuid.uuid4().hex[:8]
+# A per-run number so voice tests never claim a demo-data or concurrent-run number.
+_TEST_NUMBER = "+1999" + str(int(_SUFFIX, 16))[:7].zfill(7)
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +144,8 @@ def _purge_bot(bot_id: str) -> None:
         for table in ("channel_configs", "voice_bot_settings", "voice_bot_readiness",
                       "bot_languages", "workflows", "phone_numbers", "prompts"):
             conn.execute(sa_text(f"DELETE FROM `{table}` WHERE bot_id = :b"), {"b": bot_id})
+        # released numbers have bot_id NULL, so clear this run's number by value too
+        conn.execute(sa_text("DELETE FROM phone_numbers WHERE number = :n"), {"n": _TEST_NUMBER})
         conn.execute(sa_text("DELETE FROM voice_bots WHERE id = :b"), {"b": bot_id})
 
 
@@ -368,6 +372,38 @@ def test_archive_channel(client, tenant_admin, test_bot):
     rows = _data(client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_admin))
     mobile = next(r for r in rows if r["type"] == "mobile")
     assert mobile["status"] == "not_configured"  # archived row excluded
+
+
+def test_reconfigure_after_archive_revives_channel(client, tenant_admin, test_bot):
+    """Re-creating an archived channel must revive its row, not 409 on the
+    (bot, type) unique key that the soft-deleted row still occupies."""
+    bot_id = test_bot["id"]
+    config = {"platform": "android", "bundleIds": ["com.example.revived"]}
+    first = _data(client.put(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin,
+                             json={"config": config}))
+    _data(client.delete(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin))
+
+    response = client.put(f"{API}/bots/{bot_id}/channels/mobile", headers=tenant_admin,
+                          json={"config": config})
+    assert response.status_code == 200, response.json()
+    revived = _data(response)
+    assert revived["id"] == first["id"]          # same row, not a duplicate
+    assert revived["status"] == "configured"
+    assert revived["enabled"] is True
+
+
+def test_reconfigure_voice_after_archive(client, tenant_admin, test_bot):
+    """The voice case that surfaced the bug: archive, then re-add the number."""
+    bot_id = test_bot["id"]
+    config = {"phoneNumber": _TEST_NUMBER, "telephonyProvider": "freeswitch"}
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": config}))
+    _data(client.delete(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin))
+
+    response = client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                          json={"config": config})
+    assert response.status_code == 200, response.json()
+    assert _data(response)["config"]["phoneNumber"] == _TEST_NUMBER
 
 
 # ── Audit ───────────────────────────────────────────────────────────────────

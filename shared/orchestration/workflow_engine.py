@@ -51,6 +51,8 @@ class WorkflowState(TypedDict, total=False):
     off_script: bool  # the turn was NOT consumed — node unchanged, no reply
     awaiting_prompt: str | None  # question of the node the flow is paused at
     signal: str | None  # semantic signal of the caller's utterance
+    # Testing Studio: {tool_name: payload} replaces live HTTP in api nodes.
+    mock_tool_results: dict | None
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -487,6 +489,23 @@ def _edge_tokens(label: str) -> list[str]:
     return [t.strip().lower() for t in re.split(r"[/,|]", label or "") if t.strip()]
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[।?!.])\s+")
+_MAX_REASK_CHARS = 160
+
+
+def _short_question(base: str, lang: str = "") -> str:
+    """The re-askable core of a node's text: its last question sentence."""
+    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(base or "") if s.strip()]
+    if not sentences:
+        return canned("wf_more_detail", lang)
+    question = next(
+        (s for s in reversed(sentences) if s.endswith("?")), sentences[-1]
+    )
+    if len(question) > _MAX_REASK_CHARS:
+        return canned("wf_more_detail", lang)
+    return question
+
+
 # ── semantic edge selection for intent nodes ────────────────────────────────
 # A user turn advances an intent node ONLY when the node actually supports
 # what the caller said: an edge whose label carries the same semantic signal
@@ -707,8 +726,16 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
 
     def _question(node: dict, retrying: bool, lang: str = "") -> str:
         base = _node_text(node, "question", "prompt", "text")
-        prefix = canned("wf_retry_prefix", lang) if retrying else ""
-        return f"{prefix}{base}" if base else canned("wf_more_detail", lang)
+        if not base:
+            return canned("wf_more_detail", lang)
+        if not retrying:
+            return base
+        # A retry must never re-read the node's full scripted text — callers
+        # heard it seconds ago, and long pitch nodes turned every retry into
+        # the same monologue again. Re-ask with just the node's actual
+        # QUESTION (its last interrogative sentence), or a generic short
+        # re-prompt when the node text has no question to extract.
+        return canned("wf_retry_prefix", lang) + _short_question(base, lang)
 
     async def _step(state: WorkflowState) -> WorkflowState:
         # Generic engine strings follow the caller's conversation language —
@@ -757,10 +784,13 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     audit.append({"action": "slot_filled", "node": awaiting,
                                   "variable": variable})
                     current, awaiting = _next_of(awaiting), None
-                elif signal is not None and signal not in ("affirm",):
-                    # The caller said something meaningful that is NOT an
-                    # answer (hardship, complaint, a question...) — do not
-                    # burn a retry or advance; the brain answers in context.
+                elif signal is not None:
+                    # The caller said something meaningful that the ask's
+                    # matcher did not extract (hardship, complaint, a
+                    # question — or a bare "ठीक है" at a choice question).
+                    # Do not burn a retry, advance, or speak a canned
+                    # "didn't catch that"; the brain answers in context and
+                    # the ask still accepts the next answer.
                     audit.append({"action": "off_script", "node": awaiting,
                                   "signal": signal})
                     off_script = True
@@ -806,16 +836,21 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                     for t in _edge_tokens(e.get("label", "")))),
                             None,
                         )
-                        if chosen is None:
-                            audit.append({"action": "off_script",
-                                          "node": awaiting, "signal": signal})
-                            off_script = True
-                            current = None
-                        else:
-                            why = "else"
-                    else:
-                        replies.append(_question(node, retrying=True, lang=lang))
+                    if chosen is None:
+                        # First unmatched turn (and any later one with no
+                        # authored else edge): the caller said something the
+                        # node does not understand — a canned "didn't catch
+                        # that" + re-read of the pitch is exactly the repeat
+                        # loop callers complain about. Report off-script so
+                        # the brain answers the actual message in context;
+                        # the node stays and can still advance next turn.
+                        audit.append({"action": "off_script",
+                                      "node": awaiting, "signal": signal,
+                                      "reason": "no_match"})
+                        off_script = True
                         current = None
+                    else:
+                        why = "else"
                 if chosen is not None:
                     audit.append({"action": "intent_branch", "node": awaiting,
                                   "edge": chosen.get("label") or chosen.get("id"),
@@ -873,23 +908,54 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 current = str(edge.get("to")) if edge else None
             elif kind == "api":
                 config = _node_config(node)
-                # No live API executor is wired into the voice runtime yet —
-                # the action is recorded (audited) and the flow follows the
-                # success edge, so journeys keep their shape.
-                audit.append({"action": "api_call_recorded",
-                              "node": current,
-                              "name": config.get("name") or node.get("label")})
+                tool = str(
+                    config.get("connection") or config.get("connectionId")
+                    or config.get("name") or node.get("label") or ""
+                ).strip()
+                succeeded = False
+                if tool:
+                    # Live execution through the backend-validated executor:
+                    # tenant/bot scoping, schema, idempotency, timeout/retry
+                    # and masking are enforced there, not here.
+                    from shared.orchestration.tool_executor import get_tool_executor
+
+                    result = await get_tool_executor().execute(
+                        tenant_id=state.get("tenant_id", ""),
+                        bot_id=state.get("bot_id", ""),
+                        tool=tool,
+                        args={k: v for k, v in slots.items()
+                              if not isinstance(v, (dict, list))},
+                        workflow=state.get("workflow"),
+                        session_id=str(state.get("session_id") or ""),
+                        customer_verified=bool(slots.get("customer_verified")),
+                        mock_results=state.get("mock_tool_results"),
+                    )
+                    succeeded = result.ok
+                    # Mapped response fields become slots for later condition
+                    # nodes ("payment_status equals completed" etc.).
+                    for key, value in (result.mapped or {}).items():
+                        slots.setdefault(str(key), value)
+                    audit.append({"action": "api_call", "node": current,
+                                  "name": tool, "ok": result.ok,
+                                  "status": result.status,
+                                  "mocked": result.mocked})
+                else:
+                    audit.append({"action": "api_call_skipped", "node": current,
+                                  "reason": "no connection configured"})
                 spoken = _node_text(node, "text", fallback_label=False)
                 if spoken:
                     replies.append(spoken)
                 out_edges = edges_from.get(current, [])
-                success = next(
+                wanted = (
+                    ("success", "ok", "done") if succeeded
+                    else ("failure", "failed", "error", "fallback")
+                )
+                edge = next(
                     (e for e in out_edges
-                     if any(t in ("success", "ok", "done")
-                            for t in _edge_tokens(e.get("label", "")))),
+                     if any(t in wanted for t in _edge_tokens(e.get("label", "")))),
                     out_edges[0] if out_edges else None,
                 )
-                current = str(success.get("to")) if success else None
+                current = str(edge.get("to")) if edge else None
             elif kind == "knowledge":
                 answer = await _knowledge_answer(state, node, slots)
                 answered = answer is not None
@@ -1050,6 +1116,7 @@ class WorkflowEngine:
         user_text: str,
         timeout_seconds: float = 10.0,
         language: str | None = None,
+        mock_tool_results: dict | None = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -1094,6 +1161,7 @@ class WorkflowEngine:
                         "workflow": workflow_name,
                         "user_text": user_text,
                         "language": language or "",
+                        "mock_tool_results": mock_tool_results,
                     },
                     config=thread,
                 ),

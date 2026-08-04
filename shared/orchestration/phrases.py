@@ -51,6 +51,16 @@ _PHRASES: dict[str, dict[str, str]] = {
         "en": "Alright, ending the call now. Goodbye!",
         "hi": "ठीक है, कॉल बंद की जा रही है। धन्यवाद।",
     },
+    "dnc_ack": {
+        "en": (
+            "Understood — this number will be marked do-not-call and you "
+            "won't be contacted again. Goodbye."
+        ),
+        "hi": (
+            "समझ गया — यह नंबर डू-नॉट-कॉल सूची में डाल दिया जाएगा और आपको "
+            "दोबारा कॉल नहीं की जाएगी। धन्यवाद।"
+        ),
+    },
     "repeat_none": {
         "en": "I haven't said anything yet.",
         "hi": "अभी तक मैंने कुछ नहीं कहा है।",

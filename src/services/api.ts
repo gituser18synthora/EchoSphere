@@ -7,11 +7,14 @@
 
 import type {
   AnalyticsBundle, ApiConnection, ApiTestResult, ApprovedModel, AuditEvent,
-  ChannelConfig, ChannelProviderConfig, Conversation, DocumentStatus, DocumentUploadResult, EntityDef,
+  ChannelConfig, ChannelProviderConfig, Conversation, CustomerContext,
+  CustomerContextCallState, CustomerContextInput,
+  DocumentStatus, DocumentUploadResult, EntityDef,
   EntityExtraction, Guardrail, HealthMetric, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
-  PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptTestResult,
-  Release, RoleInfo, SearchTestResult, SessionUserInfo, SipTrunk,
+  PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
+  Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
+  RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
   TenantSettings, TestScenario, UploadConfig, VoiceBot, VoiceCatalog,
   VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
@@ -192,10 +195,68 @@ export const reviewRetrievalTest = (body: {
 }): Promise<RetrievalTestResult> => http.post(`${REVIEW}/retrieval-test`, body);
 
 /* ---------- Voice runtime ---------- */
-export const createVoiceSession = (botId: string, channel = "browser"): Promise<VoiceSessionInfo> =>
-  http.post("/voice-sessions", { botId, channel });
+export const createVoiceSession = (
+  botId: string,
+  channel = "browser",
+  opts?: { variables?: Record<string, string>; customerContextId?: string },
+): Promise<VoiceSessionInfo> =>
+  http.post("/voice-sessions", {
+    botId,
+    channel,
+    ...(opts?.variables ? { variables: opts.variables } : {}),
+    ...(opts?.customerContextId ? { customerContextId: opts.customerContextId } : {}),
+  });
 export const getVoiceCatalog = (): Promise<VoiceCatalog> =>
   http.get("/providers/voice-catalog");
+
+/* ---------- Customer collection context ---------- */
+export const listCustomerContexts = async (botId: string): Promise<CustomerContext[]> =>
+  (await http.getPaged<CustomerContext>(`/bots/${botId}/customer-contexts`)).items;
+export const lookupCustomerContext = (botId: string, phone: string): Promise<CustomerContext> =>
+  http.get(`/bots/${botId}/customer-contexts/lookup?phone=${encodeURIComponent(phone)}`);
+export const getCustomerContext = (id: string): Promise<CustomerContext> =>
+  http.get(`/customer-contexts/${id}`);
+export const createCustomerContext = (botId: string, body: CustomerContextInput): Promise<CustomerContext> =>
+  http.post(`/bots/${botId}/customer-contexts`, body);
+export const updateCustomerContext = (id: string, body: CustomerContextInput): Promise<CustomerContext> =>
+  http.patch(`/customer-contexts/${id}`, body);
+export const updateCustomerContextCallState = (
+  id: string, body: CustomerContextCallState,
+): Promise<CustomerContext> => http.patch(`/customer-contexts/${id}/call-state`, body);
+export const deleteCustomerContext = (id: string): Promise<{ deleted: boolean }> =>
+  http.delete(`/customer-contexts/${id}`);
+
+/* ---------- Runtime context / user details (per bot) ---------- */
+export const getRuntimeContext = (botId: string): Promise<RuntimeContextConfig> =>
+  http.get(`/bots/${botId}/runtime-context`);
+export const saveRuntimeContext = (botId: string, body: {
+  name?: string; sourceMode: "api" | "manual"; apiConnectionId?: string | null;
+  responsePath?: string | null; fields: RuntimeContextField[]; allowAdditional: boolean;
+  testPayload?: Record<string, unknown> | null; missingValuePolicy?: string | null;
+  domainPolicy: "generic" | "collections";
+}): Promise<RuntimeContextConfig> => http.put(`/bots/${botId}/runtime-context`, body);
+/** Validate a payload against the schema (or unsaved `fields`) and return the
+    effective, source-tagged, masked context a live call would see. */
+export const validateRuntimeContext = (botId: string, body: {
+  payload: Record<string, unknown>; fields?: RuntimeContextField[]; allowAdditional?: boolean;
+}): Promise<RuntimeContextValidateResult> =>
+  http.post(`/bots/${botId}/runtime-context/validate`, body);
+export const listContextRecords = (botId: string, params?: {
+  page?: number; pageSize?: number; search?: string;
+}): Promise<Paged<RuntimeContextRecord>> => {
+  const sp = new URLSearchParams({ pageSize: String(params?.pageSize ?? 25) });
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.search) sp.set("search", params.search);
+  return http.getPaged<RuntimeContextRecord>(`/bots/${botId}/runtime-context/records?${sp}`);
+};
+export const createContextRecord = (botId: string, body: {
+  customerRef?: string; phone?: string; data: Record<string, unknown>;
+}): Promise<RuntimeContextRecord> => http.post(`/bots/${botId}/runtime-context/records`, body);
+export const updateContextRecord = (recordId: string, body: {
+  customerRef?: string; phone?: string; data: Record<string, unknown>;
+}): Promise<RuntimeContextRecord> => http.patch(`/runtime-context-records/${recordId}`, body);
+export const deleteContextRecord = (recordId: string): Promise<{ deleted: boolean }> =>
+  http.delete(`/runtime-context-records/${recordId}`);
 
 /* ---------- Provider catalog (database-driven voice configuration) ---------- */
 export const getProviderCatalog = (
@@ -321,6 +382,16 @@ export interface ChatTestResult {
 }
 export const testBotChat = (botId: string, message: string, sessionId?: string): Promise<ChatTestResult> =>
   http.post(`/bots/${botId}/testing/chat`, { message, ...(sessionId ? { sessionId } : {}) });
+/** One complete runtime turn (context → prompt → routing → policy → tools →
+    workflow/LLM) with the full trace — the Testing Studio simulator. */
+export const simulateTurn = (botId: string, body: {
+  message: string; messages?: { role: "user" | "assistant"; content: string }[];
+  promptId?: string; promptVersion?: number;
+  contextSource?: "saved" | "manual" | "api_mock" | "none";
+  contextPayload?: Record<string, unknown>; language?: string;
+  isFinal?: boolean; interrupted?: boolean;
+  mockToolResults?: Record<string, unknown>; sessionId?: string;
+}): Promise<SimulateTrace> => http.post(`/bots/${botId}/testing/simulate`, body);
 export const runSuite = (botId: string): Promise<{ passed: number; failed: number; total: number; at: string }> =>
   http.post(`/bots/${botId}/scenarios/run`);
 export const listReleases = (botId: string): Promise<Release[]> => http.get(`/bots/${botId}/releases`);
@@ -339,7 +410,10 @@ export const listConversations = async (filters?: { botId?: string; channel?: st
   if (filters?.search) params.set("search", filters.search);
   return (await http.getPaged<Conversation>(`/conversations?${params}`)).items;
 };
-export const getConversation = (id: string): Promise<Conversation> => http.get(`/conversations/${id}`);
+/** `currency` selects the display currency for the cost breakdown only; the
+    authoritative `costUsd` total is always returned in the base currency. */
+export const getConversation = (id: string, currency?: string): Promise<Conversation> =>
+  http.get(`/conversations/${id}${currency ? `?currency=${encodeURIComponent(currency)}` : ""}`);
 export const flagConversation = (id: string, flagged: boolean) =>
   http.patch<Conversation>(`/conversations/${id}`, { flagged });
 
@@ -537,16 +611,24 @@ export const getUploadConfig = (): Promise<UploadConfig> => http.get("/knowledge
 
 /* ---------- Prompts: create / builder / lifecycle / test ---------- */
 export const createPrompt = (botId: string, body: {
-  type: string; name: string; description?: string; variables?: string[];
-  variants?: { language: string; content: string }[];
-  structuredConfig?: StructuredPromptConfig; note?: string;
+  type: string; promptMode?: "structured" | "full"; name: string; description?: string;
+  variables?: string[]; variants?: { language: string; content: string }[];
+  structuredConfig?: StructuredPromptConfig; fullPrompt?: string; note?: string;
 }): Promise<Prompt> => http.post(`/bots/${botId}/prompts`, body);
 export const savePromptVersion = (promptId: string, body: {
-  note?: string; variants?: { language: string; content: string }[];
-  structuredConfig?: StructuredPromptConfig; submitForApproval?: boolean;
+  note?: string; promptMode?: "structured" | "full";
+  variants?: { language: string; content: string }[];
+  structuredConfig?: StructuredPromptConfig; fullPrompt?: string; submitForApproval?: boolean;
 }): Promise<Prompt> => http.post(`/prompts/${promptId}/versions`, body);
-export const compilePromptPreview = (structuredConfig: StructuredPromptConfig): Promise<PromptCompileResult> =>
-  http.post("/prompts/compile-preview", { structuredConfig });
+/** Stateless compile of either authoring mode; with testContext the response
+    also carries the rendered prompt + missing-variable report. */
+export const compilePromptPreview = (body: {
+  promptMode: "structured" | "full"; structuredConfig?: StructuredPromptConfig;
+  fullPrompt?: string; testContext?: Record<string, unknown>;
+}): Promise<PromptCompileResult> => http.post("/prompts/compile-preview", body);
+export const renderPromptPreview = (promptId: string, body: {
+  version?: number; testContext: Record<string, unknown>;
+}): Promise<PromptRenderResult> => http.post(`/prompts/${promptId}/render-preview`, body);
 export const duplicatePrompt = (promptId: string): Promise<Prompt> =>
   http.post(`/prompts/${promptId}/duplicate`);
 export const deletePrompt = (promptId: string): Promise<{ archived: boolean }> =>

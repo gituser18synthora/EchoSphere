@@ -112,8 +112,15 @@ class PromptVersion(Base, TimestampMixin):
     edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     variants: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{language, content}]
-    # Structured prompt configuration (sectioned) + backend-compiled system prompt.
+    # Authoring mode per version: "structured" (sectioned builder JSON) or
+    # "full" (one unified prompt document). Both compile into compiled_prompt,
+    # the single interface the runtime reads — so a prompt can move between
+    # modes across versions without the runtime ever knowing.
+    prompt_mode: Mapped[str] = mapped_column(
+        String(20), default="structured", nullable=False
+    )
     structured_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    full_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     compiled_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_compatibility: Mapped[list | None] = mapped_column(JSON, nullable=True)
 

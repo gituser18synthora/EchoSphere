@@ -1,12 +1,20 @@
-"""Test scenarios, suite runs and the live chat tester.
+"""Test scenarios, suite runs, the live chat tester and the full simulator.
 
 The chat tester (`POST /bots/{bot_id}/testing/chat`) runs a text turn through
 the SAME components the voice runtime uses — TurnRouter for routing and the
 WorkflowEngine for saved workflow execution — so the Studio Testing tab
-exercises real behavior, not a UI simulation. Audio (STT/TTS) is the only
-part not covered here.
+exercises real behavior, not a UI simulation.
+
+The simulator (`POST /bots/{bot_id}/testing/simulate`) goes further: one
+complete runtime turn — transcript finality gating, runtime context from a
+manual payload / mock API response / the saved config, platform command
+detection, hybrid LLM intent classification, domain policy, workflow
+routing, MOCKED tool execution and the real LLM reply on the rendered
+prompt — returning the full decision trace. Audio (STT/TTS) is the only part
+not covered here.
 """
 
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -17,11 +25,19 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import assert_tenant_access, get_current_user, require_tenant_admin
-from shared.errors import NotFoundError
+from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
 from shared.db.mysql import get_db
-from shared.models import Intent, KnowledgeSource, TestScenario, User, VoiceBot
+from shared.models import (
+    Intent,
+    KnowledgeSource,
+    Prompt,
+    RuntimeContextSchema,
+    TestScenario,
+    User,
+    VoiceBot,
+)
 from backend.serializers import serialize_scenario
 
 router = APIRouter(tags=["Testing"])
@@ -267,3 +283,442 @@ async def chat_test(
         "activeWorkflow": (workflow_detail or {}).get("name") if workflow_detail and not done else None,
         "workflow": workflow_detail,
     })
+
+
+# ── full runtime simulator: one turn, complete trace ─────────────────────────
+
+
+class SimulateRequest(BaseModel):
+    """One simulated runtime turn. Everything optional has a live default."""
+
+    message: str = Field(min_length=1, max_length=2000)
+    # Prior conversation, oldest first: [{role: user|assistant, content}].
+    messages: list[dict] = Field(default_factory=list, max_length=40)
+    # Prompt selection: a specific prompt/version, else the published system
+    # prompt (exactly what a live call would load).
+    prompt_id: str | None = Field(default=None, alias="promptId")
+    prompt_version: int | None = Field(default=None, alias="promptVersion", ge=1)
+    # Runtime context source: "saved" uses the bot's configured source;
+    # "manual" / "api_mock" validate contextPayload against the schema and
+    # treat it as the manual test JSON / the User Details API response.
+    context_source: str = Field(
+        default="saved", alias="contextSource",
+        pattern="^(saved|manual|api_mock|none)$",
+    )
+    context_payload: dict | None = Field(default=None, alias="contextPayload")
+    language: str = Field(default="", max_length=15)
+    # Transcript state: partial transcripts NEVER become turns in the live
+    # runtime — the simulator demonstrates that instead of pretending.
+    is_final: bool = Field(default=True, alias="isFinal")
+    interrupted: bool = Field(default=False)
+    # {tool_name: payload} — replaces live HTTP in tool/workflow execution.
+    mock_tool_results: dict = Field(default_factory=dict, alias="mockToolResults")
+    session_id: str | None = Field(default=None, alias="sessionId", max_length=64)
+
+    model_config = {"populate_by_name": True}
+
+
+def _simulate_prompt(db: Session, bot: VoiceBot, body: SimulateRequest) -> dict:
+    """The compiled prompt + provenance the simulated call runs on."""
+    prompt = None
+    if body.prompt_id:
+        prompt = db.get(Prompt, body.prompt_id)
+        if prompt is None or prompt.is_deleted or prompt.bot_id != bot.id:
+            raise NotFoundError("Prompt")
+    else:
+        prompt = db.scalar(
+            select(Prompt).where(
+                Prompt.bot_id == bot.id, Prompt.type == "system",
+                Prompt.state == "published", Prompt.is_deleted.is_(False),
+            ).limit(1)
+        )
+    if prompt is None:
+        return {"compiled": "", "promptId": None, "promptVersion": None,
+                "promptMode": None, "promptState": None}
+    version_no = body.prompt_version or prompt.published_version or prompt.active_version
+    version = next((v for v in prompt.versions if v.version == version_no), None)
+    if version is None:
+        raise ApiError("Unknown prompt version.", 422)
+    return {
+        "compiled": version.compiled_prompt or "",
+        "promptId": prompt.id,
+        "promptVersion": version_no,
+        "promptMode": version.prompt_mode,
+        "promptState": prompt.state,
+    }
+
+
+@router.post("/bots/{bot_id}/testing/simulate")
+async def simulate_turn(
+    bot_id: str,
+    body: SimulateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """One complete runtime turn with a full trace — the Testing Studio.
+
+    Uses the same shared modules as the voice worker (context builder,
+    router, hybrid classifier, collection policy, workflow engine, tool
+    executor) so the trace shows real behavior; only audio and live tool
+    HTTP are replaced (tools run against mockToolResults).
+    """
+    from shared.config import get_settings
+    from shared.models import VoiceBotSetting
+    from shared.orchestration.delivery import delivery_instructions
+    from shared.orchestration.intent_classifier import HybridIntentPipeline
+    from shared.orchestration.placeholders import resolve_placeholders
+    from shared.orchestration.router import (
+        RouteKind,
+        classify_user_signal,
+        detect_do_not_call,
+        detect_emergency,
+        detect_hangup,
+    )
+    from shared.orchestration.tool_executor import get_tool_executor
+    from shared.orchestration.workflow_engine import get_workflow_engine
+    from shared.providers.base import ProviderConfig
+    from shared.providers.factory import get_llm_provider
+    from shared.runtime_context import (
+        build_runtime_context,
+        collection_snapshot_from_context,
+        validate_payload,
+    )
+    from voice_runtime.call_policy import CollectionCallPolicy
+
+    started = time.monotonic()
+    bot = _bot_checked(db, bot_id, user)
+    trace: dict = {
+        "rawTranscript": body.message,
+        "isFinal": body.is_final,
+        "interrupted": body.interrupted,
+        "botVersion": bot.live_version or bot.version,
+    }
+
+    # 0. Transcript finality: a partial NEVER becomes a turn.
+    if not body.is_final:
+        trace.update({
+            "finalTranscript": None,
+            "heldForFinal": True,
+            "route": None,
+            "response": None,
+            "note": (
+                "Partial transcript — the runtime only feeds the live UI with "
+                "partials; business routing, workflows and the LLM run on the "
+                "completed (final) turn."
+            ),
+            "latencyMs": round((time.monotonic() - started) * 1000),
+        })
+        return ok(trace)
+    trace["finalTranscript"] = body.message
+
+    # 1. Runtime context (schema-validated, source-tagged, masked).
+    schema = db.scalar(
+        select(RuntimeContextSchema).where(
+            RuntimeContextSchema.bot_id == bot.id,
+            RuntimeContextSchema.is_deleted.is_(False),
+        )
+    )
+    fields = (schema.fields if schema else []) or []
+    context_errors: list[dict] = []
+    payload = None
+    payload_source = "test"
+    if body.context_source == "none":
+        payload = None
+    elif body.context_source in ("manual", "api_mock") and body.context_payload is not None:
+        context_errors, payload = validate_payload(
+            fields, body.context_payload,
+            allow_additional=bool(schema.allow_additional) if schema else True,
+        )
+        payload_source = "api" if body.context_source == "api_mock" else "test"
+    elif schema is not None and isinstance(schema.test_payload, dict):
+        context_errors, payload = validate_payload(
+            fields, schema.test_payload,
+            allow_additional=bool(schema.allow_additional),
+        )
+        payload_source = "test"
+    runtime_ctx = build_runtime_context(
+        tenant_id=bot.tenant_id, bot_id=bot.id,
+        field_definitions=fields, payload=payload,
+        payload_source=payload_source,
+        system_values={"call_channel": "simulator", "bot_language": body.language or None},
+        allow_additional=bool(schema.allow_additional) if schema else True,
+        missing_value_policy=schema.missing_value_policy if schema else None,
+        domain_policy=(schema.domain_policy if schema else "generic") or "generic",
+        source_mode=body.context_source,
+        schema_id=schema.id if schema else None,
+    )
+    trace["runtimeContext"] = {
+        "values": runtime_ctx.items_with_sources(),
+        "errors": context_errors,
+        "missingRequired": runtime_ctx.missing_required(),
+        "domainPolicy": runtime_ctx.domain_policy,
+    }
+
+    # 2. Prompt: selected (or published) version rendered with the context.
+    prompt_info = _simulate_prompt(db, bot, body)
+    context_values = runtime_ctx.prompt_values()
+    base_prompt = prompt_info["compiled"] or (
+        f"You are {bot.name}, a helpful voice assistant. Keep answers short "
+        "and conversational. Never invent facts."
+    )
+    vbs = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
+    policy: CollectionCallPolicy | None = None
+    if runtime_ctx.domain_policy == "collections":
+        policy = CollectionCallPolicy(
+            context=collection_snapshot_from_context(runtime_ctx),
+            language=body.language or "hi-IN",
+        )
+        policy.tools_available = bool(body.mock_tool_results)
+        # Replay the prior conversation through the policy so its state
+        # matches where a live call would be at this turn.
+        for message in body.messages:
+            content = str(message.get("content") or "")
+            if not content:
+                continue
+            if message.get("role") == "assistant":
+                policy.observe_bot(content)
+            else:
+                policy.observe_user(content, classify_user_signal(content))
+        if body.interrupted:
+            policy.interruption_detected = True
+    context_block = (
+        policy.static_instruction() if policy is not None
+        else runtime_ctx.prompt_section()
+    )
+    rendered_prompt = (
+        resolve_placeholders(base_prompt, context_values)
+        + delivery_instructions(
+            (vbs.empathy if vbs and vbs.empathy is not None else 50),
+            (vbs.energy if vbs and vbs.energy is not None else 50),
+        )
+        + context_block
+    )
+    trace.update({
+        "promptId": prompt_info["promptId"],
+        "promptVersion": prompt_info["promptVersion"],
+        "promptMode": prompt_info["promptMode"],
+        "promptState": prompt_info["promptState"],
+        "renderedPrompt": rendered_prompt,
+    })
+
+    # 3. Platform deterministic commands first — never the LLM's call.
+    if detect_hangup(body.message):
+        trace.update({"route": "call_control", "action": "hangup",
+                      "response": "(call ends: caller-requested hang-up)",
+                      "latencyMs": round((time.monotonic() - started) * 1000)})
+        return ok(trace)
+    if detect_do_not_call(body.message):
+        trace.update({"route": "call_control", "action": "do_not_call",
+                      "disposition": "do_not_call",
+                      "response": "(call ends: number marked do-not-call)",
+                      "latencyMs": round((time.monotonic() - started) * 1000)})
+        return ok(trace)
+    if detect_emergency(body.message):
+        trace.update({"route": "handoff", "action": "transfer",
+                      "reason": "emergency",
+                      "response": "(escalated to a human agent: emergency)",
+                      "latencyMs": round((time.monotonic() - started) * 1000)})
+        return ok(trace)
+
+    # 4. Routing + hybrid intent classification (real LLM, bounded).
+    settings = get_settings()
+    provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
+    model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)
+    llm = get_llm_provider(ProviderConfig(
+        provider=provider_code, model=model,
+        api_key_reference=settings.llm_api_key_reference,
+    ))
+    intents = db.scalars(
+        select(Intent).where(
+            Intent.bot_id == bot.id, Intent.is_deleted.is_(False),
+            Intent.status == "active",
+        )
+    ).all()
+    intent_dicts = [
+        {"name": i.name, "description": i.description or "",
+         "samples": i.samples or [], "route": i.route,
+         "confidence_threshold": i.confidence_threshold,
+         "entities": i.entities or [], "optional_entities": i.optional_entities or [],
+         "api_connection_id": i.api_connection_id, "workflow_id": i.workflow_id}
+        for i in intents
+    ]
+    session = body.session_id or f"sim_{uuid.uuid4().hex[:12]}"
+    from shared.db.redis import get_redis
+
+    redis = get_redis()
+    active_key = f"wftest:{bot.id}:{session}"
+    try:
+        active_workflow = await redis.get(active_key)
+        if isinstance(active_workflow, bytes):
+            active_workflow = active_workflow.decode()
+    except Exception:  # noqa: BLE001 — degrade to single-turn routing
+        active_workflow = None
+
+    decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
+    pipeline = HybridIntentPipeline(llm=llm, intents=intent_dicts, enabled=True)
+    classification = await pipeline.classify(
+        body.message, body.messages, active_workflow=active_workflow,
+    )
+    signal = classification.signal or decision.signal or classify_user_signal(body.message)
+    trace["intent"] = classification.as_event()
+    trace["signal"] = signal
+    trace["routerDecision"] = {
+        "route": decision.kind.value, "reason": decision.reason,
+        "confidence": round(decision.confidence, 3),
+    }
+
+    plan = None
+    if policy is not None:
+        policy.observe_user(body.message, signal)
+        plan = policy.plan_turn(body.message, signal)
+        trace["policy"] = {
+            "phase": policy.phase,
+            "blockers": policy.blockers(),
+            "forceLlm": plan.force_llm,
+            "handoff": plan.handoff,
+            "closeAfterReply": plan.close_after_reply,
+            "disposition": policy.disposition(),
+        }
+
+    # 5. Tool execution (mocked): validated exactly like a live call.
+    tool_instruction = ""
+    tool_trace = None
+    tool_name = classification.tool_name
+    if tool_name is None and signal == "already_paid":
+        for intent in intent_dicts:
+            if intent["name"] == "already_paid":
+                route = intent.get("route") or ""
+                if route.startswith("tool:"):
+                    tool_name = route.split(":", 1)[1]
+                elif intent.get("api_connection_id"):
+                    tool_name = str(intent["api_connection_id"])
+    if tool_name and not classification.below_threshold:
+        result = await get_tool_executor().execute(
+            tenant_id=bot.tenant_id, bot_id=bot.id, tool=tool_name,
+            args={k: v for k, v in (classification.entities or {}).items()
+                  if v is not None},
+            intent=classification.intent or signal,
+            session_id=f"sim:{session}",
+            customer_verified=bool(policy and policy.verified),
+            context_values=context_values,
+            mock_results=body.mock_tool_results or None,
+        )
+        tool_trace = {
+            "request": {"tool": tool_name,
+                        "args": {k: v for k, v in (classification.entities or {}).items()
+                                 if v is not None}},
+            "response": result.trace.get("response") if result.trace else None,
+            "ok": result.ok, "status": result.status, "error": result.error,
+            "mocked": result.mocked, "latencyMs": result.latency_ms,
+        }
+        payload_map = result.mapped or (result.data if isinstance(result.data, dict) else {})
+        if result.ok and signal == "already_paid" and policy is not None:
+            status_value = payload_map.get("payment_status") or payload_map.get("status")
+            policy.record_payment_verification(
+                str(status_value) if status_value is not None else None
+            )
+            trace["paymentVerification"] = policy.payment_verified_status
+        if result.ok:
+            facts = "\n".join(f"- {k}: {v}" for k, v in list(payload_map.items())[:12])
+            tool_instruction = (
+                "\n\n# Tool result (verified by the system THIS turn)\n"
+                f"`{tool_name}` returned:\n{facts or '- (no fields)'}\n"
+                "These are the only verified facts from this check."
+            )
+        else:
+            tool_instruction = (
+                "\n\n# Tool result (THIS turn)\n"
+                f"- The system check `{tool_name}` FAILED ({result.error or result.status}). "
+                "Do not claim anything was verified."
+            )
+        if policy is not None and tool_instruction:
+            # Same re-plan the live brain performs: the verified result — not
+            # the claim — decides this reply's next step and close behavior.
+            plan = policy.plan_turn(body.message, signal)
+            trace["policy"] = {
+                "phase": policy.phase, "blockers": policy.blockers(),
+                "forceLlm": plan.force_llm, "handoff": plan.handoff,
+                "closeAfterReply": plan.close_after_reply,
+                "disposition": policy.disposition(),
+            }
+    trace["tool"] = tool_trace
+
+    # 6. Route execution: workflow (with mocked tools) or the LLM.
+    response_text = ""
+    workflow_detail = None
+    if plan is not None and plan.handoff:
+        trace["route"] = "handoff"
+        response_text = "(transfer to human agent — policy confirmed)"
+    elif decision.kind == RouteKind.WORKFLOW and not (plan and plan.force_llm):
+        name = decision.action or active_workflow
+        if name:
+            engine = get_workflow_engine()
+            result = await engine.handle_turn_detailed(
+                session_id=f"sim:{bot.id}:{session}",
+                tenant_id=bot.tenant_id, bot_id=bot.id,
+                workflow_name=name, user_text=body.message,
+                language=body.language or None,
+                mock_tool_results=body.mock_tool_results or None,
+            )
+            workflow_detail = {
+                "name": name, "status": result["status"],
+                "nodeTrace": result["trace"], "slots": result["slots"],
+                "offScript": bool(result.get("offScript")), "done": result["done"],
+            }
+            trace["route"] = "workflow"
+            response_text = result["reply"]
+            try:
+                if result["done"]:
+                    await redis.delete(active_key)
+                else:
+                    await redis.set(active_key, name, ex=_CHAT_SESSION_TTL_SECONDS)
+            except Exception:  # noqa: BLE001
+                pass
+            if result.get("offScript"):
+                plan_instruction = policy.turn_instruction() if policy else ""
+                response_text = await _simulate_llm_reply(
+                    llm, rendered_prompt + plan_instruction + tool_instruction,
+                    body.messages, body.message,
+                )
+                trace["route"] = "workflow_off_script_llm"
+    if not response_text:
+        extra = (plan.instruction if plan else "") + tool_instruction
+        trace.setdefault("route", decision.kind.value if decision.kind != RouteKind.WORKFLOW else "chat")
+        if decision.kind == RouteKind.CLARIFY and policy is None and not classification.intent:
+            from shared.orchestration.phrases import canned
+
+            response_text = canned("clarify", body.language or "en")
+            trace["route"] = "clarify"
+        else:
+            # Trace fidelity: show the system prompt the LLM ACTUALLY got.
+            trace["renderedPrompt"] = rendered_prompt + extra
+            response_text = await _simulate_llm_reply(
+                llm, rendered_prompt + extra, body.messages, body.message,
+            )
+    trace["workflow"] = workflow_detail
+    trace["response"] = response_text
+    trace["language"] = body.language or (
+        bot.languages[0].language_code if bot.languages else "en"
+    )
+    trace["sessionId"] = session
+    trace["provider"] = provider_code
+    trace["latencyMs"] = round((time.monotonic() - started) * 1000)
+    if policy is not None:
+        trace["dispositionAfterTurn"] = policy.disposition()
+    return ok(trace)
+
+
+async def _simulate_llm_reply(
+    llm, system: str, messages: list[dict], message: str
+) -> str:
+    history = [
+        {"role": ("assistant" if m.get("role") == "assistant" else "user"),
+         "content": str(m.get("content") or "")}
+        for m in messages if m.get("content")
+    ]
+    history.append({"role": "user", "content": message})
+    try:
+        result = await llm.generate(history, system=system, max_tokens=400)
+        return result.text
+    except Exception as exc:  # noqa: BLE001 — surfaced as a safe test failure
+        return f"(LLM unavailable: {type(exc).__name__})"

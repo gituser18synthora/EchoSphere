@@ -11,6 +11,7 @@ import { ExportControls } from "@/components/ExportControls";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+import { CurrencySelect, useDisplayCurrency, type DisplayCurrencyState } from "@/components/CurrencyDisplay";
 import {
   downloadConversationTranscript,
   downloadOperationalExport,
@@ -23,8 +24,13 @@ function fmtDur(sec: number) {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 }
 
+/* Mirrors shared.billing.conversation_cost.HIGH_COST_USD — a call above this
+   is flagged for review rather than silently rendered as normal. */
+const HIGH_COST_USD = 0.5;
+
 export default function Conversations() {
   const q = useAsync(listConversations, []);
+  const money = useDisplayCurrency();
   const [open, setOpen] = useState<Conversation | null>(null);
   const [filter, setFilter] = useState("all");
   const [botFilter, setBotFilter] = useState("all");
@@ -61,6 +67,7 @@ export default function Conversations() {
           <p className="page-sub">QA every call: transcript, trace, sentiment and scorecards — turn findings into fixes</p>
         </div>
         <div className="page-actions">
+          {flags.tenantCostVisibility && <CurrencySelect state={money} />}
           <ExportControls
             buttonLabel="Export"
             onDownload={(format) => downloadOperationalExport(
@@ -127,18 +134,41 @@ export default function Conversations() {
                 ? <StatusChip status="good" label="Contained" />
                 : <StatusChip status="serious" label="Escalated" />,
             },
+            {
+              key: "disposition", header: "Disposition",
+              sortValue: (c) => c.disposition ?? "",
+              render: (c) => c.disposition
+                ? <code style={{ fontSize: 11.5, background: "var(--surface-3)", padding: "1px 6px", borderRadius: 4 }}>{c.disposition.replaceAll("_", " ")}</code>
+                : <span className="t-micro">—</span>,
+            },
             { key: "csat", header: "CSAT", align: "right", sortValue: (c) => c.csat ?? 0, render: (c) => <span className="t-num">{c.csat ? `${c.csat}/5` : "—"}</span> },
             { key: "qa", header: "QA score", align: "right", sortValue: (c) => c.qaScore ?? 0, render: (c) => c.qaScore ? <span className={`t-num t-strong ${c.qaScore < 70 ? "t-bad" : ""}`}>{c.qaScore}</span> : <span className="t-micro">—</span> },
+            // The list shows the SAME backend-metered total the detail
+            // breakdown itemises — never a client-side calculation — rendered
+            // in the selected display currency.
+            ...(flags.tenantCostVisibility ? [{
+              key: "cost", header: `Cost (${money.currency})`, align: "right" as const,
+              sortValue: (c: Conversation) => c.costUsd,
+              render: (c: Conversation) => (
+                <span className={`t-num ${c.costUsd > HIGH_COST_USD ? "t-bad t-strong" : ""}`}
+                      title={c.costUsd > HIGH_COST_USD ? "Unusually high for one call — open the cost breakdown" : undefined}>
+                  {money.display(c.costUsd, { precise: true })}
+                </span>
+              ),
+            }] : []),
           ]}
         />
       </div>
 
-      <ConversationDrawer conv={open} onClose={() => setOpen(null)} onUpdate={(c) => { setOpen(c); q.reload(); }} />
+      {/* The page owns the currency selection and passes it down: a second
+          useDisplayCurrency() instance in the drawer would hold its own state
+          and could show a different currency than the list behind it. */}
+      <ConversationDrawer conv={open} money={money} onClose={() => setOpen(null)} onUpdate={(c) => { setOpen(c); q.reload(); }} />
     </>
   );
 }
 
-function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | null; onClose: () => void; onUpdate: (c: Conversation) => void }) {
+function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversation | null; money: DisplayCurrencyState; onClose: () => void; onUpdate: (c: Conversation) => void }) {
   const { toast } = useApp();
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
@@ -147,14 +177,15 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
   // Transcript and recording live on the detail endpoint (Mongo-backed);
   // list rows carry only the relational metadata.
   const detailQ = useAsync<Conversation | null>(
-    async () => (convId ? getConversation(convId) : null),
-    [convId],
+    async () => (convId ? getConversation(convId, money.currency) : null),
+    [convId, money.currency],
   );
 
   if (!conv) return null;
 
   const transcript = detailQ.data?.transcript ?? [];
   const recording = detailQ.data?.recording ?? null;
+  const cost = detailQ.data?.cost ?? null;
 
   const qa = conv.qaScore ?? 0;
   const scorecard = [
@@ -181,7 +212,7 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
   return (
     <Drawer
       open onClose={onClose} wide
-      title={<span className="row gap-8">Call {conv.id}<StatusChip status={conv.contained ? "good" : "serious"} label={conv.contained ? "Contained" : "Escalated"} /></span>}
+      title={<span className="row gap-8">Call {conv.id}<StatusChip status={conv.contained ? "good" : "serious"} label={conv.contained ? "Contained" : "Escalated"} />{conv.disposition && <StatusChip status="neutral" label={conv.disposition.replaceAll("_", " ")} />}</span>}
       sub={`${conv.bot} · ${conv.channel} · ${new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${fmtDur(conv.durationSec)} · ${conv.caller}`}
       headerExtra={
         <MenuButton actions={[
@@ -230,9 +261,14 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
         <RecordingRow
           conversationId={conv.id}
           costUsd={conv.costUsd}
+          money={money}
           recording={recording}
           loading={detailQ.loading}
         />
+
+        {flags.tenantCostVisibility && (
+          <CostBreakdown cost={cost} costUsd={conv.costUsd} money={money} loading={detailQ.loading} />
+        )}
 
         {!conv.contained && conv.escalationReason && (
           <div className="callout callout-warning">
@@ -304,7 +340,7 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
                     {s.apiCalls?.length ? s.apiCalls.map((a) => `${a.name} (${a.ok ? `${a.ms}ms` : "failed"})`).join("; ") : "no API calls"}
                   </span>
                   <span className="row gap-4"><Icon name="clock" size={12} style={{ color: "var(--ink-3)" }} />{s.latencyMs}ms</span>
-                  {flags.tenantCostVisibility && s.costUsd && <span className="row gap-4 t-num"><Icon name="dollar" size={12} style={{ color: "var(--ink-3)" }} />${s.costUsd.toFixed(4)}</span>}
+                  {flags.tenantCostVisibility && s.costUsd ? <span className="row gap-4 t-num"><Icon name="dollar" size={12} style={{ color: "var(--ink-3)" }} />{money.display(s.costUsd, { precise: true })}</span> : null}
                 </div>
                 {s.apiCalls?.some((a) => !a.ok) && (
                   <div className="callout callout-critical" style={{ padding: "8px 10px", fontSize: 12 }}>
@@ -344,11 +380,108 @@ function ConversationDrawer({ conv, onClose, onUpdate }: { conv: Conversation | 
   );
 }
 
+/* ---------- cost breakdown ----------
+
+   Every figure here comes from the backend, which rebuilds the cost from the
+   conversation's usage events and the pricing snapshot recorded at the time.
+   The client never multiplies a quantity by a rate: it renders what it is
+   given, so this panel and the list row cannot drift apart. */
+
+function CostBreakdown({ cost, costUsd, money, loading }: {
+  cost: Conversation["cost"];
+  costUsd: number;
+  money: DisplayCurrencyState;
+  loading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (loading) return <span className="skeleton" style={{ height: 40, borderRadius: 10 }} />;
+  if (!cost) return null;
+
+  const capabilities = Object.entries(cost.byCapability ?? {});
+  const converted = money.currency !== cost.baseCurrency;
+
+  return (
+    <div className="card-pad-sm col gap-8" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+      <div className="row gap-8" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <span className="row gap-6 t-strong" style={{ fontSize: 13 }}>
+          <Icon name="dollar" size={13} style={{ color: "var(--ink-3)" }} />
+          Cost breakdown
+          {cost.highCost && (
+            <StatusChip
+              status="serious"
+              label={`Unusually high (> ${money.display(Number(cost.highCostThresholdUsd))})`}
+            />
+          )}
+        </span>
+        <span className="row gap-8">
+          <span className="t-num t-strong">{money.dual(costUsd, { precise: true })}</span>
+          <Button icon={open ? "chevron-up" : "chevron-down"} onClick={() => setOpen(!open)}>
+            {open ? "Hide" : "Details"}
+          </Button>
+        </span>
+      </div>
+
+      <div className="row gap-12 wrap" style={{ fontSize: 12.5 }}>
+        {capabilities.length === 0 && <span className="t-micro">No metered usage recorded for this call.</span>}
+        {capabilities.map(([key, entry]) => (
+          <span key={key} className="row gap-4">
+            <span style={{ color: "var(--ink-3)" }}>{entry.label}</span>
+            <span className="t-num">{money.display(Number(entry.costUsd), { precise: true })}</span>
+          </span>
+        ))}
+      </div>
+
+      {open && (
+        <div className="col gap-6">
+          <table className="table" style={{ fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th>Component</th><th>Provider / model</th>
+                <th style={{ textAlign: "right" }}>Quantity</th>
+                <th>Rate</th>
+                <th style={{ textAlign: "right" }}>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cost.lines.map((line, i) => (
+                <tr key={i}>
+                  <td>{line.componentLabel}<span className="t-micro"> · {line.capabilityLabel}</span></td>
+                  <td><code>{line.provider}{line.model ? ` / ${line.model}` : ""}</code>{line.voice ? <span className="t-micro"> · {line.voice}</span> : null}</td>
+                  <td className="t-num" style={{ textAlign: "right" }}>{Number(line.quantity).toLocaleString("en-US", { maximumFractionDigits: 3 })}</td>
+                  <td className="t-num">
+                    {line.priced
+                      ? <>{line.rateCurrency} {line.unitPrice} <span className="t-micro">{line.unit.replace(/_/g, " ")}</span>
+                          {line.fxRate ? <span className="t-micro"> · @ {line.fxRate}/USD</span> : null}</>
+                      : <span className="t-micro">{line.note}</span>}
+                  </td>
+                  <td className="t-num" style={{ textAlign: "right" }}>{money.display(Number(line.costUsd), { precise: true })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <span className="t-micro">
+            Costs are metered in {cost.baseCurrency} from provider-reported usage and the rate in force at
+            the time of the call.
+            {converted && cost.displayRate
+              ? ` Shown in ${money.currency} at the stored rate of ${cost.displayRate} ${money.currency}/${cost.baseCurrency}; the ${cost.baseCurrency} figure is authoritative.`
+              : ""}
+            {" "}Amounts under 1 are shown to 4 decimal places, larger amounts to 2.
+            {!cost.reconciled && " Stored total differs from the recomputed sum — usage may have been recorded after the call was finalized."}
+            {cost.unpriced.length > 0 && ` Not costed (no configured price): ${cost.unpriced.join(", ")}.`}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- call recording ---------- */
 
-function RecordingRow({ conversationId, costUsd, recording, loading }: {
+function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
   conversationId: string;
   costUsd: number;
+  money: DisplayCurrencyState;
   recording: ConversationRecording | null;
   loading: boolean;
 }) {
@@ -451,7 +584,9 @@ function RecordingRow({ conversationId, costUsd, recording, loading }: {
           Download
         </Button>
       )}
-      <span className="tag t-num" style={{ flexShrink: 0 }}>${costUsd.toFixed(2)}</span>
+      {/* Same backend total as the list row and the breakdown, rendered in the
+          selected display currency instead of a hardcoded dollar amount. */}
+      <span className="tag t-num" style={{ flexShrink: 0 }}>{money.display(costUsd, { precise: true })}</span>
     </div>
   );
 }

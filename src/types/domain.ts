@@ -724,7 +724,9 @@ export interface PromptVersion {
   editedAt: string;
   note: string;
   variants: PromptVariant[];
+  promptMode: "structured" | "full";
   structuredConfig?: StructuredPromptConfig | null;
+  fullPrompt?: string | null;
   compiledPrompt?: string | null;
   modelCompatibility?: string[];
 }
@@ -751,6 +753,19 @@ export interface PromptCompileResult {
   errors: { field: string; message: string }[];
   characterCount: number;
   tokenEstimate: number;
+  variables?: string[];
+  /** Present only when a testContext was sent and the compile was valid. */
+  render?: PromptRenderResult;
+}
+
+/* A compiled prompt rendered against sample runtime-context values. */
+export interface PromptRenderResult {
+  rendered: string;
+  variables: string[];
+  missing: string[];
+  unusedTestKeys: string[];
+  promptVersion?: number;
+  promptMode?: string;
 }
 
 export interface PromptTestResult {
@@ -766,6 +781,137 @@ export interface PromptTestResult {
   tokens: { input: number; output: number };
   provider: string;
   error: string | null;
+}
+
+/* ---------- Runtime context (per-bot user details) ---------- */
+
+export type RuntimeContextFieldType =
+  "string" | "number" | "integer" | "boolean" | "date" | "object" | "array";
+
+export interface RuntimeContextField {
+  key: string;
+  label?: string;
+  type: RuntimeContextFieldType;
+  required?: boolean;
+  sensitive?: boolean;
+  /** Trailing characters left visible when a sensitive value is masked. */
+  maskKeep?: number;
+  description?: string;
+  example?: string;
+}
+
+export interface RuntimeContextConfig {
+  id: string | null;
+  botId: string;
+  name: string;
+  sourceMode: "api" | "manual";
+  apiConnectionId: string | null;
+  responsePath: string | null;
+  fields: RuntimeContextField[];
+  allowAdditional: boolean;
+  testPayload: Record<string, unknown> | null;
+  missingValuePolicy: string | null;
+  domainPolicy: "generic" | "collections";
+  status: string;
+  configured: boolean;
+}
+
+/** One effective context value with provenance — sensitive values arrive masked. */
+export interface RuntimeContextValue {
+  key: string;
+  value: unknown;
+  source: string;
+  sensitive: boolean;
+}
+
+export interface RuntimeContextValidateResult {
+  valid: boolean;
+  errors: { field: string; message: string }[];
+  effective: RuntimeContextValue[];
+  missingRequired: string[];
+  declaredMissing: string[];
+  promptSection: string;
+}
+
+export interface RuntimeContextRecord {
+  id: string;
+  botId: string;
+  customerRef: string | null;
+  phoneMasked: string | null;
+  data: Record<string, unknown>;
+  callState: Record<string, unknown>;
+  updatedAt: string | null;
+}
+
+/* One simulated runtime turn — the full trace the Testing Studio renders.
+   Loosely typed where the backend is loose (entities, tool payloads). */
+export interface SimulateTrace {
+  rawTranscript: string;
+  isFinal: boolean;
+  interrupted: boolean;
+  botVersion: string;
+  finalTranscript: string | null;
+  heldForFinal?: boolean;
+  note?: string;
+  runtimeContext?: {
+    values: RuntimeContextValue[];
+    errors: { field: string; message: string }[];
+    missingRequired: string[];
+    domainPolicy: string;
+  };
+  promptId?: string | null;
+  promptVersion?: number | null;
+  promptMode?: string | null;
+  promptState?: string | null;
+  renderedPrompt?: string;
+  route?: string | null;
+  action?: string | null;
+  intent?: {
+    intent: string | null;
+    signal: string | null;
+    confidence: number;
+    entities: Record<string, unknown>;
+    requires_tool: boolean;
+    tool: string | null;
+    interrupts_flow: boolean;
+    below_threshold: boolean;
+    source: string;
+    latency_ms: number;
+  };
+  signal?: string | null;
+  routerDecision?: { route: string; reason: string; confidence: number };
+  policy?: {
+    phase: string;
+    blockers: string[];
+    forceLlm: boolean;
+    handoff: boolean;
+    closeAfterReply: boolean;
+    disposition: string | null;
+  };
+  tool?: {
+    request: Record<string, unknown>;
+    response: unknown;
+    ok: boolean;
+    status: number | null;
+    error: string | null;
+    mocked: boolean;
+    latencyMs: number | null;
+  } | null;
+  workflow?: {
+    name: string;
+    status: string;
+    nodeTrace: string[];
+    slots: Record<string, unknown>;
+    offScript?: boolean;
+    done: boolean;
+  } | null;
+  response?: string | null;
+  language?: string;
+  sessionId?: string;
+  provider?: string;
+  latencyMs: number;
+  paymentVerification?: string | null;
+  dispositionAfterTurn?: string | null;
 }
 
 /* ---------- Voice ---------- */
@@ -1360,13 +1506,65 @@ export interface Conversation {
   contained: boolean;
   escalationReason?: string;
   csat?: number;
+  /** Authoritative metered total in the base currency (USD), computed by the
+      backend from this call's usage events. The same value backs the list row,
+      the recording row and the breakdown — clients never recompute it. */
   costUsd: number;
   language: string;
   qaScore?: number;
   flagged: boolean;
+  /** Call outcome captured by the runtime conversation policy
+      (promise_to_pay, payment_claimed, wrong_number, account_disputed,
+      callback_requested, complaint_recorded, escalated, no_commitment…). */
+  disposition?: string | null;
   transcript: TraceStep[];
   /** Present (non-null) only when the call's audio file is available. */
   recording?: ConversationRecording | null;
+  /** Auditable per-component costing; detail endpoint only. */
+  cost?: ConversationCost | null;
+}
+
+/** One priced component of one usage event, as the backend costed it. */
+export interface ConversationCostLine {
+  capability: string;
+  capabilityLabel: string;
+  provider: string;
+  model: string;
+  voice?: string | null;
+  component: string;
+  componentLabel: string;
+  /** Decimal strings — never parsed into a float for arithmetic. */
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  /** Currency the RATE is quoted in (Sarvam publishes INR rates). */
+  rateCurrency: string;
+  /** USD → rateCurrency rate applied when the cost was charged. */
+  fxRate?: string | null;
+  costUsd: string;
+  priced: boolean;
+  note?: string | null;
+}
+
+export interface ConversationCost {
+  sessionId?: string | null;
+  baseCurrency: string;
+  totalUsd: string;
+  displayCurrency: string;
+  displayTotal?: string | null;
+  /** Stored USD → displayCurrency rate used for the shown amount. */
+  displayRate?: string | null;
+  byCapability: Record<string, { label: string; costUsd: string }>;
+  lines: ConversationCostLine[];
+  /** "capability:provider:component" entries with usage but no configured price. */
+  unpriced: string[];
+  eventCount: number;
+  highCost: boolean;
+  highCostThresholdUsd: string;
+  /** Cached conversation total, for comparison against the recomputed sum. */
+  storedTotalUsd: string;
+  /** False when the cached total and the recomputed sum disagree. */
+  reconciled: boolean;
 }
 
 export interface ConversationRecording {
@@ -1481,4 +1679,76 @@ export interface AnalyticsBundle {
   knowledgeUsage: { label: string; value: number }[];
   costSeries: SeriesPoint[]; // t, llm, tts, stt, telephony
   recommendations: { id: string; title: string; detail: string; impact: "high" | "medium" | "low"; link: string }[];
+}
+
+/* ---------- Customer collection context ---------- */
+
+/** Per-customer account/collection data a collection bot runs against.
+    Always masked by the API: full phone / loan account numbers are
+    write-only and never round-trip. Null means UNKNOWN (distinct from
+    false/zero). */
+export interface CustomerContext {
+  id: string;
+  tenantId: string;
+  botId: string;
+  customerRef?: string | null;
+  phoneMasked?: string | null;
+  customerName?: string | null;
+  dcsName?: string | null;
+  lenderName?: string | null;
+  loanAccountMasked?: string | null;
+  preferredLanguage?: string | null;
+  overdueAmount?: number | null;
+  totalOutstanding?: number | null;
+  minimumPayable?: number | null;
+  penalCharges?: number | null;
+  daysOverdue?: number | null;
+  dueDate?: string | null;
+  previousPromiseDate?: string | null;
+  partialPaymentAllowed?: boolean | null;
+  paymentMethods?: string[] | null;
+  securePaymentLinkAvailable?: boolean | null;
+  activeOffers?: { label?: string; terms?: string }[] | null;
+  offerTerms?: string | null;
+  creditReportingStatus?: string | null;
+  callbackNumber?: string | null;
+  grievanceContact?: string | null;
+  paymentStatus: "pending" | "partial" | "completed" | "disputed" | "unknown";
+  customerVerified: boolean;
+  recordingNoticeRequired: boolean;
+  complaintPending: boolean;
+  accountDisputed: boolean;
+  callbackRequested: boolean;
+  callbackRequestedAt?: string | null;
+  lastCallId?: string | null;
+  lastDisposition?: string | null;
+  isFinalTranscript: boolean;
+  interruptionDetected: boolean;
+  updatedAt?: string | null;
+}
+
+/** Writable fields when creating/updating a customer context (full values
+    for phone/loan account are accepted on write, returned masked). */
+export type CustomerContextInput = Partial<
+  Omit<
+    CustomerContext,
+    | "id" | "tenantId" | "botId" | "phoneMasked" | "loanAccountMasked"
+    | "callbackRequested" | "callbackRequestedAt" | "lastCallId"
+    | "lastDisposition" | "isFinalTranscript" | "interruptionDetected"
+    | "updatedAt"
+  > & { phone: string; loanAccountNumber: string }
+>;
+
+/** Runtime-owned call-state flags updatable via the call-state endpoint. */
+export interface CustomerContextCallState {
+  customerVerified?: boolean;
+  accountDisputed?: boolean;
+  complaintPending?: boolean;
+  paymentStatus?: CustomerContext["paymentStatus"];
+  callbackRequested?: boolean;
+  callbackRequestedAt?: string;
+  lastCallId?: string;
+  lastDisposition?: string;
+  isFinalTranscript?: boolean;
+  interruptionDetected?: boolean;
 }

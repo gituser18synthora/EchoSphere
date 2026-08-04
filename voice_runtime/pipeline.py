@@ -1,6 +1,14 @@
 """Voice pipeline assembly.
 
-    transport.input() → VAD → user-turn control → STT → brain → TTS → transport.output()
+    transport.input() → noise gate → VAD → latency probe → STT
+        → user-turn control → brain → TTS → transport.output()
+
+Speech/noise separation runs in three layers, cheapest first: the caller audio
+gate (adaptive energy relative to this call's measured noise floor — see
+voice_runtime.audio_gate), Silero VAD (neural speech probability), and the
+final-transcript quality gate (voice_runtime.transcript_gate). The energy gate
+is deliberately AHEAD of the VAD: noise it suppresses can never start a user
+turn, interrupt the bot, or reach the STT.
 
 Interruption/barge-in is handled by the user-turn controller (VAD start
 strategy) which interrupts bot output; the brain additionally cancels its
@@ -33,13 +41,21 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError
 from shared.providers.factory import get_llm_provider, get_stt_provider, get_tts_provider
-from shared.turn_detection import TURN_DETECTION_BOUNDS, TURN_DETECTION_DEFAULTS
+from shared.turn_detection import (
+    NOISE_GATE_BOUNDS,
+    NOISE_GATE_DEFAULTS,
+    TURN_DETECTION_BOUNDS,
+    TURN_DETECTION_DEFAULTS,
+    resolve_bounded,
+)
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
+from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
 from voice_runtime.recording import CallRecordingWriter, SessionRecorder
+from voice_runtime.turn_metrics import TurnLatencyTracker, VADLatencyProbe
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +78,15 @@ logger = logging.getLogger(__name__)
 # value accepted by the Voice API is guaranteed to be safe in this worker.
 
 
+def _warn_invalid(section: str):
+    def report(key, value, default):
+        logger.warning(
+            "%s.%s=%r is not a number; using default %s", section, key, value, default
+        )
+
+    return report
+
+
 def resolve_turn_detection(
     config: ResolvedBotConfig, transport_kind: str = "browser"
 ) -> dict[str, float]:
@@ -70,25 +95,29 @@ def resolve_turn_detection(
     Transport-aware defaults overridden by the bot's
     ``stt_settings.turn_detection``, every value clamped to a sane range.
     """
-    defaults = TURN_DETECTION_DEFAULTS.get(
-        transport_kind, TURN_DETECTION_DEFAULTS["browser"]
+    return resolve_bounded(
+        ((config.stt or {}).get("settings") or {}).get("turn_detection"),
+        TURN_DETECTION_DEFAULTS.get(transport_kind, TURN_DETECTION_DEFAULTS["browser"]),
+        TURN_DETECTION_BOUNDS,
+        on_invalid=_warn_invalid("turn_detection"),
     )
-    raw_overrides = ((config.stt or {}).get("settings") or {}).get("turn_detection")
-    overrides = raw_overrides if isinstance(raw_overrides, dict) else {}
-    resolved: dict[str, float] = {}
-    for key, default in defaults.items():
-        value = overrides.get(key, default)
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            logger.warning(
-                "turn_detection.%s=%r is not a number; using default %s",
-                key, value, default,
-            )
-            value = default
-        low, high = TURN_DETECTION_BOUNDS[key]
-        resolved[key] = min(max(value, low), high)
-    return resolved
+
+
+def resolve_noise_gate(
+    config: ResolvedBotConfig, transport_kind: str = "browser"
+) -> dict[str, float]:
+    """Effective caller-audio noise-gate parameters for one call.
+
+    Transport-aware defaults overridden by ``stt_settings.noise_gate``, every
+    value clamped. ``enabled`` is a 0/1 float so the whole section validates
+    and clamps through one code path.
+    """
+    return resolve_bounded(
+        ((config.stt or {}).get("settings") or {}).get("noise_gate"),
+        NOISE_GATE_DEFAULTS.get(transport_kind, NOISE_GATE_DEFAULTS["browser"]),
+        NOISE_GATE_BOUNDS,
+        on_invalid=_warn_invalid("noise_gate"),
+    )
 
 
 def _sarvam_stream_encodings() -> set[str]:
@@ -124,9 +153,12 @@ def build_stt_service(
     provider = stt_conf.get("provider") or "sarvam"
 
     if provider == "sarvam":
-        # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK).
+        # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK),
+        # subclassed to report segment finality — see voice_runtime.sarvam_stt.
         from pipecat.services.sarvam.stt import SarvamSTTService
         from pipecat.transcriptions.language import Language
+
+        from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
 
         api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
         if not api_key:
@@ -186,7 +218,7 @@ def build_stt_service(
                 "sarvamai SDK; using 'wav'", codec,
             )
             codec = "wav"
-        return SarvamSTTService(
+        return EndpointedSarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
             sample_rate=sample_rate,
@@ -297,6 +329,8 @@ def build_voice_pipeline(
     idle_timeout_secs: float | None = None,
     client_info: dict | None = None,
     call_context: dict | None = None,
+    customer_context=None,
+    runtime_context=None,
     transport_kind: str = "browser",
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
@@ -313,6 +347,25 @@ def build_voice_pipeline(
     llm_provider = build_llm_provider(config)
 
     turn = resolve_turn_detection(config, transport_kind)
+    gate_conf = resolve_noise_gate(config, transport_kind)
+    tracker = TurnLatencyTracker(session_id=recorder.session_id)
+    # The gate is the brain's source of caller audio energy for the transcript
+    # quality gate; None when gating is disabled (the gate's signals then simply
+    # do not contribute to a verdict).
+    audio_gate = (
+        CallerAudioGate(
+            noise_margin_db=gate_conf["noise_margin_db"],
+            min_speech_ms=gate_conf["min_speech_ms"],
+            echo_min_speech_ms=gate_conf["echo_min_speech_ms"],
+            hangover_ms=gate_conf["hangover_ms"],
+            preroll_ms=gate_conf["preroll_ms"],
+            echo_margin_db=gate_conf["echo_margin_db"],
+            echo_tail_ms=gate_conf["echo_tail_ms"],
+            min_threshold_dbfs=gate_conf["min_threshold_dbfs"],
+        )
+        if use_vad and gate_conf["enabled"] >= 0.5
+        else None
+    )
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
@@ -321,9 +374,19 @@ def build_voice_pipeline(
         workflow_engine=workflow_engine,
         client_info=client_info,
         call_context=call_context,
+        customer_context=customer_context,
+        runtime_context=runtime_context,
         finalize_grace=turn["finalize_grace"],
+        finalize_settle=turn["finalize_settle"],
+        complete_endpoint=turn["complete_endpoint"],
+        latency=tracker,
+        audio_gate=audio_gate,
     )
     processors = [transport.input()]
+    if audio_gate is not None:
+        # Ahead of the VAD on purpose: background noise the gate suppresses can
+        # never start a user turn, interrupt the bot, or reach the STT.
+        processors.append(audio_gate)
     if use_vad:
         processors.append(
             VADProcessor(
@@ -337,6 +400,10 @@ def build_voice_pipeline(
                 )
             )
         )
+        # Physical speech boundaries are only visible here: the UserTurnProcessor
+        # downstream consumes the VAD frames, so the brain cannot time true
+        # end-of-speech itself.
+        processors.append(VADLatencyProbe(tracker))
     # STT must receive VADUserStoppedSpeakingFrame directly. Sarvam uses that
     # frame to flush its streaming socket; placing UserTurnProcessor first
     # consumed the control frame and left telephony transcripts waiting for

@@ -15,6 +15,7 @@ vi.mock("@/services/api", () => ({
   listPrompts: vi.fn(),
   runSuite: vi.fn(),
   testBotChat: vi.fn(),
+  simulateTurn: vi.fn(),
   createVoiceSession: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({

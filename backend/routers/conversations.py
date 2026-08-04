@@ -8,6 +8,7 @@ stays in MySQL as the source of truth.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
@@ -30,6 +31,7 @@ from backend.core.transcripts import (
 )
 from shared.errors import NotFoundError
 from shared.ids import new_id
+from shared.models.billing_models import BASE_CURRENCY
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
@@ -99,6 +101,7 @@ def list_conversations(
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
+    currency: str | None = Query(None, description="Display currency for the cost breakdown"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -109,10 +112,43 @@ async def get_conversation(
     doc = await find_transcript_doc(c)
     transcript = ui_turns((doc or {}).get("turns"))
     names = _bot_names(db, [c.bot_id])
+    # The session link is what makes the cost auditable. Historical rows
+    # predate the column, so fall back to the transcript document, which has
+    # carried both ids all along — and persist it so the next read is a join.
+    session_id = c.session_id or (doc or {}).get("session_id")
+    if session_id and not c.session_id:
+        c.session_id = session_id
+        db.commit()
     return ok(serialize_conversation(
         c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
         recording=recording_descriptor(c, doc),
+        cost_breakdown=_cost_breakdown(db, c, session_id, currency),
     ))
+
+
+def _cost_breakdown(
+    db: Session, c: ConversationSession, session_id: str | None, currency: str | None
+) -> dict:
+    """Auditable cost breakdown for one conversation, in the display currency.
+
+    The breakdown is rebuilt from the conversation's usage events and their
+    stored pricing snapshots, so it reproduces the historical rate that was
+    actually applied rather than today's rate table. ``storedTotalUsd`` is the
+    cached total the LIST shows: exposing both makes a drift between them
+    visible instead of letting the two pages quietly disagree.
+    """
+    from shared.billing.conversation_cost import conversation_cost, display_rate
+
+    costing = conversation_cost(db, session_id)
+    target = (currency or BASE_CURRENCY).upper()
+    rate = display_rate(db, target, as_of=c.started_at)
+    payload = costing.as_dict(currency=target, rate=rate)
+    stored = Decimal(str(c.cost_usd))
+    payload["storedTotalUsd"] = str(stored)
+    # Tolerance is one unit of stored precision: anything larger means the
+    # cache is stale (events recorded after finalize, or a pricing backfill).
+    payload["reconciled"] = abs(stored - costing.total_usd) <= Decimal("0.000001")
+    return payload
 
 
 @router.get("/conversations/{conversation_id}/recording")

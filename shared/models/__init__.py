@@ -60,6 +60,8 @@ from shared.models.billing_models import (
     ProviderPricing,
     UsageEvent,
 )
+from shared.models.collections_models import CustomerCollectionContext
+from shared.models.context_models import RuntimeContextRecord, RuntimeContextSchema
 
 __all__ = [
     "Base",
@@ -74,4 +76,6 @@ __all__ = [
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
     "Industry", "Country", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
     "Currency", "ExchangeRate", "ProviderPricing", "UsageEvent",
+    "CustomerCollectionContext",
+    "RuntimeContextSchema", "RuntimeContextRecord",
 ]

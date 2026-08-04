@@ -258,6 +258,63 @@ async def _run_call(
         caller=session.get("caller"),
     )
 
+    # Runtime context: the server-trusted user/customer details this call
+    # runs against. The GENERIC path (tenant-defined schema: User Details
+    # API, manual test JSON, or stored records — any domain) is tried first;
+    # bots without a schema fall back to the legacy loan-collection table so
+    # existing behavior is preserved bit-for-bit. Both paths are bounded and
+    # fail-open — a lookup failure degrades the call, never blocks it.
+    from shared.customer_context import load_customer_context
+    from shared.runtime_context import load_runtime_context
+
+    session_variables = session.get("variables") or {}
+    runtime_context = await load_runtime_context(
+        config.tenant_id,
+        config.bot_id,
+        phone=session.get("caller"),
+        record_id=(
+            session.get("customer_context_id")
+            or session_variables.get("customer_context_id")
+        ),
+        session_variables=session_variables,
+        system_values={
+            "call_channel": telephony_provider or session.get("channel", "browser"),
+            "bot_language": config.language,
+        },
+    )
+    customer_context = None
+    if runtime_context is None:
+        customer_context = await load_customer_context(
+            config.tenant_id,
+            config.bot_id,
+            context_id=(
+                session.get("customer_context_id")
+                or session_variables.get("customer_context_id")
+            ),
+            phone=session.get("caller"),
+        )
+    if customer_context is not None:
+        recorder.customer_context_id = customer_context.context_id
+        await recorder.flush_event(
+            "customer_context_loaded",
+            context_id=customer_context.context_id,
+            customer_verified=customer_context.customer_verified,
+            account_disputed=customer_context.account_disputed,
+            complaint_pending=customer_context.complaint_pending,
+            payment_status=customer_context.payment_status,
+        )
+    elif runtime_context is not None:
+        recorder.runtime_context_record_id = runtime_context.record_id
+        await recorder.flush_event(
+            "runtime_context_loaded",
+            schema_id=runtime_context.schema_id,
+            record_id=runtime_context.record_id,
+            source_mode=runtime_context.source_mode,
+            domain_policy=runtime_context.domain_policy,
+            values=len(runtime_context.values),
+            load_error=runtime_context.load_error,
+        )
+
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -329,7 +386,9 @@ async def _run_call(
             stt_sample_rate=stt_sample_rate,
             idle_timeout_secs=float(config.silence_timeout) * 4,
             client_info=client_info,
-            call_context=session.get("variables") or None,
+            call_context=session_variables or None,
+            customer_context=customer_context,
+            runtime_context=runtime_context,
             transport_kind=transport_kind,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker

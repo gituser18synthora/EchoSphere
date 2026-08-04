@@ -35,6 +35,32 @@ const TYPE_OPTIONS: { value: PromptType; label: string }[] = [
 ];
 const typeLabel = (t: PromptType) => TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t;
 
+/* Two-level prompt choice for creation: both system flavors, then the simple types. */
+type CreateKind = "system:structured" | "system:full" | Exclude<PromptType, "system">;
+const CREATE_KIND_OPTIONS: { value: CreateKind; label: string }[] = [
+  { value: "system:structured", label: "Structured voice prompt" },
+  { value: "system:full", label: "Full / unified prompt" },
+  ...TYPE_OPTIONS.filter((o): o is { value: Exclude<PromptType, "system">; label: string } => o.value !== "system"),
+];
+
+/* Starter for full / unified prompts — section headings the tenant fills in. */
+const FULL_PROMPT_STARTER = `You are a voice assistant. Keep replies short, natural and speakable.
+
+## Role & identity
+## Objective
+## Conversation flow
+## Tone & language
+## Business rules
+## Intent handling
+## Tools
+## Objection handling
+## Escalation
+## Compliance
+## Closing
+
+Fill in each section above. Use placeholders like {customer_name} for caller
+details — they resolve from the bot's runtime context on every call.`;
+
 const SPECIAL_FIELDS: { key: string; label: string }[] = [
   { key: "silence", label: "Caller goes silent" },
   { key: "backgroundNoise", label: "Heavy background noise" },
@@ -58,6 +84,20 @@ const PREVIEW_VARS: Record<string, string> = {
   "{queue_wait}": "two minutes",
   "{appointment_date}": "Thursday at 10:15 AM",
 };
+
+/* Client-side placeholder detection for the full-prompt editor — same grammar
+   the runtime resolver uses ({{key}} and {key}), keys normalized alike. */
+const PLACEHOLDER_RE = /\{\{\s*([^{}\n]{1,40}?)\s*\}\}|\{\s*([^{}\n]{1,40}?)\s*\}/g;
+const normalizeVarKey = (raw: string) =>
+  raw.trim().toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, "_").replace(/^_+|_+$/g, "");
+function detectVariables(text: string): string[] {
+  const seen = new Set<string>();
+  for (const m of text.matchAll(PLACEHOLDER_RE)) {
+    const key = normalizeVarKey(m[1] ?? m[2] ?? "");
+    if (key) seen.add(key);
+  }
+  return [...seen];
+}
 
 const errMsg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 const fmtDate = (iso?: string | null) =>
@@ -160,8 +200,11 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
           {prompts.map((p) => {
             const latest = p.versions[0];
             const active = p.versions.find((v) => v.version === p.activeVersion) ?? latest;
+            const isFullMode = latest?.promptMode === "full";
             const snippet = p.type === "system"
-              ? (p.description || active?.compiledPrompt || "Structured voice prompt — open the builder to configure sections.")
+              ? (p.description || active?.compiledPrompt || (isFullMode
+                  ? "Full / unified prompt — open the editor to write it."
+                  : "Structured voice prompt — open the builder to configure sections."))
               : (active?.variants[0]?.content || p.description || "No content yet — open the editor to write it.");
             return (
               <div
@@ -173,7 +216,7 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
                 <div className="row-between gap-8">
                   <span className="row gap-8" style={{ minWidth: 0 }}>
                     <span className="tag" style={{ textTransform: "capitalize", flexShrink: 0 }}>
-                      {p.type === "system" ? "structured" : p.type}
+                      {p.type === "system" ? (isFullMode ? "full" : "structured") : p.type}
                     </span>
                     <span className="t-strong truncate" style={{ fontSize: 13.5 }}>{p.name}</span>
                   </span>
@@ -269,27 +312,38 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
 }) {
   const { toast } = useApp();
   const [name, setName] = useState("");
-  const [type, setType] = useState<PromptType>("system");
+  const [kind, setKind] = useState<CreateKind>("system:structured");
   const [description, setDescription] = useState("");
   const [nameErr, setNameErr] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const isSystemKind = kind.startsWith("system:");
+  const kindHint = kind === "system:structured"
+    ? "Multi-section builder — identity, tone, knowledge rules, handoff and more, compiled deterministically."
+    : kind === "system:full"
+      ? "One free-form prompt you write end to end — {variables} resolve from the runtime context on every call."
+      : "Single spoken message with per-language variants.";
 
   const submit = async () => {
     if (!name.trim()) { setNameErr("Give the prompt a name"); return; }
     setBusy(true);
     try {
-      const base = { type, name: name.trim(), description: description.trim() || undefined };
-      const created = type === "system"
+      const base = { name: name.trim(), description: description.trim() || undefined };
+      const created = kind === "system:structured"
         ? await createPrompt(bot.id, {
-            ...base,
+            ...base, type: "system",
             structuredConfig: { identity: { botName: bot.name, role: "voice assistant" } },
           })
-        : await createPrompt(bot.id, {
-            ...base,
-            variants: [{ language: "en-US", content: "" }],
-          });
+        : kind === "system:full"
+          ? await createPrompt(bot.id, {
+              ...base, type: "system", promptMode: "full", fullPrompt: FULL_PROMPT_STARTER,
+            })
+          : await createPrompt(bot.id, {
+              ...base, type: kind,
+              variants: [{ language: "en-US", content: "" }],
+            });
       toast(`“${created.name}” created as a draft`);
-      setName(""); setDescription(""); setType("system"); setNameErr("");
+      setName(""); setDescription(""); setKind("system:structured"); setNameErr("");
       onCreated(created);
     } catch (e) {
       toast(errMsg(e, "Could not create the prompt"), "error");
@@ -308,7 +362,7 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button variant="primary" icon="plus" busy={busy} onClick={() => void submit()}>
-            {type === "system" ? "Create & open builder" : "Create & open editor"}
+            {kind === "system:structured" ? "Create & open builder" : "Create & open editor"}
           </Button>
         </>
       }
@@ -318,19 +372,14 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
           <input
             className="input"
             value={name}
-            placeholder={type === "system" ? "Main system prompt" : "Business-hours greeting"}
+            placeholder={isSystemKind ? "Main system prompt" : "Business-hours greeting"}
             aria-invalid={!!nameErr}
             onChange={(e) => { setName(e.target.value); setNameErr(""); }}
           />
         </Field>
-        <Field
-          label="Type"
-          hint={type === "system"
-            ? "Multi-section builder — identity, tone, knowledge rules, handoff and more, compiled deterministically."
-            : "Single spoken message with per-language variants."}
-        >
-          <select className="select" value={type} onChange={(e) => setType(e.target.value as PromptType)}>
-            {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        <Field label="Prompt type" hint={kindHint}>
+          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as CreateKind)}>
+            {CREATE_KIND_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </Field>
         <Field label="Description" hint="Optional — helps teammates find the right prompt.">
@@ -355,10 +404,14 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
   const { toast } = useApp();
   const isSystem = prompt.type === "system";
   const latest = prompt.versions[0];
+  const isFull = isSystem && latest?.promptMode === "full";
 
   const [name, setName] = useState(prompt.name);
   const [cfg, setCfg] = useState<StructuredPromptConfig>(
     () => JSON.parse(JSON.stringify(latest?.structuredConfig ?? {})) as StructuredPromptConfig,
+  );
+  const [fullPrompt, setFullPrompt] = useState(
+    () => latest?.fullPrompt ?? latest?.compiledPrompt ?? "",
   );
   const [variants, setVariants] = useState<PromptVariant[]>(
     () => (latest?.variants ?? []).map((v) => ({ ...v })),
@@ -388,6 +441,7 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
 
   const changeVariants = (next: PromptVariant[]) => { setDirty(true); setVariants(next); };
   const changeName = (v: string) => { setDirty(true); setName(v); };
+  const changeFullPrompt = (v: string) => { setDirty(true); setFullPrompt(v); };
 
   const save = async (submit: boolean) => {
     setBusy(true);
@@ -398,7 +452,11 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
       }
       const updated = await savePromptVersion(prompt.id, {
         note: note.trim() || undefined,
-        ...(isSystem ? { structuredConfig: cfg } : { variants }),
+        ...(isSystem
+          ? (isFull
+              ? { promptMode: "full" as const, fullPrompt }
+              : { promptMode: "structured" as const, structuredConfig: cfg })
+          : { variants }),
         submitForApproval: submit,
       });
       toast(submit
@@ -449,7 +507,11 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
     try {
       const updated = await savePromptVersion(prompt.id, {
         note: `Restored from v${ver.version}`,
-        ...(isSystem ? { structuredConfig: ver.structuredConfig ?? {} } : { variants: ver.variants }),
+        ...(isSystem
+          ? (ver.promptMode === "full"
+              ? { promptMode: "full" as const, fullPrompt: ver.fullPrompt ?? ver.compiledPrompt ?? "" }
+              : { promptMode: "structured" as const, structuredConfig: ver.structuredConfig ?? {} })
+          : { variants: ver.variants }),
         submitForApproval: false,
       });
       toast(`v${ver.version} restored as a new draft`);
@@ -477,7 +539,7 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
       onClose={requestClose}
       wide
       title={<span className="row gap-8">{prompt.name}<StatusChip status={prompt.state} /></span>}
-      sub={`${typeLabel(prompt.type)}${prompt.description ? ` · ${prompt.description}` : ""}`}
+      sub={`${isFull ? "Full / unified prompt" : typeLabel(prompt.type)}${prompt.description ? ` · ${prompt.description}` : ""}`}
       headerExtra={<Button size="sm" variant="ghost" icon="play" onClick={onOpenTest}>Test</Button>}
       footer={
         perms.canManage ? (
@@ -576,7 +638,20 @@ function PromptDrawer({ prompt, languages, perms, onClose, onUpdated, onOpenTest
           {lifecycleMeta.length > 0 && <span className="t-micro">{lifecycleMeta.join(" · ")}</span>}
         </div>
 
-        {isSystem ? (
+        {isFull ? (
+          <>
+            <div className="grid grid-2" style={{ gap: 12 }}>
+              <Field label="Prompt name" required>
+                <input className="input" value={name} onChange={(e) => changeName(e.target.value)} />
+              </Field>
+              <Field label="Description" hint="Set when the prompt is created">
+                <input className="input" value={prompt.description ?? ""} disabled />
+              </Field>
+            </div>
+            <FullPromptEditor value={fullPrompt} onChange={changeFullPrompt} />
+            <FullPromptPreview fullPrompt={fullPrompt} />
+          </>
+        ) : isSystem ? (
           <>
             <SystemSections
               cfg={cfg}
@@ -884,7 +959,7 @@ function CompilePreview({ cfg }: { cfg: StructuredPromptConfig }) {
     const id = ++seq.current;
     setLoading(true);
     const t = setTimeout(() => {
-      compilePromptPreview(JSON.parse(cfgJson) as StructuredPromptConfig)
+      compilePromptPreview({ promptMode: "structured", structuredConfig: JSON.parse(cfgJson) as StructuredPromptConfig })
         .then((r) => {
           if (seq.current !== id) return;
           setResult(r);
@@ -922,6 +997,121 @@ function CompilePreview({ cfg }: { cfg: StructuredPromptConfig }) {
         {result && !result.valid && <span className="chip chip-critical">invalid</span>}
       </div>
       <pre style={preStyle}>{result?.compiled || (loading ? "Compiling…" : "Nothing to preview yet.")}</pre>
+    </Sec>
+  );
+}
+
+/* ---------- Full / unified prompt editor ---------- */
+
+function FullPromptEditor({ value, onChange }: {
+  value: string; onChange: (v: string) => void;
+}) {
+  const variables = detectVariables(value);
+  return (
+    <Sec title="Prompt text" hint="The complete system prompt, exactly as the runtime uses it" defaultOpen>
+      <textarea
+        className="textarea"
+        aria-label="Full prompt text"
+        value={value}
+        style={{
+          minHeight: 420, fontSize: 12.5, lineHeight: 1.6,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        }}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <div className="row-between wrap gap-8">
+        <span className="chip chip-neutral t-num">
+          {value.length.toLocaleString()} characters · ~{Math.ceil(value.length / 4).toLocaleString()} tokens
+        </span>
+        <span className="row gap-6 wrap" style={{ justifyContent: "flex-end" }}>
+          <span className="t-micro">Variables</span>
+          {variables.length === 0 && <span className="t-micro">none — add {"{placeholders}"} for caller details</span>}
+          {variables.map((v) => <span key={v} className="chip chip-brand">{`{${v}}`}</span>)}
+        </span>
+      </div>
+    </Sec>
+  );
+}
+
+/* ---------- Full-prompt render preview (debounced, with test data) ---------- */
+
+function FullPromptPreview({ fullPrompt }: { fullPrompt: string }) {
+  const [testJson, setTestJson] = useState('{"customer_name": "Rahul Sharma"}');
+  const [result, setResult] = useState<PromptCompileResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [jsonErr, setJsonErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const id = ++seq.current;
+    let testContext: Record<string, unknown>;
+    try {
+      testContext = testJson.trim() ? (JSON.parse(testJson) as Record<string, unknown>) : {};
+      setJsonErr(null);
+    } catch {
+      setJsonErr("Test data must be valid JSON.");
+      return;
+    }
+    setLoading(true);
+    const t = setTimeout(() => {
+      compilePromptPreview({ promptMode: "full", fullPrompt, testContext })
+        .then((r) => {
+          if (seq.current !== id) return;
+          setResult(r);
+          setErr(null);
+          setLoading(false);
+        })
+        .catch((e: unknown) => {
+          if (seq.current !== id) return;
+          setErr(errMsg(e, "Preview failed"));
+          setLoading(false);
+        });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [fullPrompt, testJson]);
+
+  const render = result?.render;
+  return (
+    <Sec title="Preview with test data" hint="The prompt a live call would run, rendered with sample context values">
+      <Field label="Test context (JSON)" error={jsonErr ?? undefined}
+        hint="Sample runtime-context values — live calls resolve these from the bot's runtime context.">
+        <textarea
+          className="textarea"
+          rows={3}
+          value={testJson}
+          style={{ fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }}
+          onChange={(e) => setTestJson(e.target.value)}
+        />
+      </Field>
+      {err && <Callout tone="critical" title="Preview failed">{err}</Callout>}
+      {result && result.errors.length > 0 && (
+        <Callout tone="critical" title="Prompt issues">
+          <ul style={{ margin: 0, paddingLeft: 16 }}>
+            {result.errors.map((e, i) => (
+              <li key={i}><code>{e.field}</code> — {e.message}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
+      {render && render.missing.length > 0 && (
+        <Callout tone="warning" title={`No value for ${render.missing.map((m) => `{${m}}`).join(", ")}`}>
+          These variables have no value in the test data — on a live call the bot is told they are unknown.
+        </Callout>
+      )}
+      <div className="row gap-8 t-micro" style={{ alignItems: "center", minHeight: 18 }}>
+        {loading && <span className="spinner" aria-hidden />}
+        {result && (
+          <span className="t-num">
+            {result.characterCount.toLocaleString()} characters · ~{result.tokenEstimate.toLocaleString()} tokens
+          </span>
+        )}
+        {result && !result.valid && <span className="chip chip-critical">invalid</span>}
+        {render && render.unusedTestKeys.length > 0 && (
+          <span>unused test keys: {render.unusedTestKeys.join(", ")}</span>
+        )}
+      </div>
+      <pre style={preStyle}>{render?.rendered || (loading ? "Rendering…" : "Nothing to preview yet.")}</pre>
     </Sec>
   );
 }
@@ -1007,7 +1197,9 @@ function VersionHistory({ prompt, isSystem, perms, busy, dirty, onRollback, onRe
 
   const versionText = (v: PromptVersion) =>
     isSystem
-      ? (v.compiledPrompt ?? (v.structuredConfig ? JSON.stringify(v.structuredConfig, null, 2) : "No content"))
+      ? (v.promptMode === "full"
+          ? (v.fullPrompt ?? v.compiledPrompt ?? "No content")
+          : (v.compiledPrompt ?? (v.structuredConfig ? JSON.stringify(v.structuredConfig, null, 2) : "No content")))
       : (v.variants.map((x) => `[${x.language}]\n${x.content}`).join("\n\n") || "No content");
 
   const toggleCompare = (n: number) =>

@@ -21,6 +21,7 @@ from shared.models import (
     ChannelConfig,
     ConversationSession,
     Currency,
+    CustomerCollectionContext,
     EntityDef,
     ExchangeRate,
     Guardrail,
@@ -409,7 +410,9 @@ def serialize_prompt(p: Prompt, *, include_config: bool = True) -> dict:
                 "editedAt": iso(v.edited_at) or iso(v.created_at),
                 "note": v.note or "",
                 "variants": v.variants or [],
+                "promptMode": v.prompt_mode or "structured",
                 "structuredConfig": (v.structured_config or None) if include_config else None,
+                "fullPrompt": (v.full_prompt or None) if include_config else None,
                 "compiledPrompt": (v.compiled_prompt or None) if include_config else None,
                 "modelCompatibility": v.model_compatibility or [],
             }
@@ -656,7 +659,20 @@ def serialize_release(r: Release) -> dict:
 
 def serialize_conversation(c: ConversationSession, *, bot_name: str,
                            transcript: list | None = None,
-                           recording: dict | None = None) -> dict:
+                           recording: dict | None = None,
+                           cost_breakdown: dict | None = None) -> dict:
+    """One conversation for the API.
+
+    ``costUsd`` is the single authoritative total for BOTH the list and the
+    detail view — a cache of the sum of this conversation's usage events (see
+    shared.billing.conversation_cost), never recomputed in the client. It is
+    always in the base currency (USD); display conversion happens at render
+    time from the configured exchange rate, so the stored cost does not move
+    when a viewer changes their display currency.
+
+    ``cost`` carries the auditable per-component breakdown and is present on
+    the detail view only — the list would otherwise run one query per row.
+    """
     return {
         "id": c.id,
         "botId": c.bot_id,
@@ -671,12 +687,71 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "escalationReason": c.escalation_reason,
         "csat": c.csat,
         "costUsd": float(c.cost_usd),
+        "cost": cost_breakdown,
         "language": c.language or "en-US",
         "qaScore": c.qa_score,
         "flagged": c.flagged,
+        # Call outcome captured by the runtime conversation policy.
+        "disposition": c.disposition,
+        # Which published prompt version this call actually ran on.
+        "promptId": c.prompt_id,
+        "promptVersion": c.prompt_version,
         "transcript": transcript or [],
         # Present only when the audio file is actually available on disk.
         "recording": recording,
+    }
+
+
+def serialize_customer_context(cc: CustomerCollectionContext) -> dict:
+    """Customer collection context, always masked.
+
+    The full phone and loan account number are write-only: this serializer is
+    the ONLY read path and never emits them. Nullable business values stay
+    null when unknown so clients can distinguish missing from false/zero.
+    """
+    from shared.customer_context import mask_tail, phone_tail
+
+    tail = phone_tail(cc.phone)
+    money = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "id": cc.id,
+        "tenantId": cc.tenant_id,
+        "botId": cc.bot_id,
+        "customerRef": cc.customer_ref,
+        "phoneMasked": mask_tail(tail, keep=4, prefix="XXXXXX"),
+        "customerName": cc.customer_name,
+        "dcsName": cc.dcs_name,
+        "lenderName": cc.lender_name,
+        "loanAccountMasked": mask_tail(cc.loan_account_number),
+        "preferredLanguage": cc.preferred_language,
+        "overdueAmount": money(cc.overdue_amount),
+        "totalOutstanding": money(cc.total_outstanding),
+        "minimumPayable": money(cc.minimum_payable),
+        "penalCharges": money(cc.penal_charges),
+        "daysOverdue": cc.days_overdue,
+        "dueDate": iso(cc.due_date),
+        "previousPromiseDate": iso(cc.previous_promise_date),
+        "partialPaymentAllowed": cc.partial_payment_allowed,
+        "paymentMethods": cc.payment_methods,
+        "securePaymentLinkAvailable": cc.secure_payment_link_available,
+        "activeOffers": cc.active_offers,
+        "offerTerms": cc.offer_terms,
+        "creditReportingStatus": cc.credit_reporting_status,
+        "callbackNumber": mask_tail(phone_tail(cc.callback_number),
+                                    keep=4, prefix="XXXXXX"),
+        "grievanceContact": cc.grievance_contact,
+        "paymentStatus": cc.payment_status,
+        "customerVerified": cc.customer_verified,
+        "recordingNoticeRequired": cc.recording_notice_required,
+        "complaintPending": cc.complaint_pending,
+        "accountDisputed": cc.account_disputed,
+        "callbackRequested": cc.callback_requested,
+        "callbackRequestedAt": iso(cc.callback_requested_at),
+        "lastCallId": cc.last_call_id,
+        "lastDisposition": cc.last_disposition,
+        "isFinalTranscript": cc.is_final_transcript,
+        "interruptionDetected": cc.interruption_detected,
+        "updatedAt": iso(cc.updated_at),
     }
 
 
