@@ -124,6 +124,36 @@ _PHRASES: dict[str, dict[str, str]] = {
             "आपको हमारे एजेंट से जोड़ा जा रहा है।"
         ),
     },
+    # Collections: the opener spoken the moment identity is confirmed. Its
+    # content is fully determined by the verified account facts, so it is
+    # scripted rather than generated — that removes an LLM round trip from
+    # the one turn in the call where the caller has just said a single word
+    # and expects an immediate answer. {amount}/{days} are filled by the
+    # policy from context; first-person grammar is gendered by the speaking
+    # voice in ConversationBrain._say.
+    "collections_open_amount_days": {
+        "en": (
+            "There is an overdue payment of {amount} on your account, "
+            "pending for {days} days. I'm calling about that payment — "
+            "can you pay today?"
+        ),
+        "hi": (
+            "आपके अकाउंट पर {amount} का payment {days} दिनों से overdue है। "
+            "मैं इसी payment के लिए call कर रहा हूँ — क्या आप आज payment "
+            "कर पाएंगे?"
+        ),
+    },
+    # Same turn, when the API gave an amount but no usable due date.
+    "collections_open_amount": {
+        "en": (
+            "There is an overdue payment of {amount} on your account. "
+            "I'm calling about that payment — can you pay today?"
+        ),
+        "hi": (
+            "आपके अकाउंट पर {amount} का payment overdue है। मैं इसी payment "
+            "के लिए call कर रहा हूँ — क्या आप आज payment कर पाएंगे?"
+        ),
+    },
 }
 
 

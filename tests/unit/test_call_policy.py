@@ -301,3 +301,76 @@ class TestGeneralBehavior:
         policy.observe_user("बाद में कॉल करना, शाम को", "callback")
         policy.plan_turn("बाद में कॉल करना, शाम को", "callback")
         assert policy.phase == CLOSING
+
+
+class TestScriptedOpening:
+    """The identity-confirmation turn is answered without an LLM round trip.
+
+    Its content follows entirely from verified facts, so generating it buys
+    nothing and costs ~1s on the one turn where the caller has just said a
+    single word. The guard is that it only fires when nothing about the call
+    requires judgement.
+    """
+
+    def _confirm(self, policy):
+        policy.observe_bot(IDENTITY_QUESTION)
+        policy.observe_user("हाँ जी बोल रहा हूँ", "affirm")
+        return policy.plan_turn("हाँ जी बोल रहा हूँ", "affirm")
+
+    def test_states_amount_days_and_asks_for_payment(self):
+        policy = make_policy(recording_notice_required=False)
+        reply = self._confirm(policy).scripted_reply
+
+        assert reply, "the opener should be scripted"
+        assert "चार हज़ार आठ सौ पचास रुपये" in reply   # amount as words
+        assert "बारह" in reply                          # days overdue as words
+        assert "?" in reply                             # ends on a direct ask
+        # Digits never reach the TTS — that is what mispronounces.
+        assert "4850" not in reply and "4,850" not in reply
+
+    def test_follows_the_conversation_language(self):
+        # preferred_language unset, so the call's language decides (a stored
+        # preference outranks it — that rule is covered elsewhere).
+        policy = CollectionCallPolicy(
+            context=snapshot(recording_notice_required=False,
+                             preferred_language=None),
+            language="en-IN",
+        )
+        reply = self._confirm(policy).scripted_reply
+
+        assert "4,850 rupees" in reply
+        assert "12 days" in reply
+
+    def test_amount_only_when_the_day_count_is_unknown(self):
+        policy = make_policy(recording_notice_required=False,
+                             days_overdue=None, due_date=None)
+        reply = self._confirm(policy).scripted_reply
+
+        assert reply
+        assert "रुपये" in reply
+        assert "दिनों" not in reply, "invented a day count"
+
+    def test_no_script_without_a_verified_amount(self):
+        policy = make_policy(recording_notice_required=False, overdue_amount=None)
+        assert self._confirm(policy).scripted_reply == ""
+
+    def test_no_script_while_the_recording_notice_is_pending(self):
+        policy = make_policy(recording_notice_required=True)
+        assert self._confirm(policy).scripted_reply == ""
+
+    def test_no_script_when_a_promise_was_missed(self):
+        # Raising a missed promise is a judgement call, not a template.
+        policy = make_policy(recording_notice_required=False,
+                             previous_promise_pending=True,
+                             previous_promise_date="2026-08-03")
+        assert self._confirm(policy).scripted_reply == ""
+
+    def test_no_script_for_a_disputed_account(self):
+        policy = make_policy(recording_notice_required=False,
+                             account_disputed=True)
+        assert self._confirm(policy).scripted_reply == ""
+
+    def test_never_scripts_before_identity_is_confirmed(self):
+        policy = make_policy(recording_notice_required=False)
+        plan = policy.plan_turn("कौन बोल रहा है?", "question")
+        assert plan.scripted_reply == ""

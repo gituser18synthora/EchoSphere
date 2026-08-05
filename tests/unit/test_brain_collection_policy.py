@@ -213,6 +213,35 @@ class TestContextReachesTheLLM:
         assert "₹4,850" in system
         assert "Days overdue: 12" in system
 
+    async def test_identity_confirmation_skips_the_llm_entirely(self):
+        """The sub-second turn: scripted from facts, no model round trip."""
+        llm = _StreamingLLMStub()
+        brain = make_brain(context=snapshot(recording_notice_required=False),
+                           llm=llm)
+        await verify_identity(brain)
+
+        assert llm.calls == [], "the confirmation turn still called the LLM"
+        spoken = bot_replies(brain)[-1]
+        assert "चार हज़ार आठ सौ पचास रुपये" in spoken
+        assert "बारह" in spoken
+
+    async def test_scripted_opening_is_recorded_as_a_turn(self):
+        """It must appear in the transcript like any other bot turn."""
+        brain = make_brain(context=snapshot(recording_notice_required=False))
+        await verify_identity(brain)
+
+        bot_turns = [t for t in brain._recorder.turns if t.role == "bot"]
+        assert bot_turns and "payment" in bot_turns[-1].text
+
+    async def test_nuanced_opening_still_goes_to_the_llm(self):
+        """A pending recording notice is a judgement call, not a template."""
+        llm = _StreamingLLMStub()
+        brain = make_brain(context=snapshot(recording_notice_required=True),
+                           llm=llm)
+        await verify_identity(brain)
+
+        assert len(llm.calls) == 1
+
     async def test_runtime_context_activates_the_policy(self):
         """A tenant opts in via the schema's domain_policy, not a code path."""
         from shared.runtime_context import build_runtime_context

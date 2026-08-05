@@ -1300,6 +1300,20 @@ class ConversationBrain(FrameProcessor):
                 ))
             elif decision.kind == RouteKind.SAFETY:
                 await self._say(canned("safety", self._conversation_language))
+            elif plan is not None and plan.scripted_reply and not tool_instruction:
+                # Fast route: the policy has decided this turn's content from
+                # verified facts alone, so the LLM adds latency and risk but
+                # no information. Skipping it takes ~1s out of the identity
+                # confirmation — the turn where the caller has said a single
+                # word and silence is least explainable. A tool ran this turn
+                # means there is a verified result to weave in, which is a
+                # judgement call: that goes back to the LLM.
+                self._recorder.add_event(
+                    "policy_scripted_reply",
+                    phase=self._policy.phase,
+                    route=decision.kind.value,
+                )
+                await self._say(plan.scripted_reply)
             elif plan is not None and plan.force_llm:
                 # The policy paused any scripted flow: the LLM answers the
                 # caller's actual message under the live-state instruction.

@@ -654,6 +654,62 @@ def _days_overdue_from(due_date: str | None) -> int | None:
     return max(0, (today - parsed.date()).days)
 
 
+def _offers_from_map(offers) -> list[str]:
+    """Project a lender's offer-eligibility map onto speakable offer lines.
+
+    Input is the shape recovery APIs actually return::
+
+        {"bhim_discount": {"enabled": true, "maximum_amount": 40},
+         "paytm_cashback": {"enabled": true, "minimum_amount": 10,
+                            "maximum_amount": 300}}
+
+    Only ``enabled`` entries are projected: an offer the customer is not
+    eligible for must be invisible to the prompt, not merely discouraged by
+    it. Amounts are rendered as ranges/ceilings so the wording stays
+    conditional ("up to ...") rather than promising a specific benefit.
+    """
+    if not isinstance(offers, dict):
+        return []
+    lines: list[str] = []
+    for key, offer in offers.items():
+        if not isinstance(offer, dict):
+            continue
+        if offer.get("enabled") is False:
+            continue
+        label = str(offer.get("label") or key).replace("_", " ").strip()
+        low, high = offer.get("minimum_amount"), offer.get("maximum_amount")
+        if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+            lines.append(f"{label}: ₹{low:g} to ₹{high:g} (subject to eligibility)")
+        elif isinstance(high, (int, float)):
+            lines.append(f"{label}: up to ₹{high:g} (subject to eligibility)")
+        else:
+            lines.append(f"{label} (subject to eligibility)")
+    return lines
+
+
+def _latest_open_promise(promises) -> tuple[str | None, bool]:
+    """Most recent promise the customer has NOT kept, as (date, pending).
+
+    A kept promise is not a talking point — raising it would sound like an
+    accusation about a payment that was actually made. Entries whose status
+    says kept/paid/completed are skipped; anything else (missed, pending, or
+    an API that omits status) counts as open.
+    """
+    if not isinstance(promises, list):
+        return None, False
+    kept = {"kept", "paid", "completed", "fulfilled", "honoured", "honored"}
+    open_dates = [
+        str(item.get("promised_payment_date") or item.get("promised_date") or "").strip()
+        for item in promises
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().lower() not in kept
+    ]
+    open_dates = [date for date in open_dates if date]
+    if not open_dates:
+        return None, False
+    return max(open_dates), True
+
+
 def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnapshot:
     """Project a generic context onto the collection-policy snapshot.
 
@@ -692,9 +748,33 @@ def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnap
         days = _days_overdue_from(_text("due_date"))
     methods = ctx.get("payment_methods")
     offers = ctx.get("active_offers")
+    if not isinstance(offers, list):
+        # Lender APIs typically return offers as an eligibility MAP
+        # ({"bhim_discount": {"enabled": true, "maximum_amount": 40}}) rather
+        # than a ready-made list. Only enabled entries are projected, so a
+        # disabled offer can never be spoken as available.
+        offers = _offers_from_map(ctx.get("offers"))
+    promise_date = _text("previous_promise_date")
+    promise_pending = ctx.get("previous_promise_date") is not None
+    if promise_date is None:
+        # ...and promises as a history array. The most recent UNMET promise is
+        # the one worth raising; a kept promise is not a talking point.
+        promise_date, promise_pending = _latest_open_promise(ctx.get("previous_promises"))
     # Masked account: the schema's masking already ran at build time for
     # sensitive keys; accept either a pre-masked value or a dedicated field.
     account_masked = _text("loan_account_masked") or _text("loan_account_number")
+    # payment_status is a bare string in the legacy shape and a nested object
+    # ({"status": "pending", "paid_amount": 0}) in the documented API shape.
+    raw_status = ctx.get("payment_status")
+    if isinstance(raw_status, dict):
+        status_text = str(raw_status.get("status") or "unknown")
+    else:
+        status_text = _text("payment_status") or "unknown"
+    # Late fee is the customer-facing name for the same figure the policy
+    # states as penal charges.
+    penalties = _num("penal_charges")
+    if penalties is None:
+        penalties = _num("late_fee")
 
     return CustomerContextSnapshot(
         context_id=ctx.record_id or ctx.schema_id or "runtime",
@@ -711,10 +791,10 @@ def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnap
         overdue_amount=_num("overdue_amount"),
         total_outstanding=_num("total_outstanding"),
         minimum_payable=_num("minimum_payable"),
-        penal_charges=_num("penal_charges"),
+        penal_charges=penalties,
         days_overdue=int(days) if isinstance(days, int) and not isinstance(days, bool) else None,
         due_date=_text("due_date"),
-        previous_promise_date=_text("previous_promise_date"),
+        previous_promise_date=promise_date,
         partial_payment_allowed=_opt_flag("partial_payment_allowed"),
         payment_methods=tuple(str(m) for m in methods) if isinstance(methods, list) else (),
         secure_payment_link_available=_opt_flag("secure_payment_link_available"),
@@ -723,13 +803,13 @@ def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnap
         credit_reporting_status=_text("credit_reporting_status"),
         callback_number_masked=_text("callback_number"),
         grievance_contact=_text("grievance_contact"),
-        payment_status=_text("payment_status") or "unknown",
+        payment_status=status_text,
         customer_verified=_flag("customer_verified"),
         recording_notice_required=_flag("recording_notice_required", True),
         complaint_pending=_flag("complaint_pending"),
         account_disputed=_flag("account_disputed"),
         callback_requested=_flag("callback_requested"),
-        previous_promise_pending=ctx.get("previous_promise_date") is not None,
+        previous_promise_pending=promise_pending,
     )
 
 
