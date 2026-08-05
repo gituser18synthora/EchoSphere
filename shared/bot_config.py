@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from shared.config import get_settings
 from shared.errors import NotFoundError, ProviderNotAvailableError
@@ -31,6 +31,7 @@ from shared.models import (
     VoiceBotSetting,
     VoiceProfile,
 )
+from shared.orchestration.voice_identity import VoiceIdentity
 from shared.providers.tts.delivery import clamp_level, clamp_speed
 
 logger = logging.getLogger(__name__)
@@ -173,12 +174,81 @@ def _wire_voice(session, provider: str, voice: str | None, tenant_id: str | None
     return voice
 
 
-def _voice_display_name(session, voice: str | None, tenant_id: str | None = None) -> str:
-    """Human-readable voice name for UIs (falls back to the raw value)."""
+def _voice_profile_for_selection(
+    session, provider: str | None, voice: str | None, tenant_id: str | None,
+):
+    """Resolve catalog metadata from either a profile id or provider wire id."""
     if not voice:
-        return ""
+        return None
     profile = _tenant_profile(session, voice, tenant_id)
-    return profile.name if profile is not None else voice
+    if profile is not None and (not provider or profile.provider == provider):
+        return profile
+    if not provider:
+        return None
+    return session.scalar(
+        select(VoiceProfile).where(
+            VoiceProfile.provider == provider,
+            VoiceProfile.provider_voice_id == str(voice).strip(),
+            VoiceProfile.is_deleted.is_(False),
+            or_(
+                VoiceProfile.tenant_id.is_(None),
+                VoiceProfile.tenant_id == tenant_id,
+            ),
+        ).limit(1)
+    )
+
+
+def _voice_identity(
+    session, provider: str | None, voice: str | None, tenant_id: str | None,
+) -> VoiceIdentity:
+    """Catalog-driven name/gender for one selected voice (never an allowlist)."""
+    profile = _voice_profile_for_selection(session, provider, voice, tenant_id)
+    if profile is None:
+        return VoiceIdentity(name=str(voice or "").strip(), gender="neutral")
+    gender = str(profile.gender or "neutral").strip().lower()
+    if gender not in ("male", "female"):
+        gender = "neutral"
+    return VoiceIdentity(name=profile.name, gender=gender)
+
+
+def resolve_voice_identity_for_settings(
+    session,
+    voice_settings,
+    tenant_id: str,
+    locale: str | None,
+    *,
+    default_provider: str = "",
+    default_voice: str = "",
+) -> VoiceIdentity:
+    """Resolve prompt identity from the same saved selection as live TTS.
+
+    Used by text-only testing surfaces, where a full ``ResolvedBotConfig`` is
+    not otherwise needed. Per-language overrides apply only when the selected
+    model is realtime-streaming, matching the actual TTS router.
+    """
+    provider = (
+        voice_settings.tts_provider
+        if voice_settings is not None and voice_settings.tts_provider
+        else default_provider
+    )
+    voice = (
+        voice_settings.tts_voice
+        if voice_settings is not None and voice_settings.tts_voice
+        else default_voice
+    )
+    language_map = (
+        (voice_settings.language_voice_map or {}) if voice_settings is not None else {}
+    )
+    selected_locale = locale or language_map.get("default")
+    model = voice_settings.tts_model if voice_settings is not None else None
+    if selected_locale and _model_streaming(session, "tts", provider, model):
+        entry = language_map.get(selected_locale)
+        if isinstance(entry, dict):
+            provider = entry.get("provider") or provider
+            voice = entry.get("voice") or ""
+        elif isinstance(entry, str):
+            voice = entry
+    return _voice_identity(session, provider, voice, tenant_id)
 
 
 def _profile_supports_language(profile, locale: str) -> bool:
@@ -210,11 +280,13 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
             continue
         if isinstance(entry, dict):
             provider = entry.get("provider") or default_engine["provider"]
+            identity = _voice_identity(session, provider, entry.get("voice"), tenant_id)
             engine = {
                 "provider": provider,
                 "model": entry.get("model") or default_engine["model"],
                 "voice": _wire_voice(session, provider, entry.get("voice"), tenant_id),
-                "voice_name": _voice_display_name(session, entry.get("voice"), tenant_id),
+                "voice_name": identity.name,
+                "voice_gender": identity.gender,
                 "params": entry.get("params") or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -228,6 +300,9 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
                 "model": (profile.model_codes or [default_engine["model"]])[0],
                 "voice": profile.provider_voice_id or profile.name,
                 "voice_name": profile.name,
+                "voice_gender": (
+                    profile.gender if profile.gender in ("male", "female") else "neutral"
+                ),
                 "params": profile.provider_settings or {},
                 "api_key_reference": _secret_ref_for(session, "tts", provider),
             }
@@ -250,7 +325,8 @@ class ResolvedBotConfig:
     API keys never enter this snapshot (it is cached in Redis).
 
     - stt:  {provider, model, language, settings, api_key_reference}
-    - tts:  {provider, model, voice, settings, api_key_reference,
+    - tts:  {provider, model, voice, voice_name, voice_gender, settings,
+             api_key_reference,
              language_map: {locale: {provider, model, voice, params}},
              fallback: {provider, model, voice, api_key_reference} | None}
     - llm:  {provider, model, settings, api_key_reference}
@@ -478,11 +554,15 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         default_voice_value = (
             (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name
         )
+        default_voice_identity = _voice_identity(
+            session, tts_provider, default_voice_value, bot.tenant_id
+        )
         tts_engine = {
             "provider": tts_provider,
             "model": tts_model,
             "voice": _wire_voice(session, tts_provider, default_voice_value, bot.tenant_id),
-            "voice_name": _voice_display_name(session, default_voice_value, bot.tenant_id),
+            "voice_name": default_voice_identity.name,
+            "voice_gender": default_voice_identity.gender,
             "settings": (vbs.tts_settings if vbs else None) or {},
             "api_key_reference": _secret_ref_for(session, "tts", tts_provider),
             # Realtime-capability of the selected model (catalog-driven): the
@@ -499,13 +579,17 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             if reason is not None:
                 logger.warning("fallback TTS engine skipped for bot %s: %s", bot_id, reason)
             else:
+                fallback_identity = _voice_identity(
+                    session, vbs.fallback_provider, vbs.fallback_voice, bot.tenant_id
+                )
                 fallback = {
                     "provider": vbs.fallback_provider,
                     "model": vbs.fallback_model or "",
                     "voice": _wire_voice(
                         session, vbs.fallback_provider, vbs.fallback_voice, bot.tenant_id
                     ),
-                    "voice_name": _voice_display_name(session, vbs.fallback_voice, bot.tenant_id),
+                    "voice_name": fallback_identity.name,
+                    "voice_gender": fallback_identity.gender,
                     "api_key_reference": _secret_ref_for(session, "tts", vbs.fallback_provider),
                 }
         tts_engine["fallback"] = fallback

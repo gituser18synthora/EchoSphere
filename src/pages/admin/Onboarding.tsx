@@ -82,6 +82,9 @@ export default function Onboarding() {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.adminEmail)) e.adminEmail = "Enter a valid email";
       else if (form.domain && !form.adminEmail.endsWith(`@${form.domain}`)) e.adminEmail = `Should use the ${form.domain} domain`;
     }
+    if (step === 3 && form.languages.length === 0) {
+      e.languages = "Select at least one language for this tenant";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -110,6 +113,7 @@ export default function Onboarding() {
         adminEmail: form.adminEmail,
         adminName: form.adminName,
         seats: Number(form.seats) || undefined,
+        defaultLanguages: form.languages,
         status: "active",
       });
       if (created.adminUser?.temporaryPassword) setTempPassword(created.adminUser.temporaryPassword);
@@ -121,7 +125,6 @@ export default function Onboarding() {
         await saveTenantSettings(
           {
             displayName: form.company,
-            defaultLanguages: form.languages,
             security: { sso: form.sso, mfa: form.mfa },
             retentionDays: Number(form.retention) || 90,
           },
@@ -269,7 +272,7 @@ export default function Onboarding() {
                     <option value="finance">Finance — adds payment & advice restrictions</option>
                   </select>
                 </Field>
-                <Field label="Languages">
+                <Field label="Languages" required error={errors.languages}>
                   <div className="row wrap gap-6">
                     {opts.languages.map((l) => {
                       const on = form.languages.includes(l.code);

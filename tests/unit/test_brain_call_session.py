@@ -60,11 +60,11 @@ class _StreamingLLMStub:
 
 
 def make_brain(*, llm=None, call_context=None, system_prompt="You are Test.",
-               language="hi-IN") -> ConversationBrain:
+               language="hi-IN", tts=None, languages=None) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
-        published=True, language=language, languages=[language],
-        stt={"provider": "sarvam"}, system_prompt=system_prompt,
+        published=True, language=language, languages=languages or [language],
+        stt={"provider": "sarvam"}, tts=tts or {}, system_prompt=system_prompt,
     )
     brain = ConversationBrain(
         config=config, llm=llm, recorder=_RecorderStub(),
@@ -218,6 +218,55 @@ class TestPlaceholderSafety:
         brain = make_brain(call_context={"customer_name": "Ravi"})
         record = await brain._say("Namaste {{customer_name}} ji!")
         assert record.text == "Namaste Ravi ji!"
+
+    async def test_say_resolves_selected_voice_name_without_tenant_data(self):
+        brain = make_brain(tts={
+            "voice_name": "Ritu", "voice_gender": "female",
+        })
+        record = await brain._say(
+            "Namaste, main {voice_speaker_name} hoon. "
+            "Legacy: {voice_bot_spiker_name}."
+        )
+        assert record.text == "Namaste, main Ritu hoon. Legacy: Ritu."
+
+    async def test_say_adapts_fixed_greeting_to_selected_female_voice(self):
+        brain = make_brain(tts={
+            "voice_name": "Ritu", "voice_gender": "female",
+        })
+        record = await brain._say(
+            "नमस्कार! मैं edas की तरफ़ से {voice_speaker_name} "
+            "bol raha hun. क्या मेरी बात Seema ji से हो रही है?"
+        )
+
+        assert record.text == (
+            "नमस्कार! मैं edas की तरफ़ से Ritu bol rahi hun. "
+            "क्या मेरी बात Seema ji से हो रही है?"
+        )
+
+    def test_selected_voice_gender_is_added_to_every_llm_turn(self):
+        brain = make_brain(tts={
+            "voice_name": "Ritu", "voice_gender": "female",
+        })
+        instruction = brain._language_instruction()
+        assert "Selected speaker name: Ritu" in instruction
+        assert "grammatically female forms" in instruction
+
+    def test_language_voice_switch_changes_the_llm_grammar_identity(self):
+        brain = make_brain(
+            language="hi-IN", languages=["hi-IN", "en-IN"],
+            tts={
+                "streaming": True,
+                "voice_name": "Hindi Male", "voice_gender": "male",
+                "language_map": {
+                    "en-IN": {
+                        "voice_name": "English Female", "voice_gender": "female",
+                    },
+                },
+            },
+        )
+        assert "grammatically male forms" in brain._language_instruction()
+        brain._conversation_language = "en-IN"
+        assert "grammatically female forms" in brain._language_instruction()
 
     async def test_streamed_reply_never_contains_placeholders(self):
         llm = _StreamingLLMStub(

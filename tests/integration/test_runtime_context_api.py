@@ -411,6 +411,8 @@ class TestSimulator:
         assert values["patient_id"]["value"] != "MRN-778812"
         assert "Meera Iyer" in trace["renderedPrompt"]
         assert "MRN-778812" not in trace["renderedPrompt"]
+        assert trace["voiceIdentity"] == {"name": "Shubh", "gender": "male"}
+        assert "grammatically male forms" in trace["renderedPrompt"]
         assert trace["intent"] is not None
         assert trace["response"]
         assert trace["latencyMs"] >= 0

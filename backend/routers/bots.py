@@ -177,14 +177,16 @@ class CreateBotRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     use_case: str = Field(default="", alias="useCase", max_length=200)
     description: str = Field(default="", max_length=2000)
-    languages: list[str] = Field(default_factory=lambda: ["en-US"])
+    # Omitted means "use the current enabled platform default".  A literal
+    # locale here becomes stale as soon as an administrator disables it.
+    languages: list[str] | None = None
     tenant_id: str | None = Field(default=None, alias="tenantId")
 
     model_config = {"populate_by_name": True}
 
 
 def _validated_languages(db: Session, codes: list[str]) -> list[str]:
-    """Dedupe (order-preserving) and require every code to be an enabled platform language."""
+    """Require every code to be an enabled platform language."""
     deduped = list(dict.fromkeys(c.strip() for c in codes if c and c.strip()))
     if not deduped:
         raise ApiError("At least one supported language is required.", 422)
@@ -199,6 +201,21 @@ def _validated_languages(db: Session, codes: list[str]) -> list[str]:
     return deduped
 
 
+def _default_bot_languages(db: Session) -> list[str]:
+    """One enabled catalog language: flagged default first, then display order."""
+    code = db.scalar(
+        select(SupportedLanguage.code)
+        .where(SupportedLanguage.enabled.is_(True))
+        .order_by(
+            SupportedLanguage.is_default.desc(),
+            SupportedLanguage.sort_order,
+            SupportedLanguage.code,
+        )
+        .limit(1)
+    )
+    return [code] if code else []
+
+
 @router.post("/bots", status_code=201)
 def create_bot(
     body: CreateBotRequest,
@@ -210,7 +227,10 @@ def create_bot(
     if db.get(Tenant, tid) is None:
         raise NotFoundError("Tenant")
 
-    langs = _validated_languages(db, body.languages)
+    requested_languages = (
+        body.languages if body.languages is not None else _default_bot_languages(db)
+    )
+    langs = _validated_languages(db, requested_languages)
 
     bot = VoiceBot(
         id=new_id("bot"),

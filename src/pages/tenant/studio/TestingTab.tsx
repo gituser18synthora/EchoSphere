@@ -38,7 +38,7 @@ export function providerName(code?: string): string {
 export function activeVoice(
   config: VoiceSessionConfig | null,
   language?: string,
-): { provider: string; voice: string } | null {
+): { provider: string; voice: string; gender?: string } | null {
   if (!config) return null;
   const forLanguage = language ? config.voices?.[language] : undefined;
   return forLanguage ?? config.defaultVoice ?? null;
@@ -242,7 +242,10 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
               {(() => {
                 const voice = activeVoice(sessionConfig, liveLanguage);
                 return voice ? (
-                  <span className="tag">{providerName(voice.provider)} · {voice.voice}</span>
+                  <span className="tag">
+                    {providerName(voice.provider)} · {voice.voice}
+                    {voice.gender && voice.gender !== "neutral" ? ` · ${voice.gender}` : ""}
+                  </span>
                 ) : null;
               })()}
               {Object.keys(sessionConfig.warnings ?? {}).map((locale) => (
@@ -744,6 +747,16 @@ function SimulateTraceView({ trace }: { trace: SimulateTrace }) {
                 </span>
               )}
             </div>
+          </TraceRow>
+        )}
+
+        {trace.voiceIdentity && (
+          <TraceRow icon="mic" label="Voice identity">
+            <span className="row gap-6 wrap" style={{ fontSize: 12.5 }}>
+              <span className="t-strong">{trace.voiceIdentity.name || "Unnamed speaker"}</span>
+              <span className="chip chip-neutral">{trace.voiceIdentity.gender}</span>
+              <span className="t-micro">catalog metadata</span>
+            </span>
           </TraceRow>
         )}
 

@@ -270,6 +270,7 @@ export interface Tenant {
   industry: string;
   region: string;
   aiProfileCode?: string;
+  defaultLanguages: string[];
   plan: PlanTier;
   status: TenantStatus;
   createdAt: string;
@@ -863,6 +864,7 @@ export interface SimulateTrace {
   promptVersion?: number | null;
   promptMode?: string | null;
   promptState?: string | null;
+  voiceIdentity?: { name: string; gender: string };
   renderedPrompt?: string;
   route?: string | null;
   action?: string | null;

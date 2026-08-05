@@ -264,6 +264,35 @@ class TestTenantProfile:
         client.patch(f"{API}/tenants/tn-001", headers=super_admin,
                      json={"region": before["region"] or "in"})
 
+    def test_super_admin_can_edit_tenant_language_assignment(self, client, super_admin):
+        before = _data(client.get(f"{API}/tenants/tn-001", headers=super_admin))
+        original = before["defaultLanguages"]
+        assert original, "the seeded tenant must retain at least one language"
+        active = _data(client.get(f"{API}/languages", headers=super_admin))
+        candidate = next(row["code"] for row in active if row["code"] not in original)
+        updated_codes = [*original, candidate]
+
+        try:
+            updated = _data(client.patch(
+                f"{API}/tenants/tn-001",
+                headers=super_admin,
+                json={"defaultLanguages": updated_codes},
+            ))
+            assert updated["defaultLanguages"] == updated_codes
+
+            scoped = _data(client.get(
+                f"{API}/languages?tenantId=tn-001", headers=super_admin
+            ))
+            assert candidate in {row["code"] for row in scoped}
+            assert {row["code"] for row in scoped} <= set(updated_codes)
+        finally:
+            restored = client.patch(
+                f"{API}/tenants/tn-001",
+                headers=super_admin,
+                json={"defaultLanguages": original},
+            )
+            assert restored.status_code == 200, restored.text
+
     def test_audit_written_for_profile_update(self, client, tenant_admin):
         from sqlalchemy import select
 

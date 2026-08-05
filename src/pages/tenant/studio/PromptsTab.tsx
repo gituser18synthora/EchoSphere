@@ -124,7 +124,7 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
   };
 
   const q = useAsync(() => listPrompts(bot.id), [bot.id]);
-  const langsQ = useAsync(() => listLanguages(), []);
+  const langsQ = useAsync(() => listLanguages(false, bot.tenantId), [bot.tenantId]);
   const languages: Lang[] = langsQ.data ?? [];
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -271,6 +271,7 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
       <CreatePromptModal
         open={createOpen}
         bot={bot}
+        languages={languages}
         onClose={() => setCreateOpen(false)}
         onCreated={(p) => { setCreateOpen(false); q.reload(); setOpenPrompt(p); }}
       />
@@ -307,14 +308,17 @@ export default function PromptsTab({ bot }: { bot: VoiceBot }) {
 
 /* ---------- Creation modal ---------- */
 
-function CreatePromptModal({ open, bot, onClose, onCreated }: {
-  open: boolean; bot: VoiceBot; onClose: () => void; onCreated: (p: Prompt) => void;
+function CreatePromptModal({ open, bot, languages, onClose, onCreated }: {
+  open: boolean; bot: VoiceBot; languages: Lang[];
+  onClose: () => void; onCreated: (p: Prompt) => void;
 }) {
   const { toast } = useApp();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<CreateKind>("system:structured");
   const [description, setDescription] = useState("");
+  const [fullPromptContent, setFullPromptContent] = useState(FULL_PROMPT_STARTER);
   const [nameErr, setNameErr] = useState("");
+  const [fullPromptErr, setFullPromptErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   const isSystemKind = kind.startsWith("system:");
@@ -326,6 +330,17 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
 
   const submit = async () => {
     if (!name.trim()) { setNameErr("Give the prompt a name"); return; }
+    if (kind === "system:full" && !fullPromptContent.trim()) {
+      setFullPromptErr("Full prompt content is required");
+      return;
+    }
+    const defaultLanguage =
+      bot.languages.find((code) => languages.some((language) => language.code === code))
+      ?? languages[0]?.code;
+    if (!isSystemKind && !defaultLanguage) {
+      toast("Assign at least one active language to this tenant before creating this prompt.", "error");
+      return;
+    }
     setBusy(true);
     try {
       const base = { name: name.trim(), description: description.trim() || undefined };
@@ -336,14 +351,15 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
           })
         : kind === "system:full"
           ? await createPrompt(bot.id, {
-              ...base, type: "system", promptMode: "full", fullPrompt: FULL_PROMPT_STARTER,
+              ...base, type: "system", promptMode: "full", fullPrompt: fullPromptContent,
             })
           : await createPrompt(bot.id, {
               ...base, type: kind,
-              variants: [{ language: "en-US", content: "" }],
+              variants: [{ language: defaultLanguage!, content: "" }],
             });
       toast(`“${created.name}” created as a draft`);
-      setName(""); setDescription(""); setKind("system:structured"); setNameErr("");
+      setName(""); setDescription(""); setFullPromptContent(FULL_PROMPT_STARTER);
+      setKind("system:structured"); setNameErr(""); setFullPromptErr("");
       onCreated(created);
     } catch (e) {
       toast(errMsg(e, "Could not create the prompt"), "error");
@@ -358,6 +374,7 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
       onClose={onClose}
       title="New prompt"
       sub="Prompts start as drafts and go live after approval and publishing."
+      wide={kind === "system:full"}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -372,24 +389,64 @@ function CreatePromptModal({ open, bot, onClose, onCreated }: {
           <input
             className="input"
             value={name}
+            aria-label="Name"
             placeholder={isSystemKind ? "Main system prompt" : "Business-hours greeting"}
             aria-invalid={!!nameErr}
             onChange={(e) => { setName(e.target.value); setNameErr(""); }}
           />
         </Field>
         <Field label="Prompt type" hint={kindHint}>
-          <select className="select" value={kind} onChange={(e) => setKind(e.target.value as CreateKind)}>
+          <select
+            className="select"
+            value={kind}
+            aria-label="Prompt type"
+            onChange={(e) => setKind(e.target.value as CreateKind)}
+          >
             {CREATE_KIND_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </Field>
-        <Field label="Description" hint="Optional — helps teammates find the right prompt.">
+        <Field
+          label="Description"
+          hint={kind === "system:full"
+            ? "Optional short summary only — write the complete prompt in Full prompt content below."
+            : "Optional — helps teammates find the right prompt."}
+        >
           <textarea
             className="textarea"
-            rows={2}
+            rows={kind === "system:full" ? 3 : 2}
             value={description}
+            aria-label="Description"
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
+        {kind === "system:full" && (
+          <Field
+            label="Full prompt content"
+            required
+            error={fullPromptErr}
+            hint="Write or paste the complete unified prompt here. You can continue editing it after creation."
+          >
+            <textarea
+              className="textarea"
+              value={fullPromptContent}
+              aria-label="Full prompt content"
+              aria-invalid={!!fullPromptErr}
+              style={{
+                minHeight: 320,
+                fontSize: 12.5,
+                lineHeight: 1.6,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              }}
+              onChange={(e) => {
+                setFullPromptContent(e.target.value);
+                setFullPromptErr("");
+              }}
+            />
+            <span className="t-micro t-num" style={{ alignSelf: "flex-end" }}>
+              {fullPromptContent.length.toLocaleString()} characters · ~{Math.ceil(fullPromptContent.length / 4).toLocaleString()} tokens
+            </span>
+          </Field>
+        )}
       </div>
     </Modal>
   );
@@ -1019,6 +1076,11 @@ function FullPromptEditor({ value, onChange }: {
         }}
         onChange={(e) => onChange(e.target.value)}
       />
+      <Callout tone="info" title="Automatic voice identity">
+        Use <code>{"{voice_speaker_name}"}</code> for the selected catalog speaker's name.
+        Generated replies and fixed Hindi/Hinglish first-person greetings automatically use the
+        grammatical gender stored on that voice (for example, <code>raha</code>/<code>rahi</code>).
+      </Callout>
       <div className="row-between wrap gap-8">
         <span className="chip chip-neutral t-num">
           {value.length.toLocaleString()} characters · ~{Math.ceil(value.length / 4).toLocaleString()} tokens
@@ -1122,7 +1184,7 @@ function SimpleEditor({ variants, variables, languages, onChange }: {
   variants: PromptVariant[]; variables: string[]; languages: Lang[];
   onChange: (next: PromptVariant[]) => void;
 }) {
-  const [lang, setLang] = useState(variants[0]?.language ?? "en-US");
+  const [lang, setLang] = useState(variants[0]?.language ?? languages[0]?.code ?? "");
   const current = variants.find((v) => v.language === lang) ?? variants[0];
   const available = languages.filter((l) => !variants.some((v) => v.language === l.code));
 
@@ -1135,18 +1197,46 @@ function SimpleEditor({ variants, variables, languages, onChange }: {
     setLang(code);
   };
 
+  const removeLanguage = (code: string) => {
+    if (variants.length <= 1) return;
+    const next = variants.filter((variant) => variant.language !== code);
+    onChange(next);
+    if (current?.language === code) setLang(next[0]?.language ?? "");
+  };
+
   return (
     <div className="col gap-12">
       <div className="row gap-6 wrap">
-        {variants.map((v) => (
-          <button
-            key={v.language}
-            className={`chip ${v.language === current?.language ? "chip-brand" : "chip-neutral"}`}
-            onClick={() => setLang(v.language)}
-          >
-            {v.language}
-          </button>
-        ))}
+        {variants.map((v) => {
+          const label = languages.find((language) => language.code === v.language)?.name ?? v.language;
+          return (
+            <span
+              key={v.language}
+              className={`chip ${v.language === current?.language ? "chip-brand" : "chip-neutral"}`}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+            >
+              <button
+                type="button"
+                aria-label={`Edit ${label} (${v.language})`}
+                onClick={() => setLang(v.language)}
+                style={{ all: "unset", cursor: "pointer" }}
+              >
+                {v.language}
+              </button>
+              {variants.length > 1 && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${label} (${v.language})`}
+                  title={`Remove ${label}`}
+                  onClick={() => removeLanguage(v.language)}
+                  style={{ all: "unset", cursor: "pointer", display: "inline-flex" }}
+                >
+                  <Icon name="x" size={11} />
+                </button>
+              )}
+            </span>
+          );
+        })}
         {available.length > 0 && (
           <select
             className="select"
@@ -1165,7 +1255,7 @@ function SimpleEditor({ variants, variables, languages, onChange }: {
 
       <Field
         label={`Prompt text (${current?.language ?? lang})`}
-        hint={`Variables resolve at call time: ${variables.length ? variables.join(", ") : "none"}`}
+        hint={`Variables resolve at call time: ${variables.length ? variables.join(", ") : "none"}. Selected speaker name: {voice_speaker_name}.`}
       >
         <textarea
           className="textarea"

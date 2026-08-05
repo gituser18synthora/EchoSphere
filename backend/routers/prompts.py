@@ -28,7 +28,10 @@ from shared.ids import new_id
 from backend.core.responses import ok
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
-from shared.models import KnowledgeSource, Prompt, PromptVersion, User, VoiceBot
+from shared.models import (
+    KnowledgeSource, Prompt, PromptVersion, SupportedLanguage, User, VoiceBot,
+)
+from shared.tenant_languages import tenant_allowed_language_codes
 from shared.orchestration.prompt_compiler import (
     compile_prompt,
     compile_source,
@@ -101,6 +104,42 @@ class VariantPayload(BaseModel):
     content: str = Field(max_length=4000)
 
 
+def _validate_variant_languages(
+    db: Session,
+    tenant_id: str,
+    variants: list[VariantPayload],
+    *,
+    previous_languages: set[str] | None = None,
+) -> None:
+    """Allow retaining/removing historical variants, but scope every new one.
+
+    This keeps an old variant editable after its language is unassigned while
+    ensuring “Add language” cannot bypass the tenant assignment via the API.
+    """
+    codes = [variant.language.strip() for variant in variants]
+    if not codes:
+        raise ApiError("At least one prompt language is required.", 422)
+    if len(codes) != len(set(codes)):
+        raise ApiError("A prompt can contain only one variant per language.", 422)
+
+    allowed = tenant_allowed_language_codes(db, tenant_id)
+    if allowed is None:
+        allowed = set(db.scalars(
+            select(SupportedLanguage.code)
+            .where(SupportedLanguage.enabled.is_(True))
+        ).all())
+    newly_added = set(codes) - (previous_languages or set())
+    rejected = sorted(newly_added - allowed)
+    if rejected:
+        raise ApiError(
+            "Language(s) not assigned to this tenant or inactive: "
+            + ", ".join(rejected),
+            422,
+        )
+    for variant, code in zip(variants, codes):
+        variant.language = code
+
+
 class CreatePromptRequest(BaseModel):
     type: str = Field(pattern=PROMPT_TYPES)
     prompt_mode: str = Field(
@@ -137,6 +176,9 @@ def create_prompt(
     )
     if duplicate is not None:
         raise ApiError(f"A prompt named '{name}' already exists on this bot.", 409)
+
+    if body.type != "system":
+        _validate_variant_languages(db, bot.tenant_id, body.variants)
 
     config, full, compiled = _compile_version_content(
         body.prompt_mode, body.structured_config, body.full_prompt
@@ -191,6 +233,18 @@ def add_prompt_version(
     db: Session = Depends(get_db),
 ):
     prompt = _prompt_checked(db, prompt_id, user)
+    if prompt.type != "system":
+        previous = {
+            str(variant.get("language") or "").strip()
+            for variant in ((prompt.versions[0].variants or []) if prompt.versions else [])
+            if variant.get("language")
+        }
+        _validate_variant_languages(
+            db,
+            prompt.tenant_id,
+            body.variants,
+            previous_languages=previous,
+        )
     # Mode defaults to the payload shape, then the previous version's mode —
     # so existing clients that only ever send structuredConfig keep working.
     mode = body.prompt_mode or (
@@ -501,9 +555,15 @@ async def test_prompt(
     """Run a sample caller message against a prompt version: routing decision,
     optional KB retrieval, and an LLM response using the bot's configured
     provider. Text-only — no tools are executed, nothing is state-changing."""
+    from shared.bot_config import resolve_voice_identity_for_settings
     from shared.config import get_settings
     from shared.models import Intent, VoiceBotSetting
+    from shared.orchestration.placeholders import resolve_placeholders
     from shared.orchestration.router import RouteKind, TurnRouter
+    from shared.orchestration.voice_identity import (
+        voice_context_values,
+        voice_identity_instruction,
+    )
     from shared.providers.base import ProviderConfig
     from shared.providers.factory import get_llm_provider
 
@@ -566,6 +626,15 @@ async def test_prompt(
     # 3. LLM response with the bot's configured provider (mock works keyless).
     settings = get_settings()
     vbs = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
+    voice_identity = resolve_voice_identity_for_settings(
+        db, vbs, bot.tenant_id, body.language,
+        default_provider=settings.tts_provider,
+        default_voice=settings.tts_voice,
+    )
+    system = (
+        resolve_placeholders(system, voice_context_values(voice_identity))
+        + voice_identity_instruction(voice_identity)
+    )
     provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
     model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)
     llm = get_llm_provider(ProviderConfig(

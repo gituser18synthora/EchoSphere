@@ -363,6 +363,7 @@ async def simulate_turn(
     HTTP are replaced (tools run against mockToolResults).
     """
     from shared.config import get_settings
+    from shared.bot_config import resolve_voice_identity_for_settings
     from shared.models import VoiceBotSetting
     from shared.orchestration.delivery import delivery_instructions
     from shared.orchestration.intent_classifier import HybridIntentPipeline
@@ -375,6 +376,10 @@ async def simulate_turn(
         detect_hangup,
     )
     from shared.orchestration.tool_executor import get_tool_executor
+    from shared.orchestration.voice_identity import (
+        voice_context_values,
+        voice_identity_instruction,
+    )
     from shared.orchestration.workflow_engine import get_workflow_engine
     from shared.providers.base import ProviderConfig
     from shared.providers.factory import get_llm_provider
@@ -462,11 +467,22 @@ async def simulate_turn(
         "and conversational. Never invent facts."
     )
     vbs = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
+    settings = get_settings()
+    simulation_language = body.language or (
+        ((vbs.language_voice_map or {}).get("default") if vbs else None)
+        or (bot.languages[0].language_code if bot.languages else "en")
+    )
+    voice_identity = resolve_voice_identity_for_settings(
+        db, vbs, bot.tenant_id, simulation_language,
+        default_provider=settings.tts_provider,
+        default_voice=settings.tts_voice,
+    )
+    context_values.update(voice_context_values(voice_identity))
     policy: CollectionCallPolicy | None = None
     if runtime_ctx.domain_policy == "collections":
         policy = CollectionCallPolicy(
             context=collection_snapshot_from_context(runtime_ctx),
-            language=body.language or "hi-IN",
+            language=simulation_language,
         )
         policy.tools_available = bool(body.mock_tool_results)
         # Replay the prior conversation through the policy so its state
@@ -491,6 +507,7 @@ async def simulate_turn(
             (vbs.empathy if vbs and vbs.empathy is not None else 50),
             (vbs.energy if vbs and vbs.energy is not None else 50),
         )
+        + voice_identity_instruction(voice_identity)
         + context_block
     )
     trace.update({
@@ -498,6 +515,10 @@ async def simulate_turn(
         "promptVersion": prompt_info["promptVersion"],
         "promptMode": prompt_info["promptMode"],
         "promptState": prompt_info["promptState"],
+        "voiceIdentity": {
+            "name": voice_identity.name,
+            "gender": voice_identity.gender,
+        },
         "renderedPrompt": rendered_prompt,
     })
 
@@ -521,7 +542,6 @@ async def simulate_turn(
         return ok(trace)
 
     # 4. Routing + hybrid intent classification (real LLM, bounded).
-    settings = get_settings()
     provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
     model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)
     llm = get_llm_provider(ProviderConfig(
@@ -697,9 +717,7 @@ async def simulate_turn(
             )
     trace["workflow"] = workflow_detail
     trace["response"] = response_text
-    trace["language"] = body.language or (
-        bot.languages[0].language_code if bot.languages else "en"
-    )
+    trace["language"] = simulation_language
     trace["sessionId"] = session
     trace["provider"] = provider_code
     trace["latencyMs"] = round((time.monotonic() - started) * 1000)

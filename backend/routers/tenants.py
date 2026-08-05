@@ -41,6 +41,7 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_tenant, serialize_tenant_settings
+from shared.tenant_languages import validate_language_assignment
 
 
 def _validate_master_code(db: Session, model, value: str | None, label: str) -> str | None:
@@ -114,6 +115,10 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
     ).all()
     sub_map = {s[0]: {"plan": s[1], "mrr": float(s[2])} for s in subs}
     usage = _month_usage(db, ids)
+    tenant_languages = dict(db.execute(
+        select(TenantSetting.tenant_id, TenantSetting.default_languages)
+        .where(TenantSetting.tenant_id.in_(ids))
+    ).all())
 
     out = []
     for t in tenants:
@@ -129,6 +134,7 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
                 minutes_month=u.get("minutes", 0.0),
                 mrr=s.get("mrr", 0.0),
                 ai_cost_month=u.get("ai_cost", 0.0),
+                default_languages=tenant_languages.get(t.id),
             )
         )
     return out
@@ -187,6 +193,9 @@ class CreateTenantRequest(BaseModel):
     )
     status: str = Field(default="provisioning", pattern="^(active|trial|suspended|provisioning)$")
     seats: int | None = Field(default=None, ge=1)
+    default_languages: list[str] | None = Field(
+        default=None, alias="defaultLanguages"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -209,6 +218,17 @@ def create_tenant(
     industry = _validate_master_code(db, Industry, body.industry, "industry")
     region = _validate_master_code(db, DataRegion, body.region, "data region")
     ai_profile = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    default_languages = None
+    if body.default_languages is not None:
+        default_languages, invalid = validate_language_assignment(
+            db, body.default_languages
+        )
+        if not default_languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
 
     code = (body.code or "").strip().lower() or None
     if code and db.scalar(select(Tenant).where(Tenant.code == code)):
@@ -250,6 +270,7 @@ def create_tenant(
             id=new_id("tset"),
             tenant_id=tenant.id,
             display_name=body.name,
+            default_languages=default_languages,
             created_by=user.id,
         )
     )
@@ -305,6 +326,9 @@ class UpdateTenantRequest(BaseModel):
     status: str | None = Field(default=None, pattern="^(active|trial|suspended|provisioning)$")
     health: str | None = Field(default=None, pattern="^(good|warning|serious|critical|neutral)$")
     admin_email: EmailStr | None = Field(default=None, alias="adminEmail")
+    default_languages: list[str] | None = Field(
+        default=None, alias="defaultLanguages"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -360,11 +384,35 @@ def update_tenant(
             )
     if body.admin_email:
         t.admin_email = body.admin_email.lower()
+    if body.default_languages is not None:
+        settings = _get_or_create_settings(db, t.id, user)
+        before["defaultLanguages"] = settings.default_languages or []
+        languages, invalid = validate_language_assignment(
+            db,
+            body.default_languages,
+            existing=settings.default_languages,
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        settings.default_languages = languages
+        settings.updated_by = user.id
     t.updated_by = user.id
     record_audit(
         db, user=user, action="Updated tenant", entity_type="tenant", entity_id=t.id,
         target_label=t.name, tenant_id=t.id, previous_value=before,
-        new_value={"name": t.name, "status": t.status, "health": t.health},
+        new_value={
+            "name": t.name,
+            "status": t.status,
+            "health": t.health,
+            **(
+                {"defaultLanguages": settings.default_languages}
+                if body.default_languages is not None else {}
+            ),
+        },
         request=request,
     )
     db.commit()
@@ -543,7 +591,16 @@ def update_tenant_profile(
     if body.timezone is not None:
         s.timezone = body.timezone
     if body.default_languages is not None:
-        s.default_languages = body.default_languages
+        languages, invalid = validate_language_assignment(
+            db, body.default_languages, existing=s.default_languages
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        s.default_languages = languages
     branding = dict(s.branding or {})
     if body.branding is not None:
         branding.update(body.branding)
@@ -579,6 +636,17 @@ def update_tenant_settings(
     tid = resolve_tenant_id(user, tenant_id)
     s = _get_or_create_settings(db, tid, user)
     before = serialize_tenant_settings(s)
+    if body.default_languages is not None:
+        languages, invalid = validate_language_assignment(
+            db, body.default_languages, existing=s.default_languages
+        )
+        if not languages:
+            raise ApiError("At least one tenant language is required.", 422)
+        if invalid:
+            raise ApiError(
+                f"Unknown or inactive language(s): {', '.join(invalid)}", 422
+            )
+        body.default_languages = languages
     for field in (
         "display_name", "timezone", "default_languages", "branding",
         "business_hours", "holidays", "notifications", "security", "retention_days",

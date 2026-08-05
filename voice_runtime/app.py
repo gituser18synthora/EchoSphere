@@ -359,6 +359,7 @@ async def _run_call(
         locale: {
             "provider": engine.get("provider", ""),
             "voice": engine.get("voice_name") or engine.get("voice", ""),
+            "gender": engine.get("voice_gender", "neutral"),
         }
         for locale, engine in (tts_conf.get("language_map") or {}).items()
     }
@@ -371,6 +372,7 @@ async def _run_call(
         "defaultVoice": {
             "provider": tts_conf.get("provider", ""),
             "voice": tts_conf.get("voice_name") or tts_conf.get("voice", ""),
+            "gender": tts_conf.get("voice_gender", "neutral"),
         },
         "warnings": config.language_warnings or {},
     }

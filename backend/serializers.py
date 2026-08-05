@@ -62,7 +62,8 @@ def iso(value: datetime | date | None) -> str | None:
 
 def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
                      calls_month: int, minutes_month: float, mrr: float,
-                     ai_cost_month: float) -> dict:
+                     ai_cost_month: float,
+                     default_languages: list[str] | None = None) -> dict:
     return {
         "id": t.id,
         "name": t.name,
@@ -71,6 +72,7 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
         "industry": t.industry or "",
         "region": t.region or "",
         "aiProfileCode": t.ai_profile_code or "",
+        "defaultLanguages": default_languages or [],
         "plan": plan or "starter",
         "status": t.status,
         "createdAt": iso(t.created_at),

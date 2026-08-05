@@ -282,8 +282,8 @@ def _pay_ask_or_confirm(state: WorkflowState) -> WorkflowState:
     if status == "handoff":
         return {
             **state,
-            "reply": "Mujhe aapki baat samajhne mein dikkat ho rahi hai. Main aapko "
-                     "hamare ek agent se connect kar rahi hoon, kripya line par bane rahiye.",
+            "reply": "Mujhe aapki baat samajhne mein dikkat ho rahi hai. Aapko "
+                     "hamare ek agent se connect kiya ja raha hai, kripya line par bane rahiye.",
         }
     if status == "collecting":
         pending = state.get("pending_slot")
@@ -292,7 +292,7 @@ def _pay_ask_or_confirm(state: WorkflowState) -> WorkflowState:
             return {**state, "reply": "Kripya dobara boliye?"}
         # Retries use the simpler wording, never the same sentence again.
         question = slot[2] if state.get("retries", 0) > 0 else slot[1]
-        prefix = "Maaf kijiye, main samajh nahi paayi. " if state.get("retries", 0) > 0 else ""
+        prefix = "Maaf kijiye, baat samajh nahi aayi. " if state.get("retries", 0) > 0 else ""
         return {**state, "reply": f"{prefix}{question}"}
     slots = state.get("slots", {})
     type_txt = "poora amount" if slots.get("payment_type") == "full" else "partial payment"
