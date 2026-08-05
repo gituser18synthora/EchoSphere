@@ -62,6 +62,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -72,7 +73,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
-    OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     StartFrame,
     TextFrame,
     TranscriptionFrame,
@@ -119,7 +120,10 @@ from shared.runtime_context import (
     context_from_collection_snapshot,
 )
 from voice_runtime.call_policy import CollectionCallPolicy
-from voice_runtime.endpointing import utterance_looks_complete
+from voice_runtime.endpointing import (
+    is_short_complete_reply,
+    utterance_looks_complete,
+)
 from voice_runtime.frames import SwitchVoiceLanguageFrame, TTSFlushHintFrame
 from voice_runtime.recording import SessionRecorder, TurnRecord
 from voice_runtime.stt_events import final_event_key, segment_audio_seconds
@@ -151,6 +155,12 @@ _DEFAULT_FINALIZE_SETTLE = 0.15
 # Endpoint used when the buffered utterance reads as a finished thought, applied
 # instead of waiting out the full pause window (see voice_runtime.endpointing).
 _DEFAULT_COMPLETE_ENDPOINT = 0.35
+# Tighter endpoint for a SELF-CONTAINED short reply ("haan", "ji", "ठीक है").
+# Unlike a closed sentence, a bare acknowledgement cannot be the first half of
+# a longer thought, so the risk the complete-endpoint window insures against
+# does not apply — and this is exactly the turn where a fixed pause makes the
+# bot feel like it is deliberating over the word "yes".
+_DEFAULT_SHORT_REPLY_ENDPOINT = 0.12
 # A too-short fragment earns a canned clarification; if the REST of the
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
@@ -211,6 +221,15 @@ def language_label(locale: str | None) -> str:
     return _LANGUAGE_LABELS.get(locale.split("-")[0].lower(), locale)
 
 
+def turn_time_iso(timestamp: float) -> str:
+    """Serialize a stored turn time for the live client without losing precision."""
+    return (
+        datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 class ConversationBrain(FrameProcessor):
     def __init__(
         self,
@@ -227,6 +246,7 @@ class ConversationBrain(FrameProcessor):
         finalize_grace: float = _DEFAULT_FINALIZE_GRACE,
         finalize_settle: float = _DEFAULT_FINALIZE_SETTLE,
         complete_endpoint: float = _DEFAULT_COMPLETE_ENDPOINT,
+        short_reply_endpoint: float = _DEFAULT_SHORT_REPLY_ENDPOINT,
         latency: TurnLatencyTracker | None = None,
         audio_gate=None,
     ) -> None:
@@ -377,6 +397,7 @@ class ConversationBrain(FrameProcessor):
         self._finalize_grace = max(0.0, float(finalize_grace))
         self._finalize_settle = max(0.0, float(finalize_settle))
         self._complete_endpoint = max(0.0, float(complete_endpoint))
+        self._short_reply_endpoint = max(0.0, float(short_reply_endpoint))
         self._finalize_task: asyncio.Task | None = None
         # Monotonic time of the newest accepted final, used to tell "stragglers
         # are still arriving" from "the utterance has settled".
@@ -689,9 +710,16 @@ class ConversationBrain(FrameProcessor):
             # far reads as a finished thought, answer on the short endpoint
             # instead of waiting the window out; if they were mid-sentence, keep
             # buffering and let the turn controller decide.
-            if utterance_looks_complete(" ".join(self._pending_segments).strip()):
+            buffered = " ".join(self._pending_segments).strip()
+            if utterance_looks_complete(buffered):
+                # A bare acknowledgement gets the tighter window: a closed
+                # sentence can still open a longer thought, but "haan" / "ji"
+                # cannot, and it is the turn where a fixed pause is felt most.
                 await self._schedule_finalize(
-                    self._complete_endpoint, ignore_open_turn=True
+                    self._short_reply_endpoint
+                    if is_short_complete_reply(buffered)
+                    else self._complete_endpoint,
+                    ignore_open_turn=True,
                 )
             else:
                 await self._cancel_finalize()
@@ -1146,8 +1174,25 @@ class ConversationBrain(FrameProcessor):
     # ── turn handling ─────────────────────────────────────────────────────
 
     async def _notify_client(self, payload: dict) -> None:
-        """Side-channel JSON to the transport (live transcripts for test UIs)."""
-        await self.push_frame(OutputTransportMessageFrame(message=payload))
+        """Side-channel JSON to the transport (live transcripts for test UIs).
+
+        Sent as the URGENT variant deliberately. A plain
+        ``OutputTransportMessageFrame`` is a DataFrame, so the output transport
+        routes it through the same realtime-paced audio queue as the speech
+        itself — a message pushed after a reply's TTS frames only reaches the
+        client once that whole reply has been played out. For a 10-second
+        utterance that put the ``bot_text`` event ~10s after the bot actually
+        started speaking, which read as response latency in the test UI while
+        the measured spans said ~2s. The urgent frame bypasses the queue and is
+        written immediately, so client-side timestamps line up with
+        :class:`TurnLatencyTracker`.
+
+        Ordering that must follow the audio (telephony transfer/hangup) is
+        handled explicitly by ``_queue_control`` / ``_flush_pending_controls``,
+        which defer on the bot-stopped-speaking event rather than relying on
+        queue position.
+        """
+        await self.push_frame(OutputTransportMessageUrgentFrame(message=payload))
 
     async def _report_latency(self) -> None:
         """Publish the completed turn's latency spans, exactly once.
@@ -1173,7 +1218,12 @@ class ConversationBrain(FrameProcessor):
 
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
-        await self._notify_client({"type": "transcript", "text": text})
+        turn_timestamp = time.time()
+        await self._notify_client({
+            "type": "transcript",
+            "text": text,
+            "at": turn_time_iso(turn_timestamp),
+        })
         decision = self._router.decide(text, active_workflow=self._active_workflow)
         # Business understanding of the COMPLETED turn: deterministic platform
         # commands were already decided above (and hang-up/DNC even earlier,
@@ -1215,7 +1265,12 @@ class ConversationBrain(FrameProcessor):
             self._recorder.session_id, decision.kind.value, signal,
             classification.intent if classification else None, text[:200],
         )
-        turn = TurnRecord(role="user", text=text, route=decision.kind.value)
+        turn = TurnRecord(
+            role="user",
+            text=text,
+            timestamp=turn_timestamp,
+            route=decision.kind.value,
+        )
         self._recorder.add_turn(turn)
         self._recorder.add_event(
             "route_decision",
@@ -1309,6 +1364,7 @@ class ConversationBrain(FrameProcessor):
         classification = await self._intent_pipeline.classify(
             text, self._history, active_workflow=self._active_workflow,
         )
+        self._latency.mark_classified()
         usage, self._intent_pipeline.last_usage = self._intent_pipeline.last_usage, None
         if usage is not None:
             counters = self._recorder.usage
@@ -1428,6 +1484,7 @@ class ConversationBrain(FrameProcessor):
             customer_verified=bool(self._policy and self._policy.verified),
             context_values=context_values,
         )
+        self._latency.mark_tool_done()
         self._recorder.add_event("tool_executed", **result.as_event())
         await self._notify_client({
             "type": "event", "name": "tool_executed", **result.as_event(),
@@ -1696,7 +1753,12 @@ class ConversationBrain(FrameProcessor):
                 reply[:200],
             )
         if reply:
-            await self._notify_client({"type": "bot_text", "text": reply})
+            reply_timestamp = time.time()
+            await self._notify_client({
+                "type": "bot_text",
+                "text": reply,
+                "at": turn_time_iso(reply_timestamp),
+            })
             self._last_bot_reply = reply
             if self._policy is not None:
                 self._policy.observe_bot(reply)
@@ -1704,6 +1766,7 @@ class ConversationBrain(FrameProcessor):
             record = TurnRecord(
                 role="bot",
                 text=reply,
+                timestamp=reply_timestamp,
                 route=decision.kind.value,
                 kb_used=bool(kb_sources),
                 kb_sources=kb_sources,
@@ -1760,6 +1823,7 @@ class ConversationBrain(FrameProcessor):
             # TTS, and history records exactly what was spoken.
             placeholder_filter = StreamingPlaceholderFilter(self._placeholder_values())
             try:
+                self._latency.mark_llm_request()
                 stream = self._llm.stream(
                     self._history,
                     system=system,
@@ -1829,7 +1893,11 @@ class ConversationBrain(FrameProcessor):
         self._history.append({"role": "assistant", "content": text})
         record = TurnRecord(role="bot", text=text)
         self._recorder.add_turn(record)
-        await self._notify_client({"type": "bot_text", "text": text})
+        await self._notify_client({
+            "type": "bot_text",
+            "text": text,
+            "at": turn_time_iso(record.timestamp),
+        })
         await self.push_frame(LLMFullResponseStartFrame())
         await self.push_frame(TextFrame(text))
         await self.push_frame(LLMFullResponseEndFrame())

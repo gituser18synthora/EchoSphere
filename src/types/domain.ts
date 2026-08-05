@@ -1455,7 +1455,7 @@ export interface TraceStep {
   promptVersion?: string;
   latencyMs?: number;
   costUsd?: number;
-  /** Wall-clock time of the turn (ISO), present for live voice calls. */
+  /** Wall-clock time of the turn (ISO, up to microsecond precision). */
   at?: string;
 }
 

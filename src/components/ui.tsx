@@ -192,15 +192,16 @@ export function ConfirmModal({ open, onClose, onConfirm, title, body, confirmLab
 }
 
 /* ---------- Drawer ---------- */
-export function Drawer({ open, onClose, title, sub, children, footer, wide, headerExtra }: {
+export function Drawer({ open, onClose, title, sub, children, footer, wide, headerExtra, className }: {
   open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode;
   children: ReactNode; footer?: ReactNode; wide?: boolean; headerExtra?: ReactNode;
+  className?: string;
 }) {
   useEscape(open, onClose);
   if (!open) return null;
   return createPortal(
     <div className="overlay-right" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`drawer${wide ? " drawer-lg" : ""}`} role="dialog" aria-modal="true">
+      <div className={`drawer${wide ? " drawer-lg" : ""}${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true">
         <div className="drawer-header">
           <div className="grow">
             <div className="t-section" style={{ fontSize: 16 }}>{title}</div>

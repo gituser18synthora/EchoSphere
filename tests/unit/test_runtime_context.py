@@ -273,6 +273,52 @@ class TestCollectionsCompatibility:
         assert snap.partial_payment_allowed is True
         assert snap.payment_methods == ("UPI", "Net Banking")
 
+    def test_days_overdue_derives_from_due_date_when_not_supplied(self):
+        """Most schemas model a due date only; the policy needs the day count.
+
+        Without this the account-explanation step can state the due date but
+        never "this is N days overdue" — the fact that creates urgency.
+        """
+        from datetime import date, timedelta
+
+        due = date.today() - timedelta(days=8)
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b", field_definitions=LOAN_FIELDS,
+            payload={"customer_name": "Rahul", "overdue_amount": 3500,
+                     "due_date": due.isoformat()},
+            payload_source="test", domain_policy="collections",
+        )
+        assert collection_snapshot_from_context(ctx).days_overdue == 8
+
+    def test_supplied_days_overdue_is_never_overwritten(self):
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b", field_definitions=LOAN_FIELDS,
+            payload={"overdue_amount": 3500, "due_date": "2020-01-01",
+                     "days_overdue": 3},
+            payload_source="test", domain_policy="collections",
+        )
+        assert collection_snapshot_from_context(ctx).days_overdue == 3
+
+    def test_future_due_date_is_zero_not_negative(self):
+        from datetime import date, timedelta
+
+        due = date.today() + timedelta(days=5)
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b", field_definitions=LOAN_FIELDS,
+            payload={"overdue_amount": 3500, "due_date": due.isoformat()},
+            payload_source="test", domain_policy="collections",
+        )
+        assert collection_snapshot_from_context(ctx).days_overdue == 0
+
+    def test_unparseable_due_date_stays_unknown(self):
+        """A guessed day count would be spoken as verified fact — refuse."""
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b", field_definitions=LOAN_FIELDS,
+            payload={"overdue_amount": 3500},
+            payload_source="test", domain_policy="collections",
+        )
+        assert collection_snapshot_from_context(ctx).days_overdue is None
+
 
 class TestResponsePath:
     def test_dot_paths(self):

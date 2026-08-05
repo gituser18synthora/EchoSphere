@@ -10,6 +10,7 @@
 """
 
 import asyncio
+from datetime import datetime, timezone
 
 from pipecat.frames.frames import TextFrame, TranscriptionFrame, UserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
@@ -206,6 +207,18 @@ class TestFragmentAggregation:
 
 
 class TestPlaceholderSafety:
+    async def test_say_uses_the_stored_turn_timestamp_in_the_live_payload(self):
+        brain = make_brain()
+        record = await brain._say("Namaste!")
+
+        expected = (
+            datetime.fromtimestamp(record.timestamp, tz=timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+        payload = next(n for n in brain._notified if n.get("type") == "bot_text")
+        assert payload["at"] == expected
+
     async def test_say_strips_unresolved_placeholders(self):
         brain = make_brain()
         record = await brain._say("क्या मैं [aapka naam] से बात कर रहा हूं?")

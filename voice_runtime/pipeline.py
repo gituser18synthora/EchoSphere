@@ -248,6 +248,7 @@ def build_tts_service(
     *,
     recorder: SessionRecorder,
     sample_rate: int = 24000,
+    latency=None,
 ):
     """TTS service from bot config: streaming router or segmented fallback."""
     tts_conf = config.tts or {}
@@ -267,6 +268,7 @@ def build_tts_service(
             energy=config.energy,
             sample_rate=sample_rate,
             recorder=recorder,
+            latency=latency,
         )
 
     # Delivery tuning for the segmented REST path: canonical speed overrides
@@ -343,12 +345,17 @@ def build_voice_pipeline(
         recorder=recorder,
         use_provider_vad=not use_vad,
     )
-    tts = build_tts_service(config, recorder=recorder, sample_rate=tts_sample_rate)
+    # Created before the TTS service: the router is the only component that can
+    # stamp when synthesis was requested and when the provider's first byte
+    # arrived, so it needs the same tracker the brain and VAD probe write to.
+    tracker = TurnLatencyTracker(session_id=recorder.session_id)
+    tts = build_tts_service(
+        config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
+    )
     llm_provider = build_llm_provider(config)
 
     turn = resolve_turn_detection(config, transport_kind)
     gate_conf = resolve_noise_gate(config, transport_kind)
-    tracker = TurnLatencyTracker(session_id=recorder.session_id)
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply
     # do not contribute to a verdict).
@@ -379,6 +386,7 @@ def build_voice_pipeline(
         finalize_grace=turn["finalize_grace"],
         finalize_settle=turn["finalize_settle"],
         complete_endpoint=turn["complete_endpoint"],
+        short_reply_endpoint=turn["short_reply_endpoint"],
         latency=tracker,
         audio_gate=audio_gate,
     )

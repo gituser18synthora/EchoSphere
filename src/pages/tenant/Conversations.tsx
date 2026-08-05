@@ -17,6 +17,7 @@ import {
   downloadOperationalExport,
   type StructuredExportFormat,
 } from "@/services/exportDownload";
+import { formatChatTime } from "@/services/chatTime";
 
 const channelIcon: Record<string, IconName> = { voice: "phone", whatsapp: "whatsapp", web: "monitor", mobile: "smartphone" };
 
@@ -67,7 +68,12 @@ export default function Conversations() {
           <p className="page-sub">QA every call: transcript, trace, sentiment and scorecards — turn findings into fixes</p>
         </div>
         <div className="page-actions">
-          {flags.tenantCostVisibility && <CurrencySelect state={money} />}
+          {flags.tenantCostVisibility && (
+            <label className="row gap-6">
+              <span className="t-micro">Currency</span>
+              <CurrencySelect state={money} />
+            </label>
+          )}
           <ExportControls
             buttonLabel="Export"
             onDownload={(format) => downloadOperationalExport(
@@ -96,18 +102,21 @@ export default function Conversations() {
         onChange={setFilter}
       />
 
-      <div className="filter-bar mt-16">
+      <div className="filter-bar conversation-toolbar mt-16">
         <div className="search-box">
           <Icon name="search" size={14} />
-          <input className="input" placeholder="Search by intent, bot, call ID…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search conversations" />
+          <input className="input" placeholder="Search by bot or call ID…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search conversations" />
         </div>
         <select className="select" value={botFilter} onChange={(e) => setBotFilter(e.target.value)} aria-label="Filter by bot">
           <option value="all">All bots</option>
           {bots.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
+        <span className="conversation-result-count">
+          <strong>{rows.length}</strong> of {q.data?.length ?? 0} conversations
+        </span>
       </div>
 
-      <div className="card">
+      <div className="card conversation-list-card">
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
           onRowClick={(c) => setOpen(c)}
@@ -126,7 +135,9 @@ export default function Conversations() {
               ),
             },
             { key: "bot", header: "Bot", sortValue: (c) => c.bot, render: (c) => <span className="t-sub">{c.bot}</span> },
-            { key: "intents", header: "Intents", render: (c) => <span className="row gap-4 wrap">{c.intents.map((i) => <code key={i} style={{ fontSize: 11.5, background: "var(--surface-3)", padding: "1px 6px", borderRadius: 4 }}>{i}</code>)}</span> },
+            /* No conversation-level Intents column: the runtime does not tag
+               calls with a rolled-up intent list, so it rendered empty for
+               every row. Per-turn intents live in the drawer's trace. */
             { key: "sentiment", header: "Sentiment", sortValue: (c) => c.sentiment, render: (c) => <StatusChip status={c.sentiment} /> },
             {
               key: "outcome", header: "Outcome", sortValue: (c) => String(c.contained),
@@ -141,7 +152,10 @@ export default function Conversations() {
                 ? <code style={{ fontSize: 11.5, background: "var(--surface-3)", padding: "1px 6px", borderRadius: 4 }}>{c.disposition.replaceAll("_", " ")}</code>
                 : <span className="t-micro">—</span>,
             },
-            { key: "csat", header: "CSAT", align: "right", sortValue: (c) => c.csat ?? 0, render: (c) => <span className="t-num">{c.csat ? `${c.csat}/5` : "—"}</span> },
+            /* CSAT column hidden until post-call ratings are actually captured:
+               the runtime never writes conversation.csat, so it only has a value
+               for ingested/seeded calls. The field still ships in the API and the
+               operational export — restore the column when surveys go live. */
             { key: "qa", header: "QA score", align: "right", sortValue: (c) => c.qaScore ?? 0, render: (c) => c.qaScore ? <span className={`t-num t-strong ${c.qaScore < 70 ? "t-bad" : ""}`}>{c.qaScore}</span> : <span className="t-micro">—</span> },
             // The list shows the SAME backend-metered total the detail
             // breakdown itemises — never a client-side calculation — rendered
@@ -211,9 +225,24 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
 
   return (
     <Drawer
-      open onClose={onClose} wide
-      title={<span className="row gap-8">Call {conv.id}<StatusChip status={conv.contained ? "good" : "serious"} label={conv.contained ? "Contained" : "Escalated"} />{conv.disposition && <StatusChip status="neutral" label={conv.disposition.replaceAll("_", " ")} />}</span>}
-      sub={`${conv.bot} · ${conv.channel} · ${new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${fmtDur(conv.durationSec)} · ${conv.caller}`}
+      open onClose={onClose} wide className="conversation-drawer"
+      title={(
+        <span className="conversation-drawer-title">
+          <span>Conversation</span>
+          <code>{conv.id}</code>
+          <StatusChip status={conv.contained ? "good" : "serious"} label={conv.contained ? "Contained" : "Escalated"} />
+          {conv.disposition && <StatusChip status="neutral" label={conv.disposition.replaceAll("_", " ")} />}
+        </span>
+      )}
+      sub={(
+        <span className="conversation-drawer-sub">
+          <span><Icon name="bot" size={12} />{conv.bot}</span>
+          <span><Icon name={channelIcon[conv.channel] ?? "message"} size={12} />{conv.channel}</span>
+          <span><Icon name="clock" size={12} />{new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+          <span>{fmtDur(conv.durationSec)}</span>
+          <span>{conv.caller}</span>
+        </span>
+      )}
       headerExtra={
         <MenuButton actions={[
           {
@@ -291,11 +320,11 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
         />
 
         {tab === "transcript" && (
-          <div className="col gap-10">
+          <section className="conversation-transcript" aria-label="Conversation transcript">
             {detailQ.loading && (
-              <div className="col gap-8" aria-label="Loading transcript">
+              <div className="col gap-10 conversation-transcript-loading" aria-label="Loading transcript">
                 {[46, 72, 38].map((w, i) => (
-                  <span key={i} className="skeleton" style={{ height: 34, width: `${w}%`, alignSelf: i % 2 ? "flex-end" : "flex-start", borderRadius: 10 }} />
+                  <span key={i} className="skeleton" style={{ height: 64, width: `${w}%`, alignSelf: i % 2 ? "flex-end" : "flex-start", borderRadius: 16 }} />
                 ))}
               </div>
             )}
@@ -310,17 +339,26 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
               />
             )}
             {!detailQ.loading && !detailQ.error && transcript.map((s) => (
-              <div key={s.turn} className="col" style={{ alignItems: s.speaker === "user" ? "flex-end" : "flex-start", gap: 2 }}>
-                <div className={`transcript-bubble ${s.speaker}`}>{s.text}</div>
-                <span className="transcript-meta">
-                  {s.speaker === "bot" ? "bot" : "caller"}
-                  {s.at && <> · {new Date(s.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}</>}
-                  {s.speaker === "bot" && (s.intent || s.route) && <> · <code>{s.intent ?? s.route}</code>{s.confidence ? ` ${(s.confidence * 100).toFixed(0)}%` : ""}</>}
-                  {s.speaker === "bot" && s.latencyMs != null && <> · {s.latencyMs}ms</>}
-                </span>
+              <div key={s.turn} className={`conversation-turn ${s.speaker}`}>
+                <div className={`transcript-bubble ${s.speaker}`}>
+                  <span className="transcript-text">{s.text}</span>
+                  {s.at && (
+                    <time className="transcript-bubble-time" dateTime={s.at} title={s.at}>
+                      {formatChatTime(s.at)}
+                    </time>
+                  )}
+                </div>
+                {s.speaker === "bot" && ((s.intent || s.route) || s.latencyMs != null) && (
+                  <span className="transcript-meta">
+                    {(s.intent || s.route) && <code>{s.intent ?? s.route}</code>}
+                    {(s.intent || s.route) && s.confidence ? ` ${(s.confidence * 100).toFixed(0)}%` : ""}
+                    {(s.intent || s.route) && s.latencyMs != null && <span aria-hidden="true"> · </span>}
+                    {s.latencyMs != null && <span>{s.latencyMs}ms</span>}
+                  </span>
+                )}
               </div>
             ))}
-          </div>
+          </section>
         )}
 
         {tab === "trace" && (

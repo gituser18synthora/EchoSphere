@@ -9,6 +9,7 @@ import { Icon } from "@/components/Icon";
 import { JsonView } from "@/components/JsonView";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+import { formatChatTime, nowWithMicroseconds } from "@/services/chatTime";
 
 /* Text testing runs each turn through the REAL runtime stack on the backend
    (TurnRouter routing + the WorkflowEngine executing the bot's saved
@@ -50,18 +51,22 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const navigate = useNavigate();
   const { toast } = useApp();
   const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
+  const greetingVariant =
+    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0];
   const greetingText =
-    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0]?.content
+    greetingVariant?.content
     ?? `Test session for ${bot.name} — type a caller message; it runs through the real routing and workflow engine.`;
   const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null);
   const [runningSuite, setRunningSuite] = useState(false);
+  const [greetingAt, setGreetingAt] = useState(nowWithMicroseconds);
   const listRef = useRef<HTMLDivElement>(null);
 
   /* ---------- Live voice session ---------- */
   const voiceRef = useRef<VoiceClient | null>(null);
+  const awaitingVoiceGreetingRef = useRef(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
@@ -74,8 +79,10 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scrollToEnd = () =>
     setTimeout(() => listRef.current?.scrollTo({ top: 99999, behavior: "smooth" }), 60);
 
-  const appendVoiceStep = (speaker: "user" | "bot", text: string) => {
-    setSteps((s) => [...s, { turn: s.length + 2, speaker, text }]);
+  const appendVoiceStep = (speaker: "user" | "bot", text: string, at?: string) => {
+    setSteps((s) => [...s, {
+      turn: s.length + 2, speaker, text, at: at ?? nowWithMicroseconds(),
+    }]);
     scrollToEnd();
   };
 
@@ -97,8 +104,17 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
         setSessionConfig(config);
         setLiveLanguage(config.language ?? "");
       },
-      onTranscript: (text) => appendVoiceStep("user", text),
-      onBotText: (text) => appendVoiceStep("bot", text),
+      onTranscript: (text, at) => appendVoiceStep("user", text, at),
+      onBotText: (text, at) => {
+        // The greeting is already rendered as turn 1. Replace its local mount
+        // time with the runtime's stored turn time instead of duplicating it.
+        if (awaitingVoiceGreetingRef.current) {
+          awaitingVoiceGreetingRef.current = false;
+          setGreetingAt(at ?? nowWithMicroseconds());
+          return;
+        }
+        appendVoiceStep("bot", text, at);
+      },
       onLanguage: (locale) => setLiveLanguage(locale),
       onEvent: (name, detail) => {
         if (name === "bot_speaking_started") setVoiceStatus("bot_speaking");
@@ -123,12 +139,14 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       onError: (message) => toast(message, "error"),
     });
     try {
+      awaitingVoiceGreetingRef.current = true;
       await client.start(bot.id);
       voiceRef.current = client;
       setVoiceActive(true);
       setVoiceStatus("listening");
       toast("Voice session live — speak into your microphone");
     } catch (e) {
+      awaitingVoiceGreetingRef.current = false;
       client.stop();
       toast(e instanceof Error ? e.message : "Could not start the voice session", "error");
     } finally {
@@ -138,20 +156,40 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
 
   /* One conversation per tab mount — the backend keeps workflow state per id. */
   const chatSessionRef = useRef<string | undefined>(undefined);
+  const chatLanguageRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!steps.length && greetingVariant?.language) {
+      chatLanguageRef.current = greetingVariant.language;
+    }
+  }, [greetingVariant?.language, steps.length]);
 
   const send = async () => {
     const text = input.trim();
     if (!text || thinking) return;
-    const userStep: TraceStep = { turn: steps.length + 2, speaker: "user", text };
+    const userStep: TraceStep = {
+      turn: steps.length + 2, speaker: "user", text, at: nowWithMicroseconds(),
+    };
     setSteps((s) => [...s, userStep]);
     setInput("");
     setThinking(true);
     scrollToEnd();
     const started = performance.now();
     try {
-      const result = await testBotChat(bot.id, text, chatSessionRef.current);
+      const history = [greetingStep, ...steps].map((step) => ({
+        role: step.speaker === "bot" ? "assistant" as const : "user" as const,
+        content: step.text,
+      }));
+      const result = await testBotChat(
+        bot.id,
+        text,
+        chatSessionRef.current,
+        history,
+        chatLanguageRef.current,
+      );
       chatSessionRef.current = result.sessionId;
-      const latency = Math.round(performance.now() - started);
+      chatLanguageRef.current = result.language;
+      const latency = result.latencyMs ?? Math.round(performance.now() - started);
       setSteps((s) => {
         const reply: TraceStep = {
           turn: s.length + 2,
@@ -165,6 +203,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           workflowSlots: result.workflow?.slots,
           workflowDone: result.workflow?.done,
           latencyMs: latency,
+          at: result.at ?? nowWithMicroseconds(),
         };
         setSelectedTurn(reply.turn);
         return [...s, reply];
@@ -174,6 +213,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       setSteps((s) => [...s, {
         turn: s.length + 2, speaker: "bot",
         text: "The test turn failed — check that the platform API is running and try again.",
+        at: nowWithMicroseconds(),
       }]);
     } finally {
       setThinking(false);
@@ -188,6 +228,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     promptVersion: greetingPrompt ? `greeting v${greetingPrompt.activeVersion}` : undefined,
     latencyMs: 400,
     costUsd: 0.004,
+    at: greetingAt,
   };
   const allSteps = [greetingStep, ...steps];
 
@@ -224,7 +265,13 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                   {voiceStatus === "bot_speaking" ? "Bot speaking" : "Listening"}
                 </span>
               )}
-              <Button size="sm" variant="ghost" icon="refresh" onClick={() => { setSteps([]); setSelectedTurn(null); }}>Reset</Button>
+              <Button size="sm" variant="ghost" icon="refresh" onClick={() => {
+                setSteps([]);
+                setSelectedTurn(null);
+                setGreetingAt(nowWithMicroseconds());
+                chatSessionRef.current = undefined;
+                chatLanguageRef.current = greetingVariant?.language;
+              }}>Reset</Button>
               {voiceActive ? (
                 <Button size="sm" variant="danger-ghost" icon="x" onClick={stopVoice}>Stop voice session</Button>
               ) : (
@@ -264,7 +311,17 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                 onClick={() => s.speaker === "bot" && setSelectedTurn(s.turn)}
                 aria-label={s.speaker === "bot" ? `Inspect turn ${s.turn}` : undefined}
               >
-                {s.text}
+                <span className="transcript-text">{s.text}</span>
+                {s.at && (
+                  <time
+                    className="transcript-bubble-time"
+                    dateTime={s.at}
+                    data-testid="message-timestamp"
+                    title={s.at}
+                  >
+                    {formatChatTime(s.at)}
+                  </time>
+                )}
               </button>
             ))}
             {thinking && (
@@ -448,9 +505,15 @@ const simPreStyle: CSSProperties = {
 const chipValue = (v: unknown): string =>
   v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
 
+interface RuntimeMessage {
+  role: "user" | "assistant";
+  content: string;
+  at: string;
+}
+
 function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }) {
   const { toast } = useApp();
-  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [messages, setMessages] = useState<RuntimeMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState<SimulateTrace | null>(null);
@@ -490,6 +553,7 @@ function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }
     }
     const mockToolResults = parseJsonObject(mockToolsJson, "Mock tool results");
     if (mockToolResults === null) return;
+    const sentAt = nowWithMicroseconds();
     setBusy(true);
     try {
       const result = await simulateTurn(bot.id, {
@@ -510,8 +574,12 @@ function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }
       if (!result.heldForFinal) {
         setMessages((m) => [
           ...m,
-          { role: "user" as const, content: text },
-          ...(result.response ? [{ role: "assistant" as const, content: result.response }] : []),
+          { role: "user" as const, content: text, at: sentAt },
+          ...(result.response ? [{
+            role: "assistant" as const,
+            content: result.response,
+            at: nowWithMicroseconds(),
+          }] : []),
         ]);
         setInput("");
       }
@@ -621,7 +689,12 @@ function RuntimeSimulator({ bot, prompts }: { bot: VoiceBot; prompts: Prompt[] }
         {messages.length > 0 && (
           <div className="col gap-8" style={{ maxHeight: 220, overflowY: "auto" }}>
             {messages.map((m, i) => (
-              <div key={i} className={`transcript-bubble ${m.role === "user" ? "user" : "bot"}`}>{m.content}</div>
+              <div key={i} className={`transcript-bubble ${m.role === "user" ? "user" : "bot"}`}>
+                <span className="transcript-text">{m.content}</span>
+                <time className="transcript-bubble-time" dateTime={m.at} title={m.at}>
+                  {formatChatTime(m.at)}
+                </time>
+              </div>
             ))}
           </div>
         )}

@@ -377,6 +377,9 @@ export interface ChatTestResult {
   reason: string;
   reply: string;
   done: boolean;
+  language: string;
+  latencyMs: number;
+  at: string;
   activeWorkflow: string | null;
   workflow: {
     name: string;
@@ -388,8 +391,19 @@ export interface ChatTestResult {
     done: boolean;
   } | null;
 }
-export const testBotChat = (botId: string, message: string, sessionId?: string): Promise<ChatTestResult> =>
-  http.post(`/bots/${botId}/testing/chat`, { message, ...(sessionId ? { sessionId } : {}) });
+export const testBotChat = (
+  botId: string,
+  message: string,
+  sessionId?: string,
+  messages: { role: "user" | "assistant"; content: string }[] = [],
+  language?: string,
+): Promise<ChatTestResult> =>
+  http.post(`/bots/${botId}/testing/chat`, {
+    message,
+    messages,
+    ...(sessionId ? { sessionId } : {}),
+    ...(language ? { language } : {}),
+  });
 /** One complete runtime turn (context → prompt → routing → policy → tools →
     workflow/LLM) with the full trace — the Testing Studio simulator. */
 export const simulateTurn = (botId: string, body: {
