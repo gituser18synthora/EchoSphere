@@ -204,6 +204,7 @@ embedding provider — no external API keys required. See
 | [docs/SECURITY.md](docs/SECURITY.md) | auth, upload safety, PII, prompt injection, audit |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | local + docker-compose setup, smoke tests |
 | [docs/TESTING.md](docs/TESTING.md) | suite layout, markers, perf numbers |
+| [docs/PERFORMANCE_TESTING.md](docs/PERFORMANCE_TESTING.md) | performance strategy, SLOs, load scenarios and reporting template |
 | [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md) | what happened to `VoiceBot/` |
 
 ## Backend gaps

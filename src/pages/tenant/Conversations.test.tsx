@@ -152,9 +152,11 @@ describe("Tenant conversation review", () => {
     await user.click(screen.getByText(/1:15/));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "More actions" }));
-    expect(within(dialog).getByRole("menuitem", { name: "Export transcript as CSV" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("menuitem", { name: "Export transcript as Excel" })).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("menuitem", { name: "Export transcript as CSV" }));
+    // MenuButton portals its popup to document.body so it cannot be clipped by
+    // the drawer's overflow boundary; query the popup at screen scope.
+    expect(screen.getByRole("menuitem", { name: "Export transcript as CSV" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Export transcript as Excel" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Export transcript as CSV" }));
     expect(exportApi.downloadConversationTranscript).toHaveBeenCalledWith("cv-001", "csv");
   });
 

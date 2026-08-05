@@ -47,9 +47,9 @@ export const getTenant = (id: string): Promise<Tenant> => http.get(`/tenants/${i
 export const createTenant = (body: {
   name: string; code?: string; domain: string; industry?: string; region?: string;
   aiProfileCode?: string; planCode: string; adminEmail: string; adminName?: string;
-  status?: string; seats?: number;
+  status?: string; seats?: number; defaultLanguages?: string[];
 }) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string } }>("/tenants", body);
-export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail"> & { planCode: string; aiProfileCode: string }>) =>
+export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages"> & { planCode: string; aiProfileCode: string }>) =>
   http.patch<Tenant>(`/tenants/${id}`, body);
 export const archiveTenant = (id: string) => http.delete<{ archived: boolean }>(`/tenants/${id}`);
 
@@ -323,8 +323,16 @@ export const listVoices = (filters?: { provider?: string; language?: string; loc
   const qs = params.toString();
   return http.get(`/voices${qs ? `?${qs}` : ""}`);
 };
-export const listLanguages = (includeDisabled = false): Promise<{ id: string; code: string; name: string; nativeName?: string | null; direction?: string; enabled: boolean }[]> =>
-  http.get(`/languages${includeDisabled ? "?includeDisabled=true" : ""}`);
+export const listLanguages = (
+  includeDisabled = false,
+  tenantId?: string,
+): Promise<{ id: string; code: string; name: string; nativeName?: string | null; direction?: string; isDefault?: boolean; enabled: boolean }[]> => {
+  const params = new URLSearchParams();
+  if (includeDisabled) params.set("includeDisabled", "true");
+  if (tenantId) params.set("tenantId", tenantId);
+  const query = params.toString();
+  return http.get(`/languages${query ? `?${query}` : ""}`);
+};
 
 /* ---------- Intents / Entities / APIs / Workflows ---------- */
 export const listIntents = (botId: string): Promise<Intent[]> => http.get(`/bots/${botId}/intents`);

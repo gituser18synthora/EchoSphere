@@ -721,6 +721,12 @@ function ApiBuilderDrawer({ botId, conn, intents, workflows, canManage, canTest,
 const CONTEXT_FIELD_TYPES: RuntimeContextFieldType[] = [
   "string", "number", "integer", "boolean", "date", "object", "array",
 ];
+const TEST_USER_DEFAULT_FIELDS: RuntimeContextField[] = [
+  { key: "customer_name", label: "Name", type: "string" },
+  { key: "mobile", label: "Mobile", type: "string" },
+  { key: "email", label: "Email", type: "string" },
+  { key: "overdue_amount", label: "Due amount", type: "number" },
+];
 /* Provenance chip tones: api=info, test=neutral, record=brand, session=warn, system=neutral. */
 const SOURCE_CHIP_TONE: Record<string, string> = {
   api: "info", test: "neutral", record: "brand", session: "warning", system: "neutral",
@@ -728,6 +734,87 @@ const SOURCE_CHIP_TONE: Record<string, string> = {
 
 const ctxValueText = (v: unknown): string =>
   v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
+
+const contextFieldLabel = (key: string): string =>
+  key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+const inferContextFieldType = (value: unknown): RuntimeContextFieldType => {
+  if (Array.isArray(value)) return "array";
+  if (value !== null && typeof value === "object") return "object";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+  return "string";
+};
+
+function TestContextValueInput({ field, value, disabled, onChange }: {
+  field: RuntimeContextField; value: unknown; disabled: boolean;
+  onChange: (value: unknown | undefined) => void;
+}) {
+  if (field.type === "boolean") {
+    const selected = value === true ? "true" : value === false ? "false" : "";
+    return (
+      <select
+        className="select" value={selected} disabled={disabled}
+        onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value === "true")}
+      >
+        <option value="">Not set</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  }
+
+  if (field.type === "object" || field.type === "array") {
+    return (
+      <input
+        className="input mono" value={value === undefined ? "" : ctxValueText(value)}
+        placeholder="Edit this value in Advanced JSON" disabled
+      />
+    );
+  }
+
+  const isNumber = field.type === "number" || field.type === "integer";
+  const inputType = isNumber
+    ? "number"
+    : field.type === "date"
+      ? "date"
+      : field.key.toLowerCase().includes("email")
+        ? "email"
+        : /(mobile|phone)/i.test(field.key)
+          ? "tel"
+          : "text";
+  const placeholder = field.key === "customer_name"
+    ? "Rahul Sharma"
+    : field.key === "mobile"
+      ? "+91 98765 43210"
+      : field.key === "email"
+        ? "rahul@example.com"
+        : field.key === "overdue_amount"
+          ? "4500"
+          : `Enter ${field.label || contextFieldLabel(field.key).toLowerCase()}`;
+
+  return (
+    <input
+      className={isNumber ? "input t-num" : "input"}
+      type={inputType}
+      step={field.type === "integer" ? 1 : isNumber ? "any" : undefined}
+      value={value === undefined || value === null ? "" : String(value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(e) => {
+        const raw = e.target.value;
+        if (raw === "") {
+          onChange(undefined);
+        } else if (isNumber) {
+          const parsed = Number(raw);
+          if (Number.isFinite(parsed)) onChange(field.type === "integer" ? Math.trunc(parsed) : parsed);
+        } else {
+          onChange(raw);
+        }
+      }}
+    />
+  );
+}
 
 function RuntimeContextSection({ bot, connections, canManage, managePermTitle }: {
   bot: VoiceBot; connections: ApiConnection[]; canManage: boolean; managePermTitle?: string;
@@ -744,7 +831,7 @@ function RuntimeContextSection({ bot, connections, canManage, managePermTitle }:
           {q.data && (q.data.configured ? (
             <>
               <span className="chip chip-good">configured</span>
-              <span className="chip chip-neutral">{q.data.sourceMode === "api" ? "API response" : "manual JSON"}</span>
+              <span className="chip chip-neutral">{q.data.sourceMode === "api" ? "API response" : "test data"}</span>
               <span className="chip chip-neutral t-num">{q.data.fields.length} field{q.data.fields.length === 1 ? "" : "s"}</span>
             </>
           ) : (
@@ -795,12 +882,74 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
   const [validateErr, setValidateErr] = useState<string | null>(null);
   const [validation, setValidation] = useState<RuntimeContextValidateResult | null>(null);
 
+  const parsedTestPayload = useMemo(() => {
+    if (!testJson.trim()) return {} as Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(testJson);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }, [testJson]);
+
+  const testUserFields = useMemo(() => {
+    const declared = new Map(
+      fields.filter((field) => field.key.trim()).map((field) => [field.key.trim(), field]),
+    );
+    const result: RuntimeContextField[] = TEST_USER_DEFAULT_FIELDS.map((fallback) => {
+      const configured = declared.get(fallback.key);
+      return configured
+        ? { ...configured, key: fallback.key, label: configured.label || fallback.label }
+        : fallback;
+    });
+    const seen = new Set(result.map((field) => field.key));
+    for (const field of fields) {
+      const key = field.key.trim();
+      if (!key || seen.has(key)) continue;
+      result.push({ ...field, key, label: field.label || contextFieldLabel(key) });
+      seen.add(key);
+    }
+    for (const [key, value] of Object.entries(parsedTestPayload ?? {})) {
+      if (seen.has(key)) continue;
+      result.push({
+        key, label: contextFieldLabel(key), type: inferContextFieldType(value),
+      });
+      seen.add(key);
+    }
+    return result;
+  }, [fields, parsedTestPayload]);
+
   const patchField = (i: number, patch: Partial<RuntimeContextField>) =>
     setFields((rows) => rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const cleanFields = (): RuntimeContextField[] =>
     fields.filter((f) => f.key.trim()).map((f) => ({
       ...f, key: f.key.trim(), label: f.label?.trim() || undefined,
     }));
+
+  const fieldsForPayload = (payload: Record<string, unknown> | null): RuntimeContextField[] => {
+    const cleaned = cleanFields();
+    const declared = new Set(cleaned.map((field) => field.key));
+    for (const fallback of TEST_USER_DEFAULT_FIELDS) {
+      if (payload && Object.prototype.hasOwnProperty.call(payload, fallback.key) && !declared.has(fallback.key)) {
+        cleaned.push({ ...fallback });
+        declared.add(fallback.key);
+      }
+    }
+    return cleaned;
+  };
+
+  const setTestValue = (key: string, value: unknown | undefined) => {
+    if (parsedTestPayload === null) return;
+    const next = { ...parsedTestPayload };
+    if (value === undefined || value === "") delete next[key];
+    else next[key] = value;
+    setTestJson(Object.keys(next).length ? JSON.stringify(next, null, 2) : "");
+    setValidation(null);
+    setValidateErr(null);
+    setSaveErr(null);
+  };
 
   const parseTestJson = (): Record<string, unknown> | null | "invalid" => {
     if (!testJson.trim()) return null;
@@ -824,7 +973,7 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
     setValidateErr(null);
     try {
       setValidation(await validateRuntimeContext(bot.id, {
-        payload: payload ?? {}, fields: cleanFields(), allowAdditional,
+        payload: payload ?? {}, fields: fieldsForPayload(payload), allowAdditional,
       }));
     } catch (e) {
       setValidateErr(errMsg(e, "Validation failed"));
@@ -846,7 +995,7 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
         sourceMode,
         apiConnectionId: sourceMode === "api" ? apiConnectionId : null,
         responsePath: responsePath.trim() || null,
-        fields: cleanFields(),
+        fields: fieldsForPayload(testPayload),
         allowAdditional,
         testPayload,
         missingValuePolicy: missingValuePolicy.trim() || null,
@@ -872,11 +1021,11 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
           label="Source mode"
           hint={sourceMode === "api"
             ? "Live calls fetch user details from the selected API connection."
-            : "Live calls use the test JSON below (or a stored record matched by phone)."}
+            : "Calls use the test-user details below (or a stored record matched by phone)."}
         >
           <select className="select" value={sourceMode} onChange={(e) => setSourceMode(e.target.value as "api" | "manual")}>
             <option value="api">API response</option>
-            <option value="manual">Manual test JSON</option>
+            <option value="manual">Manual test data</option>
           </select>
         </Field>
         <Field label="Domain policy" hint="Collections adds the deterministic call policy (verification, phased flow, dispositions).">
@@ -960,20 +1109,62 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
       </Field>
 
       {/* Test payload */}
-      <SectionTitle>Test payload</SectionTitle>
-      <Field
-        label="Test payload (JSON)"
-        hint={sourceMode === "api"
-          ? "Paste a sample User Details API response body to check it against the schema."
-          : "The user details test calls run with when no stored record matches."}
-      >
-        <textarea
-          className="textarea mono" rows={6} value={testJson}
-          placeholder={'{\n  "customer_name": "Rahul Sharma",\n  "amount_due": 4500\n}'}
-          style={{ fontSize: 12 }}
-          onChange={(e) => setTestJson(e.target.value)}
-        />
-      </Field>
+      <SectionTitle>{sourceMode === "api" ? "Sample user details" : "Test user details"}</SectionTitle>
+      <Callout tone="info" title={sourceMode === "api" ? "API sample data" : "Temporary test data"}>
+        {sourceMode === "api"
+          ? "These values are only a sample for validation. Live calls continue to fetch user details from the selected API."
+          : "Save these details and the bot will use them in Testing Studio and test calls until you switch the source to a real API."}
+      </Callout>
+
+      {parsedTestPayload === null && (
+        <Callout tone="critical" title="Advanced JSON has an error">
+          Fix the JSON below before editing these fields or saving.
+        </Callout>
+      )}
+
+      <div className="grid grid-2" style={{ gap: 12 }}>
+        {testUserFields.map((field) => (
+          <Field
+            key={field.key}
+            label={field.label || contextFieldLabel(field.key)}
+            hint={`Prompt variable: {${field.key}}${field.type === "object" || field.type === "array" ? " · edit in Advanced JSON" : ""}`}
+          >
+            <TestContextValueInput
+              field={field}
+              value={parsedTestPayload?.[field.key]}
+              disabled={parsedTestPayload === null || !canManage}
+              onChange={(value) => setTestValue(field.key, value)}
+            />
+          </Field>
+        ))}
+      </div>
+      <span className="t-micro">
+        Need another value? Add it in Fields above; its input will appear here automatically.
+      </span>
+
+      <details style={{ border: "1px solid var(--hairline)", borderRadius: 8 }}>
+        <summary className="row-between card-pad-sm" style={{ cursor: "pointer", listStyle: "none", gap: 12 }}>
+          <span className="col" style={{ gap: 1 }}>
+            <span className="t-strong" style={{ fontSize: 12.5 }}>Advanced JSON</span>
+            <span className="t-micro">Optional editor for nested objects, arrays or bulk paste.</span>
+          </span>
+          <Icon name="chevron-down" size={13} style={{ color: "var(--ink-3)" }} />
+        </summary>
+        <div style={{ padding: "0 12px 12px" }}>
+          <textarea
+            className="textarea mono" rows={7} value={testJson}
+            aria-label="Test user details JSON"
+            placeholder={'{\n  "customer_name": "Rahul Sharma",\n  "overdue_amount": 4500\n}'}
+            style={{ fontSize: 12 }} disabled={!canManage}
+            onChange={(e) => {
+              setTestJson(e.target.value);
+              setValidation(null);
+              setValidateErr(null);
+              setSaveErr(null);
+            }}
+          />
+        </div>
+      </details>
       <div className="row gap-8">
         <Button size="sm" icon="check-circle" busy={validating} onClick={() => void runValidate()}>Validate</Button>
         <span className="t-micro">Validates against the field definitions above (including unsaved edits) and previews the effective context.</span>
@@ -1014,7 +1205,7 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
 
       <div className="row gap-8" style={{ justifyContent: "flex-end" }}>
         <Button variant="primary" icon="check" busy={saving} disabled={!canManage} title={managePermTitle} onClick={() => void save()}>
-          Save runtime context
+          {sourceMode === "manual" ? "Save test user details" : "Save runtime context"}
         </Button>
       </div>
 

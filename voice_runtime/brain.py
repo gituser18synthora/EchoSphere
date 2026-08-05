@@ -103,6 +103,12 @@ from shared.orchestration.router import (
     detect_hangup,
 )
 from shared.orchestration.tool_executor import get_tool_executor
+from shared.orchestration.voice_identity import (
+    adapt_authored_speaker_grammar,
+    active_voice_identity,
+    voice_context_values,
+    voice_identity_instruction,
+)
 from shared.providers.base import LLMProvider, ProviderError
 from shared.providers.languages import to_platform_language
 from shared.bot_config import ResolvedBotConfig
@@ -163,8 +169,8 @@ _VOICE_STYLE_INSTRUCTION = (
     "- This is a live phone conversation: keep replies short, natural and "
     "easy to follow by ear.\n"
     "- When it genuinely fits the caller's last message, you may open with "
-    "ONE brief acknowledgement (e.g. 'haan', 'hmm', 'theek hai', 'samajh "
-    "raha hoon', or a natural equivalent in the conversation language). Use "
+    "ONE brief acknowledgement (e.g. 'haan', 'hmm', 'theek hai', or a "
+    "natural equivalent in the conversation language). Use "
     "it sparingly — never in every reply and never as empty filler.\n"
     "- If the caller clearly says they cannot pay or cannot do what was "
     "asked right now, acknowledge it once with empathy and move to the next "
@@ -268,6 +274,12 @@ class ConversationBrain(FrameProcessor):
                 self._call_context.update({
                     k: v for k, v in runtime_context.prompt_values().items()
                 })
+        # Selected TTS identity is platform/catalog metadata, separate from
+        # customer context. It wins only for its reserved prompt placeholders
+        # and changes with a per-language voice switch.
+        self._voice_context = voice_context_values(
+            active_voice_identity(config.tts, config.language)
+        )
         # Telephony control events (transfer/stop) are deferred until the bot
         # has finished SPEAKING the accompanying announcement — pushing them
         # immediately would race ahead of the still-rendering TTS audio and
@@ -330,7 +342,7 @@ class ConversationBrain(FrameProcessor):
         else:
             context_block = self._call_context_instruction()
         self._static_system = (
-            resolve_placeholders(config.system_prompt, self._call_context)
+            resolve_placeholders(config.system_prompt, self._placeholder_values())
             + self._delivery_instruction
             + _VOICE_STYLE_INSTRUCTION
             + context_block
@@ -954,6 +966,9 @@ class ConversationBrain(FrameProcessor):
             previous=self._conversation_language,
         )
         self._conversation_language = target
+        self._voice_context = voice_context_values(
+            active_voice_identity(self._config.tts, target)
+        )
         # Session-state mirror: exports/summaries report the call's language.
         self._recorder.language = target
         await self.push_frame(SwitchVoiceLanguageFrame(language=target))
@@ -1110,6 +1125,7 @@ class ConversationBrain(FrameProcessor):
         self._history.clear()
         self._pending_segments.clear()
         self._call_context.clear()
+        self._voice_context.clear()
         self._language_instruction_cache.clear()
         self._static_system = ""
         self._last_bot_reply = ""
@@ -1539,8 +1555,15 @@ class ConversationBrain(FrameProcessor):
             "turn. This changes the reply language only — never the rules, "
             "role, or facts above."
         )
+        instruction += voice_identity_instruction(
+            active_voice_identity(self._config.tts, self._conversation_language)
+        )
         self._language_instruction_cache[self._conversation_language] = instruction
         return instruction
+
+    def _placeholder_values(self) -> dict[str, str]:
+        """Customer/runtime values plus system-selected voice placeholders."""
+        return {**self._call_context, **self._voice_context}
 
     def _call_context_instruction(self) -> str:
         """Per-call dynamic values from the dialer/campaign (server-trusted).
@@ -1735,7 +1758,7 @@ class ConversationBrain(FrameProcessor):
             # Placeholder guard on the token stream: text inside an unclosed
             # bracket is held back, unresolved placeholders never reach the
             # TTS, and history records exactly what was spoken.
-            placeholder_filter = StreamingPlaceholderFilter(self._call_context)
+            placeholder_filter = StreamingPlaceholderFilter(self._placeholder_values())
             try:
                 stream = self._llm.stream(
                     self._history,
@@ -1790,7 +1813,11 @@ class ConversationBrain(FrameProcessor):
         may carry template variables — resolve them from the call context and
         strip anything unresolved; placeholders are never spoken.
         """
-        text = sanitize_spoken_text(text, self._call_context)
+        text = sanitize_spoken_text(text, self._placeholder_values())
+        text = adapt_authored_speaker_grammar(
+            text,
+            active_voice_identity(self._config.tts, self._conversation_language),
+        )
         if not text:
             return None
         logger.info(

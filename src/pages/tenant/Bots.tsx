@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import { createBot, listBots, listLanguages, simulateAction } from "@/services/api";
@@ -216,10 +216,25 @@ function CreateBotModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const langsQ = useAsync(listLanguages, []);
   const [name, setName] = useState("");
   const [useCase, setUseCase] = useState("Appointment booking");
-  const [langs, setLangs] = useState<string[]>(["en-US"]);
+  const [langs, setLangs] = useState<string[]>([]);
   const [err, setErr] = useState("");
   const [langErr, setLangErr] = useState("");
   const [busy, setBusy] = useState(false);
+
+  /* The platform catalog is the source of truth. Never keep a locale merely
+     because it used to be the product default: an administrator can disable
+     it at any time. Prefer the enabled Platform default, then catalog order. */
+  useEffect(() => {
+    if (!open || !langsQ.data) return;
+    const enabled = langsQ.data.filter((language) => language.enabled);
+    const enabledCodes = new Set(enabled.map((language) => language.code));
+    setLangs((current) => {
+      const valid = current.filter((code) => enabledCodes.has(code));
+      if (valid.length) return valid;
+      const preferred = enabled.find((language) => language.isDefault) ?? enabled[0];
+      return preferred ? [preferred.code] : [];
+    });
+  }, [open, langsQ.data]);
 
   const create = async () => {
     if (name.trim().length < 3) { setErr("Give the bot a name (at least 3 characters)"); return; }

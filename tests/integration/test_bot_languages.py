@@ -148,6 +148,22 @@ def test_create_rejects_empty_selection(client, tenant_admin):
     assert response.status_code == 422
 
 
+def test_create_omitted_languages_uses_enabled_catalog_default(client, tenant_admin):
+    catalog = _data(client.get(f"{API}/languages", headers=tenant_admin))
+    expected = next((row for row in catalog if row["isDefault"]), catalog[0])
+
+    response = client.post(f"{API}/bots", headers=tenant_admin, json={
+        "name": f"Default Language Bot {_SUFFIX} {len(_bot_ids)}",
+        "useCase": "languages",
+    })
+    assert response.status_code == 201, response.json()
+    created = _data(response)
+    _bot_ids.append(created["id"])
+
+    assert created["languages"] == [expected["code"]]
+    assert expected["enabled"] is True
+
+
 # ── Update ────────────────────────────────────────────────────────────────────
 
 

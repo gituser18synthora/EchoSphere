@@ -1,5 +1,5 @@
 import {
-  useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes,
+  useEffect, useLayoutEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./Icon";
@@ -336,22 +336,113 @@ export interface MenuAction {
 }
 export function MenuButton({ actions, label = "More actions" }: { actions: (MenuAction | "sep")[]; label?: string }) {
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false);
+        setPosition(null);
+      }
     };
-    window.addEventListener("mousedown", h);
-    return () => window.removeEventListener("mousedown", h);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setPosition(null);
+        buttonRef.current?.focus();
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+
+    const placeMenu = () => {
+      const button = buttonRef.current;
+      const menu = menuRef.current;
+      if (!button || !menu) return;
+
+      const anchor = button.getBoundingClientRect();
+      const measured = menu.getBoundingClientRect();
+      const menuWidth = measured.width || 180;
+      const menuHeight = measured.height;
+      const gap = 8;
+      const offset = 4;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      const left = Math.max(
+        gap,
+        Math.min(anchor.right - menuWidth, viewportWidth - menuWidth - gap),
+      );
+      const spaceBelow = viewportHeight - anchor.bottom - gap;
+      const spaceAbove = anchor.top - gap;
+      const openUpward = menuHeight > spaceBelow && spaceAbove > spaceBelow;
+      const desiredTop = openUpward
+        ? anchor.top - menuHeight - offset
+        : anchor.bottom + offset;
+      const top = Math.max(
+        gap,
+        Math.min(desiredTop, viewportHeight - menuHeight - gap),
+      );
+
+      setPosition({ top, left });
+    };
+
+    placeMenu();
+    window.addEventListener("resize", placeMenu);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => {
+      window.removeEventListener("resize", placeMenu);
+      window.removeEventListener("scroll", placeMenu, true);
+    };
+  }, [open]);
+
   return (
     <div style={{ position: "relative" }} ref={ref}>
-      <button className="btn-icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+      <button
+        ref={buttonRef}
+        className="btn-icon"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((current) => {
+            if (current) setPosition(null);
+            return !current;
+          });
+        }}
+      >
         <Icon name="more" />
       </button>
-      {open && (
-        <div className="menu" role="menu" style={{ right: 0, top: "calc(100% + 4px)" }}>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="menu"
+          role="menu"
+          style={{
+            position: "fixed",
+            top: position?.top ?? 0,
+            left: position?.left ?? 0,
+            right: "auto",
+            visibility: position ? "visible" : "hidden",
+            zIndex: 100,
+            maxHeight: "calc(100vh - 16px)",
+            overflowY: "auto",
+          }}
+        >
           {actions.map((a, i) =>
             a === "sep" ? (
               <div className="menu-sep" key={i} />
@@ -366,6 +457,7 @@ export function MenuButton({ actions, label = "More actions" }: { actions: (Menu
                   e.stopPropagation();
                   if (a.disabled) return;
                   setOpen(false);
+                  setPosition(null);
                   a.onClick();
                 }}
               >
@@ -374,7 +466,8 @@ export function MenuButton({ actions, label = "More actions" }: { actions: (Menu
               </button>
             ),
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

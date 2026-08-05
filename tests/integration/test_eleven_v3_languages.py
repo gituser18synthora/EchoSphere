@@ -348,6 +348,10 @@ class TestDeactivatedLanguagePreservation:
         # Runtime resolution keeps working for live calls.
         config = _load_config_sync(bot_id, require_published=False)
         assert config.tts["language_map"]["gu-IN"]["voice"] == "ritu"
+        assert config.tts["voice_name"] == "Shubh"
+        assert config.tts["voice_gender"] == "male"
+        assert config.tts["language_map"]["gu-IN"]["voice_name"] == "Ritu"
+        assert config.tts["language_map"]["gu-IN"]["voice_gender"] == "female"
 
     def test_new_selection_of_disabled_language_rejected(
         self, legacy_language_bot, language_state

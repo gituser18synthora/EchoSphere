@@ -116,11 +116,14 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     industry: tenant.industry,
     aiProfile: tenant.aiProfileCode ?? "",
     adminEmail: tenant.adminEmail,
+    languages: [...(tenant.defaultLanguages ?? [])],
   });
-  const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
   const [pw, setPw] = useState({ next: "", confirm: "" });
   const [pwErr, setPwErr] = useState<{ next?: string; confirm?: string }>({});
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [languageErr, setLanguageErr] = useState("");
   const wantsPasswordReset = pw.next !== "" || pw.confirm !== "";
 
   /* Keep the tenant's current value selectable even if it's missing from the option catalog. */
@@ -137,10 +140,17 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     if (form.industry !== tenant.industry) diff.industry = form.industry;
     if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
     if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
+    if (JSON.stringify(form.languages) !== JSON.stringify(tenant.defaultLanguages ?? [])) {
+      diff.defaultLanguages = form.languages;
+    }
     return diff;
   };
 
   const save = async () => {
+    if (form.languages.length === 0) {
+      setLanguageErr("Select at least one language for this tenant.");
+      return;
+    }
     /* Password reset happens ONLY when the Super Admin explicitly typed and
        confirmed a new password; empty fields leave the password untouched. */
     if (wantsPasswordReset) {
@@ -244,6 +254,45 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
               <input className="input" type="email" value={form.adminEmail} onChange={(e) => set("adminEmail", e.target.value)} />
             </Field>
           </div>
+
+          <Field
+            label="Assigned languages"
+            required
+            error={languageErr}
+            hint="Bot and prompt language choices for this tenant are limited to this assignment."
+          >
+            <div className="row wrap gap-6" role="group" aria-label="Assigned languages">
+              {[
+                ...opts.languages,
+                ...form.languages
+                  .filter((code) => !opts.languages.some((language) => language.code === code))
+                  .map((code) => ({ code, name: `${code} — inactive` })),
+              ].map((language) => {
+                const selected = form.languages.includes(language.code);
+                return (
+                  <button
+                    key={language.code}
+                    type="button"
+                    className={`chip ${selected ? "chip-brand" : "chip-neutral"}`}
+                    aria-pressed={selected}
+                    aria-label={`${language.name} (${language.code})`}
+                    onClick={() => {
+                      set(
+                        "languages",
+                        selected
+                          ? form.languages.filter((code) => code !== language.code)
+                          : [...form.languages, language.code],
+                      );
+                      setLanguageErr("");
+                    }}
+                  >
+                    {selected && <Icon name="check" size={11} />}
+                    {language.name}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
 
           {canResetPassword && (
             <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>

@@ -26,8 +26,8 @@ export interface VoiceSessionConfig {
   sampleRate?: number;
   language?: string;
   languages?: string[];
-  voices?: Record<string, { provider: string; voice: string }>;
-  defaultVoice?: { provider: string; voice: string };
+  voices?: Record<string, { provider: string; voice: string; gender?: string }>;
+  defaultVoice?: { provider: string; voice: string; gender?: string };
   warnings?: Record<string, string>;
 }
 
