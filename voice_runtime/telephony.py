@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     StartFrame,
     StopFrame,
 )
@@ -345,7 +346,11 @@ class VaaniFrameSerializer(FrameSerializer):
                 "streamSid": self._stream_sid,
                 "clear": {"reason": "interrupt"},
             })
-        if isinstance(frame, OutputTransportMessageFrame):
+        # The urgent variant is a SystemFrame and does not subclass the plain
+        # message frame — both must be accepted or control events vanish.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
             message = frame.message or {}
             if message.get("type") == "telephony_control":
                 event = message.get("event")

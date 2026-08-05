@@ -40,11 +40,19 @@ class RawPCMSerializer(FrameSerializer):
         pass
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        from pipecat.frames.frames import OutputTransportMessageFrame
+        from pipecat.frames.frames import (
+            OutputTransportMessageFrame,
+            OutputTransportMessageUrgentFrame,
+        )
 
         if isinstance(frame, OutputAudioRawFrame):
             return frame.audio
-        if isinstance(frame, OutputTransportMessageFrame):
+        # The urgent variant is a SystemFrame, NOT a subclass of the plain
+        # message frame, so it needs its own branch or the brain's live
+        # transcript events would be silently dropped.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
             return json.dumps(frame.message)
         if isinstance(frame, TranscriptionFrame):
             return json.dumps({"type": "transcript", "text": frame.text})

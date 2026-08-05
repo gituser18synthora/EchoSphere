@@ -89,6 +89,9 @@
 .input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] {
   border-color: var(--status-critical);
 }
+/* Controls that sit in a toolbar or page header rather than a form field:
+   the 100% above would eat the whole row and force the header to wrap. */
+.select-inline { width: auto; min-width: 104px; }
 .field {
   display: flex;
   flex-direction: column;

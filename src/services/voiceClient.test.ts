@@ -149,6 +149,22 @@ function clientWithQueue() {
 }
 
 describe("VoiceClient message handling", () => {
+  it("passes the runtime turn timestamp through for transcript and bot text", () => {
+    const onTranscript = vi.fn();
+    const onBotText = vi.fn();
+    const client = new VoiceClient({ onTranscript, onBotText });
+
+    client.handleMessage(JSON.stringify({
+      type: "transcript", text: "हाँ", at: "2026-08-05T07:57:38.001234Z",
+    }));
+    client.handleMessage(JSON.stringify({
+      type: "bot_text", text: "जी", at: "2026-08-05T07:57:39.728901Z",
+    }));
+
+    expect(onTranscript).toHaveBeenCalledWith("हाँ", "2026-08-05T07:57:38.001234Z");
+    expect(onBotText).toHaveBeenCalledWith("जी", "2026-08-05T07:57:39.728901Z");
+  });
+
   it("session_config is stored and surfaced with the announced sample rate", () => {
     const { client, events } = clientWithQueue();
     client.handleMessage(

@@ -171,19 +171,24 @@ describe("Tenant conversation review", () => {
     expect(within(dialog).getByText("Let me check that for you.")).toBeInTheDocument();
 
     // Chronological order as rendered.
-    const bubbles = [...dialog.querySelectorAll(".transcript-bubble")].map((b) => b.textContent);
+    const bubbles = [...dialog.querySelectorAll(".transcript-text")].map((b) => b.textContent);
     expect(bubbles).toEqual([
       "Namaste, this is Billing Bot.",
       "I was charged twice.",
       "Let me check that for you.",
     ]);
-    // Speaker labels and per-turn detail.
-    expect(within(dialog).getAllByText(/caller/).length).toBeGreaterThan(0);
+    // Speaker alignment and per-turn detail.
+    expect(dialog.querySelectorAll(".conversation-turn.bot")).toHaveLength(2);
+    expect(dialog.querySelectorAll(".conversation-turn.user")).toHaveLength(1);
     expect(within(dialog).getByText("billing_dispute", { selector: "code" })).toBeInTheDocument();
     expect(within(dialog).getByText(/640ms/)).toBeInTheDocument();
-    // Timestamp rendered for turns that carry one (h:mm:ss in the meta line).
-    const metas = [...dialog.querySelectorAll(".transcript-meta")].map((m) => m.textContent ?? "");
-    expect(metas.filter((m) => /\d{1,2}:\d{2}:\d{2}/.test(m)).length).toBe(2);
+    // Stored transcript uses the same in-bubble MM:SS.xx clock as Testing.
+    const times = [...dialog.querySelectorAll(".transcript-bubble time")];
+    expect(times.map((time) => time.textContent)).toEqual([
+      expect.stringMatching(/^\d{2}:\d{2}\.\d{2}$/),
+      expect.stringMatching(/^\d{2}:\d{2}\.\d{2}$/),
+    ]);
+    expect(times.every((time) => time.closest(".transcript-bubble"))).toBe(true);
   });
 
   it("shows an empty state when no turns were captured", async () => {

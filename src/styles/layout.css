@@ -759,7 +759,17 @@
   gap: 10px;
 }
 .page-sub { font-size: 13.5px; color: var(--ink-2); }
-.page-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  /* Keeps the actions flush right even when .page-head wraps them onto their
+     own line, so they never read as a second column of page content. */
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.page-actions .select { width: auto; min-width: 104px; }
 
 /* Studio workspace bar */
 .studio-bar {
@@ -1033,10 +1043,159 @@
   border-bottom-right-radius: 4px;
   align-self: flex-end;
 }
+.transcript-text { display: block; }
+.transcript-bubble-time {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.transcript-bubble.user .transcript-bubble-time { color: rgba(255, 255, 255, 0.76); }
 .transcript-meta {
   font-size: 11px;
   color: var(--ink-3);
   margin-top: 3px;
+}
+
+/* Conversation Review -----------------------------------------------------
+   The list stays dense enough for QA work; the detail drawer reads like the
+   live Testing chat so a saved call does not suddenly switch visual grammar. */
+.conversation-toolbar {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+.conversation-toolbar .search-box {
+  width: min(420px, 100%);
+  flex: 1 1 280px;
+}
+.conversation-toolbar .search-box .input { width: 100%; }
+.conversation-result-count {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.conversation-result-count strong { color: var(--ink-2); }
+.conversation-list-card { overflow: hidden; }
+.conversation-list-card .table th { position: sticky; top: 0; z-index: 1; }
+.conversation-list-card .table tbody tr.row-click:focus-visible {
+  outline: 2px solid var(--brand-400);
+  outline-offset: -2px;
+}
+.conversation-drawer { width: min(760px, 96vw); }
+.conversation-drawer .drawer-header { padding: 18px 24px 16px; }
+.conversation-drawer .drawer-body { padding: 18px 24px 24px; }
+.conversation-drawer-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.conversation-drawer-title > code {
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.conversation-drawer-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.conversation-drawer-sub > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.conversation-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 220px;
+  padding: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top right, rgba(106, 90, 249, 0.06), transparent 34%),
+    var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+.conversation-transcript-loading { padding: 2px; }
+.conversation-turn {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  gap: 3px;
+}
+.conversation-turn.bot { align-items: flex-start; }
+.conversation-turn.user { align-items: flex-end; }
+.conversation-transcript .transcript-bubble {
+  width: fit-content;
+  max-width: min(82%, 560px);
+  padding: 11px 14px 9px;
+  border-radius: 17px;
+  font-size: 14px;
+  line-height: 1.52;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow-1);
+}
+.conversation-transcript .transcript-bubble.bot {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-bottom-left-radius: 5px;
+}
+.conversation-transcript .transcript-bubble.user {
+  border-bottom-right-radius: 5px;
+}
+.conversation-transcript .transcript-bubble-time {
+  margin-top: 5px;
+  font-size: 10.5px;
+}
+.conversation-turn .transcript-meta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  gap: 3px;
+  margin: 0 0 0 8px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+.conversation-turn .transcript-meta code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--ink-2);
+  background: var(--surface-3);
+}
+
+@media (max-width: 720px) {
+  .conversation-toolbar { align-items: stretch; }
+  .conversation-toolbar .search-box,
+  .conversation-toolbar .select { width: 100%; }
+  .conversation-result-count { margin-left: 0; padding: 0 2px; }
+  .conversation-drawer { width: 100vw; max-width: none; }
+  .conversation-drawer .drawer-header { padding: 14px 16px; }
+  .conversation-drawer .drawer-body { padding: 14px 14px 20px; }
+  .conversation-drawer .drawer-footer {
+    padding: 10px 14px;
+    overflow-x: auto;
+    justify-content: flex-start;
+  }
+  .conversation-transcript { padding: 12px; gap: 12px; }
+  .conversation-transcript .transcript-bubble {
+    max-width: 90%;
+    font-size: 13.5px;
+  }
 }
 
 /* Responsive shell */

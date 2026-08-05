@@ -63,7 +63,7 @@ export function CurrencySelect({ state }: { state: DisplayCurrencyState }) {
   const currencies = state.rates?.currencies ?? [];
   return (
     <select
-      className="select"
+      className="select select-inline"
       aria-label="Display currency"
       value={state.currency}
       onChange={(e) => state.setCurrency(e.target.value)}

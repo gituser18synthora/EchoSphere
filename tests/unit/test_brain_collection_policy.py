@@ -98,7 +98,8 @@ class _WorkflowStub:
 
 
 def make_brain(*, context=None, llm=None, workflows=None,
-               intents=None, verified=False) -> ConversationBrain:
+               intents=None, verified=False,
+               runtime_context=None) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language="hi-IN", languages=["hi-IN"],
@@ -108,8 +109,8 @@ def make_brain(*, context=None, llm=None, workflows=None,
     brain = ConversationBrain(
         config=config, llm=llm or _StreamingLLMStub(),
         recorder=_RecorderStub(), workflow_engine=workflows,
-        customer_context=context, finalize_grace=GRACE,
-        complete_endpoint=GRACE,
+        customer_context=context, runtime_context=runtime_context,
+        finalize_grace=GRACE, complete_endpoint=GRACE,
     )
     brain._pushed = []
     brain._notified = []
@@ -192,6 +193,46 @@ class TestContextReachesTheLLM:
         brain = make_brain(context=snapshot())
         assert "Ramesh Kumar" in brain._static_system
         assert "eDAS Finance" in brain._static_system
+
+    async def test_identity_confirmation_drives_straight_to_the_ask(self):
+        """The turn after "yes, speaking" must open the recovery, not offer help.
+
+        Regression: with no domain policy this turn fell through to a plain
+        LLM reply under a generic assistant persona, which produced support
+        openers ("kuch madad chahiye?") and handed the agenda to the customer.
+        """
+        llm = _StreamingLLMStub()
+        brain = make_brain(context=snapshot(), llm=llm)
+        await verify_identity(brain)
+        system = llm.calls[-1]["system"]
+
+        assert "Conversation phase: account_explanation" in system
+        assert "Identity: CONFIRMED" in system
+        # The next step must be the ask, stated with the verified facts.
+        assert "can they pay today" in system
+        assert "₹4,850" in system
+        assert "Days overdue: 12" in system
+
+    async def test_runtime_context_activates_the_policy(self):
+        """A tenant opts in via the schema's domain_policy, not a code path."""
+        from shared.runtime_context import build_runtime_context
+
+        fields = [{"key": "customer_name", "type": "string"},
+                  {"key": "overdue_amount", "type": "number"},
+                  {"key": "due_date", "type": "date"}]
+        payload = {"customer_name": "Devendra Mishra",
+                   "overdue_amount": 3500, "due_date": "2026-07-28"}
+
+        generic = make_brain(runtime_context=build_runtime_context(
+            tenant_id="tn-x", bot_id="bot-x", field_definitions=fields,
+            payload=payload, domain_policy="generic"))
+        collections = make_brain(runtime_context=build_runtime_context(
+            tenant_id="tn-x", bot_id="bot-x", field_definitions=fields,
+            payload=payload, domain_policy="collections"))
+
+        assert generic._policy is None
+        assert collections._policy is not None
+        assert collections._policy.context.overdue_amount == 3500.0
 
     async def test_short_affirm_goes_to_llm_not_canned_clarify(self):
         llm = _StreamingLLMStub()

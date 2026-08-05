@@ -32,6 +32,7 @@ from pipecat.frames.frames import (
     EndWorkerFrame,
     ErrorFrame,
     Frame,
+    StartFrame,
     TTSAudioRawFrame,
     TTSStoppedFrame,
 )
@@ -140,6 +141,7 @@ class StreamingTTSRouter(TTSService):
         sample_rate: int = 24000,
         recorder=None,
         provider_factory=None,
+        latency=None,
         first_audio_timeout: float = _FIRST_AUDIO_TIMEOUT_S,
         **kwargs,
     ):
@@ -180,6 +182,10 @@ class StreamingTTSRouter(TTSService):
         self._energy = energy
         self._recorder = recorder
         self._provider_factory = provider_factory or self._default_provider_factory
+        # Shared per-call TurnLatencyTracker (optional): the router is the only
+        # place that sees when synthesis was actually requested and when the
+        # provider's first byte came back.
+        self._latency = latency
         self._first_audio_timeout = first_audio_timeout
 
         self._providers: dict[tuple, StreamingTTSProvider] = {}
@@ -190,6 +196,26 @@ class StreamingTTSRouter(TTSService):
         # True while a flush-hint fragment is being pushed (see _Sentence).
         self._mid_turn_flush = False
         self._fatal_call_ended = False
+
+    async def start(self, frame: StartFrame):
+        """Open the provider connection before the first word needs speaking.
+
+        Measured against Sarvam bulbul:v3: ~715ms to first audio on a cold
+        WebSocket versus ~35ms once it is up. Left lazy, that handshake lands
+        inside the greeting of every single call — the one turn where the
+        caller is already waiting through ring and pickup. Connecting here
+        moves it into pipeline startup, which overlaps call setup.
+
+        Best-effort by construction: a failure is logged and left to the
+        normal synthesis path, which has fallback and retry. Warm-up must
+        never be able to stop a call from starting.
+        """
+        await super().start(frame)
+        try:
+            engine = self._engine_for_language(self._current_language)
+            await self._get_provider(engine, self._current_language)
+        except Exception:  # noqa: BLE001 — never block call start on a warm-up
+            logger.warning("tts-router: connection warm-up failed", exc_info=True)
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -319,6 +345,8 @@ class StreamingTTSRouter(TTSService):
 
     # ── TTSService contract ─────────────────────────────────────────────
     async def run_tts(self, text: str, context_id: str):
+        if self._latency is not None:
+            self._latency.mark_tts_request()
         logger.info(
             "tts[%s] generating %d chars (lang=%s, context=%s)",
             self._recorder.session_id if self._recorder else "?",
@@ -499,6 +527,10 @@ class StreamingTTSRouter(TTSService):
             state.active_got_audio = True
             if not state.got_audio:
                 state.got_audio = True
+                # Stamped before the resample/queue below so tts_ttfb is the
+                # provider's own time and `playout` isolates ours.
+                if self._latency is not None:
+                    self._latency.mark_tts_first_byte()
                 await self.stop_ttfb_metrics()
                 if state.watchdog is not None:
                     state.watchdog.cancel()

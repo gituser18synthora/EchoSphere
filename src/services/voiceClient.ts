@@ -35,9 +35,9 @@ export interface VoiceClientCallbacks {
   /** Session parameters announced by the runtime before the greeting. */
   onSessionConfig?: (config: VoiceSessionConfig) => void;
   /** Caller words recognised by the runtime STT. */
-  onTranscript?: (text: string) => void;
+  onTranscript?: (text: string, at?: string) => void;
   /** Bot reply text (what the TTS is speaking). */
-  onBotText?: (text: string) => void;
+  onBotText?: (text: string, at?: string) => void;
   /** The conversation switched to following this language. */
   onLanguage?: (locale: string) => void;
   /** Runtime lifecycle events. */
@@ -227,7 +227,7 @@ export class VoiceClient {
   handleMessage(data: unknown): void {
     if (typeof data === "string") {
       let msg: { type?: string; text?: string; name?: string; message?: string;
-                 language?: string; sampleRate?: number } & VoiceSessionConfig;
+                 language?: string; sampleRate?: number; at?: string } & VoiceSessionConfig;
       try {
         msg = JSON.parse(data) as typeof msg;
       } catch {
@@ -236,10 +236,10 @@ export class VoiceClient {
       if (msg.type === "session_config") {
         this.applySessionConfig(msg);
       } else if (msg.type === "transcript" && msg.text) {
-        this.callbacks.onTranscript?.(msg.text);
+        this.callbacks.onTranscript?.(msg.text, msg.at);
       } else if (msg.type === "bot_text" && msg.text) {
         this.suppressAudio = false; // a new reply is definitely underway
-        this.callbacks.onBotText?.(msg.text);
+        this.callbacks.onBotText?.(msg.text, msg.at);
       } else if (msg.type === "language" && msg.language) {
         this.callbacks.onLanguage?.(msg.language);
       } else if (msg.type === "error" && msg.message) {

@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TestingTab from "@/pages/tenant/studio/TestingTab";
+import { formatChatTime, nowWithMicroseconds } from "@/services/chatTime";
 import * as api from "@/services/api";
 import type { VoiceBot } from "@/types/domain";
 
@@ -33,6 +34,9 @@ const TURN_1 = {
   reason: "intent_workflow",
   reply: "I can set up a payment plan. How much can you pay per month?",
   done: false,
+  language: "hi-IN",
+  latencyMs: 24,
+  at: "2026-08-05T07:15:30.123456Z",
   activeWorkflow: "collections_plan",
   workflow: {
     name: "collections_plan", source: "definition" as const, status: "collecting",
@@ -72,12 +76,29 @@ describe("TestingTab — real runtime chat testing", () => {
 
     await sendMessage(user, "i need a plan");
     await screen.findByText(/How much can you pay per month/);
-    expect(api.testBotChat).toHaveBeenCalledWith("bot_x", "i need a plan", undefined);
+    expect(api.testBotChat).toHaveBeenCalledWith(
+      "bot_x",
+      "i need a plan",
+      undefined,
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", content: expect.any(String) }),
+      ]),
+      undefined,
+    );
 
     await sendMessage(user, "2500");
     await screen.findByText(/Goodbye!/);
     // The second turn reuses the session id from the first response.
-    expect(api.testBotChat).toHaveBeenLastCalledWith("bot_x", "2500", "ct_abc123");
+    expect(api.testBotChat).toHaveBeenLastCalledWith(
+      "bot_x",
+      "2500",
+      "ct_abc123",
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "i need a plan" }),
+        expect.objectContaining({ role: "assistant", content: TURN_1.reply }),
+      ]),
+      "hi-IN",
+    );
   });
 
   it("shows the executed workflow nodes and collected slots in the trace", async () => {
@@ -103,5 +124,35 @@ describe("TestingTab — real runtime chat testing", () => {
 
     await sendMessage(user, "hello");
     await screen.findByText(/test turn failed/i);
+  });
+
+  it("shows an MM:SS.xx timestamp on every simulator message", async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    await sendMessage(user, "i need a plan");
+    await screen.findByText(/How much can you pay/);
+
+    const timestamps = screen.getAllByTestId("message-timestamp");
+    expect(timestamps).toHaveLength(3);
+    for (const timestamp of timestamps) {
+      expect(timestamp).toHaveTextContent(/^\d{2}:\d{2}\.\d{2}$/);
+      expect(timestamp.getAttribute("dateTime")).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,
+      );
+    }
+  });
+});
+
+describe("high-resolution chat timestamps", () => {
+  it("creates distinct ISO timestamps and shows two fractional digits", () => {
+    const first = nowWithMicroseconds();
+    const second = nowWithMicroseconds();
+
+    expect(first).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+    expect(second).not.toBe(first);
+    expect(formatChatTime("2026-08-05T12:34:56.123456Z")).toMatch(
+      /^\d{2}:\d{2}\.12$/,
+    );
   });
 });

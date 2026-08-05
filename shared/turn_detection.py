@@ -20,6 +20,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "finalize_grace": 0.3,
         "finalize_settle": 0.15,
         "complete_endpoint": 0.35,
+        "short_reply_endpoint": 0.12,
     },
     "telephony": {
         "confidence": 0.6,
@@ -30,6 +31,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "finalize_grace": 0.3,
         "finalize_settle": 0.15,
         "complete_endpoint": 0.3,
+        "short_reply_endpoint": 0.12,
     },
 }
 
@@ -52,6 +54,13 @@ TURN_DETECTION_BOUNDS: dict[str, tuple[float, float]] = {
     # full pause window; an over-eager firing is absorbed by the brain's
     # late-final merge, never by talking over the caller.
     "complete_endpoint": (0.1, 1.5),
+    # Endpoint for the narrower class of SELF-CONTAINED short replies
+    # ("haan", "ji", "nahi", "ok", "ठीक है"). A closed sentence can still be
+    # the first half of a longer thought, so it keeps complete_endpoint; a
+    # one-word acknowledgement cannot, which is why it can fire sooner. This
+    # is the turn the caller feels most: a fixed window makes the bot seem to
+    # think hard about the word "yes".
+    "short_reply_endpoint": (0.0, 1.0),
 }
 
 # ── caller-audio noise gate (voice_runtime.audio_gate) ───────────────────────

@@ -84,7 +84,8 @@ class _GateStub:
 
 
 def make_brain(language="hi-IN", languages=("hi-IN",), *, gate=None,
-               latency=None, complete_endpoint=COMPLETE):
+               latency=None, complete_endpoint=COMPLETE,
+               short_reply_endpoint=None):
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language=language, languages=list(languages),
@@ -93,7 +94,12 @@ def make_brain(language="hi-IN", languages=("hi-IN",), *, gate=None,
     brain = ConversationBrain(
         config=config, llm=None, recorder=_RecorderStub(),
         finalize_grace=GRACE, finalize_settle=SETTLE,
-        complete_endpoint=complete_endpoint, latency=latency, audio_gate=gate,
+        complete_endpoint=complete_endpoint,
+        short_reply_endpoint=(
+            complete_endpoint if short_reply_endpoint is None
+            else short_reply_endpoint
+        ),
+        latency=latency, audio_gate=gate,
     )
     brain._pushed = []
     brain._notified = []
@@ -307,6 +313,31 @@ class TestAdaptiveEndpointing:
         armed = brain._finalize_task
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         assert brain._finalize_task is armed, "the armed endpoint was replaced"
+        assert await wait_for(handled)
+
+    async def test_bare_acknowledgement_uses_the_tighter_window(self):
+        # "haan" cannot be the first half of a longer thought the way a closed
+        # sentence can, so it is dispatched on short_reply_endpoint.
+        brain = make_brain(complete_endpoint=0.5, short_reply_endpoint=0.02)
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        started = time.monotonic()
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        assert await wait_for(handled)
+        # Well inside complete_endpoint: the short window was the one used.
+        assert time.monotonic() - started < 0.3
+
+    async def test_closed_sentence_keeps_the_complete_endpoint(self):
+        # The counterpart: a full sentence still gets the conservative window,
+        # because the caller may be pausing between two sentences.
+        brain = make_brain(complete_endpoint=0.3, short_reply_endpoint=0.02)
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(
+            transcript("हाँ, मैं बोल रहा हूँ।"), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.1)  # inside complete_endpoint, past the short one
+        assert handled == [], "a closed sentence fired on the short-reply window"
         assert await wait_for(handled)
 
     async def test_early_endpoint_is_rolled_back_if_the_caller_continues(self):
@@ -632,6 +663,69 @@ class TestLatencyInstrumentation:
         assert spans["tts_first_audio"] == 400.0
         assert spans["response"] == 1500.0
 
+    def test_stage_spans_attribute_the_think_time(self):
+        """llm_first_token/tts_first_audio must decompose, not just bracket."""
+        tracker = TurnLatencyTracker(session_id="s")
+        now = time.monotonic()
+        tracker.speech_stopped_at = now + 2.5
+        tracker.dispatched_at = now + 3.0
+        tracker.classified_at = now + 3.2          # classify 200ms
+        tracker.tool_done_at = now + 3.3           # tool 100ms
+        tracker.llm_request_at = now + 3.3
+        tracker.llm_first_token_at = now + 3.6     # llm_ttft 300ms
+        tracker.tts_request_at = now + 3.7         # tts_queue 100ms
+        tracker.tts_first_byte_at = now + 3.95     # tts_ttfb 250ms
+        tracker.bot_started_at = now + 4.0         # playout 50ms
+        spans = tracker.snapshot()
+
+        assert spans["classify"] == 200.0
+        assert spans["tool"] == 100.0
+        assert spans["llm_ttft"] == 300.0
+        assert spans["tts_queue"] == 100.0
+        assert spans["tts_ttfb"] == 250.0
+        assert spans["playout"] == 50.0
+        # The parts account for the brackets they sit inside.
+        assert (
+            spans["classify"] + spans["tool"] + spans["llm_ttft"]
+            == spans["llm_first_token"]
+        )
+        assert (
+            spans["tts_queue"] + spans["tts_ttfb"] + spans["playout"]
+            == spans["tts_first_audio"]
+        )
+
+    def test_stage_spans_absent_when_the_stage_did_not_run(self):
+        """A deterministic route skips classification; nothing is invented."""
+        tracker = TurnLatencyTracker()
+        tracker.mark_dispatched()
+        tracker.mark_llm_request()
+        tracker.mark_llm_first_token()
+        spans = tracker.snapshot()
+
+        assert "classify" not in spans
+        assert "tool" not in spans
+        assert "llm_ttft" in spans
+
+    def test_llm_request_mark_follows_a_pre_first_token_retry(self):
+        """A retry re-sends the request; ttft belongs to the LAST attempt."""
+        tracker = TurnLatencyTracker()
+        tracker.mark_llm_request()
+        first = tracker.llm_request_at
+        tracker.mark_llm_request()
+        assert tracker.llm_request_at != first
+
+    def test_tts_marks_keep_the_first_dispatch_of_the_turn(self):
+        """Later sentences stream inside the same turn — the first one counts."""
+        tracker = TurnLatencyTracker()
+        tracker.mark_tts_request()
+        first_request = tracker.tts_request_at
+        tracker.mark_tts_first_byte()
+        first_byte = tracker.tts_first_byte_at
+        tracker.mark_tts_request()
+        tracker.mark_tts_first_byte()
+        assert tracker.tts_request_at == first_request
+        assert tracker.tts_first_byte_at == first_byte
+
     def test_absent_marks_are_omitted_never_guessed(self):
         tracker = TurnLatencyTracker()
         assert tracker.snapshot() == {}
@@ -754,9 +848,21 @@ class TestEndpointConfiguration:
     def test_new_parameters_have_transport_defaults_within_bounds(self):
         for transport in ("browser", "telephony"):
             turn = resolve_turn_detection(self._config(), transport)
-            for key in ("finalize_settle", "complete_endpoint"):
+            for key in ("finalize_settle", "complete_endpoint",
+                        "short_reply_endpoint"):
                 low, high = TURN_DETECTION_BOUNDS[key]
                 assert low <= turn[key] <= high, f"{transport}.{key}"
+
+    def test_short_reply_endpoint_is_the_tightest_window(self):
+        # "haan" must not wait as long as a closed sentence, which in turn must
+        # not wait as long as a pause.
+        for transport in ("browser", "telephony"):
+            d = TURN_DETECTION_DEFAULTS[transport]
+            assert (
+                d["short_reply_endpoint"]
+                < d["complete_endpoint"]
+                < d["user_speech_timeout"]
+            ), transport
 
     def test_complete_endpoint_is_shorter_than_the_full_window(self):
         # The whole point: a finished thought is answered sooner than a pause.

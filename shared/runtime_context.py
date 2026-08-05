@@ -29,6 +29,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from shared.customer_context import (
     CustomerContextSnapshot,
@@ -636,6 +637,23 @@ _COLLECTION_BOOL_FIELDS = (
 )
 
 
+def _days_overdue_from(due_date: str | None) -> int | None:
+    """Whole days between a due date and today, floored at zero.
+
+    Accepts the ISO forms a tenant schema's ``date`` field produces (plain
+    dates and full timestamps). Anything unparseable stays None rather than
+    becoming a guessed number the bot would then state as fact.
+    """
+    if not due_date:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(due_date).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    today = datetime.now(timezone.utc).date()
+    return max(0, (today - parsed.date()).days)
+
+
 def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnapshot:
     """Project a generic context onto the collection-policy snapshot.
 
@@ -665,6 +683,13 @@ def collection_snapshot_from_context(ctx: RuntimeContext) -> CustomerContextSnap
         return str(value) if value is not None and not isinstance(value, (dict, list)) else None
 
     days = ctx.get("days_overdue")
+    if not isinstance(days, int) or isinstance(days, bool):
+        # Derived, not required: most tenants model a due date and nothing
+        # else, but the policy's account-explanation step reads days_overdue.
+        # Without this the bot can only say "your due date was X" and never
+        # "this is N days overdue", which is the fact that creates urgency.
+        # A future due date derives 0 (not overdue yet), never a negative.
+        days = _days_overdue_from(_text("due_date"))
     methods = ctx.get("payment_methods")
     offers = ctx.get("active_offers")
     # Masked account: the schema's masking already ran at build time for

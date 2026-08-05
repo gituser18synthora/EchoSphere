@@ -14,6 +14,7 @@ prompt — returning the full decision trace. Audio (STT/TTS) is the only part
 not covered here.
 """
 
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -138,13 +139,216 @@ def run_suite(
 # ── live chat tester: the real router + workflow engine, text-only ───────────
 
 
+class ChatHistoryMessage(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class ChatTestRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     # Stable per conversation so multi-turn workflow state persists; the
     # client keeps sending the id the first response returned.
     session_id: str | None = Field(default=None, alias="sessionId", max_length=64)
+    messages: list[ChatHistoryMessage] = Field(default_factory=list, max_length=40)
+    # Current conversation locale returned by the previous turn.  The server
+    # still re-evaluates the latest message before choosing the reply language.
+    language: str | None = Field(default=None, max_length=15)
 
     model_config = {"populate_by_name": True}
+
+
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097f]")
+_LATIN_WORD_RE = re.compile(r"[a-z]+", re.IGNORECASE)
+_ROMAN_HINDI_WORDS = {
+    "aap", "aapka", "aapke", "aapki", "aapko", "aapne", "apne",
+    "abhi", "acha", "achha", "batao", "bataiye", "bhai", "boliye",
+    "haan", "hai", "hain", "ho", "hun", "hu", "kaise", "kar", "karo",
+    "kya", "kyu", "kyon", "main", "mai", "mera", "mere", "meri",
+    "mujhe", "nahi", "nahin", "paise", "raha", "rahe", "theek", "tum",
+    "tumhara", "tumne",
+}
+_ENGLISH_WORDS = {
+    "are", "can", "called", "calling", "could", "do", "english",
+    "explain", "hello", "help", "how", "i", "is", "me", "my", "need",
+    "please", "speak", "tell", "the", "this", "want", "what", "when",
+    "where", "why", "would", "you", "your",
+}
+
+
+def detect_chat_language(text: str, current: str, supported: list[str]) -> str:
+    """Choose Hindi/English from the latest text without noisy flip-flops.
+
+    Native Hindi script is conclusive. Romanized text needs at least two
+    language markers, so a lone code-switched “haan”/“okay” keeps the current
+    language while a real English sentence switches a Hindi conversation.
+    """
+    supported = supported or [current or "en-IN"]
+
+    def match(base: str) -> str | None:
+        return next(
+            (locale for locale in supported if locale.split("-")[0].lower() == base),
+            None,
+        )
+
+    if _DEVANAGARI_RE.search(text or ""):
+        return match("hi") or current or supported[0]
+    words = _LATIN_WORD_RE.findall((text or "").lower())
+    hindi_score = sum(word in _ROMAN_HINDI_WORDS for word in words)
+    english_score = sum(word in _ENGLISH_WORDS for word in words)
+    if hindi_score >= 2 and hindi_score > english_score:
+        return match("hi") or current or supported[0]
+    if english_score >= 2 and english_score > hindi_score:
+        return match("en") or current or supported[0]
+    return current or supported[0]
+
+
+def _active_prompt_version(prompt: Prompt):
+    return next(
+        (version for version in prompt.versions if version.version == prompt.active_version),
+        None,
+    )
+
+
+def _default_chat_language(db: Session, bot: VoiceBot) -> str:
+    """The testing greeting establishes the initial conversation language."""
+    greeting = db.scalar(select(Prompt).where(
+        Prompt.bot_id == bot.id,
+        Prompt.type == "greeting",
+        Prompt.is_deleted.is_(False),
+    ).limit(1))
+    if greeting is not None:
+        version = _active_prompt_version(greeting)
+        variant = next(
+            (item for item in ((version.variants if version else None) or [])
+             if item.get("content") and item.get("language")),
+            None,
+        )
+        if variant is not None:
+            return str(variant["language"])
+    return bot.languages[0].language_code if bot.languages else "en-IN"
+
+
+def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[str, object] | None:
+    """Render the active Studio draft prompt for a real text-test LLM turn."""
+    from shared.bot_config import resolve_voice_identity_for_settings
+    from shared.config import get_settings
+    from shared.models import VoiceBotSetting
+    from shared.orchestration.delivery import delivery_instructions
+    from shared.orchestration.placeholders import resolve_placeholders
+    from shared.orchestration.voice_identity import (
+        voice_context_values,
+        voice_identity_instruction,
+    )
+    from shared.providers.base import ProviderConfig
+    from shared.providers.factory import get_llm_provider
+
+    prompt = db.scalar(select(Prompt).where(
+        Prompt.bot_id == bot.id,
+        Prompt.type == "system",
+        Prompt.is_deleted.is_(False),
+    ).limit(1))
+    if prompt is None:
+        return None
+    version = _active_prompt_version(prompt)
+    base_prompt = (version.compiled_prompt if version else None) or ""
+    if not base_prompt:
+        return None
+
+    schema = db.scalar(select(RuntimeContextSchema).where(
+        RuntimeContextSchema.bot_id == bot.id,
+        RuntimeContextSchema.is_deleted.is_(False),
+    ))
+    context_values = dict(schema.test_payload or {}) if schema else {}
+    # Numeric fields are authoritative. A hand-authored "amount in words"
+    # helper can easily drift (the affected bot had 3,500 in one field and
+    # 12,500 in the helper), causing the model to invent a third amount.
+    overdue_amount = context_values.get("overdue_amount")
+    if overdue_amount is not None:
+        context_values["amount_in_words"] = (
+            f"exactly {overdue_amount} rupees; convert this exact value to words "
+            "in the response language"
+        )
+    due_date = context_values.get("due_date")
+    if due_date:
+        try:
+            overdue_days = max(
+                0,
+                (datetime.now(timezone.utc).date()
+                 - datetime.fromisoformat(str(due_date)).date()).days,
+            )
+            context_values["days_overdue"] = overdue_days
+            context_values["days_overdue_in_words"] = (
+                f"exactly {overdue_days} days; convert this exact value to words "
+                "in the response language"
+            )
+        except ValueError:
+            pass
+    settings = get_settings()
+    vbs = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
+    identity = resolve_voice_identity_for_settings(
+        db, vbs, bot.tenant_id, language,
+        default_provider=settings.tts_provider,
+        default_voice=settings.tts_voice,
+    )
+    context_values.update(voice_context_values(identity))
+    rendered = (
+        resolve_placeholders(base_prompt, context_values)
+        + delivery_instructions(
+            vbs.empathy if vbs and vbs.empathy is not None else 50,
+            vbs.energy if vbs and vbs.energy is not None else 50,
+        )
+        + voice_identity_instruction(identity)
+    )
+    if context_values:
+        facts = "\n".join(
+            f"- {key}: {value}" for key, value in context_values.items()
+            if value is not None and str(value).strip()
+        )
+        rendered += (
+            "\n\n# Current test-customer facts\n"
+            + facts
+            + "\nThese facts override every example elsewhere in the prompt. "
+            "Never copy an example's amount, date, or overdue duration. Never "
+            "invent a missing value."
+        )
+    if language.split("-")[0].lower() == "hi":
+        rendered += (
+            "\n\n# Runtime-enforced response language\n"
+            "The customer's latest message is Hindi. Reply only in natural "
+            "Hindi/Hinglish written in Devanagari. Do not switch to English, "
+            "and do not output a language tag such as <|HINDI|>."
+        )
+    else:
+        rendered += (
+            "\n\n# Runtime-enforced response language\n"
+            "The customer's latest message is English. Reply only in natural "
+            "Indian English. Do not output a language tag such as <|ENGLISH|>."
+        )
+    provider_code = vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider
+    model = vbs.llm_model if vbs and vbs.llm_model else settings.llm_model
+    llm = get_llm_provider(ProviderConfig(
+        provider=provider_code,
+        model=model,
+        api_key_reference=settings.llm_api_key_reference,
+        extra=(vbs.llm_settings or {}) if vbs else {},
+    ))
+    return rendered, llm
+
+
+_LANGUAGE_TAG_RE = re.compile(r"^\s*<\|(?:HINDI|ENGLISH)(?:\s*\([^|]+\))?\|>\s*", re.I)
+
+
+async def _testing_llm_reply(
+    db: Session, bot: VoiceBot, body: ChatTestRequest, language: str,
+) -> str | None:
+    configured = _testing_system_prompt(db, bot, language)
+    if configured is None:
+        return None
+    system, llm = configured
+    history = [message.model_dump() for message in body.messages[-20:]]
+    history.append({"role": "user", "content": body.message})
+    result = await llm.generate(history, system=system, max_tokens=120, temperature=0.2)
+    return _LANGUAGE_TAG_RE.sub("", result.text or "").strip()
 
 
 def _build_router(db: Session, bot: VoiceBot):
@@ -173,7 +377,8 @@ def _build_router(db: Session, bot: VoiceBot):
     )
 
 
-async def _knowledge_reply(bot: VoiceBot, message: str) -> str:
+async def _knowledge_reply(bot: VoiceBot, message: str, language: str) -> str:
+    from shared.orchestration.phrases import canned
     from shared.knowledge.schemas import RetrievalRequest
     from shared.knowledge.service import get_knowledge_service
 
@@ -182,7 +387,7 @@ async def _knowledge_reply(bot: VoiceBot, message: str) -> str:
     )
     if result.answerable and result.sources:
         return result.sources[0].text[:400]
-    return "I couldn't find that in the information I have."
+    return canned("kb_miss", language)
 
 
 @router.post("/bots/{bot_id}/testing/chat")
@@ -200,10 +405,17 @@ async def chat_test(
     state model of a live call.
     """
     from shared.db.redis import get_redis
+    from shared.orchestration.phrases import canned
     from shared.orchestration.router import RouteKind
     from shared.orchestration.workflow_engine import get_workflow_engine
 
+    started = time.perf_counter()
     bot = _bot_checked(db, bot_id, user)
+    supported = [item.language_code for item in bot.languages]
+    current_language = body.language or _default_chat_language(db, bot)
+    conversation_language = detect_chat_language(
+        body.message, current_language, supported,
+    )
     session = body.session_id or f"ct_{uuid.uuid4().hex[:12]}"
     redis = get_redis()
     active_key = f"wftest:{bot.id}:{session}"
@@ -229,6 +441,7 @@ async def chat_test(
                 bot_id=bot.id,
                 workflow_name=name,
                 user_text=body.message,
+                language=conversation_language,
             )
             reply, done = result["reply"], result["done"]
             if result.get("offScript"):
@@ -256,20 +469,22 @@ async def chat_test(
             except Exception:  # noqa: BLE001
                 pass
         else:
-            reply = "Could you tell me a bit more about what you need?"
+            reply = canned("clarify", conversation_language)
     elif decision.kind == RouteKind.KNOWLEDGE:
-        reply = await _knowledge_reply(bot, body.message)
+        reply = await _knowledge_reply(bot, body.message, conversation_language)
     elif decision.kind == RouteKind.HANDOFF:
-        reply = "I understand — let me connect you with a human agent. Please hold on."
+        reply = canned("handoff", conversation_language)
     elif decision.kind == RouteKind.SAFETY:
-        reply = "I can't help with that over this channel."
-    elif decision.kind == RouteKind.CLARIFY:
-        reply = "Could you tell me a little more about what you need?"
+        reply = canned("safety", conversation_language)
     elif decision.kind == RouteKind.CALL_CONTROL:
         reply = f"(call control: {decision.action or 'acknowledged'})"
-    else:  # CHAT / INTENT / TOOL — the live call would answer via the LLM
-        reply = ("(In a live call the assistant would answer conversationally here "
-                 "via the configured LLM.)")
+    else:  # CHAT / CLARIFY / INTENT / TOOL — answer through the configured LLM.
+        try:
+            reply = await _testing_llm_reply(
+                db, bot, body, conversation_language,
+            ) or canned("clarify", conversation_language)
+        except Exception:  # noqa: BLE001 — one provider failure must stay readable
+            reply = canned("error", conversation_language)
 
     return ok({
         "sessionId": session,
@@ -280,6 +495,9 @@ async def chat_test(
         "reason": decision.reason,
         "reply": reply,
         "done": done,
+        "language": conversation_language,
+        "latencyMs": round((time.perf_counter() - started) * 1000),
+        "at": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "activeWorkflow": (workflow_detail or {}).get("name") if workflow_detail and not done else None,
         "workflow": workflow_detail,
     })
