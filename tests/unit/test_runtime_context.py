@@ -310,6 +310,75 @@ class TestCollectionsCompatibility:
         )
         assert collection_snapshot_from_context(ctx).days_overdue == 0
 
+    def test_offer_eligibility_map_projects_only_enabled_offers(self):
+        """A disabled offer must be invisible, not merely discouraged."""
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b",
+            field_definitions=[{"key": "offers", "type": "object"}],
+            payload={"offers": {
+                "bhim_discount": {"enabled": True, "maximum_amount": 40},
+                "paytm_cashback": {"enabled": True, "minimum_amount": 10,
+                                   "maximum_amount": 300},
+                "credit_limit_increase": {"enabled": False,
+                                          "maximum_amount": 50000},
+            }},
+            payload_source="api", domain_policy="collections",
+        )
+        offers = collection_snapshot_from_context(ctx).active_offers
+
+        assert any("bhim" in o and "40" in o for o in offers)
+        assert any("10" in o and "300" in o for o in offers)
+        assert not any("50000" in o for o in offers), "disabled offer leaked"
+        # Wording stays conditional — never a promise.
+        assert all("eligibility" in o for o in offers)
+
+    def test_promise_history_surfaces_the_latest_unmet_promise(self):
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b",
+            field_definitions=[{"key": "previous_promises", "type": "array"}],
+            payload={"previous_promises": [
+                {"promised_amount": 2000, "promised_payment_date": "2026-07-10",
+                 "status": "missed"},
+                {"promised_amount": 2000, "promised_payment_date": "2026-08-03",
+                 "status": "missed"},
+            ]},
+            payload_source="api", domain_policy="collections",
+        )
+        snap = collection_snapshot_from_context(ctx)
+
+        assert snap.previous_promise_date == "2026-08-03"
+        assert snap.previous_promise_pending is True
+
+    def test_kept_promises_are_not_a_talking_point(self):
+        """Raising a promise they actually kept reads as an accusation."""
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b",
+            field_definitions=[{"key": "previous_promises", "type": "array"}],
+            payload={"previous_promises": [
+                {"promised_payment_date": "2026-07-10", "status": "kept"},
+            ]},
+            payload_source="api", domain_policy="collections",
+        )
+        snap = collection_snapshot_from_context(ctx)
+
+        assert snap.previous_promise_date is None
+        assert snap.previous_promise_pending is False
+
+    def test_nested_payment_status_and_late_fee_are_understood(self):
+        ctx = build_runtime_context(
+            tenant_id="tn", bot_id="b",
+            field_definitions=[{"key": "payment_status", "type": "object"},
+                               {"key": "late_fee", "type": "number"}],
+            payload={"payment_status": {"status": "pending", "paid_amount": 0,
+                                        "remaining_amount": 2000},
+                     "late_fee": 100},
+            payload_source="api", domain_policy="collections",
+        )
+        snap = collection_snapshot_from_context(ctx)
+
+        assert snap.payment_status == "pending"
+        assert snap.penal_charges == 100.0
+
     def test_unparseable_due_date_stays_unknown(self):
         """A guessed day count would be spoken as verified fact — refuse."""
         ctx = build_runtime_context(

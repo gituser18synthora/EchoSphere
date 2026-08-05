@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass, field
 
 from shared.customer_context import CustomerContextSnapshot
+from shared.orchestration.phrases import canned
 
 # ── phases ───────────────────────────────────────────────────────────────────
 GREETING = "greeting"
@@ -148,6 +149,10 @@ class TurnPlan:
     handoff: bool = False            # deterministic transfer to a human agent
     close_after_reply: bool = False  # this reply is the goodbye; end the call after it
     instruction: str = ""            # per-turn system-prompt block
+    # Fully determined reply to speak WITHOUT an LLM round trip. Set only when
+    # the turn's content follows from verified facts alone; empty otherwise,
+    # and the LLM answers as usual.
+    scripted_reply: str = ""
 
 
 @dataclass
@@ -401,6 +406,10 @@ class CollectionCallPolicy:
             # scripted ladder as if it answered a payment pitch — the LLM
             # opens the account explanation from the now-unlocked facts.
             plan.force_llm = True
+            # ...unless the opener is fully determined, in which case speaking
+            # it directly removes ~1s of LLM time from the turn where the
+            # caller has just said one word and is waiting.
+            plan.scripted_reply = self._scripted_opening()
         elif not self.verified and self.context is not None:
             # No account specifics may be pushed before identity confirmation.
             plan.force_llm = True
@@ -660,6 +669,38 @@ class CollectionCallPolicy:
         )
         return "\n".join(parts)
 
+    def _scripted_opening(self) -> str:
+        """The account-explanation opener, or "" to let the LLM answer.
+
+        Returned only when every fact the line states is verified and present.
+        Anything conditional — a disputed account, a payment claim, a missed
+        promise worth raising, a pending recording notice — is a judgement
+        call and goes to the LLM instead, so this can never flatten a nuanced
+        situation into a script.
+        """
+        ctx = self.context
+        if ctx is None or not self.verified or self.wrong_party:
+            return ""
+        if ctx.overdue_amount is None:
+            return ""
+        if (
+            self.dispute_raised
+            or self.payment_claimed
+            or self.complaint_raised
+            or self.callback_requested
+            or self.hardship_raised
+            or ctx.previous_promise_pending
+            or not self.recording_notice_given
+        ):
+            return ""
+        amount = _spoken_rupees(ctx.overdue_amount, self.language)
+        if ctx.days_overdue:
+            return canned("collections_open_amount_days", self.language).format(
+                amount=amount,
+                days=_spoken_count(ctx.days_overdue, self.language),
+            )
+        return canned("collections_open_amount", self.language).format(amount=amount)
+
     def _missing_facts(self, ctx: CustomerContextSnapshot) -> list[str]:
         if not (self.verified and not self.wrong_party):
             return []
@@ -802,6 +843,26 @@ def _hindi_int_words(n: int) -> str:
     if n:
         parts.append(_ONES_HI[n])
     return " ".join(parts)
+
+
+def _spoken_rupees(amount: float, language: str | None) -> str:
+    """Amount as it should be SPOKEN — words, never digits.
+
+    Distinct from :func:`_rupees`, which is written for the LLM's prompt and
+    deliberately carries both digits and a pronunciation hint. This one goes
+    straight to the TTS, where a digit string is exactly what mispronounces.
+    """
+    whole = int(amount)
+    if (language or "").split("-")[0].lower() == "hi" and amount == whole and 0 <= whole < 10**9:
+        return f"{_hindi_int_words(whole)} रुपये"
+    return f"{whole:,} rupees" if amount == whole else f"{amount:,.2f} rupees"
+
+
+def _spoken_count(value: int, language: str | None) -> str:
+    """A small count as words, for the same reason as :func:`_spoken_rupees`."""
+    if (language or "").split("-")[0].lower() == "hi" and 0 <= value < 10**9:
+        return _hindi_int_words(value)
+    return str(value)
 
 
 def _rupees(amount: float) -> str:
