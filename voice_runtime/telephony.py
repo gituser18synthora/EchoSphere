@@ -25,7 +25,6 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
-    OutputTransportMessageUrgentFrame,
     StartFrame,
     StopFrame,
 )
@@ -232,6 +231,25 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
             return json.dumps({"type": "killAudio"})
+        if isinstance(frame, OutputTransportMessageFrame):
+            message = frame.message or {}
+            if message.get("type") != "telephony_control":
+                return None
+            event = message.get("event")
+            if event == "transfer":
+                transfer = {
+                    "reason": message.get("reason") or "transfer",
+                }
+                if message.get("transfer_queue"):
+                    transfer["transfer_queue"] = message["transfer_queue"]
+                if message.get("agent_id"):
+                    transfer["agent_id"] = message["agent_id"]
+                return json.dumps({"event": "transfer", "transfer": transfer})
+            if event == "stop":
+                return json.dumps({
+                    "event": "stop",
+                    "stop": {"reason": message.get("reason") or "stop"},
+                })
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:
@@ -346,11 +364,7 @@ class VaaniFrameSerializer(FrameSerializer):
                 "streamSid": self._stream_sid,
                 "clear": {"reason": "interrupt"},
             })
-        # The urgent variant is a SystemFrame and does not subclass the plain
-        # message frame — both must be accepted or control events vanish.
-        if isinstance(
-            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
-        ):
+        if isinstance(frame, OutputTransportMessageFrame):
             message = frame.message or {}
             if message.get("type") == "telephony_control":
                 event = message.get("event")
