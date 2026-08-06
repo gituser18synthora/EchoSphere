@@ -51,6 +51,7 @@ from shared.turn_detection import (
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.audio_gate import CallerAudioGate
+from voice_runtime.barge_in import WordConfirmedBargeInStrategy
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
@@ -417,10 +418,21 @@ def build_voice_pipeline(
     # consumed the control frame and left telephony transcripts waiting for
     # the provider's roughly 60-second server-side endpoint.
     processors.append(stt)
+    # Barge-in policy: while the bot is quiet VAD starts the user turn (fast
+    # path, unchanged); while it is SPEAKING an interruption must be confirmed
+    # by a transcript of >= barge_in_min_words words — VAD alone let ambient
+    # speech reaching the mic cancel replies mid-word (see voice_runtime
+    # .barge_in). 0 restores pure-VAD interruption.
+    barge_in_min_words = int(round(turn["barge_in_min_words"]))
+    start_strategy = (
+        WordConfirmedBargeInStrategy(min_words=barge_in_min_words)
+        if barge_in_min_words > 0
+        else VADUserTurnStartStrategy()
+    )
     processors.append(
         UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
-                start=[VADUserTurnStartStrategy()],
+                start=[start_strategy],
                 # wait_for_transcript must be False: transcripts are consumed by
                 # the brain downstream and never reach the turn processor, so
                 # waiting for one only ever hits the 5s fallback — which also
