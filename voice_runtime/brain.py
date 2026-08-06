@@ -119,7 +119,10 @@ from shared.runtime_context import (
     collection_snapshot_from_context,
     context_from_collection_snapshot,
 )
-from voice_runtime.call_policy import CollectionCallPolicy
+from voice_runtime.call_policy import (
+    CollectionCallPolicy,
+    is_valid_transaction_reference,
+)
 from voice_runtime.endpointing import (
     is_short_complete_reply,
     utterance_looks_complete,
@@ -405,6 +408,8 @@ class ConversationBrain(FrameProcessor):
         # Latency instrumentation (shared with the VAD probe) and the caller
         # audio gate, which supplies speech energy/echo evidence per segment.
         self._latency = latency or TurnLatencyTracker(session_id=recorder.session_id)
+        self._latency.conversation_id = getattr(recorder, "control_plane_id", "") or ""
+        self._turn_counter = 0
         self._audio_gate = audio_gate
         # The bot turn whose latency row is completed once its audio starts.
         self._pending_latency_record: TurnRecord | None = None
@@ -1116,8 +1121,8 @@ class ConversationBrain(FrameProcessor):
         await self._say(canned("dnc_ack", self._conversation_language))
         await self.push_frame(EndWorkerFrame(reason="do_not_call_request"))
 
-    async def _close_call_completed(self) -> None:
-        """Bot-initiated clean close: the correct next action was captured.
+    async def _close_call_completed(self, reason: str = "") -> None:
+        """Bot-initiated clean close: the completion evaluator approved it.
 
         The goodbye the LLM just produced is already queued ahead of the
         EndWorkerFrame, so the worker drains the audio and then ends — the
@@ -1129,9 +1134,13 @@ class ConversationBrain(FrameProcessor):
             return
         self._closing = True
         disposition = self._policy.disposition() if self._policy else None
+        if self._policy is not None:
+            self._policy.mark_closed()
         self._recorder.disposition = disposition
         await self._recorder.flush_event(
-            "call_completed_by_policy", disposition=disposition
+            "call_completed_by_policy",
+            disposition=disposition,
+            completion_reason=reason or None,
         )
         await self.push_frame(EndWorkerFrame(reason="policy_completed"))
 
@@ -1236,10 +1245,18 @@ class ConversationBrain(FrameProcessor):
         if self._latency.counts:
             payload["counts"] = dict(self._latency.counts)
         self._recorder.add_event("turn_latency", **payload)
+        # Structured per-turn timing: absolute timestamps for every pipeline
+        # boundary plus the stage attribution, logged as one JSON object and
+        # stored as an event — slow turns are diagnosed, never guessed.
+        timing = self._latency.structured()
+        logger.info("turn_timing %s", json.dumps(timing, ensure_ascii=False))
+        self._recorder.add_event("turn_timing", **timing)
 
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
         turn_timestamp = time.time()
+        self._turn_counter += 1
+        self._latency.turn_id = self._turn_counter
         await self._notify_client({
             "type": "transcript",
             "text": text,
@@ -1250,10 +1267,17 @@ class ConversationBrain(FrameProcessor):
         # commands were already decided above (and hang-up/DNC even earlier,
         # per segment); everything else goes through the hybrid pipeline —
         # LLM classification with phrase fast path and regex fallback.
+        # EXCEPT turns the policy consumes deterministically (the answer to a
+        # pending identity or transaction-number question): the classifier's
+        # verdict cannot change their handling, and its LLM hop is the single
+        # largest serial pre-reply cost (~1.2–1.8 s measured per turn).
         classification: IntentClassification | None = None
+        policy_preempted = (
+            self._policy is not None and self._policy.preempts_turn(text)
+        )
         if decision.kind not in (
             RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
-        ):
+        ) and not policy_preempted:
             classification = await self._classify_turn(text)
             decision = self._apply_classification(decision, classification)
         signal = (
@@ -1281,6 +1305,14 @@ class ConversationBrain(FrameProcessor):
                 # the verified reality — next step, close decision and the
                 # live-state instruction all reflect the tool's answer.
                 plan = self._policy.plan_turn(text, signal)
+        if plan is not None and plan.verify_reference and not self._closing:
+            # A transaction reference was captured THIS turn: verify it with
+            # the configured payment tool (or record honestly that no check
+            # could run), then re-plan — the reply speaks the ACTUAL outcome.
+            tool_instruction += await self._verify_payment_reference(
+                plan.verify_reference
+            )
+            plan = self._policy.plan_turn(text, signal)
         logger.info(
             "turn[%s] user said (route=%s signal=%s intent=%s): %r",
             self._recorder.session_id, decision.kind.value, signal,
@@ -1321,17 +1353,24 @@ class ConversationBrain(FrameProcessor):
                 ))
             elif decision.kind == RouteKind.SAFETY:
                 await self._say(canned("safety", self._conversation_language))
-            elif plan is not None and plan.scripted_reply and not tool_instruction:
+            elif plan is not None and plan.scripted_reply and (
+                plan.scripted_final or not tool_instruction
+            ):
                 # Fast route: the policy has decided this turn's content from
                 # verified facts alone, so the LLM adds latency and risk but
                 # no information. Skipping it takes ~1s out of the identity
                 # confirmation — the turn where the caller has said a single
                 # word and silence is least explainable. A tool ran this turn
                 # means there is a verified result to weave in, which is a
-                # judgement call: that goes back to the LLM.
+                # judgement call and goes back to the LLM — UNLESS the
+                # scripted reply already encodes the tool's outcome
+                # (scripted_final: verification results, identity re-asks),
+                # where the LLM could only embellish or contradict it.
                 self._recorder.add_event(
                     "policy_scripted_reply",
                     phase=self._policy.phase,
+                    state=self._policy.conversation_state(),
+                    action=plan.action,
                     route=decision.kind.value,
                 )
                 await self._say(plan.scripted_reply)
@@ -1341,6 +1380,8 @@ class ConversationBrain(FrameProcessor):
                 self._recorder.add_event(
                     "policy_override",
                     phase=self._policy.phase,
+                    state=self._policy.conversation_state(),
+                    action=plan.action or None,
                     blockers=self._policy.blockers(),
                     route=decision.kind.value,
                 )
@@ -1378,7 +1419,21 @@ class ConversationBrain(FrameProcessor):
                     text, decision, started, extra_system=tool_instruction
                 )
             if plan is not None and plan.close_after_reply:
-                await self._close_call_completed()
+                # Executor-side completion gate: a close is honored only when
+                # the structured state + tool results say the goal is genuinely
+                # done — a polite goodbye sentence alone never completes a call.
+                complete, reason = (
+                    self._policy.evaluate_completion()
+                    if self._policy is not None else (True, "no_policy")
+                )
+                if complete:
+                    await self._close_call_completed(reason)
+                else:
+                    self._recorder.add_event(
+                        "completion_rejected",
+                        reason=reason,
+                        state=self._policy.conversation_state(),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - one bad turn must not kill the call
@@ -1509,6 +1564,7 @@ class ConversationBrain(FrameProcessor):
             self._runtime_context.prompt_values()
             if self._runtime_context is not None else dict(self._call_context)
         )
+        self._latency.mark_tool_start()
         result = await self._tools.execute(
             tenant_id=self._config.tenant_id,
             bot_id=self._config.bot_id,
@@ -1537,7 +1593,7 @@ class ConversationBrain(FrameProcessor):
         if classification.signal == "already_paid" and self._policy is not None:
             status = payload.get("payment_status") or payload.get("status")
             self._policy.record_payment_verification(
-                str(status) if status is not None else None
+                str(status) if status is not None else None, tool_name
             )
         facts = "\n".join(
             f"- {key}: {value}" for key, value in list(payload.items())[:12]
@@ -1550,6 +1606,85 @@ class ConversationBrain(FrameProcessor):
             f"`{tool_name}` returned:\n{facts}\n"
             "These are the only verified facts from this check — state them "
             "plainly and never contradict them."
+        )
+
+    async def _verify_payment_reference(self, reference: str) -> str:
+        """Verify a captured transaction reference with the configured tool.
+
+        The captured reference is persisted (flushed event + structured
+        payment record) BEFORE any reply can claim it was noted. Without a
+        configured tool the outcome is recorded as honestly unverified — the
+        policy's scripted reply then says verification is PENDING, never done.
+        Returns a system-prompt block describing the verified result.
+        """
+        policy = self._policy
+        await self._recorder.flush_event(
+            "transaction_reference_captured",
+            reference=reference,
+            valid=is_valid_transaction_reference(reference),
+        )
+        if self._payment_tool is None:
+            policy.record_payment_verification(None, None, for_reference=True)
+            self._recorder.add_event(
+                "payment_verification",
+                outcome=policy.verification_outcome,
+                reference=reference,
+                tool=None,
+            )
+            return ""
+        self._latency.mark_tool_start()
+        context_values = (
+            self._runtime_context.prompt_values()
+            if self._runtime_context is not None else dict(self._call_context)
+        )
+        result = await self._tools.execute(
+            tenant_id=self._config.tenant_id,
+            bot_id=self._config.bot_id,
+            tool=self._payment_tool,
+            args={"transaction_reference": reference},
+            intent="payment_verification",
+            session_id=self._recorder.session_id,
+            customer_verified=bool(policy.verified),
+            context_values=context_values,
+        )
+        self._latency.mark_tool_done()
+        self._recorder.add_event("tool_executed", **result.as_event())
+        payload = result.mapped or (
+            result.data if isinstance(result.data, dict) else {}
+        )
+        status = (
+            payload.get("payment_status") or payload.get("status")
+            if result.ok else None
+        )
+        policy.record_payment_verification(
+            str(status) if status is not None else None,
+            self._payment_tool,
+            for_reference=True,
+        )
+        await self._recorder.flush_event(
+            "payment_verification",
+            outcome=policy.verification_outcome,
+            raw_status=str(status) if status is not None else None,
+            reference=reference,
+            tool=self._payment_tool,
+            ok=result.ok,
+        )
+        if not result.ok:
+            return (
+                "\n\n# Tool result (THIS turn)\n"
+                f"- The payment verification `{self._payment_tool}` FAILED "
+                f"({result.error or result.status}). The claim stays "
+                "unverified; never say the payment was verified."
+            )
+        facts = "\n".join(
+            f"- {key}: {value}" for key, value in list(payload.items())[:12]
+        ) or "- (the tool returned no fields)"
+        return (
+            "\n\n# Tool result (verified by the system THIS turn)\n"
+            f"`{self._payment_tool}` checked transaction {reference} and "
+            f"returned:\n{facts}\n"
+            "These are the only verified payment facts — state them plainly "
+            "and never contradict them."
         )
 
     async def _handle_call_control(self, decision: RouteDecision) -> None:
@@ -1772,6 +1907,7 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(LLMFullResponseStartFrame())
         try:
             first_token_ms = await self._stream_llm_tokens(reply_parts, system, started)
+            self._latency.mark_llm_completed()
         finally:
             await self.push_frame(LLMFullResponseEndFrame())
 

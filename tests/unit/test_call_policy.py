@@ -124,19 +124,31 @@ class TestWrongParty:
 
 
 class TestPaymentAlreadyMade:
-    def test_claim_recorded_then_one_followup_then_close(self):
+    def test_claim_asks_for_reference_then_verifies_then_closes(self):
         policy = make_policy(verified=True)
         policy.observe_user("मैंने पेमेंट कर दी है", "already_paid")
         assert policy.payment_claimed and policy.phase == PAYMENT_ALREADY_MADE
         plan = policy.plan_turn("मैंने पेमेंट कर दी है", "already_paid")
-        assert plan.force_llm and not plan.close_after_reply
-        assert "when did they pay" in plan.instruction
+        assert not plan.close_after_reply
+        # The claim carries no reference: the ONE next question is the actual
+        # transaction number, scripted (never left to the LLM).
+        assert plan.action == "ask_transaction_reference"
+        assert "ट्रांजैक्शन" in plan.scripted_reply
 
         policy.observe_user("UTR number 123456789 hai", None)
-        assert policy.payment_claim_stage == 2
+        assert policy.transaction_reference == "123456789"
+        plan = policy.plan_turn("UTR number 123456789 hai", None)
+        # Captured ≠ verified: the plan demands a REAL verification first.
+        assert plan.action == "verify_payment"
+        assert plan.verify_reference == "123456789"
+        assert not plan.close_after_reply
+
+        # No verification tool on this call → honestly pending, then close.
+        policy.record_payment_verification(None, None, for_reference=True)
         plan = policy.plan_turn("UTR number 123456789 hai", None)
         assert plan.close_after_reply
-        assert "team will verify" in plan.instruction
+        assert "1 2 3 4 5 6 7 8 9" in plan.scripted_reply  # read back
+        assert "पुष्टि अभी" in plan.scripted_reply          # pending, not done
         assert policy.disposition() == "payment_claimed"
 
     def test_never_claims_live_verification(self):
