@@ -74,6 +74,7 @@ class TestValidateSttSettings:
             "turn_detection": {
                 "user_speech_timeout": 0.7,
                 "finalize_grace": 0.15,
+                "barge_in_min_words": 3,
             },
         }) == []
 
@@ -81,6 +82,8 @@ class TestValidateSttSettings:
         {"user_speech_timeout": 0.1},
         {"finalize_grace": 2},
         {"user_speech_timeout": "fast"},
+        {"barge_in_min_words": 11},
+        {"barge_in_min_words": True},
         {"unknown": 1},
         "fast",
     ])

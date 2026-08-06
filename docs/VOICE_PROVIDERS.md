@@ -65,8 +65,15 @@ caller/browser → Sarvam STT WS (saarika/saaras, auto-detect supported)
   (telephony uses lower VAD volume/confidence thresholds for quiet 8 kHz PSTN
   audio) can be overridden per bot via `voice_bot_settings.stt_settings.
   turn_detection` `{confidence, start_secs, stop_secs, min_volume,
-  user_speech_timeout}` — see `voice_runtime/pipeline.py
+  barge_in_min_words, user_speech_timeout}` — see `voice_runtime/pipeline.py
   resolve_turn_detection` for the clamped ranges.
+- Barge-in: while the bot is quiet, VAD starts the user's turn (fast path);
+  while it is SPEAKING, an interruption must be confirmed by a transcript of
+  ≥ `barge_in_min_words` words (default 2, 0 = interrupt on any voice
+  activity) — otherwise background speech reaching the mic cancels replies
+  mid-word (`voice_runtime/barge_in.py`). Sub-threshold segments that arrive
+  during bot audio (backchannels like "हाँ", noise fragments) are held by the
+  brain and answered once the reply finishes playing, never by cutting it.
 - Hang-up: `shared/orchestration/router.py detect_hangup()` matches Hindi /
   Hinglish / English disconnect requests (negation-guarded) on every STT
   segment, before workflows and the LLM. The brain interrupts playback,

@@ -558,6 +558,15 @@ class ConversationBrain(FrameProcessor):
             self._latency.mark_bot_stopped_speaking()
             await self.push_frame(frame, direction)
             await self._flush_pending_controls()
+            if (
+                self._pending_segments
+                and not self._turn_active
+                and not self._finalize_pending()
+            ):
+                # Segments held while the bot was audibly speaking (below the
+                # barge-in word threshold) get their turn now that the caller
+                # has heard the reply out.
+                await self._schedule_finalize()
             return
 
         if isinstance(frame, TranscriptionFrame):
@@ -726,6 +735,18 @@ class ConversationBrain(FrameProcessor):
             return
         # No open user turn: VAD missed a quiet utterance or STT finalized
         # after the turn closed. Debounce — more finals may still be coming.
+        if self._bot_speaking:
+            # The turn controller heard this segment and chose NOT to
+            # interrupt (below the barge-in word threshold: a backchannel
+            # "हाँ"/"hmm", or a noise fragment). Running a turn for it would
+            # cancel the audible reply anyway — the exact mid-sentence chop
+            # the word gate exists to prevent — so hold it; it runs (merged
+            # with anything further) when the bot finishes speaking or the
+            # caller properly barges in.
+            self._recorder.add_event(
+                "stt_segment_held_during_bot_audio", text=text[:200]
+            )
+            return
         await self._schedule_finalize()
 
     async def _reject_segment(self, text: str, quality, verdict) -> None:

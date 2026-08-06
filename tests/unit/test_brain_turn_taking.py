@@ -17,6 +17,8 @@ another response.
 import asyncio
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     EndWorkerFrame,
     InterruptionFrame,
     LLMFullResponseStartFrame,
@@ -217,6 +219,71 @@ class TestTurnGating:
         assert handled == ["पहला सवाल यह है", "दूसरा सवाल यह है"]
 
 
+class TestSegmentsHeldDuringBotAudio:
+    """Orphan finals while the bot is audibly speaking must not cut the reply.
+
+    The turn controller's word gate declined to interrupt for these segments
+    (backchannel or noise below the barge-in threshold); if the brain then ran
+    a turn for them anyway, `_consume_pending_turn` would cancel the audible
+    generation and recreate the mid-sentence chop the gate exists to prevent.
+    """
+
+    async def test_segment_during_bot_audio_waits_for_reply_end(self):
+        brain = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("मुझे कुछ पूछना है"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == []  # held: the reply is still playing
+        assert "stt_segment_held_during_bot_audio" in brain._recorder.event_kinds()
+        await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == ["मुझे कुछ पूछना है"]
+
+    async def test_held_segment_does_not_cancel_playing_reply(self):
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        generation = brain._generation
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("हाँ ठीक है"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert not generation.cancelled()  # backchannel never chops the reply
+
+    async def test_held_segment_joins_confirmed_barge_in_turn(self):
+        # The word gate confirms a real interruption: the controller opens the
+        # turn (UserStartedSpeakingFrame), the reply is cancelled, and the held
+        # segment runs merged with the rest of the caller's utterance.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        started.clear()
+        generation = brain._generation
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("एक मिनट"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert generation.cancelled()
+        await brain.process_frame(transcript("मेरी बात सुनिए"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        assert handled[-1] == "एक मिनट मेरी बात सुनिए"
+
+    async def test_hangup_during_bot_audio_is_still_immediate(self):
+        # The word gate must never delay a hang-up: the brain acts on the
+        # segment itself, before any hold/buffer logic.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक करना है"), FrameDirection.DOWNSTREAM)
+        await asyncio.wait_for(started.wait(), 1)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("फोन काट दो"), FrameDirection.DOWNSTREAM)
+        await settle()
+        assert any(isinstance(f, EndWorkerFrame) for f in brain._pushed)
+
+
 class TestHangup:
     async def hangup_via(self, brain, text, language="hi-IN"):
         await brain.process_frame(transcript(text, language), FrameDirection.DOWNSTREAM)
@@ -371,6 +438,18 @@ class TestTurnDetectionConfig:
         )
         assert turn["user_speech_timeout"] == 1.2
         assert turn["min_volume"] == 0.3
+
+    def test_barge_in_word_gate_defaults_on_and_can_be_disabled(self):
+        # Default: interruptions while the bot speaks need a 2-word transcript.
+        for kind in ("browser", "telephony"):
+            assert resolve_turn_detection(self._config(), kind)["barge_in_min_words"] == 2.0
+        # 0 is a legitimate override (pure-VAD barge-in); above-bounds clamps.
+        assert resolve_turn_detection(
+            self._config({"barge_in_min_words": 0}), "browser"
+        )["barge_in_min_words"] == 0.0
+        assert resolve_turn_detection(
+            self._config({"barge_in_min_words": 99}), "browser"
+        )["barge_in_min_words"] == 10.0
 
     def test_overrides_are_clamped_and_typo_safe(self):
         turn = resolve_turn_detection(

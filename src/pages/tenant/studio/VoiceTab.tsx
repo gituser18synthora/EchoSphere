@@ -40,6 +40,10 @@ const DELIVERY_SPEED_PARAMS = ["pace", "speed"];
    a provider-native parameter. It therefore gets its own stable UI/contract
    instead of being added to every provider model's paramsSchema. */
 const TURN_DETECTION_SCHEMA: Record<string, ParamSpec> = {
+  barge_in_min_words: {
+    type: "number", min: 0, max: 10, step: 1, default: 2,
+    label: "Barge-in word threshold", help: "Transcribed words required before the caller can interrupt the bot mid-reply. Keeps background noise and chatter from cutting the bot off; 0 lets any detected voice activity interrupt instantly.",
+  },
   user_speech_timeout: {
     type: "number", min: 0.2, max: 3, step: 0.05, default: 1.2,
     label: "User pause window", help: "Seconds of silence before the bot closes the caller's turn. Browser default: 1.2s; telephony default: 0.8s. Setting a value overrides both.",

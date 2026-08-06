@@ -16,6 +16,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "start_secs": 0.3,
         "stop_secs": 0.2,
         "min_volume": 0.6,
+        "barge_in_min_words": 2.0,
         "user_speech_timeout": 1.2,
         "finalize_grace": 0.3,
         "finalize_settle": 0.15,
@@ -27,6 +28,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "start_secs": 0.2,
         "stop_secs": 0.2,
         "min_volume": 0.4,
+        "barge_in_min_words": 2.0,
         "user_speech_timeout": 0.8,
         "finalize_grace": 0.3,
         "finalize_settle": 0.15,
@@ -40,6 +42,13 @@ TURN_DETECTION_BOUNDS: dict[str, tuple[float, float]] = {
     "start_secs": (0.1, 1.0),
     "stop_secs": (0.1, 2.0),
     "min_volume": (0.0, 1.0),
+    # Words the STT must transcribe before a caller may interrupt the bot
+    # mid-reply. While the bot is quiet, VAD starts the turn as always; while
+    # it is speaking, VAD alone cannot — background noise and single-word
+    # hallucinations otherwise cancel the reply mid-sentence, which the caller
+    # hears as chopped, stuttering audio. 0 disables the word gate entirely
+    # (any voice activity interrupts instantly, the pre-2026-08 behaviour).
+    "barge_in_min_words": (0.0, 10.0),
     "user_speech_timeout": (0.2, 3.0),
     "finalize_grace": (0.0, 1.5),
     # How stale the newest STT final must be, at the moment the turn controller
