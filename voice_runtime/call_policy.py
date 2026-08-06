@@ -27,8 +27,23 @@ nicely; nothing *enforced* it.
 - every turn produces a :class:`TurnPlan`: whether the LLM must answer
   (instead of the workflow), whether the call should end after the reply,
   a deterministic handoff, and the per-turn instruction block;
+- **identity is confirmed only by an anchored clear yes** (see
+  :func:`classify_identity_answer`); ambiguous, partial or noisy answers get
+  a scripted re-ask — the LLM never gets to guess who answered;
+- an already-paid claim runs a **transaction-reference state machine**
+  (claimed → awaiting_transaction_reference → verifying → verified /
+  pending / failed / unverified): "हाँ, नंबर है" is never the number, only a
+  captured value is ever called noted, and only a TOOL result is ever called
+  verified — the outcome replies are scripted from that result;
+- the model always receives the derived spec-level
+  :func:`~CollectionCallPolicy.conversation_state`, the allowed / prohibited
+  actions for it, and the required fields still missing; the brain validates
+  actions (:func:`~CollectionCallPolicy.validate_action`) and gates every
+  close through :func:`~CollectionCallPolicy.evaluate_completion` — a polite
+  goodbye alone never completes a call;
 - the terminal state maps to a stored **disposition** and to the call-state
-  fields written back to the customer context row.
+  fields written back to the customer context row (including the structured
+  :func:`~CollectionCallPolicy.payment_record`).
 
 The policy is deterministic and language-agnostic: it consumes the router's
 semantic signals (shared.orchestration.router.classify_user_signal) plus a
@@ -646,6 +661,7 @@ class CollectionCallPolicy:
             self.payment_verified_status = normalized
         if normalized in self._VERIFIED_STATUSES:
             self.verification_outcome = "verified"
+            self.awaiting_reference = False
             self.payment_claim_stage = 2
             return
         if not (for_reference or self.transaction_reference):

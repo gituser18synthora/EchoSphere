@@ -149,13 +149,15 @@ class TestAlreadyPaidToolVerification:
         assert tool.calls and tool.calls[-1]["tool"] == "check_payment_status"
         assert tool.calls[-1]["args"]["payment_date"] == "kal"
         assert tool.calls[-1]["intent"] == "already_paid"
-        # The verified result reached the reply prompt…
-        system = llm.calls[-1]["system"]
-        assert "Tool result (verified by the system THIS turn)" in system
-        assert "payment_status: completed" in system
-        assert "payment IS confirmed" in system
+        # The verified outcome is spoken SCRIPTED from the tool result —
+        # the LLM never gets to phrase (or embellish) a verification claim.
+        replies = bot_replies(brain)
+        assert "पुष्टि हो" in replies[-1] and "भुगतान" in replies[-1]
         # …and ONLY the tool marks the account paid.
         assert brain._policy.payment_verified_status == "completed"
+        assert brain._policy.verification_outcome == "verified"
+        # The completion evaluator approved the close.
+        assert brain._closing
         await brain.cleanup()
         assert brain._recorder.call_state.get("payment_status") == "completed"
 
@@ -166,8 +168,13 @@ class TestAlreadyPaidToolVerification:
                                   intents=[ALREADY_PAID_INTENT], tool=tool)
         await verify_identity(brain)
         await turn(brain, "maine payment kar di thi kal hi")
-        system = llm.calls[-1]["system"]
-        assert "NOT yet reflected" in system
+        # An inconclusive account-level check does NOT settle the claim: the
+        # bot moves to capturing the transaction reference instead.
+        replies = bot_replies(brain)
+        assert "ट्रांजैक्शन" in replies[-1]
+        assert brain._policy.awaiting_reference
+        assert brain._policy.verification_outcome is None
+        assert not brain._closing
         await brain.cleanup()
         # The claim alone must not settle the account.
         assert brain._recorder.call_state.get("payment_status") != "completed"
@@ -193,9 +200,13 @@ class TestAlreadyPaidToolVerification:
                                   intents=[ALREADY_PAID_INTENT], tool=tool)
         await verify_identity(brain)
         await turn(brain, "bhugtan ho chuka hai mera")
-        system = llm.calls[-1]["system"]
-        assert "FAILED" in system
+        # A failed check verifies nothing: no success claim anywhere, and the
+        # flow proceeds to capture the transaction reference.
+        replies = bot_replies(brain)
+        assert "पुष्टि हो चुकी" not in replies[-1]
+        assert "ट्रांजैक्शन" in replies[-1]
         assert brain._policy.payment_verified_status is None
+        assert brain._policy.verification_outcome is None
 
     async def test_pitch_not_repeated_after_claim(self):
         """The claim pauses the ladder: the workflow is never consulted."""
