@@ -154,6 +154,111 @@ _PHRASES: dict[str, dict[str, str]] = {
             "के लिए call कर रहा हूँ — क्या आप आज payment कर पाएंगे?"
         ),
     },
+    # Identity answer was unclear/partial/noise: re-ask, never assume. The
+    # {name} is the customer on record; grammar is gendered by the speaking
+    # voice downstream.
+    "collections_identity_reask": {
+        "en": "Sorry — am I speaking with {name}?",
+        "hi": "माफ़ कीजिए, क्या मैं {name} जी से बात कर रहा हूँ?",
+    },
+    # Identity could not be verified after repeated attempts: close with no
+    # account disclosure of any kind.
+    "collections_identity_unverified_close": {
+        "en": (
+            "I'm sorry, I couldn't confirm I'm speaking with the right "
+            "person, so I can't discuss this call's purpose. We'll reach "
+            "out again later. Thank you."
+        ),
+        "hi": (
+            "माफ़ कीजिए, मैं पुष्टि नहीं कर पाया कि मेरी बात सही व्यक्ति से "
+            "हो रही है, इसलिए मैं इस कॉल का विवरण साझा नहीं कर सकता। हम "
+            "बाद में दोबारा संपर्क करेंगे। धन्यवाद।"
+        ),
+    },
+    # The payment-already-made flow: ask for the ACTUAL transaction number.
+    "collections_ask_reference": {
+        "en": (
+            "Thank you. To verify the payment, please tell me the "
+            "transaction or UTR number."
+        ),
+        "hi": (
+            "धन्यवाद। पेमेंट की पुष्टि के लिए कृपया ट्रांजैक्शन या UTR "
+            "नंबर बताइए।"
+        ),
+    },
+    "collections_ask_reference_retry": {
+        "en": (
+            "Sorry, I didn't get the number. Please say the transaction "
+            "number slowly, digit by digit."
+        ),
+        "hi": (
+            "माफ़ कीजिए, नंबर समझ नहीं आया। कृपया ट्रांजैक्शन नंबर "
+            "धीरे-धीरे, एक-एक अंक करके बताइए।"
+        ),
+    },
+    # Verification outcomes — the ONLY sentences that state a result, each
+    # scripted from the tool's answer. {reference} is pre-spaced digit by
+    # digit for the TTS.
+    "collections_payment_verified": {
+        "en": (
+            "Your payment has been received and verified successfully. "
+            "Sorry for the reminder call, and thank you!"
+        ),
+        "hi": (
+            "आपका भुगतान सफलतापूर्वक प्राप्त हो गया है और उसकी पुष्टि हो "
+            "चुकी है। कॉल के लिए खेद है, धन्यवाद!"
+        ),
+    },
+    "collections_payment_processing": {
+        "en": (
+            "I've noted transaction number {reference}. Your payment shows "
+            "in our records but is still processing — it will reflect on "
+            "your account once complete. Thank you!"
+        ),
+        "hi": (
+            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। आपका भुगतान "
+            "रिकॉर्ड में दिखाई दे रहा है, लेकिन अभी प्रोसेसिंग में है — पूरा "
+            "होते ही अकाउंट में दिखेगा। धन्यवाद!"
+        ),
+    },
+    "collections_payment_not_found": {
+        "en": (
+            "I couldn't verify a payment against transaction number "
+            "{reference} right now. I've recorded the number and our team "
+            "will re-check it and get back to you. Thank you."
+        ),
+        "hi": (
+            "अभी ट्रांजैक्शन नंबर {reference} से भुगतान की पुष्टि नहीं हो "
+            "पा रही है। मैंने नंबर नोट कर लिया है — हमारी टीम इसे दोबारा "
+            "जाँच कर आपसे संपर्क करेगी। धन्यवाद।"
+        ),
+    },
+    # A reference was captured but no verification tool exists on this call:
+    # verification is honestly PENDING — never claimed done.
+    "collections_verification_unavailable": {
+        "en": (
+            "I've noted transaction number {reference}. Verification is "
+            "still pending — our team will confirm it against the records. "
+            "Thank you."
+        ),
+        "hi": (
+            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। पुष्टि अभी "
+            "बाकी है — हमारी टीम रिकॉर्ड से इसकी जाँच करेगी। धन्यवाद।"
+        ),
+    },
+    # The customer could not provide any reference after clarification.
+    "collections_reference_unavailable_close": {
+        "en": (
+            "No problem. I've recorded that you've made the payment — our "
+            "team will verify it from the records and follow up if needed. "
+            "Thank you."
+        ),
+        "hi": (
+            "कोई बात नहीं। मैंने नोट कर लिया है कि आपने भुगतान किया है — "
+            "हमारी टीम रिकॉर्ड से इसकी जाँच करेगी और ज़रूरत होने पर संपर्क "
+            "करेगी। धन्यवाद।"
+        ),
+    },
 }
 
 

@@ -76,6 +76,10 @@ class TurnLatencyTracker:
     """
 
     session_id: str = ""
+    # Set by the brain: the control-plane conversation id and a 1-based turn
+    # counter, carried into the structured per-turn timing record.
+    conversation_id: str = ""
+    turn_id: int = 0
     bot_stopped_at: float | None = None
     # Resolved at mark_speech_started rather than derived at report time.
     bot_stop_gap_ms: float | None = None
@@ -85,9 +89,11 @@ class TurnLatencyTracker:
     last_final_at: float | None = None
     dispatched_at: float | None = None
     classified_at: float | None = None
+    tool_started_at: float | None = None
     tool_done_at: float | None = None
     llm_request_at: float | None = None
     llm_first_token_at: float | None = None
+    llm_completed_at: float | None = None
     tts_request_at: float | None = None
     tts_first_byte_at: float | None = None
     bot_started_at: float | None = None
@@ -124,6 +130,11 @@ class TurnLatencyTracker:
     def mark_classified(self) -> None:
         self.classified_at = time.monotonic()
 
+    def mark_tool_start(self) -> None:
+        """First tool dispatch of this turn."""
+        if self.tool_started_at is None:
+            self.tool_started_at = time.monotonic()
+
     def mark_tool_done(self) -> None:
         self.tool_done_at = time.monotonic()
 
@@ -135,6 +146,10 @@ class TurnLatencyTracker:
     def mark_llm_first_token(self) -> None:
         if self.llm_first_token_at is None:
             self.llm_first_token_at = time.monotonic()
+
+    def mark_llm_completed(self) -> None:
+        """The reply stream finished (last token received)."""
+        self.llm_completed_at = time.monotonic()
 
     def mark_tts_request(self) -> None:
         """First synthesis dispatch of this turn (later sentences are inside it)."""
@@ -167,9 +182,11 @@ class TurnLatencyTracker:
         self.last_final_at = None
         self.dispatched_at = None
         self.classified_at = None
+        self.tool_started_at = None
         self.tool_done_at = None
         self.llm_request_at = None
         self.llm_first_token_at = None
+        self.llm_completed_at = None
         self.tts_request_at = None
         self.tts_first_byte_at = None
         self.bot_started_at = None
@@ -197,6 +214,61 @@ class TurnLatencyTracker:
             "response": _ms(self.bot_started_at, self.speech_stopped_at),
         }
         return {name: value for name, value in spans.items() if value is not None}
+
+    # The serial stages a slow response can hide in, in pipeline order. The
+    # composite spans (llm_first_token, tts_first_audio, response) are
+    # excluded — they CONTAIN these and would always "win".
+    _ATTRIBUTABLE_STAGES = (
+        "stt_final", "endpoint", "classify", "tool", "llm_ttft",
+        "tts_queue", "tts_ttfb", "playout",
+    )
+
+    def slowest_stage(self, spans: dict[str, float] | None = None) -> str | None:
+        """The single pipeline stage that cost this turn the most time."""
+        spans = spans if spans is not None else self.snapshot()
+        candidates = {
+            name: spans[name]
+            for name in self._ATTRIBUTABLE_STAGES if name in spans
+        }
+        if not candidates:
+            return None
+        return max(candidates, key=candidates.get)
+
+    def structured(self) -> dict:
+        """The per-turn timing record, absolute epoch-ms timestamps.
+
+        One JSON-serializable object per completed turn: every pipeline
+        boundary as a wall-clock timestamp (0 when the mark did not happen),
+        the total the caller felt, and the stage attribution — so a slow turn
+        is diagnosed from data, never guessed at.
+        """
+        # Monotonic marks → epoch: the offset is constant within a process.
+        offset = time.time() - time.monotonic()
+
+        def _epoch_ms(mark: float | None) -> float:
+            return round((mark + offset) * 1000, 1) if mark is not None else 0
+
+        spans = self.snapshot()
+        return {
+            "conversation_id": self.conversation_id or self.session_id,
+            "turn_id": self.turn_id,
+            "user_speech_start_at": _epoch_ms(self.speech_started_at),
+            "user_speech_end_at": _epoch_ms(self.speech_stopped_at),
+            "stt_final_at": _epoch_ms(self.last_final_at),
+            "turn_dispatched_at": _epoch_ms(self.dispatched_at),
+            "classify_completed_at": _epoch_ms(self.classified_at),
+            "tool_started_at": _epoch_ms(self.tool_started_at),
+            "tool_completed_at": _epoch_ms(self.tool_done_at),
+            "llm_started_at": _epoch_ms(self.llm_request_at),
+            "llm_first_token_at": _epoch_ms(self.llm_first_token_at),
+            "llm_completed_at": _epoch_ms(self.llm_completed_at),
+            "tts_started_at": _epoch_ms(self.tts_request_at),
+            "first_audio_generated_at": _epoch_ms(self.tts_first_byte_at),
+            "first_audio_sent_at": _epoch_ms(self.bot_started_at),
+            "total_response_latency_ms": spans.get("response", 0),
+            "spans_ms": spans,
+            "slowest_stage": self.slowest_stage(spans),
+        }
 
     def report(self) -> dict[str, float]:
         """Log the completed turn's spans once and return them."""
