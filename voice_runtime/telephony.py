@@ -366,7 +366,12 @@ class VaaniFrameSerializer(FrameSerializer):
                         payload["transfer"]["transfer_queue"] = message["transfer_queue"]
                     if message.get("agent_id"):
                         payload["transfer"]["agent_id"] = message["agent_id"]
-                    return json.dumps(payload)
+                    wire_message = json.dumps(payload)
+                    logger.info(
+                        "vaani websocket outbound transfer: %s",
+                        wire_message,
+                    )
+                    return wire_message
                 if event == "stop":
                     self._stopped = True
                     return self._stop_message(message.get("reason") or "stop")

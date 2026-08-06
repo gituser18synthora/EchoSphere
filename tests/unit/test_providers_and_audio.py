@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 
 import pytest
@@ -313,7 +314,8 @@ class TestVaaniTelephony:
             audio=b"\x01" * 3200, sample_rate=8000, num_channels=1,
         )) is None
 
-    async def test_transfer_carries_queue_and_agent(self):
+    async def test_transfer_carries_queue_and_agent(self, caplog):
+        caplog.set_level(logging.INFO, logger="voice_runtime.telephony")
         serializer = VaaniFrameSerializer(stream_sid="MZ123")
         raw = await serializer.serialize(OutputTransportMessageFrame(message={
             "type": "telephony_control", "event": "transfer",
@@ -325,6 +327,8 @@ class TestVaaniTelephony:
             "transfer": {"reason": "workflow_handover",
                          "transfer_queue": "queue 1", "agent_id": "agent 1"},
         }
+        assert "vaani websocket outbound transfer" in caplog.text
+        assert raw in caplog.text
 
 
 def _pcm_tone(samples: int, amplitude: int, *, period: int = 16) -> bytes:
