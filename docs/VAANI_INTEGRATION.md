@@ -392,7 +392,10 @@ the call and operational logging/connection close to report a transport error.
 
 Outbound chunk guarantees (per the platform playback guidance):
 * size is always a **multiple of 320 bytes** (zero-padded when needed),
-* at least **3,200 bytes** except the final flush of an utterance,
+* at least **3,200 bytes** in steady state — except the final flush of an
+  utterance, and the first packets of each utterance, which ramp up from
+  **640 → 1,280 → 2,560 bytes** so the bot's first audio arrives sooner
+  (all still 320-byte aligned),
 * never more than the nominal **100,000-byte** limit (the largest aligned
   regular chunk produced by the current code is 99,840 bytes),
 * `chunk` is a sequential **string** counter, `timestamp` is epoch **seconds**.
@@ -455,7 +458,7 @@ handled internally where possible; fatal setup failures use close codes.
 | Channels | 1 (mono) | 1 (mono) |
 | JSON transport | Standard base64 in `media.payload`; no data-URI prefix | Same |
 | Frame quantum | Use multiples of 320 bytes = 160 samples = 20 ms | Always emitted on 320-byte boundaries |
-| Recommended packet | 320 bytes every 20 ms, or a paced multiple up to 3,200 bytes | Normally buffered to at least 3,200 bytes; final utterance chunk may be shorter |
+| Recommended packet | 320 bytes every 20 ms, or a paced multiple up to 3,200 bytes | Normally buffered to at least 3,200 bytes; the first packets of an utterance ramp up from 640 bytes and the final utterance chunk may be shorter |
 | Maximum | Contract maximum 100,000 decoded bytes | 99,840 bytes effective aligned maximum |
 
 At 8 kHz × 16-bit × mono, the stream is 16,000 bytes/s. Therefore 320 bytes
@@ -809,7 +812,7 @@ EchoSphere requirement.
 |---|---|---|---|---|
 | Audio | 8 kHz, 16-bit PCM, mono, base64 | Raw signed PCM16 little-endian, 8 kHz, mono, base64, no WAV header | Yes | Vaani must not send μ-law/A-law despite stale DB metadata. |
 | 320-byte unit | Required multiple of 320 | Outbound always aligned; inbound alignment not enforced | Partial | Vaani sends aligned frames; EchoSphere remains tolerant inbound. |
-| Minimum chunk | 3.2 KB “≈100 ms”, bidirectional | Outbound buffers to 3,200 bytes except final; inbound accepts 320-byte/20 ms frames | Partial | Vaani accepts short final output. PDF arithmetic is wrong: 3,200 bytes is 200 ms. |
+| Minimum chunk | 3.2 KB “≈100 ms”, bidirectional | Outbound buffers to 3,200 bytes in steady state (utterance-start packets ramp from 640 bytes, final flush may be short); inbound accepts 320-byte/20 ms frames | Partial | Vaani accepts short leading/final output. PDF arithmetic is wrong: 3,200 bytes is 200 ms. |
 | Maximum chunk | 100 KB | Outbound effective maximum 99,840 aligned bytes; inbound contract cap 100,000 decoded bytes with a 140,000-character base64 guard | Compatible | Keep decoded input ≤100,000 bytes. |
 | Barge-in | `clear` flushes ongoing playback | VAD detects caller audio, cancels generation, clears server buffer, sends `clear` | Yes | Vaani must make buffer flush low latency. |
 | Reconnect | Exponential backoff | Pre-pipeline `4400`/`4429` may retry the still-issued URL; established call cannot resume and needs a fresh webhook | Partial | **Vaani distinguishes setup retry from call resume.** |

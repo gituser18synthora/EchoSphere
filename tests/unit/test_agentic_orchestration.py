@@ -192,8 +192,10 @@ class TestIdentityDecisions:
 
 class TestSlotDecisions:
     def _flow_stub(self):
+        # NOTE: the identity turn ("हाँ, मैं बोल रहा हूँ") and the final
+        # spoken-digits turn resolve on the deterministic fast path and never
+        # reach the engine, so no decisions are queued for them.
         return _AgenticLLMStub([
-            CONFIRMED,
             {  # the claim turn: says a payment happened, no reference given
                 "signal": "already_paid", "scope": "in_scope",
                 "confidence": 0.92,
@@ -208,14 +210,6 @@ class TestSlotDecisions:
                           {"status": "exists_claimed"}},
                 "next_action": "request_slot_value",
                 "response_text": "जी, कृपया ट्रांजैक्शन नंबर बोलिए।",
-            },
-            {  # the caller finally says the number (spoken digits)
-                "scope": "in_scope", "confidence": 0.9,
-                "slots": {"transaction_reference": {
-                    "status": "provided",
-                    "value": "एक दो तीन चार पांच छह सात आठ नौ शून्य एक दो",
-                }},
-                "next_action": "continue_workflow",
             },
         ])
 
@@ -268,8 +262,9 @@ JOKE_REDIRECT = (
 
 class TestScopeProtection:
     async def test_joke_request_redirects_to_goal(self):
+        # The clear identity confirmation resolves on the deterministic fast
+        # path; only the joke turn consumes an engine decision.
         llm = _AgenticLLMStub([
-            CONFIRMED,
             {"scope": "out_of_scope", "confidence": 0.95,
              "reason": "joke request, unrelated to the recovery objective",
              "response_text": JOKE_REDIRECT},
@@ -466,10 +461,12 @@ class TestWorkflowSignalThreading:
 
 class TestObservability:
     async def test_orchestration_turn_event_is_complete(self):
+        # An affirmation the anchored fast-path regexes cannot resolve, so the
+        # turn runs through the engine and is recorded as a decision.
         llm = _AgenticLLMStub([CONFIRMED])
         brain = make_agentic_brain(context=snapshot(), llm=llm)
         await brain._say(IDENTITY_QUESTION)
-        await turn(brain, "हाँ, मैं बोल रहा हूँ")
+        await turn(brain, "अरे भाई मैं ही तो हूँ")
         rows = events(brain, "orchestration_turn")
         assert rows
         row = rows[-1]

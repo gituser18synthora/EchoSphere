@@ -955,6 +955,110 @@ class CollectionCallPolicy:
             )
         return False
 
+    # Fast-path clarity gates: only SHORT, single-thought utterances resolve
+    # deterministically. Anything longer may be compound ("haan, lekin …") and
+    # goes to the Goal Engine, whose semantic judgement these limits protect.
+    _FAST_PATH_MAX_WORDS = 8
+    _FAST_PATH_AGENT_MAX_WORDS = 6
+    # The payment_intent signal also fires on a bare method mention ("UPI se
+    # ho jayega kya?"), which is a QUESTION, not a commitment. The fast path
+    # additionally requires an explicit commitment verb and no interrogative.
+    _CLEAR_COMMITMENT = re.compile(
+        r"karunga|karungi|करूंगा|करूंगी"
+        r"|(?:kar|कर|de|दे|bhar|भर)\s*(?:dunga|dungi|deta|deti|दूंगा|दूंगी|देता|देती)"
+        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार",
+        re.I,
+    )
+    _INTERROGATIVE = re.compile(
+        r"\b(?:kya|kab|kaise|kyun|kyon|kahan|kitn\w*|what|when|how|why|where)\b"
+        r"|क्या|कब|कैसे|क्यों|कहाँ|कहां|कितन",
+        re.I,
+    )
+
+    def deterministic_turn_resolution(self, text: str, signal: str | None) -> str | None:
+        """Name of the deterministic rule that fully resolves this turn, or None.
+
+        Used by the brain BEFORE the Goal Engine: a turn the policy/parser can
+        resolve with high confidence (a clear yes/no to the pending identity
+        question, an explicit transaction reference for the pending slot, an
+        accepted agent offer, a short explicit agent request, a clear payment
+        commitment/refusal while the recovery discussion waits for one) never
+        pays the decision-LLM latency. Everything compound, contradictory,
+        ambiguous or off-question returns None and is judged semantically.
+
+        The rules deliberately reuse the same deterministic machinery the
+        fallback path runs on (classify_identity_answer, reference
+        extraction, the signal bank) gated by the CURRENT pending question —
+        never a broad regex on its own.
+        """
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+        words = len(stripped.split())
+
+        # Pending transaction-reference question: only an ACTUAL value (which
+        # deterministic format validation accepts) or an explicit can't-provide
+        # resolves without the engine. "हाँ, नंबर है" and everything else stays
+        # semantic — the engine distinguishes exists-claims from noise.
+        if (
+            self.awaiting_reference
+            and self.transaction_reference is None
+            and self.verification_outcome is None
+        ):
+            if signal in (
+                "complaint", "agent_request", "hardship", "callback",
+                "wrong_person", "question",
+            ):
+                return None
+            if extract_transaction_reference(stripped):
+                return "reference_provided"
+            if signal == "refusal" or _NO_REFERENCE.search(stripped):
+                return "reference_unavailable"
+            return None
+
+        # Pending identity question: a clear anchored yes (no negation, no
+        # ambiguity marker) or an explicit denial resolves deterministically.
+        # Unclear/partial answers go to the engine — the scripted re-ask is
+        # only their FALLBACK, not their fast path.
+        if self.awaiting_identity and not self.verified:
+            if words > self._FAST_PATH_MAX_WORDS or "?" in stripped:
+                return None
+            answer = classify_identity_answer(stripped, signal)
+            if answer == "confirm" and signal in (None, "affirm"):
+                return "identity_confirmed"
+            if answer == "deny" and signal in ("refusal", "wrong_person"):
+                return "identity_denied"
+            return None
+
+        # Yes to the bot's own "shall I connect you to an agent?" — the affirm
+        # signal is whole-utterance anchored, so it cannot hide a second ask.
+        if self._bot_offered_agent and signal == "affirm":
+            return "agent_offer_accepted"
+
+        # Explicit human-agent request. Kept to short utterances: the signal
+        # pattern alone matches any mention of "agent", which is not a request.
+        if signal == "agent_request" and words <= self._FAST_PATH_AGENT_MAX_WORDS:
+            return "agent_requested"
+
+        # Clear payment willingness/unwillingness while the recovery
+        # discussion is waiting for exactly that answer. Identity must be
+        # confirmed and nothing else open — any blocker means the reply is a
+        # judgement call.
+        if (
+            signal in ("payment_intent", "refusal")
+            and self.verified
+            and not self.wrong_party
+            and not self.blockers()
+            and words <= self._FAST_PATH_MAX_WORDS
+            and "?" not in stripped
+            and not self._INTERROGATIVE.search(stripped)
+        ):
+            if signal == "refusal":
+                return "payment_refusal"
+            if self._CLEAR_COMMITMENT.search(stripped):
+                return "payment_commitment"
+        return None
+
     def blockers(self) -> list[str]:
         open_blockers: list[str] = []
         if self.wrong_party:

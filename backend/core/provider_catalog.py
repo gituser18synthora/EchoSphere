@@ -276,6 +276,84 @@ def validate_params(schema: dict | None, params: dict | None, *, prefix: str) ->
     return errors
 
 
+# ── platform-owned LLM settings ──────────────────────────────────────────────
+# These keys configure the EchoSphere orchestration layer (Goal Engine /
+# intent pipeline / memory greeting) rather than the LLM provider, so they
+# intentionally do not belong to a provider model's ``params_schema`` — the
+# same design as the STT ``turn_detection``/``noise_gate`` sections below.
+# Safe ranges mirror the runtime clamps in shared.orchestration.goal_engine.
+
+_PLATFORM_LLM_BOOLEAN_KEYS = (
+    "goal_engine_enabled",
+    "intent_llm_enabled",
+    "memory_greeting_enabled",
+)
+_PLATFORM_LLM_STRING_KEYS = {
+    "orchestration_provider": 40,
+    "orchestration_model": 80,
+}
+_PLATFORM_LLM_NUMBER_BOUNDS = {
+    "orchestration_timeout_seconds": (0.5, 5.0),
+    "intent_timeout_seconds": (0.5, 5.0),
+    "memory_greeting_timeout_seconds": (1.0, 10.0),
+}
+_PLATFORM_LLM_INTEGER_BOUNDS = {
+    "orchestration_max_tokens": (64, 340),
+}
+PLATFORM_LLM_SETTING_KEYS = frozenset(
+    (*_PLATFORM_LLM_BOOLEAN_KEYS, *_PLATFORM_LLM_STRING_KEYS,
+     *_PLATFORM_LLM_NUMBER_BOUNDS, *_PLATFORM_LLM_INTEGER_BOUNDS)
+)
+
+
+def validate_llm_settings(
+    schema: dict | None, params: dict | None, *, prefix: str = "LLM"
+) -> list[str]:
+    """Validate provider parameters plus platform-owned orchestration settings.
+
+    The orchestration keys control the EchoSphere decision layer, not the LLM
+    provider, so they are validated against the platform contract here and
+    removed before the remaining settings go through the strict
+    provider-schema validation.
+    """
+    params = params or {}
+    errors: list[str] = []
+    for key in _PLATFORM_LLM_BOOLEAN_KEYS:
+        if key in params and not isinstance(params[key], bool):
+            errors.append(f"{prefix}: '{key}' must be true or false.")
+    for key, max_length in _PLATFORM_LLM_STRING_KEYS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append(f"{prefix}: '{key}' must be a string.")
+        elif len(value) > max_length:
+            errors.append(f"{prefix}: '{key}' is too long.")
+    for key, (low, high) in _PLATFORM_LLM_NUMBER_BOUNDS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            errors.append(f"{prefix}: '{key}' must be a number.")
+        elif not low <= float(value) <= high:
+            errors.append(f"{prefix}: '{key}' must be between {low:g} and {high:g}.")
+    for key, (low, high) in _PLATFORM_LLM_INTEGER_BOUNDS.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(f"{prefix}: '{key}' must be an integer.")
+        elif not low <= value <= high:
+            errors.append(f"{prefix}: '{key}' must be between {low} and {high}.")
+    provider_params = {
+        key: value
+        for key, value in params.items()
+        if key not in PLATFORM_LLM_SETTING_KEYS
+    }
+    errors.extend(validate_params(schema, provider_params, prefix=prefix))
+    return errors
+
+
 def validate_stt_settings(
     schema: dict | None, params: dict | None, *, prefix: str = "STT"
 ) -> list[str]:
@@ -495,9 +573,32 @@ def validate_voice_settings(
                         f"LLM model '{model}' does not belong to provider '{llm_provider}'."
                     )
             if model_row is not None:
-                errors.extend(validate_params(
+                errors.extend(validate_llm_settings(
                     model_row.params_schema, payload.get("llm_settings"), prefix="LLM"
                 ))
+
+    # ── Orchestration engine (platform-owned llm_settings keys) ──
+    # The Goal Engine's dedicated decision model must exist in the governed
+    # catalog like any other engine. The runtime additionally degrades to the
+    # conversation LLM if governance changes later — but a NEW selection of an
+    # unknown/inactive engine is rejected at save time.
+    llm_settings_blob = payload.get("llm_settings") or {}
+    orch_provider = llm_settings_blob.get("orchestration_provider")
+    if isinstance(orch_provider, str) and orch_provider.strip():
+        orch_provider = orch_provider.strip()
+        orch_row = get_provider(db, "llm", orch_provider)
+        if orch_row is None:
+            errors.append(
+                f"LLM: orchestration provider '{orch_provider}' is not available."
+            )
+        else:
+            orch_model = llm_settings_blob.get("orchestration_model")
+            if isinstance(orch_model, str) and orch_model.strip():
+                if get_model(db, "llm", orch_provider, orch_model.strip()) is None:
+                    errors.append(
+                        f"LLM: orchestration model '{orch_model.strip()}' does not "
+                        f"belong to provider '{orch_provider}'."
+                    )
 
     # ── TTS (default engine) ──
     tts_provider = payload.get("tts_provider")

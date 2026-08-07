@@ -58,6 +58,11 @@ def _is_reasoning_class(model: str | None) -> bool:
 
 _CACHE_TTL_SECONDS = 300
 
+# Preferred fast orchestration engine when the conversation model is
+# reasoning-class and neither the bot nor the platform default supplies a
+# usable non-reasoning model. Must stay inside the governed provider matrix.
+_FAST_ORCHESTRATION_ENGINE = ("openai", "gpt-4o-mini")
+
 DEFAULT_AUDIO_SETTINGS = {
     "browser": {"codec": "linear16", "sampleRate": 24000},
     "telephony": {"codec": "mulaw", "sampleRate": 8000},
@@ -575,27 +580,42 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         orchestration_engine = None
         orch_provider = str(llm_settings_blob.get("orchestration_provider") or "").strip()
         orch_model = str(llm_settings_blob.get("orchestration_model") or "").strip()
-        if not orch_provider and _is_reasoning_class(llm_model) \
-                and not _is_reasoning_class(settings.llm_model):
-            # The per-turn decision call is a small, hard-deadline JSON task;
-            # reasoning-era conversation models routinely blow that deadline
-            # (measured: gpt-5-mini ~3-4s vs the 2.5s budget, falling back to
-            # regex every turn). Unless the bot explicitly configured an
-            # orchestration engine, decide on the platform's default fast
-            # model and keep the reasoning model for the spoken replies.
-            orch_provider, orch_model = settings.llm_provider, settings.llm_model
+        # Candidate order: the bot's configured orchestration engine wins;
+        # when the CONVERSATION model is reasoning-class the fast defaults
+        # follow. The per-turn decision call is a small, hard-deadline JSON
+        # task; reasoning-era conversation models routinely blow that deadline
+        # (measured: gpt-5-mini ~3-4s vs the 1.2s budget, falling back to
+        # regex every turn) — so a reasoning conversation model never decides
+        # by default: the platform's non-reasoning default (or, failing that,
+        # the pinned fast engine) does, and the reasoning model keeps the
+        # spoken replies. If NO candidate is allowed under governance the
+        # engine degrades to the conversation LLM — decisions degrade, calls
+        # never drop.
+        candidates: list[tuple[str, str]] = []
         if orch_provider:
-            reason = _engine_allowed(session, "llm", orch_provider, orch_model or None)
+            candidates.append((orch_provider, orch_model))
+        if _is_reasoning_class(llm_model):
+            if settings.llm_model and not _is_reasoning_class(settings.llm_model):
+                candidates.append((settings.llm_provider, settings.llm_model))
+            candidates.append(_FAST_ORCHESTRATION_ENGINE)
+        for candidate_provider, candidate_model in dict.fromkeys(candidates):
+            reason = _engine_allowed(
+                session, "llm", candidate_provider, candidate_model or None
+            )
             if reason is not None:
                 logger.warning(
-                    "orchestration LLM skipped for bot %s: %s", bot_id, reason
+                    "orchestration LLM %s/%s skipped for bot %s: %s",
+                    candidate_provider, candidate_model, bot_id, reason,
                 )
-            else:
-                orchestration_engine = {
-                    "provider": orch_provider,
-                    "model": orch_model,
-                    "api_key_reference": _secret_ref_for(session, "llm", orch_provider),
-                }
+                continue
+            orchestration_engine = {
+                "provider": candidate_provider,
+                "model": candidate_model,
+                "api_key_reference": _secret_ref_for(
+                    session, "llm", candidate_provider
+                ),
+            }
+            break
 
         default_voice_value = (
             (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name

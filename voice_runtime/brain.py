@@ -96,6 +96,8 @@ from shared.orchestration.decision_schema import (
     ConversationDecision,
 )
 from shared.orchestration.goal_engine import (
+    _DEFAULT_MAX_TOKENS as GOAL_ENGINE_DEFAULT_MAX_TOKENS,
+    _DEFAULT_TIMEOUT_SECONDS as GOAL_ENGINE_DEFAULT_TIMEOUT,
     GoalEngine,
     GoalSession,
     compile_goal_policy,
@@ -384,8 +386,14 @@ class ConversationBrain(FrameProcessor):
             policy=self._goal_policy,
             intents=config.intents,
             enabled=engine_enabled,
-            timeout_seconds=float(
-                llm_settings_early.get("orchestration_timeout_seconds", 2.5)
+            # Defaults come from the engine's own budget constants; per-bot
+            # overrides (llm_settings) are clamped to the shared safe ranges
+            # inside GoalEngine.
+            timeout_seconds=llm_settings_early.get(
+                "orchestration_timeout_seconds", GOAL_ENGINE_DEFAULT_TIMEOUT
+            ),
+            max_tokens=llm_settings_early.get(
+                "orchestration_max_tokens", GOAL_ENGINE_DEFAULT_MAX_TOKENS
             ),
         )
         # Guarded goal state for bots WITHOUT a dedicated domain policy —
@@ -1134,6 +1142,10 @@ class ConversationBrain(FrameProcessor):
         text = (text_override or " ".join(self._pending_segments)).strip()
         if not text:
             return
+        if self._deterministic_fast_path(text) is not None:
+            # This utterance resolves without a decision call; speculating
+            # would only spend tokens the dispatched turn will never consume.
+            return
         prefetch = self._decision_prefetch
         if prefetch is not None:
             if prefetch[0] == text and not prefetch[1].done():
@@ -1152,6 +1164,11 @@ class ConversationBrain(FrameProcessor):
         """
         prefetch, self._decision_prefetch = self._decision_prefetch, None
         if prefetch is not None and prefetch[0] == text:
+            if prefetch[1].done():
+                # The speculative decision finished BEFORE dispatch: the turn
+                # pays ~0 classify time. Recorded explicitly so the near-zero
+                # classify span reads as an overlap win, not a measurement gap.
+                self._latency.count("decision_prefetched")
             try:
                 orchestrated = await prefetch[1]
             except asyncio.CancelledError:
@@ -1601,6 +1618,12 @@ class ConversationBrain(FrameProcessor):
         """
         if self._latency.reported:
             return
+        if self._latency.bot_started_at is None:
+            # Bot audio whose ownership the tracker rejected (late audio of a
+            # previous reply after the caller already started a new turn):
+            # reporting now would emit a speech-only record for a turn that
+            # has not produced its reply yet.
+            return
         spans = self._latency.report()
         if not spans:
             return
@@ -1640,10 +1663,26 @@ class ConversationBrain(FrameProcessor):
         # transaction-number answers.
         classification: IntentClassification | None = None
         orchestrated: ConversationDecision | None = None
+        fast_path: str | None = None
         if decision.kind not in (
             RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
         ):
-            orchestrated = await self._take_decision(text)
+            # Deterministic fast path: a turn the policy/parser resolves with
+            # high confidence against the CURRENT pending question (a clear
+            # yes/no identity answer, an explicit transaction reference, an
+            # accepted agent offer, a clear payment commitment/refusal) never
+            # pays the decision-LLM latency — the same deterministic handling
+            # the fallback path runs on consumes it directly. Ambiguous,
+            # compound or off-question turns return None here and are judged
+            # by the Goal Engine as before.
+            fast_path = self._deterministic_fast_path(text)
+            if fast_path is not None:
+                self._discard_decision_prefetch("deterministic_fast_path")
+                self._recorder.add_event(
+                    "deterministic_fast_path", rule=fast_path,
+                )
+            else:
+                orchestrated = await self._take_decision(text)
             if orchestrated is not None:
                 # The decision carries language explicitly: what the caller
                 # spoke this turn and the language the reply MUST be in. The
@@ -1659,7 +1698,7 @@ class ConversationBrain(FrameProcessor):
                     "intent_classified", **classification.as_event()
                 )
                 decision = self._apply_classification(decision, classification)
-            elif not self._goal_engine.enabled and not (
+            elif fast_path is None and not self._goal_engine.enabled and not (
                 self._policy is not None and self._policy.preempts_turn(text)
             ):
                 # Engine DISABLED: the hybrid classifier is the understanding
@@ -1880,13 +1919,14 @@ class ConversationBrain(FrameProcessor):
                         extra_system=plan.instruction + tool_instruction,
                     )
             elif (
-                decision.kind == RouteKind.CHAT
+                decision.kind in (RouteKind.CHAT, RouteKind.INTENT)
                 and (direct := self._direct_reply_text(
                     orchestrated, plan, tool_instruction
                 ))
             ):
-                # Generic bot, plain conversational turn, decision co-generated
-                # the reply: one model call covers the turn.
+                # Generic bot, plain conversational or intent turn (no
+                # workflow, no tool — those routes never reach here), decision
+                # co-generated the reply: one model call covers the turn.
                 self._recorder.add_event(
                     "orchestration_direct_reply", route=decision.kind.value,
                 )
@@ -1926,10 +1966,11 @@ class ConversationBrain(FrameProcessor):
                 ),
                 response_language=self._conversation_language,
                 interpretation=(
-                    "decision" if orchestrated is not None else "fallback"
+                    "deterministic" if fast_path is not None
+                    else ("decision" if orchestrated is not None else "fallback")
                 ),
                 fallback_reason=(
-                    None if orchestrated is not None
+                    None if orchestrated is not None or fast_path is not None
                     else self._goal_engine.last_fallback_reason
                 ),
                 route=decision.kind.value,
@@ -1969,6 +2010,20 @@ class ConversationBrain(FrameProcessor):
         if self._goal_session is not None:
             return self._goal_session.stage
         return "conversation"
+
+    def _deterministic_fast_path(self, text: str) -> str | None:
+        """Whether the current pending question resolves this turn without an LLM.
+
+        Collections-policy bots only: the policy holds the pending-question
+        state (identity, transaction reference, agent offer, payment ask) the
+        rules are gated on. Deterministic routes (hang-up, DNC, transfer,
+        safety) are already decided before the engine ever runs.
+        """
+        if self._policy is None:
+            return None
+        return self._policy.deterministic_turn_resolution(
+            text, classify_user_signal(text)
+        )
 
     async def _decide_turn(
         self, text: str, *, mark: bool = True
@@ -2065,9 +2120,14 @@ class ConversationBrain(FrameProcessor):
         "ask_identity_confirmation", "ask_transaction_reference",
         "clarify_transaction_reference",
     })
+    # continue_workflow is included for the NO-active-workflow case only: an
+    # active workflow routes to RouteKind.WORKFLOW and never reaches the
+    # direct path, so here it simply means "carry the conversation forward".
+    # answer_from_knowledge and call_tool are deliberately absent — those
+    # turns must run their retrieval/tool stages.
     _DIRECT_SPEAK_DECISION_ACTIONS = frozenset({
         "ask_identity_confirmation", "request_slot_value", "clarify",
-        "redirect_to_goal", "answer",
+        "redirect_to_goal", "answer", "continue_workflow",
     })
 
     def _decision_text_matches_language(self, text: str) -> bool:
@@ -2120,8 +2180,9 @@ class ConversationBrain(FrameProcessor):
         if plan.action in self._DIRECT_SPEAK_PLAN_ACTIONS:
             return orchestrated.response_text
         if (
-            orchestrated.next_action == "answer"
+            orchestrated.next_action in ("answer", "continue_workflow")
             and not plan.action
+            and not self._active_workflow
             and self._policy is not None
             and self._policy.verified
             and not self._policy.blockers()

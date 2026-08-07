@@ -23,17 +23,23 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "complete_endpoint": 0.35,
         "short_reply_endpoint": 0.12,
     },
+    # Telephony runs tighter endpoints than the browser: PSTN callers already
+    # tolerate lower audio latency budgets, and every 100 ms here is dead air
+    # after EVERY caller turn. The pause a caller gets mid-thought is
+    # stop_secs + user_speech_timeout (0.9 s) — incomplete utterances always
+    # wait the full window; only finished thoughts and short replies use the
+    # complete/short endpoints below.
     "telephony": {
         "confidence": 0.6,
         "start_secs": 0.2,
         "stop_secs": 0.2,
         "min_volume": 0.4,
         "barge_in_min_words": 2.0,
-        "user_speech_timeout": 0.8,
-        "finalize_grace": 0.3,
-        "finalize_settle": 0.15,
-        "complete_endpoint": 0.3,
-        "short_reply_endpoint": 0.12,
+        "user_speech_timeout": 0.7,
+        "finalize_grace": 0.12,
+        "finalize_settle": 0.1,
+        "complete_endpoint": 0.2,
+        "short_reply_endpoint": 0.1,
     },
 }
 

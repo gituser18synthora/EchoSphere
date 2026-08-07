@@ -52,14 +52,23 @@ from shared.orchestration.intent_classifier import PLATFORM_SIGNALS
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 2.5
+# Hard decision deadline: the call sits serially before every reply, so a
+# slow decision is a slow TURN. Past this budget the deterministic fallback
+# answers immediately — never a second sequential model call.
+_DEFAULT_TIMEOUT_SECONDS = 1.2
 # Latency budget: the decision call sits serially before every reply, so its
 # payload is kept small — a short rolling history window (each turn capped)
 # and a bounded output. The full conversation lives in Stage-B's history.
-_MAX_HISTORY_TURNS = 4
+_MAX_HISTORY_TURNS = 2
 _MAX_HISTORY_CHARS = 240
-_DEFAULT_MAX_TOKENS = 340
-_MAX_PROMPT_EXCERPT_CHARS = 4000
+# Output cap. The decision JSON (all fields + a one/two-sentence
+# response_text) measures well under this; a cap that truncated valid output
+# would surface as unparseable_output fallbacks (validated in tests).
+_DEFAULT_MAX_TOKENS = 200
+# Bounds shared with API validation (backend.core.provider_catalog).
+TIMEOUT_BOUNDS = (0.5, 5.0)
+MAX_TOKENS_BOUNDS = (64, 340)
+_MAX_PROMPT_EXCERPT_CHARS = 1200
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 
 # The reserved intent name for "the caller answered the pending identity
@@ -233,8 +242,18 @@ class GoalEngine:
         self.policy = policy or BotGoalPolicy()
         self._intents = [i for i in (intents or []) if i.get("name")]
         self._enabled = enabled and llm is not None
-        self._timeout = timeout_seconds
-        self._max_tokens = max_tokens
+        # Clamped to the shared safe ranges: a misconfigured bot must never
+        # stall every turn behind a 60 s decision or truncate valid JSON.
+        try:
+            timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError):
+            timeout_seconds = _DEFAULT_TIMEOUT_SECONDS
+        self._timeout = min(max(timeout_seconds, TIMEOUT_BOUNDS[0]), TIMEOUT_BOUNDS[1])
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            max_tokens = _DEFAULT_MAX_TOKENS
+        self._max_tokens = min(max(max_tokens, MAX_TOKENS_BOUNDS[0]), MAX_TOKENS_BOUNDS[1])
         self._system: str | None = None
         self._allowed_intents = frozenset(
             {i["name"] for i in self._intents} | {IDENTITY_INTENT}
