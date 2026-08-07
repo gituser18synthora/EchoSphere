@@ -72,6 +72,14 @@ env/bin/python -m backend.cli seed          # idempotent base records
 env/bin/python -m backend.cli seed --demo   # optional demo dataset + logins
 ```
 
+The CLI wraps Alembic; the raw equivalents are
+`env/bin/alembic -c backend/alembic.ini upgrade head` (MySQL) and
+`env/bin/alembic -c backend/alembic_pg.ini upgrade head` (PostgreSQL).
+With `AUTO_RUN_MIGRATIONS=true` the API applies the **MySQL** migrations at
+startup (default `false`; the PostgreSQL knowledge plane still needs
+`pg-migrate`). While `ENABLE_DATABASE_SEED=true` (the default) the API also
+runs the idempotent base seed at startup.
+
 ### 1.6 Run the services
 
 ```bash
@@ -79,8 +87,15 @@ env/bin/python -m backend.main                             # Platform API (API_P
 env/bin/python -m voice_runtime.app                        # Voice runtime (VOICE_WORKER_PORT)
 env/bin/python -m backend.workers.ingestion                # Ingestion worker (optional; embedded in API by default)
 env/bin/python -m backend.mcp_server.server                # MCP server (optional; MCP_PORT)
+env/bin/python -m voice_runtime.gateway                    # Telephony gateway (optional; TELEPHONY_GATEWAY_PORT)
 npm run dev                                                # Frontend → http://localhost:5199
 ```
+
+`./scripts/dev.sh [start|stop|restart|status|logs]` orchestrates all six
+services (PID files under `.devrun/`), reading every port from `.env`
+(see [ENVIRONMENT.md](ENVIRONMENT.md)). Default ports: API 9001, voice worker
+9002, MCP 9003, telephony gateway 9011, frontend 5199 (FreeSWITCH ESL control
+socket: 9004).
 
 Verify: `curl -s localhost:9001/api/health/ready` — all four checks (`mysql`,
 `postgres`, `redis`, `mongodb`) must report `ok: true`. Voice worker:
@@ -276,8 +291,11 @@ backend.cli migrate` (then `pg-migrate` and `seed` the same way).
 
 ## 4. FreeSWITCH ESL notes
 
-- Media: a dialplan attaches `mod_audio_fork` to
-  `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` (raw L16 @ 8 kHz).
+- Media: a dialplan attaches `mod_audio_stream` (default; stereo L16 @ 8 kHz
+  inbound, `streamAudio` JSON out) or `mod_audio_fork`
+  (`?transport=audio_fork`; mono L16 @ 16 kHz inbound, `playAudio` JSON out) to
+  `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` — details in
+  [TELEPHONY.md](TELEPHONY.md#freeswitch).
 - Call control: enable `mod_event_socket` at `127.0.0.1:9004`, set its
   password, configure `FREESWITCH_HOST`/`FREESWITCH_PORT` and
   `FREESWITCH_PASSWORD` (via `FREESWITCH_PASSWORD_REFERENCE=env:FREESWITCH_PASSWORD`).
