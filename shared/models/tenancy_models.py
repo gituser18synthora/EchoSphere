@@ -48,6 +48,15 @@ class Tenant(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     contact_phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Post-call intelligence switches (Super Admin controlled, both off by
+    # default): generate the AI call summary / outcome / NBA after each call,
+    # and inject the customer's previous call summary into new calls.
+    call_summary_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    use_previous_call_summary: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
 
 
 class Plan(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):

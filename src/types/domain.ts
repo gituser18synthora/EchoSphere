@@ -289,6 +289,10 @@ export interface Tenant {
   aiCostMonth: number;
   health: Severity;
   adminEmail: string;
+  /** Generate the AI call summary / outcome / NBA after each call. */
+  callSummaryEnabled: boolean;
+  /** Inject the customer's previous call summary into new calls. */
+  usePreviousCallSummary: boolean;
   website?: string;
   contactName?: string;
   contactPhone?: string;

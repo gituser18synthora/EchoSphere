@@ -29,6 +29,7 @@ const TENANT = {
   createdAt: "2026-01-01T00:00:00Z", users: 1, bots: 1, callsMonth: 0,
   minutesMonth: 0, mrr: 0, aiCostMonth: 0, health: "good",
   adminEmail: "admin@voice.example",
+  callSummaryEnabled: false, usePreviousCallSummary: false,
 };
 
 describe("TenantDetail — assigned languages", () => {
@@ -68,6 +69,33 @@ describe("TenantDetail — assigned languages", () => {
     await waitFor(() => {
       expect(api.updateTenant).toHaveBeenCalledWith("tn-voice", {
         defaultLanguages: ["en-IN", "hi-IN"],
+      });
+    });
+  });
+
+  it("edits the Call Summary switches independently and persists only the diff", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/admin/tenants/tn-voice"]}>
+        <Routes><Route path="/admin/tenants/:tenantId" element={<TenantDetail />} /></Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Edit tenant" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit tenant" });
+
+    const generate = within(dialog).getByRole("switch", { name: "Generate call summary after calls" });
+    const usePrevious = within(dialog).getByRole("switch", { name: "Use previous call summary on new calls" });
+    // Defaults come from the tenant record: both off.
+    expect(generate).toHaveAttribute("aria-checked", "false");
+    expect(usePrevious).toHaveAttribute("aria-checked", "false");
+
+    await user.click(generate); // enable generation only — usage stays off
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(api.updateTenant).toHaveBeenCalledWith("tn-voice", {
+        callSummaryEnabled: true,
       });
     });
   });

@@ -13,6 +13,7 @@ interface FormState {
   plan: string; seats: string;
   adminName: string; adminEmail: string;
   aiProfile: string; guardrailProfile: string; languages: string[];
+  callSummaryEnabled: boolean; usePreviousCallSummary: boolean;
   telephonyMode: string; numberCountry: string;
   sso: boolean; mfa: boolean; retention: string; residency: boolean;
 }
@@ -22,6 +23,7 @@ const initial: FormState = {
   plan: "", seats: "10",
   adminName: "", adminEmail: "",
   aiProfile: "", guardrailProfile: "standard", languages: [],
+  callSummaryEnabled: false, usePreviousCallSummary: false,
   telephonyMode: "platform", numberCountry: "US",
   sso: true, mfa: true, retention: "90", residency: false,
 };
@@ -114,6 +116,8 @@ export default function Onboarding() {
         adminName: form.adminName,
         seats: Number(form.seats) || undefined,
         defaultLanguages: form.languages,
+        callSummaryEnabled: form.callSummaryEnabled,
+        usePreviousCallSummary: form.usePreviousCallSummary,
         status: "active",
       });
       if (created.adminUser?.temporaryPassword) setTempPassword(created.adminUser.temporaryPassword);
@@ -161,6 +165,7 @@ export default function Onboarding() {
       ["Plan", `${planSel?.name ?? form.plan} · ${form.seats} seats · ${(planSel?.minutesIncluded ?? 0).toLocaleString()} min/mo`],
       ["Admin", `${form.adminName || "—"} <${form.adminEmail || "—"}>`],
       ["AI profile", `${profileName} · ${form.guardrailProfile} guardrails · ${langNames.join(", ")}`],
+      ["Call summary", `Generate: ${form.callSummaryEnabled ? "yes" : "no"} · Use previous: ${form.usePreviousCallSummary ? "yes" : "no"}`],
       ["Telephony", form.telephonyMode === "platform" ? `Platform-managed number (${form.numberCountry})` : "Customer SIP trunk (BYOC)"],
       ["Security", `${form.sso ? "SSO" : "Password"} · ${form.mfa ? "MFA required" : "MFA optional"} · ${form.retention}-day retention${form.residency ? " · EU residency" : ""}`],
     ];
@@ -271,6 +276,18 @@ export default function Onboarding() {
                     <option value="healthcare">Healthcare — adds medical-advice boundary</option>
                     <option value="finance">Finance — adds payment & advice restrictions</option>
                   </select>
+                </Field>
+                <Field label="Call Summary" hint="Both settings are independent and can be changed later from Edit tenant.">
+                  <div className="col gap-6">
+                    <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+                      <div><div className="t-strong" style={{ fontSize: 13 }}>Generate call summary after calls</div><div className="t-micro">AI summary, outcome and next best action once each call ends</div></div>
+                      <Toggle checked={form.callSummaryEnabled} onChange={(v) => set("callSummaryEnabled", v)} label="Generate call summary after calls" />
+                    </div>
+                    <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+                      <div><div className="t-strong" style={{ fontSize: 13 }}>Use previous call summary on new calls</div><div className="t-micro">Give the bot the customer's latest stored summary when a call starts</div></div>
+                      <Toggle checked={form.usePreviousCallSummary} onChange={(v) => set("usePreviousCallSummary", v)} label="Use previous call summary on new calls" />
+                    </div>
+                  </div>
                 </Field>
                 <Field label="Languages" required error={errors.languages}>
                   <div className="row wrap gap-6">

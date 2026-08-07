@@ -91,6 +91,32 @@ async def _finalize(recorder: SessionRecorder, reason="completed") -> None:
 
 
 @pytest.fixture(scope="module", autouse=True)
+def enable_tenant_summary_flags():
+    """Post-call generation and recall are tenant opt-in (both flags default
+    to false) — this suite exercises the machinery itself, so switch both on
+    for the two dev tenants and restore the previous values afterwards."""
+    with get_engine().begin() as conn:
+        previous = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(sa_text(
+                "SELECT id, call_summary_enabled, use_previous_call_summary "
+                "FROM tenants WHERE id IN :ids"
+            ).bindparams(ids=(TENANT_A, TENANT_B)))
+        }
+        conn.execute(sa_text(
+            "UPDATE tenants SET call_summary_enabled=1, "
+            "use_previous_call_summary=1 WHERE id IN :ids"
+        ).bindparams(ids=(TENANT_A, TENANT_B)))
+    yield
+    with get_engine().begin() as conn:
+        for tenant_id, (generate, use_previous) in previous.items():
+            conn.execute(sa_text(
+                "UPDATE tenants SET call_summary_enabled=:g, "
+                "use_previous_call_summary=:u WHERE id=:i"
+            ).bindparams(g=generate, u=use_previous, i=tenant_id))
+
+
+@pytest.fixture(scope="module", autouse=True)
 def cleanup():
     yield
     settings = get_settings()
