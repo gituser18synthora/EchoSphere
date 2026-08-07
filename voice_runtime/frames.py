@@ -30,3 +30,31 @@ class TTSFlushHintFrame(DataFrame):
     """
 
     reason: str = "llm_pause"
+
+
+@dataclass
+class STTEagerEndOfTurnFrame(DataFrame):
+    """Provider predicts the caller's turn is over (not yet committed).
+
+    Normalized from Deepgram Flux ``EagerEndOfTurn``. Carries the likely-final
+    transcript so the brain can start SPECULATIVE orchestration work (decision
+    prefetch) during the provider's end-of-turn confirmation window. Nothing
+    speculative may produce audio: the turn is committed only by the final
+    ``TranscriptionFrame`` (provider ``EndOfTurn``), and a following
+    :class:`STTTurnResumedFrame` discards the speculation entirely.
+    """
+
+    text: str = ""
+    language: str = ""
+
+
+@dataclass
+class STTTurnResumedFrame(DataFrame):
+    """The caller kept talking after an eager end-of-turn prediction.
+
+    Normalized from Deepgram Flux ``TurnResumed``. All speculative work started
+    for the eager transcript must be cancelled — the utterance is still going
+    and will be re-delivered in full with the real end of turn.
+    """
+
+    reason: str = "turn_resumed"

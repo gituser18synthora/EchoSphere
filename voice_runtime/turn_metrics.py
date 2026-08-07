@@ -85,6 +85,8 @@ class TurnLatencyTracker:
     bot_stop_gap_ms: float | None = None
     speech_started_at: float | None = None
     speech_stopped_at: float | None = None
+    # Provider's eager end-of-turn prediction (Deepgram Flux), when enabled.
+    eager_eot_at: float | None = None
     first_final_at: float | None = None
     last_final_at: float | None = None
     dispatched_at: float | None = None
@@ -117,6 +119,20 @@ class TurnLatencyTracker:
 
     def mark_speech_stopped(self) -> None:
         self.speech_stopped_at = time.monotonic()
+
+    def mark_speech_stopped_ago(self, seconds_ago: float) -> None:
+        """Backdated end-of-speech.
+
+        Providers with server-side turn detection (Deepgram Flux) report the
+        turn AFTER their decision window; the caller actually stopped at the
+        last word's end on the stream's audio clock. Backdating keeps the
+        ``endpoint`` span honest about provider decision time.
+        """
+        self.speech_stopped_at = time.monotonic() - max(0.0, seconds_ago)
+
+    def mark_eager_eot(self) -> None:
+        """Provider predicted end of turn (speculative work may begin)."""
+        self.eager_eot_at = time.monotonic()
 
     def mark_final(self) -> None:
         now = time.monotonic()
@@ -178,6 +194,7 @@ class TurnLatencyTracker:
         self.bot_stop_gap_ms = None
         self.speech_started_at = None
         self.speech_stopped_at = None
+        self.eager_eot_at = None
         self.first_final_at = None
         self.last_final_at = None
         self.dispatched_at = None
@@ -199,6 +216,7 @@ class TurnLatencyTracker:
         spans = {
             "bot_stop_to_speech": self.bot_stop_gap_ms,
             "speech": _ms(self.speech_stopped_at, self.speech_started_at),
+            "stt_eager_eot": _ms(self.eager_eot_at, self.speech_stopped_at),
             "stt_final": _ms(self.last_final_at, self.speech_stopped_at),
             "endpoint": _ms(self.dispatched_at, self.speech_stopped_at),
             # Attribution inside llm_first_token.
@@ -254,6 +272,7 @@ class TurnLatencyTracker:
             "turn_id": self.turn_id,
             "user_speech_start_at": _epoch_ms(self.speech_started_at),
             "user_speech_end_at": _epoch_ms(self.speech_stopped_at),
+            "stt_eager_eot_at": _epoch_ms(self.eager_eot_at),
             "stt_final_at": _epoch_ms(self.last_final_at),
             "turn_dispatched_at": _epoch_ms(self.dispatched_at),
             "classify_completed_at": _epoch_ms(self.classified_at),

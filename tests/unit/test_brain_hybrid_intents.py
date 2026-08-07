@@ -88,11 +88,17 @@ class _ToolStub:
 def make_hybrid_brain(*, context=None, runtime_context=None, llm=None,
                       intents=None, tool=None, workflows=None,
                       system_prompt="You are Collection Bot.") -> ConversationBrain:
+    # These suites exercise the LEGACY understanding pipeline (hybrid intent
+    # classification + regex signals), which is now the deterministic
+    # fallback layer under the Goal Engine. The engine is disabled here so
+    # the fallback path stays covered end-to-end; the agentic path has its
+    # own suite (tests/unit/test_agentic_orchestration.py).
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language="hi-IN", languages=["hi-IN"],
         stt={"provider": "sarvam"}, system_prompt=system_prompt,
         intents=intents or [],
+        llm={"settings": {"goal_engine_enabled": False}},
     )
     brain = ConversationBrain(
         config=config, llm=llm or _StreamingLLMStub(),

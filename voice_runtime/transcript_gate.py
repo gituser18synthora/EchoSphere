@@ -163,6 +163,73 @@ _HINGLISH_HINTS = re.compile(
     re.I,
 )
 
+# ── romanized-utterance language leaning ─────────────────────────────────────
+# For all-Latin text the script carries no signal, so the DOMINANT lexicon of
+# the utterance decides between Hindi/Hinglish and English. Both lexicons are
+# deliberately function/grammar words: business loan-words ("payment", "UPI",
+# "loan", "account", "overdue", "amount", "date") appear equally in both
+# languages and must never vote — that is exactly the borrowed-word flip this
+# guard exists to prevent.
+_ROMAN_HINDI_TOKENS = frozenset({
+    "haan", "han", "ha", "hanji", "ji", "nahi", "nahin", "nhi", "na", "mat",
+    "abhi", "aaj", "kal", "parso", "bhai", "bhaiya", "yaar", "sahab",
+    "theek", "thik", "accha", "acha", "achha", "sahi", "bilkul",
+    "kar", "karo", "karu", "karunga", "karungi", "karenge", "kiya", "karta",
+    "karti", "sakta", "sakti", "sakte", "hoga", "hogi", "honge", "hona",
+    "hai", "hain", "tha", "thi", "the", "ho", "hu", "hun", "hoon",
+    "mera", "mere", "meri", "mujhe", "mujhko", "main", "mai", "hum", "humko",
+    "aap", "aapka", "aapki", "aapko", "tum", "tumhara", "tera", "teri",
+    "kya", "kyun", "kyu", "kaise", "kaisa", "kitna", "kitni", "kab", "kahan",
+    "batao", "bata", "bolo", "bol", "boliye", "dijiye", "dedo", "dena",
+    "paisa", "paise", "rupaye", "rupay", "rupaiya",
+    "se", "ka", "ki", "ke", "ko", "me", "mein", "par", "pe",
+    "aur", "lekin", "magar", "phir", "fir", "toh", "to", "wala", "wali",
+    "raha", "rahi", "rahe", "gaya", "gayi", "gaye", "diya", "liya", "lena",
+    "milega", "milegi", "chahiye", "zarur", "jarur", "pakka", "baad",
+})
+_ROMAN_ENGLISH_TOKENS = frozenset({
+    "i", "am", "is", "are", "was", "were", "be", "been", "being",
+    "the", "a", "an", "this", "that", "these", "those", "it", "its",
+    "you", "your", "yours", "we", "our", "they", "their", "he", "she",
+    "my", "me", "mine", "us",
+    "can", "cant", "cannot", "could", "will", "wont", "would", "shall",
+    "should", "may", "might", "must", "do", "dont", "does", "doesnt",
+    "did", "didnt", "have", "havent", "has", "hasnt", "had", "hadnt",
+    "not", "no", "yes", "yeah", "okay", "ok",
+    "and", "or", "but", "if", "then", "so", "because", "when", "while",
+    "what", "why", "how", "where", "who", "which",
+    "please", "tell", "speak", "speaking", "know", "want", "need",
+    "now", "today", "tomorrow", "later", "soon", "next", "week", "month",
+    "money", "pay", "paying", "call", "calling", "back", "again",
+    "for", "from", "with", "about", "of", "in", "on", "at", "to", "by",
+})
+
+
+def romanized_language_leaning(text: str) -> str | None:
+    """Dominant language of an all-Latin utterance: "hi", "en", or None.
+
+    None means "no verdict" — the text carries native script (the script
+    heuristics decide), or the lexical evidence is absent/tied. A None must
+    always be treated as "trust the STT label", never as a vote.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    # Native script present → script evidence outranks lexicon counting.
+    for pattern in _SCRIPT_PATTERNS.values():
+        if pattern.search(stripped):
+            return None
+    tokens = re.findall(r"[a-z']+", stripped.lower())
+    if not tokens:
+        return None
+    hindi = sum(1 for token in tokens if token.replace("'", "") in _ROMAN_HINDI_TOKENS)
+    english = sum(
+        1 for token in tokens if token.replace("'", "") in _ROMAN_ENGLISH_TOKENS
+    )
+    if hindi == english:
+        return None
+    return "hi" if hindi > english else "en"
+
 
 def script_supports_language(text: str, locale: str) -> bool:
     """Whether an utterance's dominant script is consistent with a locale.
@@ -295,15 +362,38 @@ def segment_quality(frame, *, provider: str = "") -> SegmentQuality:
         data = result.get("data") if isinstance(result.get("data"), dict) else result
         quality.provider = str(result.get("provider") or provider)
         wire_language = data.get("language_code") or data.get("language")
+        if not wire_language:
+            # Deepgram Flux TurnInfo reports per-turn detections as a list.
+            languages = data.get("languages")
+            if isinstance(languages, list) and languages:
+                wire_language = languages[0]
         if wire_language:
             quality.language = str(wire_language)
         quality.language_probability = _as_float(data.get("language_probability"))
         quality.confidence = _as_float(data.get("confidence"))
+        if quality.confidence is None:
+            # Flux reports confidence per word; the mean is the segment's.
+            words = data.get("words")
+            if isinstance(words, list) and words:
+                values = [
+                    _as_float(word.get("confidence"))
+                    for word in words
+                    if isinstance(word, dict)
+                ]
+                values = [value for value in values if value is not None]
+                if values:
+                    quality.confidence = sum(values) / len(values)
         quality.no_speech_prob = _as_float(data.get("no_speech_prob"))
         metrics = data.get("metrics")
         quality.audio_seconds = _as_float(data.get("audio_seconds"))
         if quality.audio_seconds is None and isinstance(metrics, dict):
             quality.audio_seconds = _as_float(metrics.get("audio_duration"))
+        if quality.audio_seconds is None:
+            # Flux: the turn's audio window brackets the utterance.
+            start = _as_float(data.get("audio_window_start"))
+            end = _as_float(data.get("audio_window_end"))
+            if start is not None and end is not None and end > start:
+                quality.audio_seconds = end - start
     return quality
 
 

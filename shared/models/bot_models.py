@@ -215,6 +215,12 @@ class VoiceBotSetting(Base, TimestampMixin, AuditByMixin):
     # Transport audio configuration: {"browser": {"codec","sampleRate"},
     #                                 "telephony": {"codec","sampleRate"}}
     audio_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Goal Engine configuration (shared.orchestration.goal_engine
+    # .BotGoalPolicy shape: role, domain, goals, allowedTopics,
+    # restrictedTopics, identity, slots, toolRules, escalation,
+    # completionCriteria, tone, outOfScope, safety). NULL → a safe default is
+    # derived at runtime from the published prompt, intents and domain policy.
+    goal_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ChannelConfig(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedMixin):

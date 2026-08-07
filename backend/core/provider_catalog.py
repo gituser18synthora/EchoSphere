@@ -258,6 +258,21 @@ def validate_params(schema: dict | None, params: dict | None, *, prefix: str) ->
                     errors.append(
                         f"{prefix}: every '{key}' entry must be between {spec.get('min')} and {spec.get('max')}."
                     )
+        elif kind == "string_list":
+            if (not isinstance(value, list)
+                    or any(not isinstance(v, str) for v in value)):
+                errors.append(f"{prefix}: '{key}' must be a list of strings.")
+            else:
+                if len(value) > int(spec.get("max_items", 16)):
+                    errors.append(f"{prefix}: '{key}' has too many entries.")
+                if any(len(v) > int(spec.get("max_length", 50)) for v in value):
+                    errors.append(f"{prefix}: a '{key}' entry is too long.")
+                allowed = spec.get("values")
+                if allowed and any(v not in allowed for v in value):
+                    errors.append(
+                        f"{prefix}: every '{key}' entry must be one of "
+                        f"{', '.join(map(str, allowed))}."
+                    )
     return errors
 
 

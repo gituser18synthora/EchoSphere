@@ -45,10 +45,25 @@ nicely; nothing *enforced* it.
   fields written back to the customer context row (including the structured
   :func:`~CollectionCallPolicy.payment_record`).
 
-The policy is deterministic and language-agnostic: it consumes the router's
-semantic signals (shared.orchestration.router.classify_user_signal) plus a
-few collection-specific patterns of its own (account dispute vs wrong
-number, name mismatch, a time offered for a callback, a payment reference).
+Understanding vs. enforcement — the two layers are deliberately separate:
+
+- **Understanding** (what the caller meant) comes from the Goal Engine's
+  validated :class:`~shared.orchestration.decision_schema.ConversationDecision`
+  whenever one is available: identity confirm/deny/ambiguous, slot
+  observations ("has a number" vs "said the number"), the generic signal.
+  The regex patterns kept below run ONLY as the deterministic fallback for
+  turns where the agentic path could not produce a decision (LLM down,
+  timeout, unparseable output) — they are no longer the primary mechanism.
+- **Enforcement** (what may happen next) stays fully deterministic here:
+  phases, blockers, the transaction-reference state machine,
+  :func:`~CollectionCallPolicy.validate_action`,
+  :func:`~CollectionCallPolicy.evaluate_completion` and identity-gated
+  disclosure never move on model output alone.
+
+Scripted ``collections_*`` phrases are last-resort fallbacks for when the
+LLM cannot generate (they also keep this domain's wording OUT of shared
+orchestration code); on the agentic path the same turns are generated from
+the per-turn instruction with the scripted text as the safety net.
 """
 
 import re
@@ -56,7 +71,8 @@ import time
 from dataclasses import dataclass, field
 
 from shared.customer_context import CustomerContextSnapshot
-from shared.orchestration.phrases import canned
+from shared.orchestration.decision_schema import SCOPE_IN, ConversationDecision
+from shared.orchestration.phrases import resolve_phrase
 
 # ── phases ───────────────────────────────────────────────────────────────────
 GREETING = "greeting"
@@ -93,6 +109,134 @@ _MAX_IDENTITY_REASKS = 3
 # How many unusable transaction-reference answers before the claim is closed
 # honestly ("noted, the team will verify") instead of looping forever.
 _MAX_REFERENCE_ATTEMPTS = 2
+
+# ── collections fallback phrases (domain-owned; NOT in shared orchestration) ─
+# Spoken only when the agentic path cannot generate this turn's reply (LLM
+# unavailable / failed) or when a decision could not be produced at all.
+# {amount}/{days}/{name}/{reference} are filled from verified context; the
+# {reference} is pre-spaced digit by digit for the TTS.
+_COLLECTIONS_FALLBACKS: dict[str, dict[str, str]] = {
+    "collections_open_amount_days": {
+        "en": (
+            "There is an overdue payment of {amount} on your account, "
+            "pending for {days} days. I'm calling about that payment — "
+            "can you pay today?"
+        ),
+        "hi": (
+            "आपके अकाउंट पर {amount} का payment {days} दिनों से overdue है। "
+            "मैं इसी payment के लिए call कर रहा हूँ — क्या आप आज payment "
+            "कर पाएंगे?"
+        ),
+    },
+    "collections_open_amount": {
+        "en": (
+            "There is an overdue payment of {amount} on your account. "
+            "I'm calling about that payment — can you pay today?"
+        ),
+        "hi": (
+            "आपके अकाउंट पर {amount} का payment overdue है। मैं इसी payment "
+            "के लिए call कर रहा हूँ — क्या आप आज payment कर पाएंगे?"
+        ),
+    },
+    "collections_identity_reask": {
+        "en": "Sorry — am I speaking with {name}?",
+        "hi": "माफ़ कीजिए, क्या मैं {name} जी से बात कर रहा हूँ?",
+    },
+    "collections_identity_unverified_close": {
+        "en": (
+            "I'm sorry, I couldn't confirm I'm speaking with the right "
+            "person, so I can't discuss this call's purpose. We'll reach "
+            "out again later. Thank you."
+        ),
+        "hi": (
+            "माफ़ कीजिए, मैं पुष्टि नहीं कर पाया कि मेरी बात सही व्यक्ति से "
+            "हो रही है, इसलिए मैं इस कॉल का विवरण साझा नहीं कर सकता। हम "
+            "बाद में दोबारा संपर्क करेंगे। धन्यवाद।"
+        ),
+    },
+    "collections_ask_reference": {
+        "en": (
+            "Thank you. To verify the payment, please tell me the "
+            "transaction or UTR number."
+        ),
+        "hi": (
+            "धन्यवाद। पेमेंट की पुष्टि के लिए कृपया ट्रांजैक्शन या UTR "
+            "नंबर बताइए।"
+        ),
+    },
+    "collections_ask_reference_retry": {
+        "en": (
+            "Sorry, I didn't get the number. Please say the transaction "
+            "number slowly, digit by digit."
+        ),
+        "hi": (
+            "माफ़ कीजिए, नंबर समझ नहीं आया। कृपया ट्रांजैक्शन नंबर "
+            "धीरे-धीरे, एक-एक अंक करके बताइए।"
+        ),
+    },
+    "collections_payment_verified": {
+        "en": (
+            "Your payment has been received and verified successfully. "
+            "Sorry for the reminder call, and thank you!"
+        ),
+        "hi": (
+            "आपका भुगतान सफलतापूर्वक प्राप्त हो गया है और उसकी पुष्टि हो "
+            "चुकी है। कॉल के लिए खेद है, धन्यवाद!"
+        ),
+    },
+    "collections_payment_processing": {
+        "en": (
+            "I've noted transaction number {reference}. Your payment shows "
+            "in our records but is still processing — it will reflect on "
+            "your account once complete. Thank you!"
+        ),
+        "hi": (
+            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। आपका भुगतान "
+            "रिकॉर्ड में दिखाई दे रहा है, लेकिन अभी प्रोसेसिंग में है — पूरा "
+            "होते ही अकाउंट में दिखेगा। धन्यवाद!"
+        ),
+    },
+    "collections_payment_not_found": {
+        "en": (
+            "I couldn't verify a payment against transaction number "
+            "{reference} right now. I've recorded the number and our team "
+            "will re-check it and get back to you. Thank you."
+        ),
+        "hi": (
+            "अभी ट्रांजैक्शन नंबर {reference} से भुगतान की पुष्टि नहीं हो "
+            "पा रही है। मैंने नंबर नोट कर लिया है — हमारी टीम इसे दोबारा "
+            "जाँच कर आपसे संपर्क करेगी। धन्यवाद।"
+        ),
+    },
+    "collections_verification_unavailable": {
+        "en": (
+            "I've noted transaction number {reference}. Verification is "
+            "still pending — our team will confirm it against the records. "
+            "Thank you."
+        ),
+        "hi": (
+            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। पुष्टि अभी "
+            "बाकी है — हमारी टीम रिकॉर्ड से इसकी जाँच करेगी। धन्यवाद।"
+        ),
+    },
+    "collections_reference_unavailable_close": {
+        "en": (
+            "No problem. I've recorded that you've made the payment — our "
+            "team will verify it from the records and follow up if needed. "
+            "Thank you."
+        ),
+        "hi": (
+            "कोई बात नहीं। मैंने नोट कर लिया है कि आपने भुगतान किया है — "
+            "हमारी टीम रिकॉर्ड से इसकी जाँच करेगी और ज़रूरत होने पर संपर्क "
+            "करेगी। धन्यवाद।"
+        ),
+    },
+}
+
+
+def canned(key: str, locale: str | None = None) -> str:
+    """Collections fallback phrase in the caller's language (domain-owned)."""
+    return resolve_phrase(_COLLECTIONS_FALLBACKS, key, locale)
 
 # ── collection-specific utterance patterns (hi / hinglish / en) ─────────────
 # The router's `wrong_person` signal covers BOTH "wrong number" and "not my
@@ -212,9 +356,30 @@ _IDENTITY_AMBIGUOUS = re.compile(
     re.I,
 )
 
-def classify_identity_answer(text: str, signal: str | None) -> str:
-    """One user turn answering the identity question → confirm/deny/unclear.
+def identity_answer_from_decision(decision: ConversationDecision) -> str | None:
+    """Map a validated Goal Engine decision onto confirm/deny/unclear.
 
+    This is the PRIMARY identity mechanism: the semantic judgement (negation
+    over affirmation, ambiguity, noise) was made by the decision layer under
+    the bot's policy and validated by the schema. Returns None when the
+    decision does not answer the identity question at all (``unrelated`` or
+    no gate outcome) — the turn then falls through to its other handling.
+    """
+    if decision.decision is None or decision.decision == "unrelated":
+        return None
+    return {
+        "confirmed": "confirm",
+        "denied": "deny",
+        "ambiguous": "unclear",
+        "needs_clarification": "unclear",
+    }.get(decision.decision, "unclear")
+
+
+def classify_identity_answer(text: str, signal: str | None) -> str:
+    """FALLBACK identity classification — regex, used only when no validated
+    decision is available for the turn (LLM down/timeout/unparseable).
+
+    One user turn answering the identity question → confirm/deny/unclear.
     ``deny`` needs explicit evidence (refusal/wrong-person signal, a name
     mismatch, or a plain negation). ``confirm`` needs an anchored clear yes
     with no negation and no ambiguity marker. EVERYTHING else — partial STT,
@@ -395,6 +560,9 @@ class CollectionCallPolicy:
     payment_initiated: bool = False
     escalated: bool = False
     interruption_detected: bool = False
+    # How the LAST observed turn was interpreted: "decision" (validated Goal
+    # Engine output) or "regex" (deterministic fallback). Observability only.
+    last_interpretation_source: str = "regex"
 
     claims: list[str] = field(default_factory=list)  # customer statements (unverified)
     _last_bot_reply: str = ""
@@ -440,11 +608,24 @@ class CollectionCallPolicy:
         if _RECORDING_MENTION.search(self._last_bot_reply):
             self.recording_notice_given = True
 
-    def observe_user(self, text: str, signal: str | None) -> None:
-        """Fold one user turn into the call state (before routing/replying)."""
+    def observe_user(
+        self,
+        text: str,
+        signal: str | None,
+        decision: ConversationDecision | None = None,
+    ) -> None:
+        """Fold one user turn into the call state (before routing/replying).
+
+        ``decision`` is the Goal Engine's validated interpretation of the
+        turn; when present it is the PRIMARY source of meaning (identity
+        outcome, slot observations). Without one — the LLM failed or the
+        engine is disabled — the legacy deterministic patterns take over so
+        a provider outage degrades understanding, never drops turns.
+        """
         stripped = (text or "").strip()
         self._identity_unclear_turn = False
         self._reference_captured_turn = False
+        self.last_interpretation_source = "regex" if decision is None else "decision"
         if not stripped:
             return
 
@@ -454,18 +635,31 @@ class CollectionCallPolicy:
         # the next utterance after "कृपया ट्रांजैक्शन नंबर बताइए" is parsed
         # specifically as the reference (see _observe_reference_answer).
         if self.awaiting_reference and self.transaction_reference is None:
-            if self._observe_reference_answer(stripped, signal):
+            if self._observe_reference_answer(stripped, signal, decision):
                 return
 
         # Identity outcome for a pending identity question. Mismatch evidence
         # is checked FIRST — "जी नहीं" contains an affirm token but denies.
         if self.awaiting_identity:
-            # Turns that carry a DIFFERENT meaning (a question, a complaint,
-            # hardship, an agent request, a payment claim …) are not answers
-            # to the identity question — they fall through to their own
-            # handling below with identity still unconfirmed.
-            if signal in (None, "affirm", "refusal", "wrong_person", "clarify"):
+            # The validated decision answers the gate directly (PRIMARY). The
+            # regex classifier fills in only when no decision judged the gate
+            # at all — and never for off-goal turns, whose gate outcome the
+            # schema already neutralized. Turns that carry a DIFFERENT
+            # meaning (a question, a complaint, hardship, an agent request,
+            # a payment claim, "unrelated" …) are not answers to the identity
+            # question — they fall through to their own handling below with
+            # identity still unconfirmed.
+            answer: str | None = None
+            regex_eligible = signal in (
+                None, "affirm", "refusal", "wrong_person", "clarify",
+            )
+            if decision is not None and decision.decision is not None:
+                answer = identity_answer_from_decision(decision)
+            elif (
+                decision is None or decision.scope == SCOPE_IN
+            ) and regex_eligible:
                 answer = classify_identity_answer(stripped, signal)
+            if answer is not None:
                 if answer == "deny":
                     self.awaiting_identity = False
                     self.identity_mismatch = True
@@ -511,7 +705,8 @@ class CollectionCallPolicy:
             self.phase = PAYMENT_ALREADY_MADE
             claim = stripped
             self._note_payment_details(stripped)
-            reference = extract_transaction_reference(stripped)
+            reference = self._reference_from_decision(decision) \
+                or extract_transaction_reference(stripped)
             if reference and self.transaction_reference is None:
                 self._capture_reference(reference)
             elif self.transaction_reference is None and self.verification_outcome is None:
@@ -528,7 +723,8 @@ class CollectionCallPolicy:
             # Any later turn may still volunteer the reference (or the
             # method/date) without being asked.
             self._note_payment_details(stripped)
-            reference = extract_transaction_reference(stripped)
+            reference = self._reference_from_decision(decision) \
+                or extract_transaction_reference(stripped)
             if reference:
                 self._capture_reference(reference)
                 claim = stripped
@@ -573,13 +769,24 @@ class CollectionCallPolicy:
                 self.claims.append(snippet)
                 del self.claims[:-8]
 
-    def _observe_reference_answer(self, stripped: str, signal: str | None) -> bool:
+    def _observe_reference_answer(
+        self,
+        stripped: str,
+        signal: str | None,
+        decision: ConversationDecision | None = None,
+    ) -> bool:
         """Parse one turn as the answer to "कृपया ट्रांजैक्शन नंबर बताइए".
 
         Returns True when the turn was consumed by the reference question.
         Turns carrying a different meaning (complaint, agent request,
         hardship, callback, a real question) are NOT consumed — they fall
         through to their own handling with the reference still awaited.
+
+        The Goal Engine's slot observation is the primary interpretation:
+        ``provided`` values are still format-validated deterministically
+        before capture, ``exists_claimed``/``unclear`` count as an attempt
+        (the value has NOT been said), ``unavailable``/``refused`` close the
+        ask honestly. The regexes below are the no-decision fallback.
         """
         if signal in (
             "complaint", "agent_request", "hardship", "callback",
@@ -587,9 +794,25 @@ class CollectionCallPolicy:
         ):
             return False
         self._note_payment_details(stripped)
-        reference = extract_transaction_reference(stripped)
+        # Semantic-first: what did the decision layer observe for this slot?
+        observation = (
+            decision.slots.get("transaction_reference")
+            if decision is not None else None
+        )
+        reference = self._reference_from_decision(decision) \
+            or extract_transaction_reference(stripped)
         if reference:
             self._capture_reference(reference)
+            return True
+        if observation is not None and observation.status in ("unavailable", "refused"):
+            self.reference_unavailable = True
+            self.awaiting_reference = False
+            self.payment_claim_stage = 2
+            return True
+        if observation is not None:
+            # exists_claimed / unclear / provided-but-format-invalid: saying
+            # the number exists is not the number — ask for the value itself.
+            self.reference_attempts += 1
             return True
         if signal == "refusal" or _NO_REFERENCE.search(stripped):
             # They cannot provide it: that is recorded honestly; the claim is
@@ -602,6 +825,23 @@ class CollectionCallPolicy:
         # the number has NOT been provided — ask for the value itself.
         self.reference_attempts += 1
         return True
+
+    @staticmethod
+    def _reference_from_decision(
+        decision: ConversationDecision | None,
+    ) -> str | None:
+        """A decision-provided transaction reference, format-validated.
+
+        The decision layer says the caller PROVIDED a value; capture still
+        requires the value to normalize into a valid reference — semantic
+        interpretation never bypasses deterministic schema validation.
+        """
+        if decision is None:
+            return None
+        observation = decision.slots.get("transaction_reference")
+        if observation is None or observation.status != "provided":
+            return None
+        return extract_transaction_reference(observation.value or "")
 
     def _capture_reference(self, reference: str) -> None:
         self.transaction_reference = reference
@@ -684,13 +924,15 @@ class CollectionCallPolicy:
     def preempts_turn(self, text: str) -> bool:
         """Whether the policy will consume this turn deterministically.
 
-        The brain uses this to SKIP the LLM intent-classification hop — the
-        single largest serial pre-reply cost (~1.2–1.8 s measured) — on turns
-        whose handling cannot depend on it: the answer to a pending
-        transaction-number question, and identity-question answers that the
-        deterministic rules already resolve (clear yes / clear no / unclear →
-        scripted re-ask). A turn whose regex signal carries OTHER meaning
-        (complaint, agent request, hardship, …) still classifies normally.
+        FALLBACK-PATH ONLY: when the Goal Engine is disabled or failed for
+        the turn, the brain uses this to skip the legacy LLM classification
+        hop on turns whose fallback handling cannot depend on it: the answer
+        to a pending transaction-number question, and identity-question
+        answers the deterministic rules already resolve (clear yes / clear
+        no / unclear → scripted re-ask). On the agentic path identity and
+        slot answers are decided semantically, never preempted by regex. A
+        turn whose regex signal carries OTHER meaning (complaint, agent
+        request, hardship, …) still classifies normally.
         """
         from shared.orchestration.router import classify_user_signal
 
@@ -1175,6 +1417,35 @@ class CollectionCallPolicy:
             if ctx.days_overdue is not None:
                 values["overdue_days"] = str(ctx.days_overdue)
         return values
+
+    def compact_facts(self) -> list[str]:
+        """Identity-gated one-line account facts for the decision call.
+
+        The same disclosure rule as :meth:`turn_instruction`: nothing before
+        the caller's identity is confirmed. Short by design — these ground
+        the Goal Engine's co-generated replies without duplicating the full
+        per-turn prompt block.
+        """
+        ctx = self.context
+        if ctx is None or not self.verified or self.wrong_party:
+            return []
+        facts: list[str] = []
+        if ctx.overdue_amount is not None:
+            facts.append(f"overdue amount {_rupees(ctx.overdue_amount)}")
+        if ctx.days_overdue is not None:
+            facts.append(f"{ctx.days_overdue} days overdue")
+        if ctx.due_date:
+            facts.append(f"due date {ctx.due_date}")
+        if ctx.total_outstanding is not None:
+            facts.append(f"total outstanding {_rupees(ctx.total_outstanding)}")
+        if ctx.payment_methods:
+            facts.append("payment methods " + ", ".join(ctx.payment_methods))
+        if ctx.partial_payment_allowed is not None:
+            facts.append(
+                "partial payment "
+                + ("allowed" if ctx.partial_payment_allowed else "not allowed")
+            )
+        return facts[:8]
 
     def static_instruction(self) -> str:
         """Once-per-call system-prompt block (customer identity only)."""

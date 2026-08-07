@@ -213,7 +213,9 @@ PROVIDERS = [
     # dev/test pseudo-provider — it is excluded from production by the catalog
     # layer, not by status.
     ("stt", "openai", "OpenAI Whisper", True, "Whisper speech-to-text via the OpenAI API.", "inactive"),
-    ("stt", "deepgram", "Deepgram", True, "Low-latency streaming STT.", "inactive"),
+    ("stt", "deepgram", "Deepgram", True,
+     "Conversational realtime STT (Flux) with model-integrated turn detection.",
+     "active"),
     ("stt", "assemblyai", "AssemblyAI", True, "Batch and realtime STT.", "inactive"),
     ("stt", "sarvam", "Sarvam AI", True, "Indic-language STT (saarika).", "active"),
     ("stt", "azure", "Azure Speech", True, "Microsoft Azure speech-to-text.", "inactive"),
@@ -374,7 +376,9 @@ CURRENCIES = [
 #   per minute of audio: whisper-1 and gpt-4o-transcribe $0.006,
 #   gpt-transcribe $0.0045, gpt-4o-mini-transcribe $0.003. TTS is per
 #   character: tts-1 $15/1M, tts-1-hd $30/1M.
-# - Deepgram (deepgram.com/pricing): nova-3 streaming pay-as-you-go
+# - Deepgram (deepgram.com/pricing): Flux conversational STT pay-as-you-go
+#   flux-general-multi $0.0078/min, flux-general-en $0.0065/min (verified
+#   2026-08); nova-3 streaming pay-as-you-go
 #   $0.0058/min multilingual (mono-English is $0.0048/min — the platform is
 #   multilingual, so the multilingual rate applies); nova-2 streaming
 #   $0.35/hour (FAQ: "unchanged rates for existing deployments"); true
@@ -426,6 +430,8 @@ PROVIDER_PRICING = [
     ("openai", "stt", "gpt-transcribe", "audio_seconds", "per_minute", "0.0045", "USD"),
     ("openai", "stt", "gpt-4o-transcribe", "audio_seconds", "per_minute", "0.006", "USD"),
     ("openai", "stt", "gpt-4o-mini-transcribe", "audio_seconds", "per_minute", "0.003", "USD"),
+    ("deepgram", "stt", "flux-general-multi", "audio_seconds", "per_minute", "0.0078", "USD"),
+    ("deepgram", "stt", "flux-general-en", "audio_seconds", "per_minute", "0.0065", "USD"),
     ("deepgram", "stt", "nova-3", "audio_seconds", "per_minute", "0.0058", "USD"),
     ("deepgram", "stt", "nova-2", "audio_seconds", "per_hour", "0.35", "USD"),
     # ── TTS ──────────────────────────────────────────────────────────────

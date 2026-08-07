@@ -54,6 +54,12 @@ def final_event_key(frame, text: str) -> str | None:
     data = _payload(frame)
     if data is not None:
         connection = str(data.get("request_id") or "")
+        # Deepgram Flux: TurnInfo carries an explicit per-connection turn
+        # counter — the strongest possible identity. A replayed EndOfTurn for
+        # the same turn cannot differ in (request_id, turn_index, transcript).
+        turn_index = data.get("turn_index")
+        if connection and turn_index is not None:
+            return f"turn:{connection}|{turn_index}|{text}"
         metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
         duration = metrics.get("audio_duration")
         latency = metrics.get("processing_latency")

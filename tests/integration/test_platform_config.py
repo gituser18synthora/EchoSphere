@@ -195,7 +195,7 @@ class TestProviderModelValidation:
         assert "sttProvider" in _field_errors(response)
 
     def test_provider_without_models_rejects_any_model(self, client, super_admin):
-        # deepgram has no catalog models; the governance matrix keeps it
+        # assemblyai has no catalog models; the governance matrix keeps it
         # inactive, so activate it just for this scenario and restore after.
         from sqlalchemy import select as sa_select
 
@@ -205,16 +205,16 @@ class TestProviderModelValidation:
         session = get_sessionmaker()()
         try:
             provider = session.execute(sa_select(ProviderDef).where(
-                ProviderDef.kind == "stt", ProviderDef.code == "deepgram",
+                ProviderDef.kind == "stt", ProviderDef.code == "assemblyai",
             )).scalar_one_or_none()
             if provider is None:
-                pytest.skip("deepgram STT provider not seeded")
+                pytest.skip("assemblyai STT provider not seeded")
             previous_status = provider.status
             provider.status = "active"
             session.commit()
             try:
                 response = self._create(
-                    client, super_admin, sttProvider="deepgram", sttModel="nova-2"
+                    client, super_admin, sttProvider="assemblyai", sttModel="best"
                 )
                 assert response.status_code == 422
                 assert "no configured models" in _field_errors(response)["sttModel"]
@@ -223,6 +223,21 @@ class TestProviderModelValidation:
                 session.commit()
         finally:
             session.close()
+
+    def test_deepgram_flux_is_a_selectable_stt_pair(self, client, super_admin):
+        # Deepgram Flux is an active, governed STT option (models seeded by
+        # migration e9a1c3b5d7f9); a wrong model still fails closed.
+        ok_response = self._create(
+            client, super_admin,
+            sttProvider="deepgram", sttModel="flux-general-multi",
+        )
+        created = _data(ok_response)
+        _track("ai_config_profiles", created["id"])
+        assert created["sttModel"] == "flux-general-multi"
+        bad = self._create(
+            client, super_admin, sttProvider="deepgram", sttModel="saaras:v3",
+        )
+        assert bad.status_code == 422
 
     def test_embedding_pair_validated(self, client, super_admin):
         ok_response = self._create(

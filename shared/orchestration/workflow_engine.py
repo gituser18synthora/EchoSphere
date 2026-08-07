@@ -51,6 +51,11 @@ class WorkflowState(TypedDict, total=False):
     off_script: bool  # the turn was NOT consumed — node unchanged, no reply
     awaiting_prompt: str | None  # question of the node the flow is paused at
     signal: str | None  # semantic signal of the caller's utterance
+    # Input-only: the caller-supplied semantic signal for THIS turn (from the
+    # Goal Engine's validated decision). Consumed by _step and cleared in the
+    # returned state so a checkpointed value can never leak into a later turn;
+    # when absent the legacy regex classification is the fallback.
+    signal_override: str | None
     # Testing Studio: {tool_name: payload} replaces live HTTP in api nodes.
     mock_tool_results: dict | None
 
@@ -749,7 +754,12 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         status = "collecting"
         handoff_queue: str | None = None
         text = (state.get("user_text") or "").strip()
-        signal = classify_user_signal(text) if text else None
+        # Semantic signal: the Goal Engine's validated decision (passed per
+        # turn) is primary; the regex classifier is the deterministic
+        # fallback when no decision reached this turn.
+        signal = (state.get("signal_override") or None) if text else None
+        if signal is None and text:
+            signal = classify_user_signal(text)
         off_script = False
         current = state.get("current_node")
         awaiting = state.get("awaiting")
@@ -882,7 +892,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # First intent node after a workflow entry: the utterance
                     # that triggered the flow carries meaning of its own —
                     # consume it when an edge explicitly supports its signal.
-                    entry_signal = classify_user_signal(entry_text)
+                    # entry_text IS this turn's text, so the (decision-first)
+                    # signal computed above applies to it directly.
+                    entry_signal = signal
                     entry_text = ""  # single use, matched or not
                     if entry_signal in _ENTRY_SIGNALS:
                         chosen, why = _choose_intent_edge(
@@ -1024,6 +1036,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "off_script": off_script,
             "awaiting_prompt": awaiting_prompt,
             "signal": signal,
+            "signal_override": None,  # input-only; never survives the turn
             "status": status if not awaiting else "collecting",
             "reply": reply_text,
         }
@@ -1117,6 +1130,7 @@ class WorkflowEngine:
         timeout_seconds: float = 10.0,
         language: str | None = None,
         mock_tool_results: dict | None = None,
+        signal: str | None = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -1124,6 +1138,10 @@ class WorkflowEngine:
         slugified name or exact name) run first; the hardcoded reference
         builders remain as fallbacks; an unknown name ends the flow with a
         clear reply instead of silently running an unrelated graph.
+
+        ``signal`` is the semantic signal of the utterance as decided by the
+        Goal Engine (validated). When provided, intent-node edge selection
+        routes on it instead of re-deriving meaning from regex patterns.
         """
         definition: dict | None = None
         try:
@@ -1162,6 +1180,7 @@ class WorkflowEngine:
                         "user_text": user_text,
                         "language": language or "",
                         "mock_tool_results": mock_tool_results,
+                        "signal_override": signal,
                     },
                     config=thread,
                 ),

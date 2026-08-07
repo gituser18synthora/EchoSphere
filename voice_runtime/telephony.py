@@ -31,6 +31,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.serializers.base_serializer import FrameSerializer
 
+from shared.config import get_settings
 from shared.errors import ApiError
 _VAANI_MIN_CHUNK_BYTES = 3200
 _VAANI_MAX_CHUNK_BYTES = 100_000
@@ -41,10 +42,54 @@ _FREESWITCH_FRAME_BYTES = 320
 # 100 KB of PCM is ~133.4 KB base64 — anything larger is a protocol violation.
 _VAANI_MAX_B64_CHARS = 140_000
 
+# First-packet ramp (see _RampedAudioMixin). The steady-state 3200-byte packet
+# is 200 ms of 8 kHz PCM; the output transport feeds this serializer one
+# 40 ms chunk per 40 ms pacing tick, so waiting for 3200 bytes delayed the
+# FIRST packet of every reply by ~160 ms. Emitting smaller packets while the
+# reply starts costs no playout margin — five 40 ms ticks carry 200 ms of
+# audio in 160 ms of wall clock, so the dialer's lead is the same ~40 ms
+# either way. It simply arrives sooner.
+_RAMP_THRESHOLDS = (640, 1280, 2560)
+# Outbound audio quiet for longer than this is a new utterance: the ramp
+# resets so the next reply's first packet is fast again.
+_RAMP_RESET_IDLE_S = 0.5
+
 logger = logging.getLogger(__name__)
 
 
-class FreeSwitchAudioStreamSerializer(FrameSerializer):
+class _RampedAudioMixin:
+    """Outbound PCM buffering with a fast first packet per utterance.
+
+    The steady-state packet size is unchanged; only the first few packets of
+    an utterance are allowed out early, which is what the caller perceives as
+    the bot's response time.
+    """
+
+    def _init_ramp(self) -> None:
+        self._ramp_step = 0
+        self._last_audio_at = 0.0
+
+    def _note_audio(self) -> None:
+        """Record inbound-from-TTS audio, restarting the ramp after a gap."""
+        now = time.monotonic()
+        if self._last_audio_at and now - self._last_audio_at > _RAMP_RESET_IDLE_S:
+            self._ramp_step = 0
+        self._last_audio_at = now
+
+    def _reset_ramp(self) -> None:
+        self._ramp_step = 0
+
+    def _min_chunk_bytes(self, steady_bytes: int) -> int:
+        if self._ramp_step >= len(_RAMP_THRESHOLDS):
+            return steady_bytes
+        return min(_RAMP_THRESHOLDS[self._ramp_step], steady_bytes)
+
+    def _advance_ramp(self) -> None:
+        if self._ramp_step < len(_RAMP_THRESHOLDS):
+            self._ramp_step += 1
+
+
+class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
     """Media wire format used by ``mod_audio_stream`` on FreeSWITCH.
 
     Audio arrives as stereo binary L16 PCM. The installed QA
@@ -55,9 +100,15 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
     output is not played.
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, *, send_kill_audio: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
         self._pending_audio = bytearray()
+        # Barge-in: clearing local pending bytes is not enough — up to ~2 s of
+        # already-shipped audio sits in the module's playback buffer and would
+        # talk over the caller. killAudio tells mod_audio_stream to drop it;
+        # disable only for older module builds that reject the message.
+        self._send_kill_audio = bool(send_kill_audio)
+        self._init_ramp()
         self._inbound_bytes = 0
         self._inbound_interval_bytes = 0
         self._inbound_interval_peak = 0
@@ -89,19 +140,26 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
 
     async def serialize(self, frame: Frame) -> str | None:
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
+            if self._send_kill_audio:
+                return json.dumps({"type": "killAudio"})
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _FREESWITCH_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(
+            _FREESWITCH_MIN_CHUNK_BYTES
+        ):
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
@@ -114,6 +172,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         remainder = len(audio) % _FREESWITCH_FRAME_BYTES
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
+        self._advance_ramp()
         return json.dumps({
             "type": "streamAudio",
             "data": {
@@ -201,7 +260,7 @@ class FreeSwitchAudioStreamSerializer(FrameSerializer):
         return None
 
 
-class FreeSwitchAudioForkSerializer(FrameSerializer):
+class FreeSwitchAudioForkSerializer(_RampedAudioMixin, FrameSerializer):
     """Bidirectional media wire format used by ``mod_audio_fork``.
 
     The fork is started in ``mono 16k`` mode, so inbound binary frames are
@@ -214,6 +273,7 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._pending_audio = bytearray()
+        self._init_ramp()
         self._inbound_bytes = 0
         self._inbound_interval_bytes = 0
         self._inbound_interval_peak = 0
@@ -225,12 +285,15 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
 
     async def serialize(self, frame: Frame) -> str | None:
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
             return json.dumps({"type": "killAudio"})
         return None
 
@@ -238,7 +301,9 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _FREESWITCH_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(
+            _FREESWITCH_MIN_CHUNK_BYTES
+        ):
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
@@ -251,6 +316,7 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         remainder = len(audio) % _FREESWITCH_FRAME_BYTES
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
+        self._advance_ramp()
         return json.dumps({
             "type": "playAudio",
             "data": {
@@ -304,7 +370,7 @@ class FreeSwitchAudioForkSerializer(FrameSerializer):
         return None
 
 
-class VaaniFrameSerializer(FrameSerializer):
+class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
     """Vaani Telephony JSON media-stream protocol.
 
     Vaani sends/receives base64 encoded 8 kHz, 16-bit, mono PCM in JSON
@@ -324,6 +390,7 @@ class VaaniFrameSerializer(FrameSerializer):
         self._track = track or "inbound"
         self._out_chunk = 0
         self._pending_audio = bytearray()
+        self._init_ramp()
         self._last_in_chunk = 0
         self._stopped = False
         self._warned_sid_mismatch = False
@@ -335,12 +402,15 @@ class VaaniFrameSerializer(FrameSerializer):
         if self._stopped:
             return None  # after `stop`, nothing else may go on the wire
         if isinstance(frame, OutputAudioRawFrame):
+            self._note_audio()
             self._pending_audio.extend(frame.audio)
             return self._pop_audio_chunk(force=False)
         if isinstance(frame, BotStoppedSpeakingFrame):
+            self._reset_ramp()
             return self._pop_audio_chunk(force=True)
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
+            self._reset_ramp()
             return json.dumps({
                 "event": "clear",
                 "streamSid": self._stream_sid,
@@ -443,7 +513,7 @@ class VaaniFrameSerializer(FrameSerializer):
         if not self._pending_audio:
             return None
         available = len(self._pending_audio)
-        if not force and available < _VAANI_MIN_CHUNK_BYTES:
+        if not force and available < self._min_chunk_bytes(_VAANI_MIN_CHUNK_BYTES):
             return None
         limit = min(available, _VAANI_MAX_CHUNK_BYTES)
         size = limit - (limit % _VAANI_FRAME_BYTES)
@@ -456,6 +526,7 @@ class VaaniFrameSerializer(FrameSerializer):
         remainder = len(chunk) % _VAANI_FRAME_BYTES
         if remainder:
             chunk += b"\x00" * (_VAANI_FRAME_BYTES - remainder)
+        self._advance_ramp()
         self._out_chunk += 1
         return json.dumps({
             "event": "media",
@@ -496,7 +567,9 @@ def build_media_serializer(
             )
         # QA uses mod_audio_stream: stereo L16 inbound (caller channel is
         # selected above), JSON/base64 playback out.
-        return FreeSwitchAudioStreamSerializer()
+        return FreeSwitchAudioStreamSerializer(
+            send_kill_audio=get_settings().freeswitch_send_kill_audio,
+        )
     if provider == "twilio":
         from pipecat.serializers.twilio import TwilioFrameSerializer
 

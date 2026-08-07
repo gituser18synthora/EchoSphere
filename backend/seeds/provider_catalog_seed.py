@@ -40,8 +40,41 @@ from shared.models import (
 )
 
 # ── Parameter schemas ────────────────────────────────────────────────────────
-# {"field": {"type": number|integer|boolean|enum|string|int_list,
+# {"field": {"type": number|integer|boolean|enum|string|int_list|string_list,
 #            "min","max","step","default","values","label","help","advanced"}}
+
+# Deepgram Flux (conversational STT, /v2/listen): only the parameters the
+# voice-agent runtime actually consumes are exposed — encoding/sample-rate are
+# decided by the call transport, and the raw API surface stays out of the UI.
+_DEEPGRAM_FLUX_SCHEMA = {
+    "eot_threshold": {
+        "type": "number", "min": 0.5, "max": 0.9, "default": 0.7, "step": 0.05,
+        "label": "End-of-turn threshold",
+        "help": "Confidence Flux needs before ending the caller's turn. "
+                "Lower answers sooner but may cut into natural pauses.",
+    },
+    "eager_eot_threshold": {
+        "type": "number", "min": 0.3, "max": 0.9, "default": 0.6, "step": 0.05,
+        "label": "Eager end-of-turn threshold", "advanced": True,
+        "help": "Enables EagerEndOfTurn: orchestration starts speculatively "
+                "before the turn is confirmed (lower = faster responses, more "
+                "speculative decision calls).",
+    },
+    "eot_timeout_ms": {
+        "type": "integer", "min": 500, "max": 60000, "default": 3000,
+        "label": "End-of-turn timeout (ms)", "advanced": True,
+        "help": "Silence after speech that force-ends the turn regardless of "
+                "end-of-turn confidence.",
+    },
+    "language_hints": {
+        # Languages flux-general-multi supports (pipecat wire codes).
+        "type": "string_list", "max_items": 8, "max_length": 8,
+        "values": ["de", "en", "es", "fr", "hi", "it", "ja", "nl", "pt", "ru"],
+        "label": "Language hints", "advanced": True,
+        "help": "Bias multilingual detection toward these languages. Defaults "
+                "to the bot's configured languages (e.g. hi, en).",
+    },
+}
 
 _SARVAM_STT_COMMON = {
     "vad_signals": {
@@ -416,6 +449,21 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
         "Cheaper GPT-4o mini transcription (batch/REST). Inactive under "
         "platform governance: STT is Sarvam-only."
     ),
+    ("deepgram", "stt", "flux-general-multi"): (
+        "Deepgram Flux multilingual conversational STT (/v2/listen): "
+        "model-integrated turn detection (EndOfTurn / EagerEndOfTurn / "
+        "TurnResumed), per-turn language detection. Recommended for "
+        "Hindi/Hinglish/English voice agents."
+    ),
+    ("deepgram", "stt", "flux-general-en"): (
+        "Deepgram Flux English-only conversational STT (/v2/listen) with "
+        "model-integrated turn detection. Use flux-general-multi for "
+        "Hindi/Hinglish callers."
+    ),
+    ("deepgram", "stt", "nova-3"): (
+        "Legacy Deepgram streaming transcription (v1). Superseded for voice "
+        "agents by Flux; inactive."
+    ),
 }
 
 # (provider, capability, code, display, languages, codecs, rates, streaming,
@@ -463,12 +511,22 @@ PROVIDER_MODELS = [
      [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 2),
     ("openai", "stt", "gpt-4o-mini-transcribe", "GPT-4o mini Transcribe",
      [], ["linear16"], [8000, 16000, 24000], False, {}, False, "inactive", 3),
-    # Deepgram — streaming STT; inactive under the same governance. Catalogued
-    # so provider-model pricing can be configured/validated ahead of rollout.
+    # Deepgram Flux — conversational realtime STT (/v2/listen) with
+    # model-integrated turn detection; the platform's second active STT
+    # vendor. flux-general-multi is the default for Hindi/Hinglish/English
+    # calling; flux-general-en is English-only.
+    ("deepgram", "stt", "flux-general-multi", "Flux (multilingual)",
+     [], ["linear16"], [8000, 16000, 24000, 44100, 48000], True,
+     _DEEPGRAM_FLUX_SCHEMA, True, "active", 0),
+    ("deepgram", "stt", "flux-general-en", "Flux (English)",
+     ["en"], ["linear16"], [8000, 16000, 24000, 44100, 48000], True,
+     _DEEPGRAM_FLUX_SCHEMA, False, "active", 1),
+    # Legacy Deepgram batch/streaming models — inactive; catalogued so their
+    # pricing can be configured/validated.
     ("deepgram", "stt", "nova-3", "Nova-3 (streaming)",
-     [], ["linear16"], [8000, 16000, 24000], True, {}, True, "inactive", 0),
+     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 2),
     ("deepgram", "stt", "nova-2", "Nova-2 (legacy)",
-     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 1),
+     [], ["linear16"], [8000, 16000, 24000], True, {}, False, "inactive", 3),
     # OpenAI TTS — inactive under platform governance: TTS is Sarvam/ElevenLabs.
     ("openai", "tts", "tts-1", "TTS-1", [], ["linear16"], [24000], False,
      {}, True, "inactive", 0),
@@ -642,7 +700,7 @@ def seed_provider_catalog(db: Session) -> dict:
 ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
     "llm": {"openai"},
     "embedding": {"openai"},
-    "stt": {"sarvam"},
+    "stt": {"sarvam", "deepgram"},
     "tts": {"sarvam", "elevenlabs"},
     # Voice catalogs follow their TTS vendor's governance.
     "voice": {"platform", "elevenlabs"},
@@ -651,7 +709,7 @@ ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
 _DEV_PSEUDO_PROVIDERS = {"mock"}
 
 # Approved-model registry vendors allowed on the AI Governance page.
-_ALLOWED_REGISTRY_VENDORS = {"openai", "sarvam", "elevenlabs"}
+_ALLOWED_REGISTRY_VENDORS = {"openai", "sarvam", "elevenlabs", "deepgram"}
 
 # Platform-seeded AI profiles are re-pointed inside the matrix when they
 # reference a now-inactive provider. Operator-created profiles are left

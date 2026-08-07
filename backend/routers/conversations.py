@@ -36,8 +36,11 @@ from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
-from shared.models import ConversationSession, User, VoiceBot
-from backend.serializers import serialize_conversation
+from shared.models import ConversationMemory, ConversationSession, User, VoiceBot
+from backend.serializers import (
+    serialize_conversation,
+    serialize_conversation_memory,
+)
 
 router = APIRouter(tags=["Conversations"])
 
@@ -123,7 +126,26 @@ async def get_conversation(
         c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
         recording=recording_descriptor(c, doc),
         cost_breakdown=_cost_breakdown(db, c, session_id, currency),
+        summary=_ai_summary(db, c),
     ))
+
+
+def _ai_summary(db: Session, c: ConversationSession) -> dict | None:
+    """Post-call intelligence for the detail view, if any was generated.
+
+    Tenant scope is already asserted on the conversation row; the memory row
+    is fetched strictly by that conversation's id, so it can never surface
+    another tenant's data.
+    """
+    memory = db.execute(
+        select(ConversationMemory).where(
+            ConversationMemory.conversation_id == c.id,
+            ConversationMemory.is_deleted.is_(False),
+        )
+    ).scalar_one_or_none()
+    if memory is None:
+        return None
+    return serialize_conversation_memory(memory)
 
 
 def _cost_breakdown(

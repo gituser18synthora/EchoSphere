@@ -121,6 +121,8 @@ export function ParamField({ spec, value, onChange }: {
       return <NumberParam spec={spec} value={value} onChange={onChange} />;
     case "int_list":
       return <IntListParam spec={spec} value={value} onChange={onChange} />;
+    case "string_list":
+      return <StringListParam spec={spec} value={value} onChange={onChange} />;
     case "string":
     default:
       return (
@@ -221,6 +223,53 @@ function IntListParam({ spec, value, onChange }: {
       <input
         className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
         placeholder="e.g. 1, 2, 3"
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onChange={(e) => handle(e.target.value)}
+      />
+    </Field>
+  );
+}
+
+function StringListParam({ spec, value, onChange }: {
+  spec: ParamSpec; value: ProviderSettingValue | undefined;
+  onChange: (v: ProviderSettingValue | undefined) => void;
+}) {
+  const list = Array.isArray(value) ? value : Array.isArray(spec.default) ? spec.default : [];
+  const joined = list.join(", ");
+  const [text, setText] = useState(joined);
+  const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { if (!focused) { setText(joined); setError(null); } }, [joined, focused]);
+
+  const allowed = (spec.values ?? []).map(String);
+  const handle = (raw: string) => {
+    setText(raw);
+    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (spec.max_items !== undefined && parts.length > spec.max_items) {
+      setError(`At most ${spec.max_items} entries allowed`);
+      return;
+    }
+    if (allowed.length > 0) {
+      const bad = parts.find((p) => !allowed.includes(p));
+      if (bad !== undefined) {
+        setError(`"${bad}" is not one of: ${allowed.join(", ")}`);
+        return;
+      }
+    }
+    setError(null);
+    onChange(parts.length === 0 ? undefined : parts);
+  };
+
+  return (
+    <Field
+      label={spec.label}
+      hint={error ? undefined : (spec.help ?? "Comma-separated values")}
+      error={error ?? undefined}
+    >
+      <input
+        className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
+        placeholder={allowed.length > 0 ? `e.g. ${allowed.slice(0, 2).join(", ")}` : "e.g. a, b"}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onChange={(e) => handle(e.target.value)}

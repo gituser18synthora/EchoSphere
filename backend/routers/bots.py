@@ -401,6 +401,8 @@ class VoiceSettingsRequest(BaseModel):
     fallback_model: str | None = Field(default=None, alias="fallbackModel", max_length=80)
     fallback_voice: str | None = Field(default=None, alias="fallbackVoice", max_length=80)
     audio_settings: dict | None = Field(default=None, alias="audioSettings")
+    # Goal Engine configuration ({} clears it back to the derived default).
+    goal_policy: dict | None = Field(default=None, alias="goalPolicy")
 
     model_config = {"populate_by_name": True}
 
@@ -411,6 +413,7 @@ _VOICE_SETTINGS_FIELDS = (
     "tts_provider", "tts_model", "tts_voice", "tts_settings",
     "llm_provider", "llm_model", "llm_settings",
     "fallback_provider", "fallback_model", "fallback_voice", "audio_settings",
+    "goal_policy",
 )
 
 # Delivery tuning's speaking speed is the single canonical speed control:
@@ -459,6 +462,7 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "fallbackModel": s.fallback_model,
         "fallbackVoice": s.fallback_voice,
         "audioSettings": s.audio_settings or {},
+        "goalPolicy": s.goal_policy or {},
     }
 
 
@@ -510,6 +514,20 @@ def update_voice_settings(
                 )
         s.voice_id = body.voice_id or None
         bot.voice_id = s.voice_id
+
+    # Goal Engine configuration must at least parse into the policy schema —
+    # a config that cannot compile would silently fall back to the derived
+    # default at runtime, which is exactly the confusion to reject here.
+    if body.goal_policy:
+        from shared.orchestration.goal_engine import BotGoalPolicy
+
+        try:
+            BotGoalPolicy.model_validate(body.goal_policy)
+        except Exception as exc:  # noqa: BLE001 — surfaced as a field error
+            raise ApiError(
+                "Goal policy configuration is invalid.", 422,
+                errors=[{"field": "goalPolicy", "message": str(exc)[:300]}],
+            )
 
     # Sanitize legacy per-provider speed duplicates before validation and
     # persistence — Delivery tuning's speed is the only speed control.

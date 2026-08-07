@@ -69,9 +69,26 @@ async def _close_websocket(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await Mongo.connect()
+    # Post-call intelligence worker (summary / outcome / Next Best Action):
+    # the durable queue is the conversation_memories table, so an embedded
+    # poller per process is safe (single-row optimistic claims) and a restart
+    # loses nothing.
+    post_call_stop: asyncio.Event | None = None
+    post_call_task: asyncio.Task | None = None
+    if get_settings().post_call_worker_embedded:
+        from shared.post_call.processor import run_worker as run_post_call_worker
+
+        post_call_stop = asyncio.Event()
+        post_call_task = asyncio.create_task(run_post_call_worker(post_call_stop))
     yield
     for task in list(_active_sessions.values()):
         task.cancel()
+    if post_call_task is not None and post_call_stop is not None:
+        post_call_stop.set()
+        try:
+            await asyncio.wait_for(post_call_task, timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            post_call_task.cancel()
     await Mongo.disconnect()
 
 
@@ -315,6 +332,36 @@ async def _run_call(
             load_error=runtime_context.load_error,
         )
 
+    # Previous conversation memory: the customer's latest analyzed call for
+    # THIS tenant+bot, resolved exactly the way the customer themselves was
+    # (context record → legacy context → phone tail). Works for every
+    # direction combination — inbound and outbound both land here. Bounded
+    # and fail-open: an immediately recalled customer whose previous call is
+    # still being summarized simply gets the memory before it, or none.
+    previous_memory = None
+    try:
+        from shared.post_call.recall import load_previous_memory
+
+        previous_memory = await load_previous_memory(
+            config.tenant_id,
+            config.bot_id,
+            runtime_context_record_id=recorder.runtime_context_record_id,
+            customer_context_id=recorder.customer_context_id,
+            phone=session.get("caller"),
+            exclude_session_id=session_id,
+        )
+    except Exception:  # noqa: BLE001 — memory must never block a call
+        logger.warning("previous-memory load failed for %s", session_id, exc_info=True)
+    if previous_memory is not None:
+        await recorder.flush_event(
+            "previous_memory_loaded",
+            previous_memory_source_conversation_id=previous_memory.conversation_id,
+            outcome=previous_memory.call_outcome,
+            next_best_action_type=previous_memory.next_action,
+            matched_by=previous_memory.matched_by,
+            memory_status=previous_memory.status,
+        )
+
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -392,6 +439,7 @@ async def _run_call(
             customer_context=customer_context,
             runtime_context=runtime_context,
             transport_kind=transport_kind,
+            previous_memory=previous_memory,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)

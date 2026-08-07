@@ -52,7 +52,7 @@ export interface SipTrunk {
 }
 
 /* Provider-specific settings object, validated server-side against the model's paramsSchema. */
-export type ProviderSettingValue = string | number | boolean | number[] | ProviderSettings;
+export type ProviderSettingValue = string | number | boolean | number[] | string[] | ProviderSettings;
 export interface ProviderSettings {
   [key: string]: ProviderSettingValue;
 }
@@ -101,6 +101,13 @@ export interface VoiceSettings {
   fallbackModel: string | null;
   fallbackVoice: string | null;
   audioSettings: AudioSettings;
+  /**
+   * Goal Engine configuration (role, domain, goals, allowedTopics,
+   * restrictedTopics, identity, slots, outOfScope, …). Empty object means
+   * the runtime derives a safe default from the published prompt, intents
+   * and domain policy.
+   */
+  goalPolicy: Record<string, unknown>;
 }
 
 /* ---------- Provider catalog (database-driven) ---------- */
@@ -119,7 +126,7 @@ export interface ProviderInfo {
 }
 
 export interface ParamSpec {
-  type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list";
+  type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list" | "string_list";
   min?: number;
   max?: number;
   step?: number;
@@ -1524,6 +1531,47 @@ export interface Conversation {
   recording?: ConversationRecording | null;
   /** Auditable per-component costing; detail endpoint only. */
   cost?: ConversationCost | null;
+  /** Post-call AI intelligence (summary / outcome / Next Best Action);
+      detail endpoint only, null while nothing has been generated. */
+  summary?: ConversationAiSummary | null;
+}
+
+export interface ConversationCommitment {
+  type?: string | null;
+  description?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  /** Absolute ISO date resolved from the customer's spoken expression. */
+  dueDate?: string | null;
+  status?: string | null;
+}
+
+export interface ConversationNextBestAction {
+  action?: string | null;
+  reason?: string | null;
+  priority?: string | null;
+  recommendedAt?: string | null;
+}
+
+export interface ConversationAiSummary {
+  /** queued | processing | completed | failed (failed carries a deterministic fallback). */
+  status: string;
+  callOutcome?: string | null;
+  summary?: string | null;
+  customerIntent?: string | null;
+  customerSentiment?: string | null;
+  customerCommitments: ConversationCommitment[];
+  objections: string[];
+  importantFacts: string[];
+  resolvedItems: string[];
+  unresolvedItems: string[];
+  missingSlots: string[];
+  nextBestAction?: ConversationNextBestAction | null;
+  followUpRequired: boolean;
+  followUpAt?: string | null;
+  confidence?: number | null;
+  generatedAt?: string | null;
+  error?: string | null;
 }
 
 /** One priced component of one usage event, as the backend costed it. */

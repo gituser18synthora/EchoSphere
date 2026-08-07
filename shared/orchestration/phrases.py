@@ -1,12 +1,23 @@
-"""Localized canned phrases for runtime fallbacks.
+"""Localized canned phrases — LAST-RESORT technical fallbacks only.
+
+These strings exist for the moments the agentic path cannot run: the LLM
+provider is down or timing out, a workflow hit an internal error, or the
+call is being torn down and there is no time for a generation round trip.
+They are NOT the normal conversation path — identity re-asks, redirects,
+clarifications and outcome statements are normally generated per turn from
+the bot's own prompt/goal policy, in the caller's language.
 
 Every fixed phrase the voice runtime or workflow engine can speak WITHOUT the
-LLM (clarifications, safety warnings, hang-up acknowledgements, workflow retry
-prefixes, …) must go through :func:`canned` so a Hindi caller never hears an
-English fallback mid-conversation. Locale resolution is by base language code
+LLM must go through :func:`canned` so a Hindi caller never hears an English
+fallback mid-conversation. Locale resolution is by base language code
 ("hi-IN" → "hi"); English is the final fallback for languages without an
 entry. Hinglish callers are Hindi callers here — Devanagari text is what the
 hi-IN TTS voices speak naturally.
+
+This table is deliberately domain-neutral: platform mechanics only (errors,
+handoffs, hang-ups, workflow retries). Domain-specific fallbacks live with
+their domain policy (e.g. voice_runtime.call_policy for collections), never
+in shared orchestration code.
 
 English values are byte-for-byte the strings the runtime used before
 localization, so transcripts/tests keyed on them keep working.
@@ -124,152 +135,24 @@ _PHRASES: dict[str, dict[str, str]] = {
             "आपको हमारे एजेंट से जोड़ा जा रहा है।"
         ),
     },
-    # Collections: the opener spoken the moment identity is confirmed. Its
-    # content is fully determined by the verified account facts, so it is
-    # scripted rather than generated — that removes an LLM round trip from
-    # the one turn in the call where the caller has just said a single word
-    # and expects an immediate answer. {amount}/{days} are filled by the
-    # policy from context; first-person grammar is gendered by the speaking
-    # voice in ConversationBrain._say.
-    "collections_open_amount_days": {
-        "en": (
-            "There is an overdue payment of {amount} on your account, "
-            "pending for {days} days. I'm calling about that payment — "
-            "can you pay today?"
-        ),
-        "hi": (
-            "आपके अकाउंट पर {amount} का payment {days} दिनों से overdue है। "
-            "मैं इसी payment के लिए call कर रहा हूँ — क्या आप आज payment "
-            "कर पाएंगे?"
-        ),
-    },
-    # Same turn, when the API gave an amount but no usable due date.
-    "collections_open_amount": {
-        "en": (
-            "There is an overdue payment of {amount} on your account. "
-            "I'm calling about that payment — can you pay today?"
-        ),
-        "hi": (
-            "आपके अकाउंट पर {amount} का payment overdue है। मैं इसी payment "
-            "के लिए call कर रहा हूँ — क्या आप आज payment कर पाएंगे?"
-        ),
-    },
-    # Identity answer was unclear/partial/noise: re-ask, never assume. The
-    # {name} is the customer on record; grammar is gendered by the speaking
-    # voice downstream.
-    "collections_identity_reask": {
-        "en": "Sorry — am I speaking with {name}?",
-        "hi": "माफ़ कीजिए, क्या मैं {name} जी से बात कर रहा हूँ?",
-    },
-    # Identity could not be verified after repeated attempts: close with no
-    # account disclosure of any kind.
-    "collections_identity_unverified_close": {
-        "en": (
-            "I'm sorry, I couldn't confirm I'm speaking with the right "
-            "person, so I can't discuss this call's purpose. We'll reach "
-            "out again later. Thank you."
-        ),
-        "hi": (
-            "माफ़ कीजिए, मैं पुष्टि नहीं कर पाया कि मेरी बात सही व्यक्ति से "
-            "हो रही है, इसलिए मैं इस कॉल का विवरण साझा नहीं कर सकता। हम "
-            "बाद में दोबारा संपर्क करेंगे। धन्यवाद।"
-        ),
-    },
-    # The payment-already-made flow: ask for the ACTUAL transaction number.
-    "collections_ask_reference": {
-        "en": (
-            "Thank you. To verify the payment, please tell me the "
-            "transaction or UTR number."
-        ),
-        "hi": (
-            "धन्यवाद। पेमेंट की पुष्टि के लिए कृपया ट्रांजैक्शन या UTR "
-            "नंबर बताइए।"
-        ),
-    },
-    "collections_ask_reference_retry": {
-        "en": (
-            "Sorry, I didn't get the number. Please say the transaction "
-            "number slowly, digit by digit."
-        ),
-        "hi": (
-            "माफ़ कीजिए, नंबर समझ नहीं आया। कृपया ट्रांजैक्शन नंबर "
-            "धीरे-धीरे, एक-एक अंक करके बताइए।"
-        ),
-    },
-    # Verification outcomes — the ONLY sentences that state a result, each
-    # scripted from the tool's answer. {reference} is pre-spaced digit by
-    # digit for the TTS.
-    "collections_payment_verified": {
-        "en": (
-            "Your payment has been received and verified successfully. "
-            "Sorry for the reminder call, and thank you!"
-        ),
-        "hi": (
-            "आपका भुगतान सफलतापूर्वक प्राप्त हो गया है और उसकी पुष्टि हो "
-            "चुकी है। कॉल के लिए खेद है, धन्यवाद!"
-        ),
-    },
-    "collections_payment_processing": {
-        "en": (
-            "I've noted transaction number {reference}. Your payment shows "
-            "in our records but is still processing — it will reflect on "
-            "your account once complete. Thank you!"
-        ),
-        "hi": (
-            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। आपका भुगतान "
-            "रिकॉर्ड में दिखाई दे रहा है, लेकिन अभी प्रोसेसिंग में है — पूरा "
-            "होते ही अकाउंट में दिखेगा। धन्यवाद!"
-        ),
-    },
-    "collections_payment_not_found": {
-        "en": (
-            "I couldn't verify a payment against transaction number "
-            "{reference} right now. I've recorded the number and our team "
-            "will re-check it and get back to you. Thank you."
-        ),
-        "hi": (
-            "अभी ट्रांजैक्शन नंबर {reference} से भुगतान की पुष्टि नहीं हो "
-            "पा रही है। मैंने नंबर नोट कर लिया है — हमारी टीम इसे दोबारा "
-            "जाँच कर आपसे संपर्क करेगी। धन्यवाद।"
-        ),
-    },
-    # A reference was captured but no verification tool exists on this call:
-    # verification is honestly PENDING — never claimed done.
-    "collections_verification_unavailable": {
-        "en": (
-            "I've noted transaction number {reference}. Verification is "
-            "still pending — our team will confirm it against the records. "
-            "Thank you."
-        ),
-        "hi": (
-            "मैंने ट्रांजैक्शन नंबर {reference} नोट कर लिया है। पुष्टि अभी "
-            "बाकी है — हमारी टीम रिकॉर्ड से इसकी जाँच करेगी। धन्यवाद।"
-        ),
-    },
-    # The customer could not provide any reference after clarification.
-    "collections_reference_unavailable_close": {
-        "en": (
-            "No problem. I've recorded that you've made the payment — our "
-            "team will verify it from the records and follow up if needed. "
-            "Thank you."
-        ),
-        "hi": (
-            "कोई बात नहीं। मैंने नोट कर लिया है कि आपने भुगतान किया है — "
-            "हमारी टीम रिकॉर्ड से इसकी जाँच करेगी और ज़रूरत होने पर संपर्क "
-            "करेगी। धन्यवाद।"
-        ),
-    },
 }
 
 
-def canned(key: str, locale: str | None = None) -> str:
-    """The canned phrase for ``key`` in the caller's current language.
+def resolve_phrase(
+    table: dict[str, dict[str, str]], key: str, locale: str | None = None
+) -> str:
+    """Locale resolution shared by this table and domain-owned fallback tables.
 
     ``locale`` is a platform locale ("hi-IN") or bare base code ("hi");
     unknown languages and missing translations fall back to English.
     """
-    table = _PHRASES.get(key)
-    if not table:
+    entry = table.get(key)
+    if not entry:
         return ""
     base = (locale or "en").split("-")[0].lower()
-    return table.get(base) or table.get("en", "")
+    return entry.get(base) or entry.get("en", "")
+
+
+def canned(key: str, locale: str | None = None) -> str:
+    """The canned phrase for ``key`` in the caller's current language."""
+    return resolve_phrase(_PHRASES, key, locale)

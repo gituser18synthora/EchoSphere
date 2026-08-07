@@ -8,12 +8,14 @@ one provider implementation.
 import logging
 
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame, TTSAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.time import time_now_iso8601
 
 from shared.providers.base import ProviderError, STTProvider, TTSProvider
 from shared.audio.pcm import resample_pcm, silence_pcm, wav_to_pcm
+from voice_runtime.frames import SwitchVoiceLanguageFrame
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,18 @@ class EchoTTSService(TTSService):
 
     def can_generate_metrics(self) -> bool:
         return True
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, SwitchVoiceLanguageFrame):
+            # Per-turn language following applies to the segmented REST path
+            # too: subsequent synthesize calls speak the caller's language.
+            if frame.language and frame.language != self._language:
+                logger.info(
+                    "tts: switching language %s → %s", self._language, frame.language
+                )
+                self._language = frame.language
+            return
+        await super().process_frame(frame, direction)
 
     async def run_tts(self, text: str, context_id: str):
         if context_id != self._pause_context_id:

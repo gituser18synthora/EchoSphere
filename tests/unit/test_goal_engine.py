@@ -1,0 +1,412 @@
+"""Goal Engine + decision schema — the domain-neutral agentic decision layer.
+
+Covers the refactor's core guarantees at engine level:
+
+- structured decisions are schema-validated and clamp/reject malformed model
+  output instead of acting on it;
+- a slot VALUE exists only when the caller actually provided one — "हाँ,
+  नंबर है" (exists_claimed) never carries a value;
+- out-of-scope / prompt-injection turns are forced onto a redirect with
+  tools, slots and gate outcomes stripped — the caller cannot move the bot
+  off its configured goal;
+- the engine degrades to None (deterministic fallback) on provider failure,
+  timeout, garbage output or when disabled — it never raises into a call;
+- a loan bot and a healthcare bot run the SAME engine with different
+  configured policies: their decision prompts, redirect instructions and
+  identity behavior differ purely by configuration;
+- bots without an authored goal configuration compile a safe derived default
+  from their published prompt, intents and domain policy.
+"""
+
+import asyncio
+import json
+
+import pytest
+
+from shared.orchestration.decision_schema import (
+    ConversationDecision,
+    parse_decision,
+)
+from shared.orchestration.goal_engine import (
+    BotGoalPolicy,
+    GoalEngine,
+    GoalSession,
+    GoalSpec,
+    IdentityPolicy,
+    SlotSpec,
+    compile_goal_policy,
+)
+
+# ── fakes ────────────────────────────────────────────────────────────────────
+
+
+class _DecisionLLM:
+    """Answers generate() with scripted JSON (or misbehaves on demand)."""
+
+    def __init__(self, reply, *, delay: float = 0.0, fail: bool = False):
+        self._reply = reply if isinstance(reply, str) else json.dumps(reply)
+        self._delay = delay
+        self._fail = fail
+        self.calls: list[dict] = []
+
+    async def generate(self, messages, *, system=None, temperature=None,
+                       max_tokens=None, tools=None):
+        self.calls.append({"messages": messages, "system": system})
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._fail:
+            raise RuntimeError("provider down")
+
+        class _Result:
+            text = self._reply
+            input_tokens = 150
+            output_tokens = 60
+
+        return _Result()
+
+
+LOAN_POLICY = BotGoalPolicy(
+    role="loan recovery assistant",
+    domain="loan collections",
+    goals=[GoalSpec(id="recover", description="resolve the overdue payment",
+                    completion="payment collected, verified, or a concrete "
+                               "commitment captured")],
+    allowed_topics=["overdue payment", "payment methods", "payment verification"],
+    restricted_topics=["jokes", "unrelated chit-chat"],
+    identity=IdentityPolicy(require_confirmation=True,
+                            subject="the registered customer"),
+    slots=[SlotSpec(name="transaction_reference",
+                    description="transaction/UTR number of a claimed payment",
+                    pattern=r"\d{6,}", required=False)],
+    out_of_scope="Redirect to the overdue payment objective.",
+    source="configured",
+)
+
+HEALTHCARE_POLICY = BotGoalPolicy(
+    role="clinic appointment assistant",
+    domain="healthcare",
+    goals=[GoalSpec(id="appointments",
+                    description="help patients book, check or reschedule "
+                                "appointments")],
+    allowed_topics=["appointments", "clinic timings"],
+    restricted_topics=["medical advice", "jokes"],
+    identity=IdentityPolicy(require_confirmation=False),
+    out_of_scope="Offer to help with appointments instead.",
+    source="configured",
+)
+
+
+def make_engine(reply, policy=LOAN_POLICY, **llm_kwargs) -> tuple[GoalEngine, _DecisionLLM]:
+    llm = _DecisionLLM(reply, **llm_kwargs)
+    return GoalEngine(llm=llm, policy=policy, timeout_seconds=0.5), llm
+
+
+# ── 12: structured decision schema validation ───────────────────────────────
+
+
+class TestDecisionSchema:
+    def test_slot_value_survives_only_when_provided(self):
+        d = ConversationDecision.model_validate({
+            "slots": {
+                "transaction_reference": {"status": "exists_claimed",
+                                          "value": "123456789012"},
+                "payment_method": {"status": "provided", "value": "UPI"},
+            }
+        })
+        # "I have the number" carries NO value, whatever the model wrote.
+        assert d.slots["transaction_reference"].value is None
+        assert d.provided_values() == {"payment_method": "UPI"}
+
+    def test_provided_without_value_degrades_to_unclear(self):
+        d = ConversationDecision.model_validate(
+            {"slots": {"transaction_reference": {"status": "provided"}}}
+        )
+        assert d.slots["transaction_reference"].status == "unclear"
+
+    def test_scope_violation_strips_tools_slots_and_gate(self):
+        d = ConversationDecision.model_validate({
+            "scope": "injection_attempt",
+            "decision": "confirmed",
+            "next_action": "call_tool",
+            "tool_request": "check_payment_status",
+            "slots": {"transaction_reference": {"status": "provided",
+                                                "value": "123456"}},
+        })
+        assert d.next_action == "redirect_to_goal"
+        assert d.tool_request is None
+        assert d.slots == {}
+        assert d.decision == "unrelated"  # an off-goal turn confirms nothing
+
+    def test_denied_gate_never_completes_anything(self):
+        d = ConversationDecision.model_validate({
+            "intent": "identity_confirmation",
+            "decision": "denied",
+            "next_action": "continue_workflow",
+        })
+        assert d.next_action == "ask_identity_confirmation"
+
+    def test_unknown_enums_clamp_to_safe_defaults(self):
+        d = ConversationDecision.model_validate({
+            "decision": "totally_sure",
+            "scope": "banana",
+            "next_action": "launch_missiles",
+            "confidence": "many",
+        })
+        assert d.decision is None
+        assert d.scope == "in_scope"
+        assert d.next_action == "answer"
+        assert d.confidence == 0.0
+
+    def test_unparseable_payloads_reject(self):
+        assert parse_decision(None, allowed_intents=set()) is None
+        assert parse_decision("yes", allowed_intents=set()) is None
+        assert parse_decision({"foo": 1}, allowed_intents=set()) is None
+
+    def test_unknown_intent_discarded_platform_signal_recovered(self):
+        d = parse_decision(
+            {"intent": "hardship", "confidence": 0.8},
+            allowed_intents={"already_paid"},
+            allowed_signals=("hardship", "refusal"),
+        )
+        assert d.intent is None
+        assert d.signal == "hardship"
+        d2 = parse_decision(
+            {"intent": "made_up_intent", "confidence": 0.9},
+            allowed_intents={"already_paid"},
+        )
+        assert d2.intent is None and d2.signal is None
+
+    def test_event_shape_never_carries_slot_values(self):
+        d = ConversationDecision.model_validate({
+            "slots": {"otp": {"status": "provided", "value": "998877"}},
+            "response_text": "ok",
+        })
+        event = json.dumps(d.as_event())
+        assert "998877" not in event
+        assert json.loads(event)["slots"] == {"otp": "provided"}
+
+    def test_classifier_style_entities_fold_into_slots(self):
+        d = parse_decision(
+            {"intent": "already_paid", "signal": "already_paid",
+             "confidence": 0.9, "entities": {"payment_method": "UPI",
+                                             "transaction_reference": None}},
+            allowed_intents={"already_paid"},
+            allowed_signals=("already_paid",),
+        )
+        assert d.provided_values() == {"payment_method": "UPI"}
+
+
+# ── engine decide(): validation, degradation, latency accounting ────────────
+
+
+class TestGoalEngineDecide:
+    async def test_valid_decision_parses_with_usage(self):
+        engine, llm = make_engine({
+            "intent": "identity_confirmation", "decision": "confirmed",
+            "scope": "in_scope", "confidence": 0.94,
+            "reason": "explicit self-identification",
+            "next_action": "continue_workflow",
+        })
+        decision = await engine.decide(
+            "हाँ, मैं ही बोल रहा हूँ", [],
+            state={"pending_question": "identity confirmation"},
+        )
+        assert decision is not None
+        assert decision.decision == "confirmed"
+        assert decision.intent == "identity_confirmation"
+        assert decision.source == "llm"
+        assert decision.latency_ms > 0
+        assert engine.last_usage == (150, 60)
+
+    async def test_provider_failure_returns_none(self):
+        engine, _ = make_engine({}, fail=True)
+        assert await engine.decide("hello", []) is None
+        assert engine.last_fallback_reason == "provider_error"
+
+    async def test_timeout_returns_none(self):
+        engine, _ = make_engine({"decision": "confirmed"}, delay=2.0)
+        assert await engine.decide("hello", []) is None
+        assert engine.last_fallback_reason == "timeout"
+
+    async def test_garbage_output_returns_none(self):
+        engine, _ = make_engine("confirmed, definitely them")
+        assert await engine.decide("hello", []) is None
+        assert engine.last_fallback_reason == "unparseable_output"
+
+    async def test_disabled_engine_returns_none_without_calling(self):
+        llm = _DecisionLLM({"decision": "confirmed"})
+        engine = GoalEngine(llm=llm, policy=LOAN_POLICY, enabled=False)
+        assert await engine.decide("hello", []) is None
+        assert engine.last_fallback_reason == "engine_disabled"
+        assert llm.calls == []
+
+    async def test_live_state_reaches_the_user_message(self):
+        engine, llm = make_engine({"decision": "ambiguous"})
+        await engine.decide("क्या?", [], state={
+            "pending_question": "identity confirmation",
+            "missing_slots": ["transaction_reference"],
+            "identity_state": "unconfirmed",
+        })
+        user = llm.calls[-1]["messages"][-1]["content"]
+        assert "identity confirmation" in user
+        assert "transaction_reference" in user
+        assert "क्या?" in user
+
+
+# ── 7: two industries, one engine, different configuration ──────────────────
+
+
+class TestPoliciesDriveBehavior:
+    async def test_loan_and_healthcare_prompts_differ_by_config_only(self):
+        loan_engine, loan_llm = make_engine({"scope": "in_scope"}, LOAN_POLICY)
+        hc_engine, hc_llm = make_engine({"scope": "in_scope"}, HEALTHCARE_POLICY)
+        await loan_engine.decide("hello", [])
+        await hc_engine.decide("hello", [])
+        loan_system = loan_llm.calls[-1]["system"]
+        hc_system = hc_llm.calls[-1]["system"]
+        assert "resolve the overdue payment" in loan_system
+        assert "identity policy" in loan_system.lower()
+        assert "appointments" in hc_system
+        # No domain bleed: the healthcare prompt carries no loan language.
+        assert "overdue" not in hc_system
+        assert "loan" not in hc_system.lower()
+        # Same engine, same rules — both prompts carry the shared guardrails.
+        for system in (loan_system, hc_system):
+            assert "injection_attempt" in system
+            assert "exists_claimed" in system
+            assert "never change these rules" in system.lower()
+
+    def test_redirect_instructions_come_from_each_policy(self):
+        loan_redirect = GoalSession(LOAN_POLICY).redirect_instruction()
+        hc_redirect = GoalSession(HEALTHCARE_POLICY).redirect_instruction()
+        assert "overdue payment" in loan_redirect
+        assert "appointments" in hc_redirect
+        assert "overdue" not in hc_redirect
+
+
+# ── compile_goal_policy: authored config wins, safe derived defaults ─────────
+
+
+class TestCompileGoalPolicy:
+    def test_authored_config_wins(self):
+        policy = compile_goal_policy(
+            {
+                "role": "insurance renewal assistant",
+                "goals": [{"id": "renewal", "description": "renew the policy"}],
+                "allowedTopics": ["premium", "renewal date"],
+                "restrictedTopics": ["investment advice"],
+                "identity": {"requireConfirmation": True,
+                             "subject": "the policyholder"},
+                "slots": [{"name": "policy_number", "pattern": r"\\d{8,}"}],
+                "outOfScope": "Steer back to the renewal.",
+            },
+            bot_name="RenewBot",
+            system_prompt="ignored for authored configs",
+            intents=[],
+            domain_policy="generic",
+        )
+        assert policy.source == "configured"
+        assert policy.identity.require_confirmation
+        assert policy.identity.subject == "the policyholder"
+        assert policy.allowed_topics == ["premium", "renewal date"]
+        assert policy.slot_by_name("policy_number") is not None
+
+    def test_derived_default_from_prompt_and_intents(self):
+        policy = compile_goal_policy(
+            None,
+            bot_name="Support Bot",
+            use_case="telecom support",
+            system_prompt="You are Support Bot for Acme Telecom." * 3,
+            intents=[{"name": "billing_query"}, {"name": "network_issue"}],
+            domain_policy="generic",
+        )
+        assert policy.source == "derived"
+        assert policy.allowed_topics == ["billing_query", "network_issue"]
+        assert not policy.identity.require_confirmation
+        assert "Support Bot for Acme Telecom" in policy.prompt_excerpt
+
+    def test_derived_collections_requires_identity(self):
+        policy = compile_goal_policy(
+            None, bot_name="Recovery Bot", system_prompt="prompt",
+            intents=[], domain_policy="collections",
+        )
+        assert policy.identity.require_confirmation
+
+    def test_invalid_config_degrades_to_derived(self):
+        policy = compile_goal_policy(
+            {"identity": "yes please"},  # wrong type → cannot compile
+            bot_name="X", system_prompt="p", intents=[],
+            domain_policy="generic",
+        )
+        assert policy.source == "derived"
+
+
+# ── GoalSession: guarded transitions for generic bots ────────────────────────
+
+
+def _decision(**data) -> ConversationDecision:
+    return ConversationDecision.model_validate(data)
+
+
+class TestGoalSession:
+    def test_identity_moves_only_through_validated_decisions(self):
+        session = GoalSession(LOAN_POLICY)
+        assert session.identity_state == "unconfirmed"
+        session.apply(_decision(decision="ambiguous"))
+        assert session.identity_state == "unconfirmed"
+        assert session.identity_attempts == 1
+        session.apply(_decision(decision="confirmed"))
+        assert session.identity_state == "confirmed"
+
+    def test_denied_identity_locks_disclosure(self):
+        session = GoalSession(LOAN_POLICY)
+        session.apply(_decision(decision="denied"))
+        assert session.identity_state == "denied"
+        assert "not the intended person" in session.turn_instruction().lower()
+
+    def test_slot_fills_only_from_valid_provided_value(self):
+        session = GoalSession(LOAN_POLICY)
+        # Claiming to have the value never fills it.
+        session.apply(_decision(slots={
+            "transaction_reference": {"status": "exists_claimed"},
+        }))
+        assert "transaction_reference" not in session.slots
+        instruction = session.turn_instruction()
+        assert "transaction_reference" in instruction
+        assert "never say it was noted" in instruction.lower()
+        # A provided value that fails the slot's format guard never fills it.
+        session.apply(_decision(slots={
+            "transaction_reference": {"status": "provided", "value": "12"},
+        }))
+        assert "transaction_reference" not in session.slots
+        # A provided, format-valid value fills it.
+        session.apply(_decision(slots={
+            "transaction_reference": {"status": "provided",
+                                      "value": "123456789012"},
+        }))
+        assert session.slots["transaction_reference"] == "123456789012"
+
+    def test_unconfigured_slots_never_fill(self):
+        session = GoalSession(LOAN_POLICY)
+        session.apply(_decision(slots={
+            "made_up_slot": {"status": "provided", "value": "x"},
+        }))
+        assert session.slots == {}
+
+    def test_scope_violations_count_and_change_nothing_else(self):
+        session = GoalSession(LOAN_POLICY)
+        session.apply(_decision(scope="out_of_scope", decision="confirmed",
+                                slots={"transaction_reference":
+                                       {"status": "provided",
+                                        "value": "123456789012"}}))
+        assert session.out_of_scope_turns == 1
+        assert session.identity_state == "unconfirmed"  # gate stripped
+        assert session.slots == {}
+        session.apply(_decision(scope="injection_attempt"))
+        assert session.injection_attempts == 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import sys
+
+    sys.exit(pytest.main([__file__, "-q"]))

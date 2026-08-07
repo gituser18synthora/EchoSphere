@@ -45,6 +45,17 @@ def _clamp_int(value, low: int, high: int, default: int) -> int:
         return default
     return min(high, max(low, value))
 
+
+def _is_reasoning_class(model: str | None) -> bool:
+    """Reasoning-era chat models (deliberate pre-answer thinking).
+
+    Wrong latency profile for the per-turn structured decision call — used
+    only to pick a sensible default orchestration engine; the conversation
+    model itself is never overridden.
+    """
+    normalized = (model or "").lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
 _CACHE_TTL_SECONDS = 300
 
 DEFAULT_AUDIO_SETTINGS = {
@@ -329,7 +340,8 @@ class ResolvedBotConfig:
              api_key_reference,
              language_map: {locale: {provider, model, voice, params}},
              fallback: {provider, model, voice, api_key_reference} | None}
-    - llm:  {provider, model, settings, api_key_reference}
+    - llm:  {provider, model, settings, api_key_reference,
+             orchestration: {provider, model, api_key_reference} | None}
     - audio_settings: {"browser": {"codec","sampleRate"},
                        "telephony": {"codec","sampleRate"}}
     """
@@ -360,6 +372,10 @@ class ResolvedBotConfig:
     energy: int = 50
     kb_ids: list[str] = field(default_factory=list)
     intents: list[dict] = field(default_factory=list)
+    # Authored Goal Engine configuration (voice_bot_settings.goal_policy).
+    # Empty → the runtime derives a safe default from the published prompt,
+    # intents and runtime-context domain policy (backward compatible).
+    goal_policy: dict = field(default_factory=dict)
     silence_timeout: int = 12
     max_call_duration: int = 3600
     audio_settings: dict = field(default_factory=dict)
@@ -551,6 +567,36 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         _ensure_engine_allowed(session, "tts", tts_provider, tts_model)
         _ensure_engine_allowed(session, "llm", llm_provider, llm_model)
 
+        # Optional dedicated orchestration (Goal Engine) LLM. Governance
+        # applies like any engine, but a misconfigured orchestration model is
+        # dropped (the engine falls back to the conversation LLM) instead of
+        # failing the call — decisions degrade, calls don't.
+        llm_settings_blob = (vbs.llm_settings if vbs else None) or {}
+        orchestration_engine = None
+        orch_provider = str(llm_settings_blob.get("orchestration_provider") or "").strip()
+        orch_model = str(llm_settings_blob.get("orchestration_model") or "").strip()
+        if not orch_provider and _is_reasoning_class(llm_model) \
+                and not _is_reasoning_class(settings.llm_model):
+            # The per-turn decision call is a small, hard-deadline JSON task;
+            # reasoning-era conversation models routinely blow that deadline
+            # (measured: gpt-5-mini ~3-4s vs the 2.5s budget, falling back to
+            # regex every turn). Unless the bot explicitly configured an
+            # orchestration engine, decide on the platform's default fast
+            # model and keep the reasoning model for the spoken replies.
+            orch_provider, orch_model = settings.llm_provider, settings.llm_model
+        if orch_provider:
+            reason = _engine_allowed(session, "llm", orch_provider, orch_model or None)
+            if reason is not None:
+                logger.warning(
+                    "orchestration LLM skipped for bot %s: %s", bot_id, reason
+                )
+            else:
+                orchestration_engine = {
+                    "provider": orch_provider,
+                    "model": orch_model,
+                    "api_key_reference": _secret_ref_for(session, "llm", orch_provider),
+                }
+
         default_voice_value = (
             (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name
         )
@@ -667,8 +713,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             llm={
                 "provider": llm_provider,
                 "model": llm_model,
-                "settings": (vbs.llm_settings if vbs else None) or {},
+                "settings": llm_settings_blob,
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
+                "orchestration": orchestration_engine,
             },
             speed=clamp_speed(vbs.speed if vbs else None),
             pause_ms=_clamp_int(vbs.pause_ms if vbs else None, 0, 5000, 350),
@@ -676,6 +723,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             energy=clamp_level(vbs.energy if vbs else None),
             kb_ids=list(kb_rows),
             intents=intents,
+            goal_policy=(vbs.goal_policy if vbs else None) or {},
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
             audio_settings=audio_settings,

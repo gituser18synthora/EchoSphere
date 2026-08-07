@@ -358,3 +358,73 @@ describe("Conversation costing display", () => {
     expect(await within(dialog).findByText(/No metered usage recorded/)).toBeInTheDocument();
   });
 });
+
+describe("AI call summary display", () => {
+  const SUMMARY = {
+    status: "completed",
+    callOutcome: "promise_to_pay",
+    summary: "Customer cannot pay today and committed to paying ₹2,000 on Monday.",
+    customerIntent: "delay_payment",
+    customerSentiment: "cooperative",
+    customerCommitments: [
+      { type: "payment", description: "pay two thousand on Monday", amount: 2000, currency: "INR", dueDate: "2026-08-10", status: "promised" },
+    ],
+    objections: [],
+    importantFacts: ["Customer gets salary on the 10th"],
+    resolvedItems: ["identity_confirmation"],
+    unresolvedItems: ["remaining_balance"],
+    missingSlots: ["payment_method"],
+    nextBestAction: { action: "follow_up_on_commitment", reason: "Open commitment", priority: "medium", recommendedAt: "2026-08-10T04:30:00Z" },
+    followUpRequired: true,
+    followUpAt: "2026-08-10T04:30:00Z",
+    confidence: 0.92,
+    generatedAt: "2026-08-07T12:00:00Z",
+    error: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.listConversations).mockResolvedValue([CONVERSATION] as never);
+  });
+
+  it("renders summary, outcome, next action, commitments and pending items", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, summary: SUMMARY } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    expect(await within(dialog).findByText("AI call summary")).toBeInTheDocument();
+    expect(within(dialog).getByText(/committed to paying ₹2,000 on Monday/)).toBeInTheDocument();
+    expect(within(dialog).getByText("promise to pay")).toBeInTheDocument();
+    expect(within(dialog).getByText("follow up on commitment")).toBeInTheDocument();
+    expect(within(dialog).getByText(/pay two thousand on Monday/)).toBeInTheDocument();
+    expect(within(dialog).getByText("remaining balance")).toBeInTheDocument();
+    expect(within(dialog).getByText("Follow-up")).toBeInTheDocument();
+  });
+
+  it("shows a processing state while the analysis is pending", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      summary: { ...SUMMARY, status: "processing", summary: null, callOutcome: null, nextBestAction: null, customerCommitments: [], importantFacts: [], unresolvedItems: [], missingSlots: [] },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    expect(await within(dialog).findByText(/still being generated/)).toBeInTheDocument();
+  });
+
+  it("shows the failure state with the deterministic fallback", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      summary: { ...SUMMARY, status: "failed", summary: null, error: "analysis_unavailable" },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    expect(await within(dialog).findByText(/could not be generated/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/deterministic fallback/)).toBeInTheDocument();
+  });
+
+  it("renders nothing when no analysis exists for the call", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({ ...DETAIL, summary: null } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    await within(dialog).findByText(/Namaste, this is Billing Bot/);
+    expect(within(dialog).queryByText("AI call summary")).not.toBeInTheDocument();
+  });
+});
