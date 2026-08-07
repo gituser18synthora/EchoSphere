@@ -169,6 +169,18 @@ def _load_sync(
     phone: str | None,
     exclude_session_id: str | None,
 ) -> PreviousCallMemory | None:
+    from shared.post_call.tenant_flags import load_tenant_summary_flags_sync
+
+    # Tenant switch, enforced HERE so no caller can inject history for a
+    # tenant that has not opted in. Deliberately independent of
+    # call_summary_enabled: already-stored memories stay usable even while
+    # new generation is switched off.
+    if not load_tenant_summary_flags_sync(tenant_id).use_previous_call_summary:
+        logger.debug(
+            "previous-memory lookup skipped for tenant %s "
+            "(use_previous_call_summary off)", tenant_id,
+        )
+        return None
     tail = phone_tail(phone or "")
     matchers = []
     if runtime_context_record_id:

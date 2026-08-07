@@ -196,6 +196,11 @@ class CreateTenantRequest(BaseModel):
     default_languages: list[str] | None = Field(
         default=None, alias="defaultLanguages"
     )
+    # Post-call intelligence: both OFF unless the Super Admin opts in.
+    call_summary_enabled: bool = Field(default=False, alias="callSummaryEnabled")
+    use_previous_call_summary: bool = Field(
+        default=False, alias="usePreviousCallSummary"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -246,6 +251,8 @@ def create_tenant(
         status=body.status,
         health="neutral",
         admin_email=body.admin_email.lower(),
+        call_summary_enabled=body.call_summary_enabled,
+        use_previous_call_summary=body.use_previous_call_summary,
         created_by=user.id,
     )
     db.add(tenant)
@@ -329,6 +336,12 @@ class UpdateTenantRequest(BaseModel):
     default_languages: list[str] | None = Field(
         default=None, alias="defaultLanguages"
     )
+    call_summary_enabled: bool | None = Field(
+        default=None, alias="callSummaryEnabled"
+    )
+    use_previous_call_summary: bool | None = Field(
+        default=None, alias="usePreviousCallSummary"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -345,8 +358,11 @@ def update_tenant(
     if t is None or t.is_deleted:
         raise NotFoundError("Tenant")
     before = {"name": t.name, "status": t.status, "health": t.health,
-              "region": t.region, "code": t.code}
-    for field in ("name", "status", "health"):
+              "region": t.region, "code": t.code,
+              "callSummaryEnabled": bool(t.call_summary_enabled),
+              "usePreviousCallSummary": bool(t.use_previous_call_summary)}
+    for field in ("name", "status", "health",
+                  "call_summary_enabled", "use_previous_call_summary"):
         val = getattr(body, field)
         if val is not None:
             setattr(t, field, val)
@@ -408,6 +424,8 @@ def update_tenant(
             "name": t.name,
             "status": t.status,
             "health": t.health,
+            "callSummaryEnabled": bool(t.call_summary_enabled),
+            "usePreviousCallSummary": bool(t.use_previous_call_summary),
             **(
                 {"defaultLanguages": settings.default_languages}
                 if body.default_languages is not None else {}

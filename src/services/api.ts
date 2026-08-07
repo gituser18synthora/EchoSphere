@@ -48,8 +48,9 @@ export const createTenant = (body: {
   name: string; code?: string; domain: string; industry?: string; region?: string;
   aiProfileCode?: string; planCode: string; adminEmail: string; adminName?: string;
   status?: string; seats?: number; defaultLanguages?: string[];
+  callSummaryEnabled?: boolean; usePreviousCallSummary?: boolean;
 }) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string } }>("/tenants", body);
-export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages"> & { planCode: string; aiProfileCode: string }>) =>
+export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages" | "callSummaryEnabled" | "usePreviousCallSummary"> & { planCode: string; aiProfileCode: string }>) =>
   http.patch<Tenant>(`/tenants/${id}`, body);
 export const archiveTenant = (id: string) => http.delete<{ archived: boolean }>(`/tenants/${id}`);
 

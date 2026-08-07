@@ -9,6 +9,7 @@ import {
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
   Health, KpiCard, Modal, PasswordInput, StatusChip, Tabs, Timeline, Avatar,
+  Toggle,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
 import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
@@ -117,6 +118,8 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     aiProfile: tenant.aiProfileCode ?? "",
     adminEmail: tenant.adminEmail,
     languages: [...(tenant.defaultLanguages ?? [])],
+    callSummaryEnabled: tenant.callSummaryEnabled ?? false,
+    usePreviousCallSummary: tenant.usePreviousCallSummary ?? false,
   });
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -143,6 +146,8 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     if (JSON.stringify(form.languages) !== JSON.stringify(tenant.defaultLanguages ?? [])) {
       diff.defaultLanguages = form.languages;
     }
+    if (form.callSummaryEnabled !== (tenant.callSummaryEnabled ?? false)) diff.callSummaryEnabled = form.callSummaryEnabled;
+    if (form.usePreviousCallSummary !== (tenant.usePreviousCallSummary ?? false)) diff.usePreviousCallSummary = form.usePreviousCallSummary;
     return diff;
   };
 
@@ -293,6 +298,24 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
               })}
             </div>
           </Field>
+
+          <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>
+            <div>
+              <div className="t-strong">Call Summary</div>
+              <p className="t-sub" style={{ marginTop: 4 }}>
+                Independent switches — summaries can be generated without being reused, and
+                already-stored summaries can be reused even while generation is off.
+              </p>
+            </div>
+            <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <div><div className="t-strong" style={{ fontSize: 13 }}>Generate call summary after calls</div><div className="t-micro">AI summary, outcome and next best action once each call ends</div></div>
+              <Toggle checked={form.callSummaryEnabled} onChange={(v) => set("callSummaryEnabled", v)} label="Generate call summary after calls" />
+            </div>
+            <div className="row-between card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+              <div><div className="t-strong" style={{ fontSize: 13 }}>Use previous call summary on new calls</div><div className="t-micro">Give the bot the customer's latest stored summary when a call starts</div></div>
+              <Toggle checked={form.usePreviousCallSummary} onChange={(v) => set("usePreviousCallSummary", v)} label="Use previous call summary on new calls" />
+            </div>
+          </div>
 
           {canResetPassword && (
             <div className="col gap-14" style={{ borderTop: "1px solid var(--hairline)", paddingTop: 14 }}>

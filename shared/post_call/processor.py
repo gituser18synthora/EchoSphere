@@ -74,10 +74,26 @@ def enqueue_post_call(recorder) -> str | None:
 
     Idempotent on ``conversation_id`` — a duplicate hangup/finalize finds the
     existing row and does nothing. Returns the memory row id, or None when
-    the call produced nothing to analyze (no turns at all).
+    the call produced nothing to analyze (no turns at all) or the tenant has
+    call-summary generation switched off.
     """
     if not recorder.turns:
         return None  # never-connected / silent call: nothing to remember
+    # Tenant switch, resolved from the DB at enqueue time: generation off
+    # means NO analysis job at all — transcript/call persistence, billing and
+    # teardown all happened before this point and are untouched.
+    from shared.post_call.tenant_flags import load_tenant_summary_flags_sync
+
+    if not load_tenant_summary_flags_sync(recorder.config.tenant_id).call_summary_enabled:
+        logger.info(
+            "post_call_skipped %s",
+            json.dumps({
+                "conversation_id": recorder.control_plane_id,
+                "tenant_id": recorder.config.tenant_id,
+                "reason": "call_summary_disabled",
+            }),
+        )
+        return None
     escalated = any(e.get("kind") == "handoff" for e in recorder.events)
     workflow_active, workflow_stage = _workflow_position(recorder.events)
     final_state = {

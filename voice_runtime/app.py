@@ -335,9 +335,12 @@ async def _run_call(
     # Previous conversation memory: the customer's latest analyzed call for
     # THIS tenant+bot, resolved exactly the way the customer themselves was
     # (context record → legacy context → phone tail). Works for every
-    # direction combination — inbound and outbound both land here. Bounded
-    # and fail-open: an immediately recalled customer whose previous call is
-    # still being summarized simply gets the memory before it, or none.
+    # direction combination — inbound and outbound both land here. Gated on
+    # the tenant's use_previous_call_summary switch, enforced inside
+    # load_previous_memory so stored history is never injected without the
+    # tenant's explicit opt-in. Bounded and fail-open: an immediately
+    # recalled customer whose previous call is still being summarized simply
+    # gets the memory before it, or none.
     previous_memory = None
     try:
         from shared.post_call.recall import load_previous_memory
