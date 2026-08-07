@@ -49,7 +49,8 @@ Minimum to fill in (`shared/config.py` documents every knob):
 | `TELEPHONY_WEBHOOK_SECRET` | required before any telephony webhook is accepted |
 | `FREESWITCH_PASSWORD` | only for FreeSWITCH ESL call control |
 
-Secrets are referenced as `env:VAR_NAME` (e.g. `STT_API_KEY_REFERENCE=env:OPENAI_API_KEY`)
+Secrets are referenced as `env:VAR_NAME` (for example the current default
+`STT_API_KEY_REFERENCE=env:SARVAM_API_KEY`)
 and resolved at runtime — raw keys never go into DB rows.
 
 **One `.env`, every process.** The API, voice worker, ingestion worker and MCP
@@ -139,7 +140,7 @@ VOICE_WORKER_PORT=9013 env/bin/python -m voice_runtime.app
 ```bash
 TOKEN=$(curl -s -X POST localhost:9001/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"priya.sharma@meridianhealth.com","password":"Demo@2026!"}' \
+  -d '{"email":"<EMAIL>","password":"<PASSWORD>"}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
 
 KB=$(curl -s -X POST localhost:9001/api/v1/knowledge \
@@ -181,11 +182,11 @@ MCP client to `http://localhost:9003/mcp` with the same bearer token.
 
 ### 2.5 Browser voice test
 
-1. Sign in at `http://localhost:5199` (demo logins in the README).
+1. Sign in at `http://localhost:5199` with a locally configured/seeded account.
 2. Open **Studio** for a bot → **Testing** tab → switch to **Voice** mode.
 3. Grant microphone access; the page creates a session via
    `POST /api/v1/voice-sessions` and connects to
-   `ws://localhost:9002/ws/voice/{sessionId}`. Live transcripts and bot events
+   `ws://localhost:9002/ws/voice/{session_id}`. Live transcripts and bot events
    render from the JSON side-channel; `mock` providers work without any keys.
 
 ## 3. docker-compose sketch

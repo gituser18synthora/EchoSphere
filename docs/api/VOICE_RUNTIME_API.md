@@ -44,6 +44,12 @@ WS    /ws/voice/{session_id}
 WS    /ws/telephony/{provider}/{session_id}
 ```
 
+FastAPI additionally exposes its generated, public documentation assets at
+`GET /docs`, `GET /openapi.json`, `GET /redoc`, and
+`GET /docs/oauth2-redirect`. They describe only the three HTTP operations
+(OpenAPI does not encode the WebSocket message protocol), are not counted as
+Voice Runtime business APIs, and carry no request body or application auth.
+
 The platform API (port 9001) additionally mounts the same webhook handler at
 `/api/v1/telephony/webhook/{provider}` (historical path) and issues browser
 sessions at `POST /api/v1/voice-sessions`.
@@ -304,10 +310,10 @@ Example `session_config` (values from the bot's resolved config):
   "language": "hi-IN",
   "languages": ["hi-IN", "en-IN"],
   "voices": {
-    "hi-IN": {"provider": "sarvam", "voice": "anushka", "gender": "female"},
+    "hi-IN": {"provider": "sarvam", "voice": "shubh", "gender": "male"},
     "en-IN": {"provider": "elevenlabs", "voice": "Riya", "gender": "female"}
   },
-  "defaultVoice": {"provider": "sarvam", "voice": "anushka", "gender": "female"},
+  "defaultVoice": {"provider": "sarvam", "voice": "shubh", "gender": "male"},
   "warnings": {}
 }
 ```
@@ -575,11 +581,13 @@ End-to-end flow of one call (trace: `voice_runtime/app.py::_run_call`,
     registered; transcript + events + usage upserted to MongoDB
     (`conversation_transcripts`); a `conversation_sessions` row + per-engine
     usage/billing events written to MySQL (idempotent — a repeated finalize
-    never re-bills); call-state written back to the context record; a
-    post-call analysis job enqueued (`conversation_memories` row = the job).
+    never re-bills); call-state written back to the context record. When the
+    tenant has `callSummaryEnabled=true` and the call contains turns, a
+    post-call analysis job is enqueued (`conversation_memories` row = the job).
     The embedded post-call worker (per process, `POST_CALL_WORKER_EMBEDDED`)
-    produces the call summary, outcome and Next Best Action in the
-    background. Finally the Redis session is deleted and the socket closed.
+    produces the call summary, outcome and Next Best Action in the background.
+    `usePreviousCallSummary=true` independently controls loading stored memory
+    on a later call. Finally the Redis session is deleted and the socket closed.
 
 ---
 

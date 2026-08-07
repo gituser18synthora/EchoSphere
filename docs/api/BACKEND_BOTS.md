@@ -1,9 +1,9 @@
 # EchoSphere Backend API — Bots & Studio Configuration
 
-This document covers the bot-configuration surface of the EchoSphere backend (FastAPI):
-VoiceBot CRUD, voice settings, channels, prompts, intents & entities, workflows, releases,
-runtime context, customer collection contexts, testing (scenarios / chat tester / simulator),
-API connections, platform templates, and knowledge gaps.
+This document covers VoiceBot CRUD, voice settings, and deployment channels.
+The larger authoring and runtime-data surfaces are split into
+[Bot Studio authoring and testing](BACKEND_BOT_STUDIO.md) and
+[Runtime context, customer data, and API integrations](BACKEND_RUNTIME_CONTEXT.md).
 
 **Base URL:** `http://localhost:9001` — every route below is mounted under the `/api/v1` prefix.
 
@@ -78,27 +78,8 @@ Placeholders used below: `<ACCESS_TOKEN>`, `<BOT_ID>`, `<TENANT_ID>`, `<PROMPT_I
    - [Get voice settings](#get-voice-settings) · [Update voice settings](#update-voice-settings)
 3. [Channels](#channels)
    - [List bot channels](#list-bot-channels) · [Get channel](#get-channel) · [Configure channel](#configure-channel-upsert) · [Activate](#activate-channel) · [Deactivate](#deactivate-channel) · [Archive channel](#archive-channel) · [Test channel](#test-channel-connection) · [Platform channel summary](#platform-channel-summary) · [WhatsApp webhook verify](#whatsapp-webhook-verification-meta-handshake) · [WhatsApp webhook events](#whatsapp-webhook-inbound-events)
-4. [Prompts](#prompts)
-   - [List prompts](#list-bot-prompts) · [Create prompt](#create-prompt) · [Add version](#add-prompt-version) · [Compile preview](#compile-preview-stateless) · [Render preview](#render-saved-version-preview) · [Duplicate](#duplicate-prompt) · [Update / lifecycle](#update-prompt--lifecycle) · [Archive](#archive-prompt) · [Test prompt](#test-prompt)
-5. [Intents](#intents)
-   - [List](#list-bot-intents) · [Create](#create-intent) · [Update](#update-intent) · [Duplicate](#duplicate-intent) · [Archive](#archive-intent) · [Test utterance](#test-intents-routing-console)
-6. [Entities](#entities)
-   - [List](#list-entities) · [Create](#create-entity) · [Update](#update-entity) · [Duplicate](#duplicate-entity) · [Archive](#archive-entity) · [Test](#test-entity-extraction)
-7. [Workflows](#workflows)
-   - [Get bot workflow](#get-bot-workflow) · [List workflows](#list-workflows) · [Save bot workflow](#save-bot-workflow)
-8. [Releases](#releases)
-   - [List](#list-releases) · [Create](#create-release) · [Change stage](#change-release-stage)
-9. [Runtime context](#runtime-context)
-   - [Get config](#get-runtime-context-config) · [Save config](#save-runtime-context-config) · [Validate payload](#validate-context-payload) · [List records](#list-context-records) · [Create record](#create-context-record) · [Update record](#update-context-record) · [Delete record](#delete-context-record)
-10. [Customer contexts (collections)](#customer-contexts-collections)
-    - [List](#list-customer-contexts) · [Lookup by phone](#lookup-customer-context-by-phone) · [Get](#get-customer-context) · [Create](#create-customer-context) · [Update](#update-customer-context) · [Update call state](#update-call-state) · [Delete](#delete-customer-context)
-11. [Testing](#testing)
-    - [List scenarios](#list-test-scenarios) · [Create scenario](#create-test-scenario) · [Run suite](#run-regression-suite) · [Chat tester](#chat-tester) · [Full turn simulator](#full-turn-simulator)
-12. [API connections](#api-connections)
-    - [List](#list-api-connections) · [Create](#create-api-connection) · [Update](#update-api-connection) · [Duplicate](#duplicate-api-connection) · [Archive](#archive-api-connection) · [Test](#test-api-connection)
-13. [Templates](#templates)
-14. [Knowledge gaps](#knowledge-gaps)
-15. [Findings / behavior notes](#findings--behavior-notes)
+4. [Bot Studio authoring and testing](BACKEND_BOT_STUDIO.md)
+5. [Runtime context, customer data, and integrations](BACKEND_RUNTIME_CONTEXT.md)
 
 ---
 
@@ -228,7 +209,7 @@ Partial update of bot metadata, status, languages, voice, owner and readiness fl
 | `name` | string | no | Max 200. |
 | `useCase` (`use_case`) | string | no | Max 200. |
 | `description` | string | no | Max 2000. |
-| `status` | string | no | `draft` \| `in_review` \| `approved` \| `published` \| `rolled_back` \| `archived`. Transitioning to `published` stamps `publishedAt` and sets `liveVersion = version`. No transition matrix here (see [Releases](#releases) for the governed pipeline). |
+| `status` | string | no | `draft` \| `in_review` \| `approved` \| `published` \| `rolled_back` \| `archived`. Transitioning to `published` stamps `publishedAt` and sets `liveVersion = version`. No transition matrix here (see [Releases](BACKEND_BOT_STUDIO.md#releases) for the governed pipeline). |
 | `languages` | string[] | no | Same validation as create; association rows are diffed (removed codes deleted, new ones added). |
 | `voiceId` (`voice_id`) | string | no | Must be an existing voice profile (422 "Unknown voice profile."). Empty string clears the voice. Note: this PATCH checks existence only — the tenant-scope/active checks are on the voice-settings PUT. |
 | `ownerUserId` (`owner_user_id`) | string | no | Must be a user of the same tenant (or a platform user with no tenant), else 422. |
@@ -271,23 +252,31 @@ Fetch (and lazily create with defaults if absent) the bot's voice settings.
     "energy": 50,
     "languageVoiceMap": {
       "default": "hi-IN",
-      "hi-IN": { "provider": "sarvam", "model": "bulbul:v2", "voice": "anushka", "params": { "pitch": 0 } },
+      "hi-IN": { "provider": "sarvam", "model": "bulbul:v3", "voice": "shubh", "params": {} },
       "en-IN": "<VOICE_ID>"
     },
-    "sttProvider": "deepgram",
-    "sttModel": "flux-general-en",
+    "sttProvider": "sarvam",
+    "sttModel": "saaras:v3",
     "sttLanguage": "hi-IN",
     "sttSettings": {
       "turn_detection": { "confidence": 0.6, "stop_secs": 0.2, "user_speech_timeout": 0.7 },
       "noise_gate": { "noise_margin_db": 8.0, "min_speech_ms": 120.0 }
     },
     "ttsProvider": "sarvam",
-    "ttsModel": "bulbul:v2",
-    "ttsVoice": "anushka",
-    "ttsSettings": { "pitch": 0 },
+    "ttsModel": "bulbul:v3",
+    "ttsVoice": "shubh",
+    "ttsSettings": {},
     "llmProvider": "openai",
     "llmModel": "gpt-4o-mini",
-    "llmSettings": { "temperature": 0.3 },
+    "llmSettings": {
+      "temperature": 0.3,
+      "goal_engine_enabled": true,
+      "intent_llm_enabled": true,
+      "orchestration_provider": "openai",
+      "orchestration_model": "gpt-4o-mini",
+      "orchestration_timeout_seconds": 1.2,
+      "orchestration_max_tokens": 200
+    },
     "fallbackProvider": "elevenlabs",
     "fallbackModel": "eleven_flash_v2_5",
     "fallbackVoice": "<VOICE_ID>",
@@ -318,19 +307,30 @@ with the update) against the DB provider catalog — frontend field-hiding is ne
   "energy": 55,
   "languageVoiceMap": {
     "default": "hi-IN",
-    "hi-IN": { "provider": "sarvam", "model": "bulbul:v2", "voice": "anushka" }
+    "hi-IN": { "provider": "sarvam", "model": "bulbul:v3", "voice": "shubh" }
   },
-  "sttProvider": "deepgram",
-  "sttModel": "flux-general-en",
+  "sttProvider": "sarvam",
+  "sttModel": "saaras:v3",
   "sttLanguage": "hi-IN",
   "sttSettings": { "turn_detection": { "user_speech_timeout": 0.7 } },
   "ttsProvider": "sarvam",
-  "ttsModel": "bulbul:v2",
-  "ttsVoice": "anushka",
+  "ttsModel": "bulbul:v3",
+  "ttsVoice": "shubh",
   "ttsSettings": {},
   "llmProvider": "openai",
   "llmModel": "gpt-4o-mini",
-  "llmSettings": { "temperature": 0.3 },
+  "llmSettings": {
+    "temperature": 0.3,
+    "goal_engine_enabled": true,
+    "intent_llm_enabled": true,
+    "memory_greeting_enabled": true,
+    "orchestration_provider": "openai",
+    "orchestration_model": "gpt-4o-mini",
+    "orchestration_timeout_seconds": 1.2,
+    "intent_timeout_seconds": 1.2,
+    "memory_greeting_timeout_seconds": 2.5,
+    "orchestration_max_tokens": 200
+  },
   "fallbackProvider": "elevenlabs",
   "fallbackModel": "eleven_flash_v2_5",
   "fallbackVoice": "<VOICE_ID>",
@@ -352,10 +352,33 @@ with the update) against the DB provider catalog — frontend field-hiding is ne
 | `ttsProvider` / `ttsModel` / `ttsVoice` | string | no | Max 40 / 80 / 80. Same registry + catalog validation; voice must belong to the model. |
 | `ttsSettings` (`tts_settings`) | object | no | Provider params; `pace` / `speed` keys stripped before validation and persistence. |
 | `llmProvider` / `llmModel` | string | no | Max 40 / 80. Registry + catalog validation. |
-| `llmSettings` (`llm_settings`) | object | no | Provider params plus platform LLM keys with bounds enforcement (e.g. token/temperature limits per catalog schema). |
+| `llmSettings` (`llm_settings`) | object | no | Provider params plus the platform orchestration keys in the table below. Unknown keys are rejected by the provider/platform validators. |
 | `fallbackProvider` / `fallbackModel` / `fallbackVoice` | string | no | Fallback **TTS** engine (validated as a TTS provider). Max 40 / 80 / 80. |
 | `audioSettings` (`audio_settings`) | object | no | Free-form audio pipeline settings. |
 | `goalPolicy` (`goal_policy`) | object | no | Goal Engine configuration; must parse into `BotGoalPolicy` (422 with a `goalPolicy` field error otherwise). Send `{}` to clear back to the derived default. See schema below. |
+
+**Platform-owned `llmSettings` keys.** These configure EchoSphere's bounded
+decision layer, not the provider SDK. They are removed before provider-specific
+parameter validation. The conversation model remains `llmProvider`/`llmModel`;
+the optional orchestration pair may select a faster governed model for the
+structured Goal Engine decision.
+
+| Key | Type | Required | Bounds / behavior |
+|---|---|---|---|
+| `goal_engine_enabled` | boolean | no | Enables the structured Goal Engine decision; runtime default is enabled. |
+| `intent_llm_enabled` | boolean | no | Enables bounded LLM intent classification; deterministic routing still runs. |
+| `memory_greeting_enabled` | boolean | no | Enables an LLM-personalized opening when previous-call memory is loaded. |
+| `orchestration_provider` | string | no | Max 40; must be an active governed LLM provider. |
+| `orchestration_model` | string | no | Max 80; must belong to `orchestration_provider`. |
+| `orchestration_timeout_seconds` | number | no | 0.5–5.0; resolver default is 1.2 seconds. |
+| `intent_timeout_seconds` | number | no | 0.5–5.0. |
+| `memory_greeting_timeout_seconds` | number | no | 1.0–10.0. |
+| `orchestration_max_tokens` | integer | no | 64–340; resolver default is 200. |
+
+When the configured conversation model is reasoning-class and no usable
+dedicated orchestration engine is set, the resolver prefers the governed fast
+engine `openai/gpt-4o-mini`. This changes only the structured decision call,
+not the main conversation model.
 
 **`sttSettings.turn_detection`** — platform-owned end-of-turn timing. All keys optional
 numbers; unknown keys are rejected. Bounds (defaults differ per transport — browser /
@@ -658,4 +681,10 @@ pipeline — events are acknowledged so the provider stops retrying).
 
 **Response 200:** `{"success": true, "data": {"received": true}}`
 
-<!-- PART2 -->
+---
+
+Continue with [Bot Studio authoring and testing](BACKEND_BOT_STUDIO.md) for
+prompts, intents, entities, workflows, releases and testing, or
+[Runtime context, customer data, and API integrations](BACKEND_RUNTIME_CONTEXT.md)
+for per-call context, customer records, API connections, templates, and
+knowledge gaps.

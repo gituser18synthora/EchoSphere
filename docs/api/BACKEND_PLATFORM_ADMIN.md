@@ -553,6 +553,8 @@ Common response fields for all types (`_master_common`): `id`, `status` (`active
 `GET /api/v1/master/{mtype}`
 
 **Auth: JWT bearer.** Permission: per-type (table above) or `manage_master_data`; unknown `{mtype}` → `404` `"Master data type not found."`.
+Path parameter: `mtype` (string, required) is one of the 12 values in the
+table above.
 
 Query params (all optional):
 
@@ -593,6 +595,7 @@ Response `200` (paginated), e.g. an industry row:
 `POST /api/v1/master/{mtype}` → `201`
 
 **Auth: JWT bearer.** Permission as per table. Body is a free-shape JSON object (`extra="allow"`); camelCase keys are converted to snake_case, and only the type's editable-field allowlist is applied — unknown fields are silently ignored.
+Path parameter: `mtype` (string, required) is one of the 12 catalog types.
 
 Example (`plans`):
 
@@ -635,6 +638,9 @@ Response `201`: the serialized record. Errors: `404` unknown type, `409` duplica
 `PATCH /api/v1/master/{mtype}/{item_id}`
 
 **Auth: JWT bearer.** Permission as per table. Same free-shape body; partial update (null/absent fields ignored, except clearable fields — ai-profile provider/model/`defaultVoice`, voice `locale`/`providerVoiceId`/`accent`, pricing `sellingPrice` — where empty string/null clears the column). Immutable-after-create: provider-model `capability`/`providerCode`; provider-pricing `capability`/`providerCode`/`modelCode`/`component` (`422` "Cannot be changed after creation…"). Setting `isDefault: true` on voices/languages/provider-models clears the previous default (per provider for voices, per provider+capability for models, platform-wide for languages). Editing a country's name re-syncs the snapshot on its data regions.
+Path parameters: `mtype` (required catalog type) and `item_id` (required
+record identifier; country IDs are integers represented in the path, other
+master IDs are opaque strings).
 
 Response `200`: serialized record. Errors: `404`, `422`.
 
@@ -642,6 +648,8 @@ Response `200`: serialized record. Errors: `404`, `422`.
 `POST /api/v1/master/{mtype}/{item_id}/status`
 
 Lifecycle transition. **Auth: JWT bearer.** Permission as per table.
+Path parameters: `mtype` (required catalog type) and `item_id` (required
+record identifier).
 
 ```json
 { "status": "inactive" }
@@ -657,6 +665,8 @@ Response `200`: serialized record. Deactivating `providers`/`provider-models`/`v
 `DELETE /api/v1/master/{mtype}/{item_id}`
 
 Reference-protected archive (soft delete); hard removal is never performed. **Auth: JWT bearer.** Permission as per table.
+Path parameters: `mtype` (required catalog type) and `item_id` (required
+record identifier). There are no query parameters or request body.
 
 Errors: `404`; `409` when `usageCount > 0` (`"This <type> is used by N existing records and cannot be deleted. Deactivate or archive it instead."`); `409` for the base currency.
 
@@ -666,6 +676,8 @@ Response `200`: `{ "archived": true, "id": "…" }`. Cache invalidation as for s
 `GET /api/v1/master/{mtype}/{item_id}/audit`
 
 Last 100 audit entries for one record. **Auth: JWT bearer.** Permission as per table. No pagination params.
+Path parameters: `mtype` (required catalog type) and `item_id` (required
+record identifier). There is no body.
 
 ```json
 { "success": true, "data": [ { "id": "aud_…", "actor": "Jane Admin", "action": "Updated plan", "previousValue": { "status": "active" }, "newValue": { "status": "inactive" }, "time": "2026-08-01T10:00:00+00:00Z" } ] }
@@ -677,11 +689,13 @@ Last 100 audit entries for one record. **Auth: JWT bearer.** Permission as per t
 `POST /api/v1/master/plans/{item_id}/duplicate` → `201`
 
 Clones a plan as `inactive` with code `<code>_copy` (then `_copy2`, `_copy3`, … until unique), name `"<name> (copy)"`, and `isRecommended` forced false. **Auth: JWT bearer.** Permission: `manage_plans` or `manage_master_data`. No body. Response `201`: serialized plan. `404` unknown plan.
+Path parameter: `item_id` (string, required plan id). No query parameters.
 
 ### Tenants on a plan
 `GET /api/v1/master/plans/{item_id}/tenants`
 
 **Auth: JWT bearer.** Permission: `manage_plans` or `manage_master_data`.
+Path parameter: `item_id` (string, required plan id). No query/body.
 
 ```json
 { "success": true, "data": [ { "id": "<TENANT_ID>", "name": "Acme Corp", "domain": "acme.com", "subscriptionStatus": "active", "mrr": 499.0 } ] }
@@ -766,6 +780,7 @@ Query: `status` (`open`|`acknowledged`|`resolved`, optional, pattern-validated).
 `PATCH /api/v1/alerts/{alert_id}`
 
 Acknowledge/resolve an alert. **Auth: JWT bearer. Super Admin only** (tenant members can list but not update — see Inconsistencies).
+Path parameter: `alert_id` (string, required alert id). No query parameters.
 
 ```json
 { "status": "acknowledged" }
@@ -790,6 +805,7 @@ Response `200`: serialized alert. `404` unknown alert.
 `PATCH /api/v1/guardrails/{guardrail_id}`
 
 **Auth: JWT bearer. Super Admin only.**
+Path parameter: `guardrail_id` (string, required guardrail id). No query params.
 
 ```json
 { "enabled": true, "enforcement": "block" }
@@ -896,6 +912,7 @@ Query: `page`, `pageSize`, `search`, `sortBy`, `sortDir` (sort params not applie
 `GET /api/v1/invoices/{invoice_id}/pdf`
 
 Streams the invoice as PDF. **Auth: JWT bearer.** Permission: `billing.manage` **and** the caller must be a Super Admin (`403` `"Only platform billing administrators can download invoices."` otherwise). Download is audited.
+Path parameter: `invoice_id` (string, required invoice id). No query/body.
 
 Response `200`: binary `application/pdf` with headers `Content-Disposition: attachment; filename="echosphere-invoice-<INVOICE_ID>-<DATE>.pdf"`, `Content-Length`, `X-Content-Type-Options: nosniff`. Errors: `404` unknown invoice/tenant.
 
@@ -921,7 +938,7 @@ Query: `days` (int, default 30, 1–365), `capability` (string, optional — one
     "missingPriceEvents": 0,
     "byTenant": [ { "tenantId": "<TENANT_ID>", "tenant": "Acme Corp", "requests": 1200, "inputTokens": 90000, "outputTokens": 41000, "cachedTokens": 0, "totalTokens": 131000, "characters": 520000, "audioSeconds": 96000.0, "costUsd": 310.2, "chargeUsd": 402.5, "missingPriceEvents": 0 } ],
     "byCapability": { "llm": { "requests": 0, "inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "totalTokens": 0, "characters": 0, "audioSeconds": 0.0, "costUsd": 0.0, "chargeUsd": 0.0, "missingPriceEvents": 0 } },
-    "byProviderModel": [ { "capability": "tts", "provider": "sarvam", "model": "bulbul:v2", "requests": 300, "inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "totalTokens": 0, "characters": 220000, "audioSeconds": 0.0, "costUsd": 120.1, "chargeUsd": 150.0, "missingPriceEvents": 0 } ]
+    "byProviderModel": [ { "capability": "tts", "provider": "sarvam", "model": "bulbul:v3", "requests": 300, "inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "totalTokens": 0, "characters": 220000, "audioSeconds": 0.0, "costUsd": 120.1, "chargeUsd": 150.0, "missingPriceEvents": 0 } ]
   }
 }
 ```
@@ -951,8 +968,8 @@ Per-call cost audit: every usage event of one voice session. **Auth: JWT bearer.
     "totalCostConverted": { "INR": 3.51 },
     "events": [
       {
-        "id": "ue_…", "capability": "tts", "provider": "sarvam", "model": "bulbul:v2",
-        "voice": "anushka", "occurredAt": "2026-08-07T06:10:00Z", "requests": 1,
+        "id": "ue_…", "capability": "tts", "provider": "sarvam", "model": "bulbul:v3",
+        "voice": "shubh", "occurredAt": "2026-08-07T06:10:00Z", "requests": 1,
         "inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "reasoningTokens": 0,
         "totalTokens": 0, "characters": 220, "audioSeconds": 14.2,
         "usageSource": "provider", "usageMetadata": { "basis": "provider_metrics" },
@@ -1068,6 +1085,8 @@ Both endpoints stream a file (`text/csv` or Excel `xlsx`) with headers `Content-
 `GET /api/v1/exports/{export_type}`
 
 **Auth: JWT bearer.** Gate permission: `billing.manage` **or** `conversations.view`; per-type checks follow. `{export_type}` ∈:
+Path parameter: `export_type` (string, required) is `subscriptions`,
+`invoices`, or `conversations`.
 
 | export_type | Access | Allowed filters | Rejected filters (`422`) |
 |---|---|---|---|
@@ -1085,6 +1104,8 @@ Columns — subscriptions: subscription_id, tenant, plan_code, plan_name, status
 `GET /api/v1/reports/{report_type}/export`
 
 Aggregate, date-bounded reports built in the database. **Auth: JWT bearer.** Permission: `analytics.view`. `{report_type}` ∈:
+Path parameter: `report_type` (string, required) is `usage`, `revenue`, or
+`ai_cost`.
 
 | report_type | Access | Bot filter | Columns |
 |---|---|---|---|
@@ -1115,6 +1136,7 @@ Platform integration catalog merged with the tenant's connection state. **Auth: 
 `POST /api/v1/integrations/{integration_id}/connect`
 
 Marks the integration connected for the caller's tenant (upserts the tenant-integration row) and stores optional config. **Auth: JWT bearer.** Role: `tenant_admin` (or `super_admin` — but see note). **Note:** the tenant is resolved from the caller's token with no `tenantId` parameter, so a Super Admin (no tenant) always gets `400` `"tenant_id is required for platform administrators."` — effectively tenant-admin-only (see Inconsistencies).
+Path parameter: `integration_id` (string, required integration id). No query params.
 
 ```json
 { "config": { "apiBase": "https://example.my.salesforce.com" } }
@@ -1130,6 +1152,7 @@ Response `200`: integration object with `status: "connected"` and `connectedAt` 
 `POST /api/v1/integrations/{integration_id}/disconnect`
 
 Returns the tenant's integration to `available` and clears `connectedAt` (no-op if never connected; still audited). **Auth: JWT bearer.** Role: `tenant_admin` (same Super Admin `400` caveat as connect). No body.
+Path parameter: `integration_id` (string, required integration id). No query params.
 
 Response `200`: integration object with `status: "available"`, `connectedAt: null`. `404` unknown integration.
 

@@ -10,9 +10,9 @@ Set in the root `.env` (shared by the API and the voice runtime — the file is
 loaded into the process environment at startup):
 
 ```env
-OPENAI_API_KEY=
-SARVAM_API_KEY=
-ELEVENLABS_API_KEY=
+OPENAI_API_KEY=<OPENAI_API_KEY>
+SARVAM_API_KEY=<SARVAM_API_KEY>
+ELEVENLABS_API_KEY=<ELEVENLABS_API_KEY>
 ```
 
 Rules:
@@ -37,12 +37,26 @@ Optional endpoint overrides: `SARVAM_TTS_WS_URL`, `ELEVENLABS_WS_BASE`
   code (lowercase Sarvam speakers, ElevenLabs voice IDs), plus supported
   locales, model codes and per-voice default settings.
 
-Seeded by `python -m backend.cli seed` (initial data only — rows are editable
-via master data and never overwritten by re-seeding). Sarvam bulbul:v3 ships
+Seeded by `python -m backend.cli seed`. Operator metadata is generally
+preserved, while the governance reconciliation deliberately converges
+provider/model status to the allowed live matrix. Sarvam bulbul:v3 ships
 with 37 speakers (default `shubh`) and 11 languages; ElevenLabs with
 `eleven_flash_v2_5` and 8 voices; OpenAI with the GPT-4o family.
 Odia is `or-IN` platform-side and translated to Sarvam's `od-IN` on the wire
 (`shared/providers/languages.py`).
+
+Current governed live matrix:
+
+| Capability | Active production providers | Platform default |
+| --- | --- | --- |
+| STT | `sarvam`, `deepgram` | `sarvam/saaras:v3` |
+| TTS | `sarvam`, `elevenlabs` | `sarvam/bulbul:v3`, voice `shubh` |
+| LLM | `openai` | `openai/gpt-4o-mini` |
+| Embedding | `openai` | `openai/text-embedding-3-small` |
+
+The code registry contains additional dormant adapters, but a live bot cannot
+select them unless governance/catalog status is changed in code. `mock` remains
+a development/test pseudo-provider and is excluded in production.
 
 ## Runtime data flow
 
