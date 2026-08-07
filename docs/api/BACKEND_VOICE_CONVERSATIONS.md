@@ -1,6 +1,9 @@
 # EchoSphere Backend API — Voice, Providers, Conversations & Telephony
 
-Documentation for the voice-provider catalog, voice cloning, voice sessions, conversation review and telephony surface of the EchoSphere control-plane API (FastAPI). Generated from the actual routers/serializers on branch `feature/voice-runtime-kmrag-integration`.
+Documentation for the voice-provider catalog, voice cloning, voice sessions,
+conversation review, and telephony surface of the EchoSphere control-plane API
+(FastAPI). The current routers, schemas, services, ORM models, and serializers
+are the source of truth.
 
 **Base URL:** `http://localhost:9001` — all routes below are prefixed with `/api/v1`.
 
@@ -119,10 +122,10 @@ Response `200`:
 {
   "success": true,
   "data": {
-    "providers": { "stt": ["sarvam", "deepgram", "openai"], "tts": ["sarvam", "elevenlabs"], "llm": ["openai"] },
+    "providers": { "stt": ["sarvam", "deepgram"], "tts": ["sarvam", "elevenlabs"], "llm": ["openai"] },
     "defaults": {
-      "stt": { "provider": "sarvam", "model": "saarika:v2.5" },
-      "tts": { "provider": "sarvam", "model": "bulbul:v2", "voice": "anushka" },
+      "stt": { "provider": "sarvam", "model": "saaras:v3" },
+      "tts": { "provider": "sarvam", "model": "bulbul:v3", "voice": "shubh" },
       "llm": { "provider": "openai", "model": "gpt-4o-mini" }
     },
     "telephonyProviders": ["freeswitch", "twilio", "telnyx", "plivo", "exotel", "vaani"]
@@ -152,8 +155,8 @@ Response `200`:
   "success": true,
   "data": [
     {
-      "code": "bulbul:v2",
-      "displayName": "Bulbul v2",
+      "code": "bulbul:v3",
+      "displayName": "Bulbul v3 (streaming)",
       "description": "…",
       "provider": "sarvam",
       "capability": "tts",
@@ -217,12 +220,12 @@ Response `200`:
   "data": [
     {
       "id": "vp_XXXXXXXXXXXX",
-      "name": "Anushka",
-      "gender": "female",
+      "name": "Shubh",
+      "gender": "male",
       "provider": "sarvam",
-      "providerVoiceId": "anushka",
+      "providerVoiceId": "shubh",
       "languages": ["hi-IN", "en-IN"],
-      "modelCodes": ["bulbul:v2"],
+      "modelCodes": ["bulbul:v3"],
       "locale": "en-IN",
       "premium": false,
       "isDefault": true,
@@ -248,8 +251,8 @@ Request:
 ```json
 {
   "provider": "sarvam",
-  "model": "bulbul:v2",
-  "voice": "anushka",
+  "model": "bulbul:v3",
+  "voice": "shubh",
   "language": "hi-IN",
   "text": "नमस्ते, मैं आपकी कैसे मदद कर सकती हूँ?",
   "params": { },
@@ -283,7 +286,7 @@ Response `200`:
     "ttfaMs": 412.7,
     "totalMs": 1873.4,
     "provider": "sarvam",
-    "voice": "anushka"
+    "voice": "shubh"
   }
 }
 ```
@@ -299,14 +302,14 @@ Real connectivity/credential check against the configured provider (no fake succ
 Request:
 
 ```json
-{ "capability": "tts", "provider": "sarvam", "model": "bulbul:v2", "voice": null, "language": null }
+{ "capability": "tts", "provider": "sarvam", "model": "bulbul:v3", "voice": "shubh", "language": "hi-IN" }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `capability` | string | yes | `stt` \| `tts` \| `llm` \| `embedding` (else `422 "Unknown capability."`). |
 | `provider` | string | yes | Provider code (unknown → `404`). |
-| `model` | string | no | Validated against the catalog (`422` if it belongs to another provider). Defaults per provider: Sarvam STT `saarika:v2.5`, Sarvam TTS `bulbul:v3`. |
+| `model` | string | no | Validated against the catalog (`422` if it belongs to another provider). Current platform defaults: Sarvam STT `saaras:v3`, Sarvam TTS `bulbul:v3`. |
 | `voice` | string | no | ElevenLabs only: verifies the voice exists on the connected account (catalog ids are mapped to wire ids first). |
 | `language` | string | no | Accepted but not used by any current test. |
 
@@ -332,9 +335,9 @@ Request:
 {
   "botId": "<BOT_ID>",
   "config": {
-    "sttProvider": "sarvam", "sttModel": "saarika:v2.5", "sttLanguage": "hi-IN", "sttSettings": { },
+    "sttProvider": "sarvam", "sttModel": "saaras:v3", "sttLanguage": "hi-IN", "sttSettings": { },
     "llmProvider": "openai", "llmModel": "gpt-4o-mini", "llmSettings": { },
-    "ttsProvider": "sarvam", "ttsModel": "bulbul:v2", "ttsVoice": "anushka", "ttsSettings": { },
+    "ttsProvider": "sarvam", "ttsModel": "bulbul:v3", "ttsVoice": "shubh", "ttsSettings": { },
     "languageVoiceMap": { }, "fallbackProvider": null, "fallbackModel": null, "fallbackVoice": null,
     "audioSettings": { }
   }
@@ -416,7 +419,7 @@ Request:
 |---|---|---|---|
 | `status` | string | yes | `approved` \| `testing` \| `deprecated` (pattern-validated, else `422`). |
 
-Response `200`: the updated model in the same shape as the list. 
+Response `200`: the updated model in the same shape as the list.
 
 ### List voice profiles
 
@@ -444,11 +447,11 @@ Response `200` (full `serialize_voice` shape — richer than `/providers/tts/{co
   "data": [
     {
       "id": "vp_XXXXXXXXXXXX", "tenantId": null, "source": "platform", "cloneMetadata": { },
-      "name": "Anushka", "gender": "female", "languages": ["hi-IN", "en-IN"], "locale": "en-IN",
+      "name": "Shubh", "gender": "male", "languages": ["hi-IN", "en-IN"], "locale": "en-IN",
       "accent": "", "styles": [], "description": "", "latencyMs": 300, "premium": false,
-      "sample": "Hello! …", "provider": "sarvam", "providerVoiceId": "anushka",
+      "sample": "Hello! …", "provider": "sarvam", "providerVoiceId": "shubh",
       "speakingRate": 1.0, "pitch": 0, "isDefault": true, "status": "active", "sortOrder": 10,
-      "modelCodes": ["bulbul:v2"], "providerSettings": { }, "usageCount": 0,
+      "modelCodes": ["bulbul:v3"], "providerSettings": { "pace": 1.0 }, "usageCount": 0,
       "updatedAt": "2026-08-01T10:00:00Z"
     }
   ]
@@ -835,7 +838,7 @@ Response `200` — the list shape plus populated detail fields:
       "byCapability": { "stt": { "label": "Speech-to-text", "costUsd": "0.004000" } },
       "lines": [
         { "capability": "tts", "capabilityLabel": "Text-to-speech", "provider": "sarvam",
-          "model": "bulbul:v2", "voice": "anushka", "component": "characters",
+          "model": "bulbul:v3", "voice": "shubh", "component": "characters",
           "componentLabel": "Characters", "quantity": "812", "unit": "chars",
           "unitPrice": "0.000010", "rateCurrency": "INR", "fxRate": "0.01148",
           "costUsd": "0.008120", "priced": true, "note": null }

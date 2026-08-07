@@ -11,9 +11,10 @@ git show 70c41bf --stat          # the commit that added it
 git show 'HEAD^{/Added Voice-Bot Files}':VoiceBot/adapters/base.py   # read any old file
 ```
 
-`VoiceBot/.env` values were preserved **commented-out in the root `.env`** (section
-"Preserved from VoiceBot/.env before folder removal") — uncomment what you need;
-provider adapters read the same `*_API_KEY` env vars.
+Legacy `.env` values are not part of the supported configuration contract and
+must not be copied into documentation. Configure fresh provider credentials in
+the root `.env` through the current `*_API_KEY` variables/secret references;
+rotate any credential that was exposed by the removed tree or its history.
 
 ## Why the folder could not run
 

@@ -85,7 +85,7 @@ the workflow active for the next turn.
    `workflow_engine.py` (or a new module) using `StateGraph(WorkflowState)`.
 2. Register it in `_GRAPH_BUILDERS` under its route name.
 3. Route into it: create an intent whose `route` is `workflow:<name>` (MySQL
-   `intents` table, managed via `POST /api/v1/...` intents endpoints or the studio
+   `intents` table, managed via `POST /api/v1/bots/{bot_id}/intents` or the studio
    UI). `resolve_bot_config` ships active intents to the router automatically.
 4. Keep nodes fast and non-blocking; anything slow belongs behind the 10 s budget or
    in an external job.

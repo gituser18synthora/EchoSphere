@@ -116,7 +116,9 @@ first audio, and the total the caller actually feels.
    paths resolve without paying any LLM latency. A safety rule fires when a caller
    reads out card numbers/OTPs/passwords.
 2. **Goal Engine decision** (`shared/orchestration/goal_engine.py`) — one bounded,
-   structured LLM call per turn (default engine `gpt-4o-mini`, hard 1.2 s budget)
+   structured LLM call per turn (default engine `gpt-4o-mini`, 1.2 s default
+   budget; per-bot `llmSettings.orchestration_timeout_seconds` is clamped to
+   0.5–5.0 s)
    produces a validated `ConversationDecision`: intent, generic signal,
    identity/gate outcome, scope (including prompt-injection attempts, which are
    forced onto a redirect and stripped of tool/slot effects), slot observations and
@@ -154,7 +156,7 @@ Conversation history is capped at 20 turns (`_HISTORY_MAX_TURNS`).
 | Session (transport) timeout | `VOICE_SESSION_TIMEOUT` → `FastAPIWebsocketParams.session_timeout` | 900 s |
 | Idle timeout | `silence_timeout * 4` → `PipelineWorker(idle_timeout_secs=...)` | 48 s |
 | Worker concurrency | `VOICE_WORKER_CONCURRENCY` (WS closed 4429 at capacity) | 20 |
-| Goal Engine decision budget | hard deadline in `GoalEngine.decide` | 1.2 s |
+| Goal Engine decision budget | `llmSettings.orchestration_timeout_seconds`, clamped by `GoalEngine` | 1.2 s (allowed 0.5–5.0 s) |
 
 ## Providers
 
@@ -172,9 +174,14 @@ How each kind is wired into the pipeline:
 
 | Kind | Realtime path | Notes |
 |---|---|---|
-| STT | `sarvam` — streaming WebSocket (`voice_runtime/sarvam_stt.py`, honest segment finalization); `deepgram` — Flux `v2/listen` (`voice_runtime/deepgram_stt.py`, authoritative end-of-turn, per-turn language hints) | any other configured provider (`openai`/`whisper`, `assemblyai`, `mock`) runs as VAD-segmented REST via `EchoSTTService` (`voice_runtime/services.py`) |
-| TTS | `sarvam`, `elevenlabs` — persistent WebSocket engines behind `StreamingTTSRouter` (`voice_runtime/tts_router.py`): per-language voice mapping, sentence-aware buffering, delivery params (speed/pause/empathy/energy), barge-in cancellation, fallback to a configured secondary engine on transient failures only | REST providers (`openai`, `azure`, `google`, `mock`) run via `EchoTTSService` |
-| LLM | streamed through the shared registry: `openai`, `anthropic`, `google`, `mock` (`shared/providers/factory.py`, lazy SDK imports) | the Goal Engine's orchestration model is configurable per bot (`llm_settings.orchestration_model`, default `gpt-4o-mini`) |
+| STT | Governed live providers are `sarvam` (streaming WebSocket) and `deepgram` Flux `v2/listen` (authoritative end-of-turn, per-turn language hints). | Default `sarvam/saaras:v3`. Dormant registry adapters (OpenAI/Whisper, AssemblyAI) are not selectable while their catalog rows are inactive; `mock` is dev/test only. |
+| TTS | Governed live providers are `sarvam` and `elevenlabs`, routed through `StreamingTTSRouter`; non-streaming Eleven v3 uses segmented REST. | Default `sarvam/bulbul:v3/shubh`. Dormant OpenAI/Azure/Google adapters do not bypass catalog governance; `mock` is dev/test only. |
+| LLM | Governed live provider is `openai`, streamed through the shared registry. | Default `gpt-4o-mini`; the Goal Engine's provider/model, timeout, and token cap are configurable in `llm_settings`. Dormant Anthropic/Google adapters are not selectable while inactive. |
+
+`shared/providers/factory.py` is the adapter registry, but it is not the
+availability list. Save-time validation and `resolve_bot_config` require an
+active provider and active model in the database catalog; primary engines fail
+closed instead of silently switching to an inactive adapter.
 
 ## Persistence
 
@@ -188,7 +195,7 @@ flushed immediately to Mongo `voice_events`. `finalize()` runs once at call end:
   caller phone masked — plus per-provider `usage_events` for billing.
 - Call **recording**: stereo WAV (caller left / bot right) under
   `VOICE_RECORDINGS_DIR` (default `storage/recordings/`), served back by the
-  authorized `GET /api/v1/conversations/{id}/recording` endpoint.
+  authorized `GET /api/v1/conversations/{conversation_id}/recording` endpoint.
 - **Post-call analysis enqueue** (`shared/post_call/processor.py`): if the tenant's
   `call_summary_enabled` flag is on (fail-closed), a queued `conversation_memories`
   row is inserted and the embedded background worker analyzes the call (summary,

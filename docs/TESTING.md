@@ -37,7 +37,7 @@ session-scoped default event loop, markers `integration` and `perf`.
 | `test_turn_router.py` | 16 | routing priorities: smalltalk, call control, handoff, KB signals, intents → workflow/tool, safety, clarify |
 | `test_providers_and_audio.py` | 13 | provider registry/factory, WAV/PCM helpers, TTS text preparation |
 | `test_security_filters.py` | 12 | prompt-injection detection, context sanitization, PII masking |
-| `test_retrieval_fusion.py` | 11 | query normalization, weighted RRF, dedupe, context budgeting |
+| `test_retrieval_fusion.py` | 11 | query normalization, normalized weighted fusion and weighted RRF, dedupe, context budgeting |
 | `test_storage_safety.py` | 10 | extension whitelist, path-segment validation, traversal containment |
 | `test_kb_request_normalization.py` | 8 | kb_ids str/list/None normalization and dedupe |
 | `test_webhook_verification.py` | 7 | Twilio + generic HMAC schemes, skew, replay |

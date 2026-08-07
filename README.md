@@ -10,10 +10,11 @@ removed (see [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md))
 
 ## Architecture
 
-Two independently-run services plus a shared library package. Both services
-load the same root `.env` and share one virtualenv (`env/`); import direction
-is strictly `backend → shared ← voice_runtime` — the services never import
-each other.
+The Platform API, voice worker, optional ingestion worker, MCP server, and
+telephony gateway are independently run processes over a shared library
+package. They load the same root `.env` and share one virtualenv (`env/`);
+import direction is `backend → shared ← voice_runtime` — the two runtime
+packages do not import each other.
 
 ```
 backend/                 Control-plane platform API (API_PORT, currently 9001)
@@ -33,7 +34,7 @@ backend/                 Control-plane platform API (API_PORT, currently 9001)
 
 voice_runtime/           Realtime voice worker (VOICE_WORKER_PORT, currently 9002)
   app.py                 FastAPI app — run: python -m voice_runtime.app
-                         WS endpoints /ws/voice/{session} + /ws/telephony/…
+                         WS endpoints /ws/voice/{session_id} + /ws/telephony/…
   pipeline.py            Pipecat pipeline: VAD → turn control → STT → brain → TTS
   brain.py               ConversationBrain: routing, RAG, streaming, barge-in
   services.py            Pipecat STT/TTS adapters over shared providers
@@ -85,10 +86,11 @@ docs/                    Architecture & operations documentation (see below)
   or expired session ids and never decides tenancy itself. Scale out by
   running more workers behind a WS-capable load balancer — workers are
   stateless between calls (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
-- **Knowledge/RAG**: documents upload through `/api/v1/knowledge/{id}/documents`,
+- **Knowledge/RAG**: documents upload through `/api/v1/knowledge/{source_id}/documents`,
   are ingested in the background (parse → chunk → embed → store → verify) into
   PostgreSQL + pgvector, and are retrieved with hybrid search (HNSW cosine +
-  full-text, weighted RRF, confidence gate). The voice bot, the REST search-test
+  full-text, normalized weighted-score fusion by default with optional RRF,
+  and a confidence gate). The voice bot, the REST search-test
   endpoint and the MCP server all share one `KnowledgeService` with a single
   tenant-authorization choke point.
 - **Workflows**: stateful multi-step flows (e.g. appointment booking) run on
@@ -167,14 +169,12 @@ npm install && npm run dev                   # frontend → http://localhost:519
 Full walkthrough (including docker-compose sketch, smoke-test curls and
 troubleshooting): [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## Sign-in (after demo seed)
+## Sign-in (after seed)
 
-| Role | Email | Password |
-|------|-------|----------|
-| Super Admin | `admin@aurexion.com` | value of `SUPERADMIN_PASSWORD` |
-| Super Admin (demo) | `alex.rivera@aurexion.com` | `Demo@2026!` |
-| Tenant Admin | `priya.sharma@meridianhealth.com` | `Demo@2026!` |
-| Tenant User | `sam.ellery@meridianhealth.com` | `Demo@2026!` |
+Use the super-admin email/password configured through `SUPERADMIN_EMAIL` and
+`SUPERADMIN_PASSWORD`. The optional demo seed creates development-only users;
+inspect the seed output/configuration locally rather than copying credentials
+into documentation. API examples use `<EMAIL>` and `<PASSWORD>` placeholders.
 
 ## Tests
 
@@ -194,6 +194,8 @@ embedding provider — no external API keys required. See
 | Doc | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | processes, datastores, component and call flow |
+| [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) | authoritative environment variables, service ports, and startup validation |
+| [docs/api/README.md](docs/api/README.md) | complete Platform, Voice Runtime, WebSocket, and MCP API reference index |
 | [docs/VOICE_RUNTIME.md](docs/VOICE_RUNTIME.md) | Pipecat pipeline, brain routing, barge-in, providers |
 | [docs/KNOWLEDGE_AND_RAG.md](docs/KNOWLEDGE_AND_RAG.md) | ingestion pipeline, hybrid retrieval, KB modes |
 | [docs/PGVECTOR.md](docs/PGVECTOR.md) | knowledge-plane schema, indexes, migrations, perf |
@@ -207,11 +209,12 @@ embedding provider — no external API keys required. See
 | [docs/PERFORMANCE_TESTING.md](docs/PERFORMANCE_TESTING.md) | performance strategy, SLOs, load scenarios and reporting template |
 | [docs/MIGRATION_FROM_VOICEBOT.md](docs/MIGRATION_FROM_VOICEBOT.md) | what happened to `VoiceBot/` |
 
-## Backend gaps
+## Feature-gated gaps
 
-Capabilities still without a backend (recording playback, voice sample
-synthesis, scheduled publish, knowledge connector OAuth and live call feed)
-remain behind feature flags in `src/services/flags.ts` — see
-`TODO_BACKEND.md`. Analytics, subscriptions, invoices and tenant conversations
-use authorized CSV/XLSX downloads; invoice summaries and original knowledge
-documents preserve their native PDF/original formats.
+The current frontend flags unresolved capabilities explicitly: live call
+monitoring, voice sample playback, scheduled publish automation, knowledge
+connector OAuth, and queued export generation remain disabled. Per-conversation
+tenant cost visibility is enabled. `src/services/flags.ts` is the source of
+truth; `TODO_BACKEND.md` is the planning record. Existing conversation
+recording playback and governed TTS preview APIs are documented separately and
+should not be confused with the disabled generic voice-sample UI flag.

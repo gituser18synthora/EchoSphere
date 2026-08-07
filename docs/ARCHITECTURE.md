@@ -130,7 +130,8 @@ Platform API :9001                          gateway POST /telephony/webhook/{pro
       │  writes voice:session:{id} → Redis (trusted tenant/bot mapping, TTL)
       │  returns opaque session id + ws path
       ▼
-WS connect: /ws/voice/{id} (worker :9002)  or  /ws/telephony/{provider}/{id} (:9011)
+WS connect: /ws/voice/{session_id} (worker :9002) or
+            /ws/telephony/{provider}/{session_id} (:9011)
       │  worker loads the Redis session, resolves the pinned published bot config,
       │  optionally loads the customer's previous-call memory (tenant flag gated)
       ▼
@@ -148,7 +149,8 @@ Per-call Pipecat pipeline (voice_runtime/pipeline.py):
                                                                 (voice_runtime/brain.py)
   1. deterministic first: hangup detection on EVERY segment, DNC/consent,
      platform commands, deterministic fast paths (no LLM latency)
-  2. Goal Engine decision — one bounded structured LLM call (1.2 s budget);
+  2. Goal Engine decision — one bounded structured LLM call (1.2 s default,
+     per-bot `orchestration_timeout_seconds` clamped to 0.5–5.0 s);
      on failure/timeout falls back to deterministic TurnRouter routing
   3. guarded transitions: call policy / identity gate / slot capture,
      LangGraph workflow step, or KB retrieval for knowledge routes
@@ -193,7 +195,9 @@ hop for the voice path):
   citations and sanitized context),
 - the REST knowledge search/test endpoints (`backend/routers/knowledge.py`,
   `backend/routers/testing.py`),
-- the agent-assist MCP tools (`backend/mcp_server/server.py`).
+- the four external-agent MCP knowledge tools
+  (`backend/mcp_server/server.py`). There is no in-repository component named
+  `AgentAssist`; KMRAG is ported source lineage, not a running service.
 
 Details: [KNOWLEDGE_AND_RAG.md](KNOWLEDGE_AND_RAG.md).
 

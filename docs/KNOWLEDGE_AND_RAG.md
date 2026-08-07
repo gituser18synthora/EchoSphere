@@ -12,7 +12,7 @@ in MySQL; document/chunk/job rows live in PostgreSQL (see [PGVECTOR.md](PGVECTOR
 
 ```mermaid
 flowchart TD
-    U["POST /api/v1/knowledge/{sourceId}/documents (multipart)"] --> V{"Validation"}
+    U["POST /api/v1/knowledge/{source_id}/documents (multipart)"] --> V{"Validation"}
     V -->|"ext whitelist, size cap, MIME sniff, sha256 dedupe"| S["Save original: storage/knowledge/{tenant}/{kb}/{doc}.{ext}"]
     S --> D["knowledge_documents row (status=pending)"]
     D --> J["knowledge_ingestion_jobs row (status=queued)"]
@@ -80,20 +80,27 @@ flowchart LR
     Q["query"] --> N["normalize (NFKC, strip control chars)"]
     N --> DZ["dense: pgvector cosine, SET LOCAL hnsw.ef_search"]
     N --> KW["keyword: websearch_to_tsquery + ts_rank_cd, AND→OR fallback"]
-    DZ --> RRF["weighted RRF (0.6/0.4, k=60)"]
-    KW --> RRF
-    RRF --> DD["dedupe (chunk id + normalized text prefix)"]
-    DD --> RE["optional cross-encoder rerank"]
-    RE --> G["confidence gate (min cosine similarity 0.35)"]
-    G --> B["context budget ~3000 tokens"]
+    DZ --> F["fusion: normalized weighted sum by default (semantic .65 / BM25 .35); optional weighted RRF"]
+    KW --> F
+    F --> DD["dedupe (chunk id + normalized text prefix)"]
+    DD --> PB["optional exact-phrase score boost"]
+    PB --> G["relevance gate: cosine >= .35 OR raw keyword rank >= .02"]
+    G --> RE["optional cross-encoder rerank"]
+    RE --> B["context budget ~3000 tokens"]
     B --> RES["RetrievalResult"]
 ```
 
 - Dense and keyword searches run **in parallel** (`asyncio.gather`) against
   `PgVectorStore` with the authorized KB list and a second tenant filter in SQL.
-- The confidence gate keeps chunks whose raw cosine similarity ≥
-  `RETRIEVAL_MIN_SCORE` (0.35) **or** that were genuine keyword hits; overall
-  `answerable` requires the top set to clear the threshold.
+- Weighted fusion saturates the unbounded `ts_rank_cd` keyword score into
+  `(0,1)` and combines it with cosine similarity. Results are deduplicated,
+  then receive the optional whole-query phrase boost.
+  `RETRIEVAL_FUSION_METHOD=rrf` switches to
+  rank-only weighted reciprocal-rank fusion (`k=60`).
+- The relevance gate keeps chunks whose raw cosine similarity ≥
+  `RETRIEVAL_MIN_SCORE` (0.35) **or** whose raw keyword rank ≥
+  `RETRIEVAL_MIN_KEYWORD_RANK` (0.02), so exact terms/codes survive weak
+  embeddings. `answerable` is true when the gated/budgeted top set is non-empty.
 - Reranking (`RETRIEVAL_USE_RERANKER=true`) uses a lazily-loaded sentence-transformers
   cross-encoder and fails open to the fused order
   (`shared/knowledge/retrieval/reranker.py`).
@@ -103,9 +110,14 @@ flowchart LR
   skipped_reason}`. Raw embeddings never leave the store.
 
 Tuning knobs (env, `shared/config.py`): `RETRIEVAL_TOP_K=6`,
-`RETRIEVAL_CANDIDATE_K=24`, `RETRIEVAL_RERANK_K=12`, `RETRIEVAL_MIN_SCORE=0.35`,
-`RETRIEVAL_HYBRID_VECTOR_WEIGHT=0.6`, `RETRIEVAL_HYBRID_KEYWORD_WEIGHT=0.4`,
-`RETRIEVAL_TS_CONFIG=english`.
+`RETRIEVAL_CANDIDATE_K=24`, `RETRIEVAL_RERANK_K=12`,
+`RETRIEVAL_MIN_SCORE=0.35`, `RETRIEVAL_FUSION_METHOD=weighted`,
+`RETRIEVAL_SEMANTIC_WEIGHT=0.65`, `RETRIEVAL_BM25_WEIGHT=0.35`,
+`RETRIEVAL_BM25_SATURATION=1.0`, `RETRIEVAL_MIN_KEYWORD_RANK=0.02`,
+`RETRIEVAL_PHRASE_BOOST=0.1`, `RETRIEVAL_USE_RERANKER=false`, and
+`RETRIEVAL_TS_CONFIG=english`. The legacy-named
+`RETRIEVAL_HYBRID_VECTOR_WEIGHT=0.6` and
+`RETRIEVAL_HYBRID_KEYWORD_WEIGHT=0.4` apply only in RRF mode.
 
 ## KB selection modes and authorization
 
@@ -134,8 +146,21 @@ statement (defense in depth). Details in [MULTI_TENANCY.md](MULTI_TENANCY.md).
 
 ## Consumers
 
-- REST: `POST /api/v1/knowledge/{sourceId}/documents` (upload),
+- REST: `POST /api/v1/knowledge/{source_id}/documents` (upload),
   `POST /api/v1/knowledge/search-test` (studio retrieval testing — same service the
   voice bot uses).
 - Voice runtime: `ConversationBrain` calls `KnowledgeService.search` directly.
 - MCP: `search_knowledge` et al. (see [MCP_TOOLS.md](MCP_TOOLS.md)).
+
+### KMRAG and AgentAssist naming
+
+- **KMRAG is not a separately deployed service in this repository.** The
+  loader, structured chunker, OCR configuration shim, and hybrid-retriever
+  ideas were ported into `shared/knowledge/` and re-keyed to EchoSphere's
+  tenant/KB authorization model. Live traffic always enters through the
+  centralized `KnowledgeService` described above.
+- **No `AgentAssist` package, route, worker, or named consumer is implemented
+  in the current codebase.** External agent-assist products can use the four
+  JWT-authenticated MCP knowledge tools, but documentation must not claim an
+  in-repository AgentAssist integration or a second retriever until code for
+  one exists.

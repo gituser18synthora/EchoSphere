@@ -25,10 +25,15 @@ sync with it.
   users, roles/permissions, tenants, master data, platform configuration,
   plans/subscriptions/invoices, usage metering, analytics, audit, exports,
   reports, integrations.
-- [Bots & Bot Configuration](BACKEND_BOTS.md) — bot CRUD, voice settings,
-  channels (incl. WhatsApp webhook), prompts, intents, workflows, releases,
-  runtime context, customer contexts, testing/scenarios, API connections,
-  entities, templates, knowledge gaps.
+- [Bots, Voice Settings & Channels](BACKEND_BOTS.md) — bot CRUD, governed
+  STT/TTS/LLM settings, Goal Engine tuning, channel configuration and the
+  WhatsApp webhook.
+- [Bot Studio Authoring & Testing](BACKEND_BOT_STUDIO.md) — prompts and
+  versions, intents, entities, workflows, releases, scenarios, chat testing,
+  and the full runtime simulator (32 operations).
+- [Runtime Context, Customer Data & API Integrations](BACKEND_RUNTIME_CONTEXT.md) —
+  generic runtime schemas/records, legacy collections context, API
+  connections, templates, and knowledge gaps (22 operations).
 - [Knowledge & RAG](BACKEND_KNOWLEDGE.md) — knowledge bases, document
   ingestion, retrieval testing, Super Admin chunk/document review.
 - [Voice, Providers, Conversations & Telephony](BACKEND_VOICE_CONVERSATIONS.md) —
@@ -62,3 +67,19 @@ Related reading: [Architecture](../ARCHITECTURE.md) ·
 [Voice Runtime overview](../VOICE_RUNTIME.md) ·
 [Telephony](../TELEPHONY.md) · [Vaani integration](../VAANI_INTEGRATION.md) ·
 [Environment variables](../ENVIRONMENT.md)
+
+## Framework-generated documentation routes
+
+The 189-operation count is the application HTTP contract: 187 `/api/v1`
+operations plus the two public health endpoints. FastAPI also registers four
+public documentation assets that contain no business request schema:
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/docs` | Swagger UI. |
+| `GET /api/openapi.json` | Generated OpenAPI document for the 189 HTTP operations. |
+| `GET /redoc` | ReDoc UI. |
+| `GET /docs/oauth2-redirect` | Swagger OAuth redirect helper. |
+
+These generated assets are not counted as Platform APIs and must not be used as
+application integration endpoints.
