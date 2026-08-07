@@ -243,6 +243,23 @@ class SessionRecorder:
                 {**self.call_state, "last_call_id": self.session_id},
             )
 
+        # Durable post-call intelligence: enqueue the (idempotent) analysis
+        # job AFTER everything above is persisted so the processor always
+        # finds the transcript. The heavy work runs in the background worker
+        # — teardown is never delayed, and a repeated finalize/hangup finds
+        # the existing row and does nothing.
+        try:
+            from shared.post_call.processor import (
+                enqueue_post_call,
+                notify_post_call_worker,
+            )
+
+            enqueued = await asyncio.to_thread(enqueue_post_call, self)
+            if enqueued:
+                notify_post_call_worker()
+        except Exception:  # noqa: BLE001 — teardown must never fail on this
+            logger.exception("post-call enqueue failed for %s", self.session_id)
+
     def _write_control_plane_row(self, duration: int, reason: str) -> None:
         from decimal import Decimal
 

@@ -338,6 +338,39 @@ class HybridIntentPipeline:
             result.signal = classify_user_signal(text)
         return result
 
+    def from_decision(self, decision) -> IntentClassification:
+        """Bridge a validated Goal Engine decision into this contract.
+
+        ``decision`` is a shared.orchestration.decision_schema
+        .ConversationDecision (duck-typed to avoid a hard import cycle).
+        Tool binding stays CONFIG-driven exactly like the LLM path: the
+        decision's intent selects the configured intent, and the intent's
+        route/connection decides whether a tool is involved — the model's
+        own ``tool_request`` never executes anything. Off-goal turns carry
+        no tool, no entities and no routable signal.
+        """
+        intent_name = decision.intent
+        if intent_name is not None and intent_name in self._by_name:
+            result = self._from_intent(
+                self._by_name[intent_name], decision.confidence,
+                source="goal_engine",
+            )
+        else:
+            result = IntentClassification(
+                confidence=decision.confidence, source="goal_engine",
+            )
+        in_scope = getattr(decision, "scope", "in_scope") == "in_scope"
+        if in_scope:
+            result.signal = decision.signal or result.signal
+            result.entities = dict(decision.provided_values())
+        else:
+            result.signal = None
+            result.entities = {}
+            result.requires_tool = False
+            result.tool_name = None
+        result.latency_ms = decision.latency_ms
+        return result
+
     def _from_intent(
         self, intent: dict, confidence: float, *, source: str
     ) -> IntentClassification:

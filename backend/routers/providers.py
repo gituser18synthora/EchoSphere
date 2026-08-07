@@ -301,6 +301,18 @@ async def _run_provider_test(db: Session, body: ProviderTestRequest) -> dict:
                 if body.voice and not response.json().get("voices"):
                     return {"ok": False, "error": "voice_unavailable",
                             "message": "The selected voice is not available on this account."}
+        elif body.provider == "deepgram" and body.capability == "stt":
+            # Cheapest authenticated call: token introspection. A live Flux
+            # WS handshake would bill audio minutes for a connectivity check.
+            async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_S) as client:
+                response = await client.get(
+                    "https://api.deepgram.com/v1/auth/token",
+                    headers={"Authorization": f"Token {key}"},
+                )
+                if response.status_code in (401, 403):
+                    return {"ok": False, "error": "auth",
+                            "message": "Deepgram rejected the API key."}
+                response.raise_for_status()
         elif body.provider == "openai":
             async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_S) as client:
                 url = "https://api.openai.com/v1/models"

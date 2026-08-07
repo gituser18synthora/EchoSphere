@@ -40,6 +40,7 @@ const chipTone: Record<string, string> = {
   pending_approval: "warning",
   needs_samples: "warning", disabled: "neutral",
   acknowledged: "info", resolved: "good",
+  processing: "info", queued: "neutral", completed: "good",
   assigned: "good", porting: "warning",
   invited: "info", deactivated: "neutral", inactive: "neutral",
   deprecated: "neutral",
@@ -51,6 +52,7 @@ const chipIcon: Record<string, IconName> = {
   suspended: "x-circle", past_due: "alert", rolled_back: "undo", in_review: "eye",
   review: "eye", pending_approval: "clock", indexing: "refresh", provisioning: "refresh",
   testing: "refresh", stale: "clock", degraded: "alert", error: "x-circle",
+  processing: "refresh", queued: "clock", completed: "check-circle",
 };
 export function StatusChip({ status, label }: { status: string; label?: string }) {
   const tone = chipTone[status] ?? "neutral";

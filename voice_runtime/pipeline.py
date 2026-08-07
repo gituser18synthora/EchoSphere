@@ -36,7 +36,10 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
 from pipecat.turns.user_turn_processor import UserTurnProcessor
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import (
+    ExternalUserTurnStrategies,
+    UserTurnStrategies,
+)
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError
@@ -142,16 +145,119 @@ def _sarvam_stream_encodings() -> set[str]:
     return {"audio/wav"}
 
 
+# Deepgram Flux end-of-turn defaults, chosen for telephony voice agents:
+# eot_threshold stays at the provider's recommended 0.7 (raising it delays
+# every turn; lowering it interrupts natural pauses), the eager threshold is
+# conservative (speculation costs decision-LLM calls when it misfires), and
+# the silence cap forces a turn end well before the provider's 5 s default —
+# a caller who has said something and then stays quiet for 3 s is done.
+_FLUX_DEFAULT_EAGER_EOT = 0.6
+_FLUX_DEFAULT_EOT_TIMEOUT_MS = 3000
+_FLUX_BOUNDS = {
+    "eot_threshold": (0.5, 0.9),
+    "eager_eot_threshold": (0.3, 0.9),
+    "eot_timeout_ms": (500, 60000),
+}
+
+
+def _flux_setting(settings: dict, key: str, default):
+    """One bounded numeric Flux setting; junk falls back to the default."""
+    value = settings.get(key, default)
+    if value is None:
+        return None  # explicit null disables the feature (eager EOT)
+    low, high = _FLUX_BOUNDS[key]
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        value = float(value)
+    except (TypeError, ValueError):
+        logger.warning("deepgram-stt: %s=%r is not a number; using %s", key, value, default)
+        if default is None:
+            return None
+        value = float(default)
+    value = min(max(value, low), high)
+    return int(value) if key == "eot_timeout_ms" else value
+
+
+def _flux_language_hints(stt_conf: dict, config: ResolvedBotConfig) -> list:
+    """Language hints for flux-general-multi, as pipecat Language values.
+
+    Explicit ``stt_settings.language_hints`` win; otherwise the bot's own
+    configured languages (hi-IN, en-IN → hi, en) are the hints — the model
+    biases toward exactly the languages the bot is allowed to speak.
+    """
+    from pipecat.transcriptions.language import Language
+
+    settings = stt_conf.get("settings") or {}
+    raw = settings.get("language_hints")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raw = [locale for locale in (config.languages or [config.language]) if locale]
+    hints = []
+    for code in raw:
+        base = str(code).split("-")[0].strip().lower()
+        if not base:
+            continue
+        try:
+            hints.append(Language(base))
+        except ValueError:
+            logger.warning("deepgram-stt: unsupported language hint %r ignored", code)
+    seen = set()
+    return [h for h in hints if not (h in seen or seen.add(h))]
+
+
 def build_stt_service(
     config: ResolvedBotConfig,
     *,
     sample_rate: int = 16000,
     recorder: SessionRecorder | None = None,
     use_provider_vad: bool | None = None,
+    latency=None,
+    barge_in_min_words: int = 2,
 ):
-    """STT service from bot config: Sarvam realtime WS or segmented fallback."""
+    """STT service from bot config: Deepgram Flux or Sarvam realtime WS,
+    segmented fallback otherwise."""
     stt_conf = config.stt or {}
     provider = stt_conf.get("provider") or "sarvam"
+
+    if provider == "deepgram":
+        # Deepgram Flux conversational STT over /v2/listen: one persistent
+        # WebSocket per call, model-integrated turn detection (EndOfTurn is
+        # authoritative — see voice_runtime.deepgram_stt).
+        from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTSettings
+
+        from voice_runtime.deepgram_stt import EchoDeepgramFluxSTTService
+
+        api_key = get_settings().resolve_secret(stt_conf.get("api_key_reference") or "")
+        if not api_key:
+            raise ProviderError(
+                "deepgram-stt", "auth",
+                "Deepgram STT credentials are not configured (DEEPGRAM_API_KEY)",
+            )
+        settings_kwargs = stt_conf.get("settings") or {}
+        model = stt_conf.get("model") or "flux-general-multi"
+        service_settings = DeepgramFluxSTTSettings(
+            model=model,
+            language=None,
+            eot_threshold=_flux_setting(settings_kwargs, "eot_threshold", 0.7),
+            eager_eot_threshold=_flux_setting(
+                settings_kwargs, "eager_eot_threshold", _FLUX_DEFAULT_EAGER_EOT
+            ),
+            eot_timeout_ms=_flux_setting(
+                settings_kwargs, "eot_timeout_ms", _FLUX_DEFAULT_EOT_TIMEOUT_MS
+            ),
+        )
+        if model == "flux-general-multi":
+            hints = _flux_language_hints(stt_conf, config)
+            if hints:
+                service_settings.language_hints = hints
+        return EchoDeepgramFluxSTTService(
+            api_key=api_key,
+            sample_rate=sample_rate,
+            settings=service_settings,
+            recorder=recorder,
+            latency=latency,
+            barge_in_min_words=barge_in_min_words,
+        )
 
     if provider == "sarvam":
         # Realtime WebSocket STT via pipecat's Sarvam integration (sarvamai SDK),
@@ -335,8 +441,24 @@ def build_voice_pipeline(
     customer_context=None,
     runtime_context=None,
     transport_kind: str = "browser",
+    previous_memory=None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
+    # Deepgram Flux runs its own model-integrated turn detection server-side:
+    # its adapter emits the user speech boundaries and the finalized turn
+    # transcript itself, so the local Silero VAD and its turn strategies are
+    # not built at all — running both would double every start/stop signal.
+    stt_provider_code = (config.stt or {}).get("provider") or "sarvam"
+    provider_owns_turns = stt_provider_code == "deepgram"
+
+    turn = resolve_turn_detection(config, transport_kind)
+    gate_conf = resolve_noise_gate(config, transport_kind)
+    barge_in_min_words = int(round(turn["barge_in_min_words"]))
+
+    # Created before the STT/TTS services: the TTS router stamps synthesis
+    # request/first-byte, and a turn-authoritative STT (Flux) stamps the
+    # physical speech boundaries — all on the same per-call tracker.
+    tracker = TurnLatencyTracker(session_id=recorder.session_id)
     # Local Silero owns speech boundaries in the normal pipeline. Enabling
     # Sarvam server VAD at the same time produces duplicate start/stop frames;
     # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
@@ -345,18 +467,13 @@ def build_voice_pipeline(
         sample_rate=stt_sample_rate,
         recorder=recorder,
         use_provider_vad=not use_vad,
+        latency=tracker,
+        barge_in_min_words=barge_in_min_words,
     )
-    # Created before the TTS service: the router is the only component that can
-    # stamp when synthesis was requested and when the provider's first byte
-    # arrived, so it needs the same tracker the brain and VAD probe write to.
-    tracker = TurnLatencyTracker(session_id=recorder.session_id)
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
     )
     llm_provider = build_llm_provider(config)
-
-    turn = resolve_turn_detection(config, transport_kind)
-    gate_conf = resolve_noise_gate(config, transport_kind)
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply
     # do not contribute to a verdict).
@@ -371,7 +488,11 @@ def build_voice_pipeline(
             echo_tail_ms=gate_conf["echo_tail_ms"],
             min_threshold_dbfs=gate_conf["min_threshold_dbfs"],
         )
-        if use_vad and gate_conf["enabled"] >= 0.5
+        # The gate substitutes silence for sub-floor audio (it never drops
+        # frames), so it composes with a provider-side turn detector too:
+        # Flux keeps receiving a continuous stream, minus the line noise
+        # that would otherwise open phantom turns.
+        if (use_vad or provider_owns_turns) and gate_conf["enabled"] >= 0.5
         else None
     )
     brain = ConversationBrain(
@@ -390,13 +511,15 @@ def build_voice_pipeline(
         short_reply_endpoint=turn["short_reply_endpoint"],
         latency=tracker,
         audio_gate=audio_gate,
+        authoritative_eot=provider_owns_turns,
+        previous_memory=previous_memory,
     )
     processors = [transport.input()]
     if audio_gate is not None:
         # Ahead of the VAD on purpose: background noise the gate suppresses can
         # never start a user turn, interrupt the bot, or reach the STT.
         processors.append(audio_gate)
-    if use_vad:
+    if use_vad and not provider_owns_turns:
         processors.append(
             VADProcessor(
                 vad_analyzer=SileroVADAnalyzer(
@@ -418,35 +541,37 @@ def build_voice_pipeline(
     # consumed the control frame and left telephony transcripts waiting for
     # the provider's roughly 60-second server-side endpoint.
     processors.append(stt)
-    # Barge-in policy: while the bot is quiet VAD starts the user turn (fast
-    # path, unchanged); while it is SPEAKING an interruption must be confirmed
-    # by a transcript of >= barge_in_min_words words — VAD alone let ambient
-    # speech reaching the mic cancel replies mid-word (see voice_runtime
-    # .barge_in). 0 restores pure-VAD interruption.
-    barge_in_min_words = int(round(turn["barge_in_min_words"]))
-    start_strategy = (
-        WordConfirmedBargeInStrategy(min_words=barge_in_min_words)
-        if barge_in_min_words > 0
-        else VADUserTurnStartStrategy()
-    )
-    processors.append(
-        UserTurnProcessor(
-            user_turn_strategies=UserTurnStrategies(
-                start=[start_strategy],
-                # wait_for_transcript must be False: transcripts are consumed by
-                # the brain downstream and never reach the turn processor, so
-                # waiting for one only ever hits the 5s fallback — which also
-                # blocked barge-in (a new turn can't start while the previous
-                # one is stuck open). The brain gates the LLM on the resulting
-                # UserStoppedSpeakingFrame, so this timeout IS the pause window
-                # a caller gets before the bot takes the turn.
-                stop=[SpeechTimeoutUserTurnStopStrategy(
-                    user_speech_timeout=turn["user_speech_timeout"],
-                    wait_for_transcript=False,
-                )],
-            )
+    if provider_owns_turns:
+        # Turn boundaries, interruption and the word-confirmed barge-in gate
+        # are all produced by the STT adapter itself (Flux TurnInfo events);
+        # the turn processor only defers to those external signals.
+        user_turn_strategies = ExternalUserTurnStrategies()
+    else:
+        # Barge-in policy: while the bot is quiet VAD starts the user turn
+        # (fast path, unchanged); while it is SPEAKING an interruption must be
+        # confirmed by a transcript of >= barge_in_min_words words — VAD alone
+        # let ambient speech reaching the mic cancel replies mid-word (see
+        # voice_runtime.barge_in). 0 restores pure-VAD interruption.
+        start_strategy = (
+            WordConfirmedBargeInStrategy(min_words=barge_in_min_words)
+            if barge_in_min_words > 0
+            else VADUserTurnStartStrategy()
         )
-    )
+        user_turn_strategies = UserTurnStrategies(
+            start=[start_strategy],
+            # wait_for_transcript must be False: transcripts are consumed by
+            # the brain downstream and never reach the turn processor, so
+            # waiting for one only ever hits the 5s fallback — which also
+            # blocked barge-in (a new turn can't start while the previous
+            # one is stuck open). The brain gates the LLM on the resulting
+            # UserStoppedSpeakingFrame, so this timeout IS the pause window
+            # a caller gets before the bot takes the turn.
+            stop=[SpeechTimeoutUserTurnStopStrategy(
+                user_speech_timeout=turn["user_speech_timeout"],
+                wait_for_transcript=False,
+            )],
+        )
+    processors.append(UserTurnProcessor(user_turn_strategies=user_turn_strategies))
     processors += [brain, tts, transport.output()]
 
     if get_settings().voice_call_recording_enabled:

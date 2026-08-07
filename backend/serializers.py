@@ -662,7 +662,8 @@ def serialize_release(r: Release) -> dict:
 def serialize_conversation(c: ConversationSession, *, bot_name: str,
                            transcript: list | None = None,
                            recording: dict | None = None,
-                           cost_breakdown: dict | None = None) -> dict:
+                           cost_breakdown: dict | None = None,
+                           summary: dict | None = None) -> dict:
     """One conversation for the API.
 
     ``costUsd`` is the single authoritative total for BOTH the list and the
@@ -701,6 +702,56 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "transcript": transcript or [],
         # Present only when the audio file is actually available on disk.
         "recording": recording,
+        # Post-call intelligence (AI summary / outcome / Next Best Action) —
+        # detail view only, null while nothing has been generated.
+        "summary": summary,
+    }
+
+
+def serialize_conversation_memory(m) -> dict:
+    """Post-call intelligence for one conversation (camelCase, PII-free).
+
+    Mirrors src/types/domain.ts ConversationAiSummary. The structured memory
+    JSON is already validated/bounded at persistence time.
+    """
+    memory = m.memory or {}
+    return {
+        "status": m.status,
+        "callOutcome": m.call_outcome,
+        "summary": m.summary,
+        "customerIntent": memory.get("customer_intent") or None,
+        "customerSentiment": memory.get("customer_sentiment") or None,
+        "customerCommitments": [
+            {
+                "type": c.get("type"),
+                "description": c.get("description"),
+                "amount": c.get("amount"),
+                "currency": c.get("currency"),
+                "dueDate": c.get("due_date"),
+                "status": c.get("status"),
+            }
+            for c in (memory.get("customer_commitments") or [])
+        ],
+        "objections": memory.get("objections") or [],
+        "importantFacts": memory.get("important_facts") or [],
+        "resolvedItems": memory.get("resolved_items") or [],
+        "unresolvedItems": memory.get("unresolved_items") or [],
+        "missingSlots": memory.get("missing_slots") or [],
+        "nextBestAction": (
+            {
+                "action": (m.next_best_action or {}).get("action") or m.next_action,
+                "reason": (m.next_best_action or {}).get("reason"),
+                "priority": (m.next_best_action or {}).get("priority"),
+                "recommendedAt": (m.next_best_action or {}).get("recommended_at"),
+            }
+            if (m.next_best_action or m.next_action)
+            else None
+        ),
+        "followUpRequired": bool(m.follow_up_required),
+        "followUpAt": iso(m.follow_up_at) if m.follow_up_at else None,
+        "confidence": float(m.confidence) if m.confidence is not None else None,
+        "generatedAt": iso(m.generated_at) if m.generated_at else None,
+        "error": (m.error or None) if m.status == "failed" else None,
     }
 
 

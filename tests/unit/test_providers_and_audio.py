@@ -29,6 +29,7 @@ from shared.providers.factory import (
     get_tts_provider,
 )
 from voice_runtime.telephony import (
+    _RAMP_THRESHOLDS,
     FreeSwitchAudioStreamSerializer,
     VaaniFrameSerializer,
     build_media_serializer,
@@ -193,21 +194,63 @@ class TestVaaniTelephony:
         assert frame.num_channels == 1
 
     async def test_outbound_audio_uses_vaani_chunk_rules(self):
+        """First packets ramp out fast; the steady state is the 200 ms packet.
+
+        The reply's opening audio must not sit in the buffer — that delay is
+        the caller's perceived response time. Later packets return to the
+        full 3200-byte (200 ms) size, which is what keeps playout stable.
+        """
         serializer = VaaniFrameSerializer(stream_sid="MZ123")
-        assert await serializer.serialize(OutputAudioRawFrame(
-            audio=b"\x00" * 1600, sample_rate=8000, num_channels=1,
-        )) is None
-        raw = await serializer.serialize(OutputAudioRawFrame(
-            audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
-        ))
-        message = json.loads(raw)
-        audio = base64.b64decode(message["media"]["payload"])
+        # Ramp step 0 (640 B): the first 40 ms chunk goes out immediately.
+        message = json.loads(await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x00" * 640, sample_rate=8000, num_channels=1,
+        )))
+        first = base64.b64decode(message["media"]["payload"])
         assert message["event"] == "media"
         assert message["streamSid"] == "MZ123"
         assert message["media"]["track"] == "inbound"
         assert message["media"]["chunk"] == "1"
-        assert len(audio) == 3200
-        assert len(audio) % 320 == 0
+        assert len(first) == 640
+        assert len(first) % 320 == 0
+        # Ramp climbs: 640 B is now below the step-1 threshold (1280 B).
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
+        )) is None
+        second = base64.b64decode(json.loads(await serializer.serialize(
+            OutputAudioRawFrame(audio=b"\x01" * 640, sample_rate=8000,
+                                num_channels=1)
+        ))["media"]["payload"])
+        assert len(second) == 1280
+        # Past the ramp, the full 200 ms packet is the rule again.
+        for _ in range(3):
+            await serializer.serialize(OutputAudioRawFrame(
+                audio=b"\x02" * 1280, sample_rate=8000, num_channels=1,
+            ))
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        serializer._pending_audio.clear()
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x03" * 1600, sample_rate=8000, num_channels=1,
+        )) is None
+        steady = base64.b64decode(json.loads(await serializer.serialize(
+            OutputAudioRawFrame(audio=b"\x03" * 1600, sample_rate=8000,
+                                num_channels=1)
+        ))["media"]["payload"])
+        assert len(steady) == 3200
+
+    async def test_ramp_resets_per_utterance_so_every_reply_starts_fast(self):
+        serializer = VaaniFrameSerializer(stream_sid="MZ123")
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        # An interruption starts a new utterance: the ramp is armed again.
+        await serializer.serialize(InterruptionFrame())
+        assert json.loads(await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
+        )))["media"]["payload"]
+        # …and so does an idle gap between replies.
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        serializer._last_audio_at -= 5.0
+        assert json.loads(await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
+        )))["media"]["payload"]
 
     async def test_clear_and_transfer_control_events(self):
         serializer = VaaniFrameSerializer(stream_sid="MZ123")
@@ -231,13 +274,16 @@ class TestVaaniTelephony:
 
     async def test_short_final_audio_flushes_on_bot_stop(self):
         serializer = VaaniFrameSerializer(stream_sid="MZ123")
+        # A sub-frame remnant (under one 320 B frame) cannot go out on its
+        # own; the end of the utterance must still flush it.
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
         assert await serializer.serialize(OutputAudioRawFrame(
-            audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
+            audio=b"\x01" * 160, sample_rate=8000, num_channels=1,
         )) is None
         raw = await serializer.serialize(BotStoppedSpeakingFrame())
         message = json.loads(raw)
         audio = base64.b64decode(message["media"]["payload"])
-        assert len(audio) == 640
+        assert len(audio) == 320  # zero-padded to the frame quantum
         assert len(audio) % 320 == 0
 
     @staticmethod
@@ -301,6 +347,7 @@ class TestVaaniTelephony:
 
         serializer = VaaniFrameSerializer(stream_sid="MZ123")
         # a sub-chunk audio tail is pending when the call ends
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
         assert await serializer.serialize(OutputAudioRawFrame(
             audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
         )) is None
@@ -545,6 +592,7 @@ class TestFreeSwitchTelephony:
         # 8000 Hz × 2 bytes/sample × 1 channel = exactly 200 ms of speech —
         # a mislabeled rate here is what wrong-speed playback sounds like.
         serializer = FreeSwitchAudioStreamSerializer()
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)  # steady state
         raw = None
         for _ in range(3):  # 3 × 1280 = 3840 bytes ≥ min chunk
             raw = await serializer.serialize(OutputAudioRawFrame(
@@ -557,7 +605,9 @@ class TestFreeSwitchTelephony:
         assert len(audio) / (8000 * 2) == pytest.approx(0.2, abs=0.05)
 
     async def test_audio_is_batched_before_module_file_playback(self):
+        """Steady-state batching is unchanged; only the ramp starts small."""
         serializer = FreeSwitchAudioStreamSerializer()
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
         assert await serializer.serialize(OutputAudioRawFrame(
             audio=b"\x01" * 1600, sample_rate=8000, num_channels=1,
         )) is None
@@ -567,3 +617,13 @@ class TestFreeSwitchTelephony:
         audio = base64.b64decode(json.loads(raw)["data"]["audioData"])
         assert len(audio) == 3200
         assert audio == b"\x01" * 1600 + b"\x02" * 1600
+
+    async def test_first_reply_audio_is_not_held_for_the_full_batch(self):
+        """The opening audio of a reply leaves immediately (latency path)."""
+        serializer = FreeSwitchAudioStreamSerializer()
+        raw = await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 640, sample_rate=8000, num_channels=1,
+        ))
+        audio = base64.b64decode(json.loads(raw)["data"]["audioData"])
+        assert len(audio) == 640
+        assert len(audio) % 320 == 0

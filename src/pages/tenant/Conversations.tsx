@@ -4,7 +4,11 @@ import { useAsync } from "@/hooks/useAsync";
 import { flagConversation, getConversation, listConversations, simulateAction } from "@/services/api";
 import { getToken } from "@/services/http";
 import { downloadFile } from "@/services/fileDownload";
-import type { Conversation, ConversationRecording } from "@/types/domain";
+import type {
+  Conversation,
+  ConversationAiSummary,
+  ConversationRecording,
+} from "@/types/domain";
 import { Button, Drawer, EmptyState, ErrorState, MenuButton, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
 import { ExportControls } from "@/components/ExportControls";
@@ -295,6 +299,8 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
           loading={detailQ.loading}
         />
 
+        <AiSummarySection summary={detailQ.data?.summary ?? null} loading={detailQ.loading} />
+
         {flags.tenantCostVisibility && (
           <CostBreakdown cost={cost} costUsd={conv.costUsd} money={money} loading={detailQ.loading} />
         )}
@@ -424,6 +430,99 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
    conversation's usage events and the pricing snapshot recorded at the time.
    The client never multiplies a quantity by a rate: it renders what it is
    given, so this panel and the list row cannot drift apart. */
+
+function AiSummarySection({ summary, loading }: {
+  summary: ConversationAiSummary | null;
+  loading: boolean;
+}) {
+  if (loading) return <span className="skeleton" style={{ height: 40, borderRadius: 10 }} />;
+  if (!summary) return null; // no post-call analysis exists for this call
+
+  const nba = summary.nextBestAction;
+  const pendingItems = [...(summary.unresolvedItems ?? []), ...(summary.missingSlots ?? [])];
+  const processing = summary.status === "queued" || summary.status === "processing";
+  const failed = summary.status === "failed";
+
+  return (
+    <div className="card-pad-sm col gap-8" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+      <div className="row gap-8" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <span className="row gap-6 t-strong" style={{ fontSize: 13 }}>
+          <Icon name="sparkles" size={13} style={{ color: "var(--ink-3)" }} />
+          AI call summary
+          {summary.callOutcome && (
+            <StatusChip status="neutral" label={summary.callOutcome.replace(/_/g, " ")} />
+          )}
+        </span>
+        <span className="row gap-8">
+          {summary.followUpRequired && <StatusChip status="pending_approval" label="Follow-up" />}
+          <StatusChip status={processing ? "processing" : failed ? "failed" : "completed"} />
+        </span>
+      </div>
+
+      {processing && (
+        <span className="t-micro">The post-call analysis is still being generated.</span>
+      )}
+      {failed && (
+        <span className="t-micro">
+          Analysis could not be generated{summary.error ? ` (${summary.error})` : ""}; showing the
+          deterministic fallback recorded from the call itself.
+        </span>
+      )}
+      {summary.summary && <p style={{ fontSize: 13, margin: 0 }}>{summary.summary}</p>}
+
+      {nba?.action && (
+        <div className="row gap-8" style={{ alignItems: "baseline", flexWrap: "wrap" }}>
+          <span className="t-label">Next best action</span>
+          <span className="t-strong" style={{ fontSize: 12.5, textTransform: "capitalize" }}>
+            {nba.action.replace(/_/g, " ")}
+          </span>
+          {nba.priority && <StatusChip status={nba.priority === "urgent" || nba.priority === "high" ? "warning" : "neutral"} label={nba.priority} />}
+          {nba.recommendedAt && (
+            <span className="t-micro">by {new Date(nba.recommendedAt).toLocaleString()}</span>
+          )}
+          {nba.reason && <span className="t-micro">{nba.reason}</span>}
+        </div>
+      )}
+
+      {(summary.customerCommitments?.length ?? 0) > 0 && (
+        <div className="col gap-4">
+          <span className="t-label">Customer commitments</span>
+          {summary.customerCommitments.map((c, i) => (
+            <span key={i} className="row gap-6" style={{ fontSize: 12.5 }}>
+              <Icon name="check-circle" size={12} style={{ color: "var(--ink-3)" }} />
+              <span>
+                {c.description || c.type}
+                {c.amount ? ` — ${c.currency || ""} ${c.amount.toLocaleString("en-IN")}` : ""}
+                {c.dueDate ? ` (due ${c.dueDate})` : ""}
+                {c.status ? ` · ${c.status}` : ""}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {pendingItems.length > 0 && (
+        <div className="row gap-6 wrap" style={{ alignItems: "center" }}>
+          <span className="t-label">Pending</span>
+          {pendingItems.map((item) => (
+            <span key={item} className="chip chip-neutral" style={{ textTransform: "none" }}>
+              {item.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {(summary.importantFacts?.length ?? 0) > 0 && (
+        <div className="col gap-2">
+          <span className="t-label">Important facts</span>
+          {summary.importantFacts.map((fact, i) => (
+            <span key={i} className="t-micro">• {fact}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CostBreakdown({ cost, costUsd, money, loading }: {
   cost: Conversation["cost"];

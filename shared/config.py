@@ -141,6 +141,17 @@ class Settings(BaseSettings):
     # Disable when running dedicated `python -m backend.workers.ingestion` workers.
     ingestion_worker_embedded: bool = True
 
+    # ── Post-call intelligence (summary / outcome / Next Best Action) ─
+    # The processor runs embedded in the voice worker/gateway processes (the
+    # rows are durable; SKIP-LOCKED-style claims make multiple pollers safe).
+    post_call_worker_embedded: bool = True
+    post_call_poll_seconds: float = 3.0
+    post_call_max_attempts: int = 3
+    # A 'processing' row older than this is presumed orphaned by a process
+    # restart and is reclaimed.
+    post_call_stale_processing_seconds: float = 600.0
+    post_call_llm_timeout_seconds: float = 25.0
+
     # ── Providers (platform defaults; tenant/bot overrides in DB) ─
     # Defaults must stay inside the governed provider matrix:
     # STT=Sarvam, TTS=Sarvam/ElevenLabs, LLM=OpenAI, Embedding=OpenAI.

@@ -19,11 +19,21 @@ class TestValidateParams:
         "mode": {"type": "enum", "values": ["transcribe", "verbatim"], "default": "transcribe"},
         "dict_id": {"type": "string", "optional": True, "max_length": 10},
         "chunk_length_schedule": {"type": "int_list", "min": 50, "max": 500, "max_items": 3},
+        "language_hints": {"type": "string_list", "max_items": 2,
+                           "values": ["hi", "en", "ta"]},
         "streaming": {"type": "boolean", "default": True, "fixed": True},
     }
 
     def check(self, params):
         return validate_params(self.SCHEMA, params, prefix="TTS")
+
+    def test_string_list_accepts_allowed_values(self):
+        assert self.check({"language_hints": ["hi", "en"]}) == []
+
+    def test_string_list_rejects_unknown_value_and_overflow(self):
+        assert self.check({"language_hints": ["hi", "fr"]})
+        assert self.check({"language_hints": ["hi", "en", "ta"]})  # > max_items
+        assert self.check({"language_hints": "hi"})  # not a list
 
     def test_valid_params_pass(self):
         assert self.check({

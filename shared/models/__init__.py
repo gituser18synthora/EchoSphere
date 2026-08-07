@@ -62,6 +62,7 @@ from shared.models.billing_models import (
 )
 from shared.models.collections_models import CustomerCollectionContext
 from shared.models.context_models import RuntimeContextRecord, RuntimeContextSchema
+from shared.models.memory_models import ConversationMemory
 
 __all__ = [
     "Base",
@@ -78,4 +79,5 @@ __all__ = [
     "Currency", "ExchangeRate", "ProviderPricing", "UsageEvent",
     "CustomerCollectionContext",
     "RuntimeContextSchema", "RuntimeContextRecord",
+    "ConversationMemory",
 ]
