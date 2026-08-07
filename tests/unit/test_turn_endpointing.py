@@ -878,6 +878,38 @@ class TestEndpointConfiguration:
         browser = resolve_turn_detection(self._config(), "browser")
         assert browser["stop_secs"] + browser["user_speech_timeout"] >= 1.4
 
+    def test_telephony_defaults_are_the_tuned_values(self):
+        # The 2026-08 latency work: every value here is caller-audible dead
+        # time appended to EVERY telephony turn. Change deliberately.
+        d = TURN_DETECTION_DEFAULTS["telephony"]
+        assert d["user_speech_timeout"] == 0.7
+        assert d["finalize_grace"] == 0.12
+        assert d["finalize_settle"] == 0.1
+        assert d["complete_endpoint"] == 0.2
+        assert d["short_reply_endpoint"] == 0.1
+
+    def test_browser_defaults_stay_conservative(self):
+        # Browser endpoints were NOT tightened with telephony: browser tests
+        # showed noise-triggered early endpoints are costlier there.
+        b = TURN_DETECTION_DEFAULTS["browser"]
+        assert b["user_speech_timeout"] == 1.2
+        assert b["finalize_grace"] == 0.3
+        assert b["finalize_settle"] == 0.15
+        assert b["complete_endpoint"] == 0.35
+        for key in ("user_speech_timeout", "finalize_grace",
+                    "finalize_settle", "complete_endpoint"):
+            assert b[key] >= TURN_DETECTION_DEFAULTS["telephony"][key], key
+
+    def test_incomplete_utterances_keep_a_longer_window_than_short_replies(self):
+        # The safety rule the tuning must preserve: mid-thought speech waits
+        # the FULL pause window (stop_secs + user_speech_timeout); a short
+        # complete reply answers on the much tighter short_reply_endpoint.
+        for transport in ("browser", "telephony"):
+            d = TURN_DETECTION_DEFAULTS[transport]
+            full_window = d["stop_secs"] + d["user_speech_timeout"]
+            assert full_window >= 4 * d["short_reply_endpoint"], transport
+            assert full_window >= 2 * d["complete_endpoint"], transport
+
     def test_overrides_are_clamped(self):
         turn = resolve_turn_detection(
             self._config({"complete_endpoint": 99, "finalize_settle": -5}),

@@ -141,7 +141,27 @@ class TurnLatencyTracker:
         self.last_final_at = now
 
     def mark_dispatched(self) -> None:
+        """A new turn is in flight from this instant.
+
+        Every stage mark downstream of dispatch is cleared: anything already
+        stamped there belongs to a PREVIOUS generation (a cancelled turn that
+        was merged and re-dispatched, a greeting, a reply cut by barge-in) and
+        must not be reported as this turn's stage time — that is exactly how
+        negative classify/LLM spans and stale TTS timestamps were produced.
+        The speech marks are left alone: they describe the caller's utterance,
+        which this dispatch answers.
+        """
         self.dispatched_at = time.monotonic()
+        self.classified_at = None
+        self.tool_started_at = None
+        self.tool_done_at = None
+        self.llm_request_at = None
+        self.llm_first_token_at = None
+        self.llm_completed_at = None
+        self.tts_request_at = None
+        self.tts_first_byte_at = None
+        self.bot_started_at = None
+        self.reported = False
 
     def mark_classified(self) -> None:
         self.classified_at = time.monotonic()
@@ -173,17 +193,33 @@ class TurnLatencyTracker:
             self.tts_request_at = time.monotonic()
 
     def mark_tts_first_byte(self) -> None:
-        """First audio byte back FROM the provider, before our resample/queue."""
+        """First audio byte back FROM the provider, before our resample/queue.
+
+        Ownership guard: a byte with no synthesis request recorded on THIS
+        turn is late audio from a previous (cancelled) turn's context — it
+        must not stamp a timestamp into the turn now in flight.
+        """
+        if self.tts_request_at is None:
+            self.count("tts_byte_without_request")
+            return
         if self.tts_first_byte_at is None:
             self.tts_first_byte_at = time.monotonic()
 
     def mark_bot_started_speaking(self) -> None:
-        if self.bot_started_at is None:
+        # Ownership guard: bot audio with neither a dispatched turn nor a
+        # synthesis request on THIS measurement is the tail of a PREVIOUS
+        # reply (barge-in race: the caller's new speech already reset the
+        # tracker) — timing the new caller turn against it would report a
+        # negative/absurd response span.
+        if self.dispatched_at is None and self.tts_request_at is None:
+            self.count("bot_audio_without_turn")
+        elif self.bot_started_at is None:
             self.bot_started_at = time.monotonic()
         # While the bot is speaking there is no completed bot-stop to measure a
         # response gap from: a caller who cuts in now is barging in, not
         # answering. Clearing this keeps a stale previous-turn timestamp from
-        # being reported as this turn's think time.
+        # being reported as this turn's think time. (Unconditional: the bot is
+        # audibly speaking whichever turn owns the audio.)
         self.bot_stopped_at = None
 
     def count(self, name: str) -> None:
@@ -231,7 +267,24 @@ class TurnLatencyTracker:
             "tts_first_audio": _ms(self.bot_started_at, self.llm_first_token_at),
             "response": _ms(self.bot_started_at, self.speech_stopped_at),
         }
-        return {name: value for name, value in spans.items() if value is not None}
+        clean: dict[str, float] = {}
+        for name, value in spans.items():
+            if value is None:
+                continue
+            if value < 0:
+                # Ownership is enforced at the marks (see mark_dispatched /
+                # mark_tts_first_byte / mark_bot_started_speaking); a negative
+                # span surviving to here means an unmodelled cross-turn race.
+                # It is dropped and counted — never reported, never clamped
+                # into a fake 0 that would hide the bug.
+                logger.warning(
+                    "turn[%s] dropped negative %s span (%.1f ms) — "
+                    "cross-turn mark contamination", self.session_id, name, value,
+                )
+                self.count("negative_span_dropped")
+                continue
+            clean[name] = value
+        return clean
 
     # The serial stages a slow response can hide in, in pipeline order. The
     # composite spans (llm_first_token, tts_first_audio, response) are

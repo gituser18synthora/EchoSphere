@@ -37,7 +37,8 @@ at the root path), `voice_runtime/app.py` (`telephony_session`),
 
 ## Webhook signature verification
 
-Two schemes (`backend/telephony/webhooks.py`):
+Two schemes (`shared/telephony_webhooks.py`; `backend/telephony/webhooks.py`
+is a compatibility re-export):
 
 | Provider | Scheme |
 |---|---|
@@ -82,7 +83,7 @@ provider's media stream at
 | Telnyx | JSON `{"stream_url": ..., "stream_track": "inbound_track"}` (for the TeXML/Call Control handler) |
 | Exotel | JSON `{"url": ...}` (Voicebot applet) |
 | Vaani | JSON `{"url": ...}` (bidirectional VoiceBOT WebSocket endpoint) |
-| FreeSWITCH | JSON `{"audio_fork_url": ...}` (consumed by the dialplan helper) |
+| FreeSWITCH | JSON `{"audio_stream_url": ..., "audio_fork_url": ...}` — the fork URL is the same WS URL with `?transport=audio_fork` appended (consumed by the dialplan helper) |
 
 `public_ws_base` comes from `TELEPHONY_PUBLIC_WS_BASE` when set (required when
 the voice worker is not reachable on the host:port that served the webhook —
@@ -127,8 +128,10 @@ session's returned URL only ever points at one instance.
 3. `build_media_serializer()` constructs the Pipecat serializer:
    `TwilioFrameSerializer` (streamSid/callSid), `TelnyxFrameSerializer`
    (stream_id/call_control_id/outbound encoding), `PlivoFrameSerializer`,
-   `ExotelFrameSerializer`, `VaaniFrameSerializer` — or
-   `RawPCMSerializer(input_sample_rate=8000)` for FreeSWITCH.
+   `ExotelFrameSerializer`, `VaaniFrameSerializer` — or, for FreeSWITCH,
+   `FreeSwitchAudioStreamSerializer` (default, `mod_audio_stream`) /
+   `FreeSwitchAudioForkSerializer` (when the WS URL carries
+   `?transport=audio_fork`).
 4. The regular voice pipeline runs (see [VOICE_RUNTIME.md](VOICE_RUNTIME.md)); the
    channel recorded on the transcript is the provider name.
 
@@ -144,8 +147,10 @@ mono PCM:
 - EchoSphere → Vaani: `media` chunks for bot audio, `clear` on interruption,
   `transfer` on human handoff, and `stop` at call termination.
 - Bot audio is emitted on 320-byte boundaries, targeting at least 3.2 KB per
-  chunk and never more than 100 KB. A final short remainder is flushed when bot
-  speech stops; exactly one `stop` is ever sent and nothing follows it.
+  steady-state chunk and never more than 100 KB. The first packets of each
+  utterance ramp up from 640 bytes so time-to-first-audio stays low. A final
+  short remainder is flushed when bot speech stops; exactly one `stop` is ever
+  sent and nothing follows it.
 
 The `start.mediaFormat.sampleRate` must be `8000` and `channels` must be `1`;
 invalid Vaani handshakes are rejected with close code `4400`.
@@ -183,9 +188,19 @@ tenant/bot resolution, which always comes from the dialed number mapping.
 
 Two integration surfaces (`voice_runtime/freeswitch.py`):
 
-- **Media**: the dialplan attaches `mod_audio_fork` to the worker's
-  `/ws/telephony/freeswitch/{session_id}` endpoint — raw L16 @ 8 kHz both ways, no
-  JSON handshake, handled by `RawPCMSerializer`.
+- **Media**: the dialplan attaches an audio module to the worker's
+  `/ws/telephony/freeswitch/{session_id}` endpoint — no JSON stream-start
+  handshake. Two wire protocols (`voice_runtime/telephony.py`):
+  - `mod_audio_stream` (default): inbound binary **stereo** L16 @ 8 kHz
+    (caller/read + bot/write interleaved; the caller channel is selected per
+    `FREESWITCH_CALLER_CHANNEL`, default `auto`); bot audio goes out in the
+    module's `streamAudio` JSON/base64 envelope, and barge-in sends
+    `{"type": "killAudio"}` (`FREESWITCH_SEND_KILL_AUDIO`, default on) so the
+    module drops already-buffered playback.
+  - `mod_audio_fork` (WS URL with `?transport=audio_fork`): inbound binary
+    **mono** L16 @ 16 kHz (the fork is started in `mono 16k` mode); bot audio
+    goes out in the module's `playAudio` JSON envelope; barge-in also sends
+    `killAudio`.
 - **Control**: `ESLClient`, a minimal asyncio Event Socket Layer client (inbound
   mode) implementing `transfer` (`uuid_transfer`), `hangup` (`uuid_kill`),
   `api`, and `health_check`. Configuration: `FREESWITCH_HOST` (default 127.0.0.1),
@@ -204,4 +219,6 @@ Deployment notes for the ESL socket are in
 | 4401 | unknown or expired session id |
 | 4403 | session tenant does not match bot tenant (defense in depth) |
 | 4404 | unknown provider, or bot configuration unavailable |
+| 4409 | a live connection already exists for this session (one session, one media stream) |
 | 4429 | voice worker at capacity (`VOICE_WORKER_CONCURRENCY`) |
+| 4500 | voice engine configuration error (pipeline construction failed) |

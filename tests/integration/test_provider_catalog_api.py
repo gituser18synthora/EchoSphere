@@ -192,6 +192,54 @@ class TestValidation:
         assert "'temperature' must be between" in joined
         assert "unknown parameter 'made_up'" in joined
 
+    def test_platform_llm_orchestration_settings_are_valid(self, client, tenant_admin):
+        # Platform-owned orchestration keys are validated by the platform
+        # contract, not rejected as unknown provider parameters.
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"llmProvider": "openai", "llmModel": "gpt-4o-mini",
+                       "llmSettings": {
+                           "temperature": 0.3,
+                           "goal_engine_enabled": True,
+                           "intent_llm_enabled": True,
+                           "orchestration_provider": "openai",
+                           "orchestration_model": "gpt-4o-mini",
+                           "orchestration_timeout_seconds": 1.2,
+                           "orchestration_max_tokens": 200,
+                           "intent_timeout_seconds": 2.0,
+                       }},
+        }))
+        assert result["valid"], result["errors"]
+
+    def test_platform_llm_settings_out_of_range_rejected(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"llmProvider": "openai", "llmModel": "gpt-4o-mini",
+                       "llmSettings": {
+                           "orchestration_timeout_seconds": 9.0,
+                           "orchestration_max_tokens": 16,
+                           "goal_engine_enabled": "yes",
+                       }},
+        }))
+        assert not result["valid"]
+        joined = " ".join(result["errors"])
+        assert "'orchestration_timeout_seconds' must be between 0.5 and 5" in joined
+        assert "'orchestration_max_tokens' must be between 64 and 340" in joined
+        assert "'goal_engine_enabled' must be true or false" in joined
+
+    def test_unknown_orchestration_model_rejected(self, client, tenant_admin):
+        result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
+            "botId": "bot-101",
+            "config": {"llmProvider": "openai", "llmModel": "gpt-4o-mini",
+                       "llmSettings": {
+                           "orchestration_provider": "openai",
+                           "orchestration_model": "made-up-model",
+                       }},
+        }))
+        assert not result["valid"]
+        joined = " ".join(result["errors"])
+        assert "orchestration model 'made-up-model' does not belong" in joined
+
     def test_eleven_v3_default_engine_with_voice_is_valid(self, client, tenant_admin):
         result = data(client.post(f"{API}/providers/validate-config", headers=tenant_admin, json={
             "botId": "bot-101",

@@ -51,7 +51,8 @@ class _DecisionLLM:
 
     async def generate(self, messages, *, system=None, temperature=None,
                        max_tokens=None, tools=None):
-        self.calls.append({"messages": messages, "system": system})
+        self.calls.append({"messages": messages, "system": system,
+                           "max_tokens": max_tokens})
         if self._delay:
             await asyncio.sleep(self._delay)
         if self._fail:
@@ -251,6 +252,113 @@ class TestGoalEngineDecide:
         assert "identity confirmation" in user
         assert "transaction_reference" in user
         assert "क्या?" in user
+
+
+# ── latency budget: bounded input, bounded output, hard deadline ─────────────
+
+
+class TestLatencyBudget:
+    def test_default_budget_is_tight(self):
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY)
+        assert engine._timeout == 1.2
+        assert engine._max_tokens == 200
+
+    def test_configured_values_are_clamped_to_safe_ranges(self):
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY,
+                            timeout_seconds=60, max_tokens=4096)
+        assert engine._timeout == 5.0
+        assert engine._max_tokens == 340
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY,
+                            timeout_seconds=0.05, max_tokens=8)
+        assert engine._timeout == 0.5
+        assert engine._max_tokens == 64
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY,
+                            timeout_seconds="junk", max_tokens=None)
+        assert engine._timeout == 1.2
+        assert engine._max_tokens == 200
+
+    async def test_max_tokens_reaches_the_model_call(self):
+        engine, llm = make_engine({"scope": "in_scope"})
+        await engine.decide("hello", [])
+        assert llm.calls[-1]["max_tokens"] == 200
+
+    async def test_history_is_trimmed_to_two_capped_turns(self):
+        engine, llm = make_engine({"scope": "in_scope"})
+        history = [
+            {"role": "user", "content": f"OLD-{i} " + "x" * 500}
+            for i in range(6)
+        ]
+        history += [
+            {"role": "assistant", "content": "RECENT-BOT " + "y" * 500},
+            {"role": "user", "content": "RECENT-USER " + "z" * 500},
+        ]
+        await engine.decide("अभी बताइए", history)
+        user = llm.calls[-1]["messages"][-1]["content"]
+        assert "RECENT-BOT" in user and "RECENT-USER" in user
+        assert "OLD-5" not in user  # only the last two turns travel
+        for line in user.splitlines():
+            if line.startswith(("Bot:", "Caller:")):
+                assert len(line) <= 240 + len("Caller: ")
+
+    def test_derived_prompt_excerpt_is_capped(self):
+        policy = compile_goal_policy(
+            None, bot_name="X", system_prompt="p" * 10_000,
+            intents=[], domain_policy="generic",
+        )
+        assert len(policy.prompt_excerpt) <= 1200
+
+    def test_full_decision_output_fits_the_token_budget(self):
+        """The output cap must never truncate a schema-complete decision.
+
+        A worst-case realistic decision (every field populated, a two-short-
+        sentence Hindi response_text, a 12-word reason) is measured with the
+        real tokenizer of the default orchestration model family. If this
+        fails, raise the default budget (max 240) rather than truncating.
+        """
+        import tiktoken
+
+        worst_case = {
+            "intent": "identity_confirmation",
+            "signal": "already_paid",
+            "decision": "needs_clarification",
+            "scope": "in_scope",
+            "confidence": 0.85,
+            "reason": "caller claims payment done but gave no usable "
+                      "transaction reference yet",
+            "slots": {
+                "transaction_reference": {"status": "exists_claimed",
+                                          "value": None},
+                "payment_method": {"status": "provided", "value": "UPI"},
+                "payment_date": {"status": "provided", "value": "kal shaam"},
+            },
+            "next_action": "request_slot_value",
+            "needs_clarification": True,
+            "response_text": "जी, आपकी पेमेंट की पुष्टि के लिए मुझे ट्रांजैक्शन "
+                             "नंबर चाहिए। कृपया अपना बारह अंकों का UTR नंबर "
+                             "धीरे-धीरे बताइए।",
+        }
+        encoding = tiktoken.get_encoding("o200k_base")  # gpt-4o family
+        tokens = len(encoding.encode(json.dumps(worst_case, ensure_ascii=False)))
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY)
+        assert tokens <= engine._max_tokens, (
+            f"decision output needs {tokens} tokens > budget "
+            f"{engine._max_tokens}; raise the default (max 240)"
+        )
+
+    async def test_a_two_hundred_token_shaped_reply_still_parses(self):
+        """End to end: a maximal decision payload parses and validates."""
+        engine, _ = make_engine({
+            "intent": None, "signal": "already_paid", "decision": None,
+            "scope": "in_scope", "confidence": 0.9,
+            "reason": "payment claim without reference",
+            "slots": {"transaction_reference": {"status": "exists_claimed"}},
+            "next_action": "request_slot_value", "needs_clarification": True,
+            "response_text": "कृपया ट्रांजैक्शन नंबर बताइए।",
+        })
+        decision = await engine.decide("payment कर दिया", [])
+        assert decision is not None
+        assert decision.next_action == "request_slot_value"
+        assert engine.last_fallback_reason is None
 
 
 # ── 7: two industries, one engine, different configuration ──────────────────

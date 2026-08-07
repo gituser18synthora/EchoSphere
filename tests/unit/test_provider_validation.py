@@ -2,7 +2,11 @@
 
 import pytest
 
-from backend.core.provider_catalog import validate_params, validate_stt_settings
+from backend.core.provider_catalog import (
+    validate_llm_settings,
+    validate_params,
+    validate_stt_settings,
+)
 from shared.providers.languages import (
     matches_model_language,
     to_platform_language,
@@ -101,6 +105,68 @@ class TestValidateSttSettings:
         assert validate_stt_settings(
             self.SCHEMA, {"mode": "transcribe", "turn_detection": turn_detection}
         )
+
+
+class TestValidateLlmSettings:
+    """Platform-owned orchestration keys are validated by the platform
+    contract and removed before provider-schema validation — the same design
+    as the STT turn_detection/noise_gate sections."""
+
+    SCHEMA = {
+        "temperature": {"type": "number", "min": 0.0, "max": 2.0},
+        "max_tokens": {"type": "integer", "min": 16, "max": 4096},
+    }
+
+    def check(self, params):
+        return validate_llm_settings(self.SCHEMA, params, prefix="LLM")
+
+    def test_platform_keys_accepted_outside_provider_schema(self):
+        assert self.check({
+            "temperature": 0.3,
+            "max_tokens": 256,
+            "goal_engine_enabled": True,
+            "intent_llm_enabled": False,
+            "orchestration_provider": "openai",
+            "orchestration_model": "gpt-4o-mini",
+            "orchestration_timeout_seconds": 1.2,
+            "orchestration_max_tokens": 200,
+            "intent_timeout_seconds": 2.0,
+            "memory_greeting_enabled": True,
+            "memory_greeting_timeout_seconds": 4.0,
+        }) == []
+
+    def test_provider_params_still_validated_strictly(self):
+        errors = self.check({"temperature": 9.0, "bogus": 1,
+                             "goal_engine_enabled": True})
+        assert any("temperature" in e for e in errors)
+        assert any("unknown parameter 'bogus'" in e for e in errors)
+        assert not any("goal_engine_enabled" in e for e in errors)
+
+    @pytest.mark.parametrize("params", [
+        {"goal_engine_enabled": "yes"},
+        {"intent_llm_enabled": 1},
+        {"memory_greeting_enabled": "on"},
+        {"orchestration_provider": 42},
+        {"orchestration_model": "x" * 81},
+        {"orchestration_timeout_seconds": 0.1},     # below the 0.5 s floor
+        {"orchestration_timeout_seconds": 9.0},     # above the 5 s ceiling
+        {"orchestration_timeout_seconds": "fast"},
+        {"orchestration_max_tokens": 32},           # below the 64 floor
+        {"orchestration_max_tokens": 512},          # above the 340 ceiling
+        {"orchestration_max_tokens": 1.5},
+        {"orchestration_max_tokens": True},
+        {"intent_timeout_seconds": 0.2},
+        {"intent_timeout_seconds": 8.0},
+        {"memory_greeting_timeout_seconds": 30.0},
+    ])
+    def test_invalid_platform_values_are_rejected(self, params):
+        assert self.check(params)
+
+    def test_safe_boundary_values_accepted(self):
+        assert self.check({"orchestration_timeout_seconds": 0.5}) == []
+        assert self.check({"orchestration_timeout_seconds": 5.0}) == []
+        assert self.check({"orchestration_max_tokens": 64}) == []
+        assert self.check({"orchestration_max_tokens": 340}) == []
 
 
 class TestLanguageMapping:
