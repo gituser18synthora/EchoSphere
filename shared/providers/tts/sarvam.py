@@ -103,6 +103,9 @@ class SarvamTTS(TTSProvider):
         self._voice = config.voice or ""
         self._language = config.language or ""
         self._timeout = config.timeout_seconds
+        # Fixed output rate — synthesize() resamples any other WAV rate to
+        # it; consumers resample when their pipeline differs.
+        self.output_sample_rate = _PCM_RATE
 
     async def synthesize(
         self, text: str, *, voice: str | None = None, language: str | None = None,

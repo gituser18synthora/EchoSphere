@@ -10,8 +10,9 @@ Wire protocol (docs.sarvam.ai/api-reference/text-to-speech/stream):
         | {"type":"error","data":{"message":..., "code":<int>}}
 
 Sarvam has no per-generation contexts: exactly one generation is active at a
-time, and ``cancel`` closes the socket to stop server-side synthesis (the next
-generation reconnects lazily). Re-sending config mid-connection is supported
+time, and ``cancel`` closes the socket to stop server-side synthesis (a
+background reconnect then rebuilds it so the next generation doesn't pay the
+cold handshake). Re-sending config mid-connection is supported
 by the API (it auto-flushes) and is how voice/language switches avoid a
 reconnect. The server idles out after ~60s, so a ping is sent every 20s.
 """
@@ -46,7 +47,11 @@ logger = logging.getLogger("providers.tts.sarvam_ws")
 # Overridable for self-hosted gateways and mocked end-to-end verification.
 _WS_URL = os.environ.get("SARVAM_TTS_WS_URL", "wss://api.sarvam.ai/text-to-speech/ws")
 _KEEPALIVE_SECONDS = 20
-_MAX_CONNECT_ATTEMPTS = 3
+# Connect attempts happen inline on the reply path: two short attempts, then
+# error/fallback — never tens of seconds of handshake retries while the
+# caller waits in silence.
+_MAX_CONNECT_ATTEMPTS = 2
+_CONNECT_TIMEOUT_S = 3.0
 
 # Parameters the two bulbul generations accept on the config message.
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
@@ -65,46 +70,56 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         self._keepalive_task: asyncio.Task | None = None
         self._current_generation: str | None = None
         self._send_lock = asyncio.Lock()
+        # Serializes concurrent connect() calls (a post-cancel background
+        # reconnect racing the next dispatch) so only one socket is opened.
+        self._connect_lock = asyncio.Lock()
+        self._reconnect_task: asyncio.Task | None = None
+        # Config last sent on the CURRENT socket — a resend auto-flushes
+        # server-side, so identical configs are skipped.
+        self._last_config: dict | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> None:
         if self._closed:
             raise RuntimeError("provider is closed")
-        if self._ws is not None and self._ws.state is State.OPEN:
-            return
-        model = self._settings.model or "bulbul:v3"
-        url = f"{_WS_URL}?model={model}&send_completion_event=true"
-        last_category = "timeout"
-        for attempt in range(_MAX_CONNECT_ATTEMPTS):
-            try:
-                self._ws = await asyncio.wait_for(
-                    websocket_connect(
-                        url,
-                        additional_headers={"api-subscription-key": self._settings.api_key},
-                    ),
-                    timeout=self._settings.timeout_seconds,
-                )
-                break
-            except InvalidStatus as exc:  # HTTP handshake rejection
-                status = exc.response.status_code
-                category = self.categorize_close(status)
-                await self._emit_error(category, f"Sarvam TTS handshake rejected ({status})")
-                if category == "auth":
-                    raise ProviderError(self.name, "auth",
-                                        "Sarvam rejected the API key") from exc
-                last_category = category
-            except (TimeoutError, OSError, ConnectionClosed):
-                last_category = "timeout"
-                await asyncio.sleep(0.2 * (attempt + 1))
-        else:
-            await self._emit_error(last_category, "Could not connect to Sarvam TTS")
-            raise ProviderError(self.name, last_category, "Could not connect to Sarvam TTS")
+        async with self._connect_lock:
+            if self._ws is not None and self._ws.state is State.OPEN:
+                return
+            model = self._settings.model or "bulbul:v3"
+            url = f"{_WS_URL}?model={model}&send_completion_event=true"
+            last_category = "timeout"
+            for attempt in range(_MAX_CONNECT_ATTEMPTS):
+                try:
+                    self._ws = await asyncio.wait_for(
+                        websocket_connect(
+                            url,
+                            additional_headers={"api-subscription-key": self._settings.api_key},
+                        ),
+                        timeout=min(_CONNECT_TIMEOUT_S, self._settings.timeout_seconds),
+                    )
+                    break
+                except InvalidStatus as exc:  # HTTP handshake rejection
+                    status = exc.response.status_code
+                    category = self.categorize_close(status)
+                    await self._emit_error(category, f"Sarvam TTS handshake rejected ({status})")
+                    if category == "auth":
+                        raise ProviderError(self.name, "auth",
+                                            "Sarvam rejected the API key") from exc
+                    last_category = category
+                except (TimeoutError, OSError, ConnectionClosed):
+                    last_category = "timeout"
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            else:
+                await self._emit_error(last_category, "Could not connect to Sarvam TTS")
+                raise ProviderError(self.name, last_category, "Could not connect to Sarvam TTS")
 
-        await self._send_config()
-        if self._receive_task is None or self._receive_task.done():
-            self._receive_task = asyncio.create_task(self._receive_loop())
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            # A fresh socket always gets a config, whatever was sent before.
+            self._last_config = None
+            await self._send_config()
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = asyncio.create_task(self._receive_loop())
+            if self._keepalive_task is None or self._keepalive_task.done():
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def configure(self, settings: TTSStreamSettings) -> None:
         """Swap voice/language/params. Reuses the connection when open."""
@@ -130,11 +145,41 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         if self._current_generation == generation_id:
             self._current_generation = None
             await self._teardown_socket()
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """Rebuild the socket in the background after a barge-in teardown so
+        the next reply doesn't pay the cold-connect handshake inline."""
+        if self._closed:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        try:
+            await self.connect()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — the next dispatch reconnects lazily
+            logger.info(
+                "sarvam-tts: background reconnect after cancel failed; the "
+                "next dispatch will reconnect"
+            )
 
     async def close(self) -> None:
         self._closed = True
         self._current_generation = None
         self._live_generations.clear()
+        task, self._reconnect_task = self._reconnect_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
         await self._teardown_socket()
 
     # ── internals ────────────────────────────────────────────────────────
@@ -203,7 +248,14 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         return config
 
     async def _send_config(self) -> None:
-        await self._send({"type": "config", "data": self._build_config()})
+        # A config resend auto-flushes server-side — skipped when nothing
+        # changed on the current socket. Fresh sockets always send (the cache
+        # resets on connect/teardown).
+        config = self._build_config()
+        if config == self._last_config:
+            return
+        await self._send({"type": "config", "data": config})
+        self._last_config = config
 
     async def _receive_loop(self) -> None:
         ws = self._ws
@@ -279,6 +331,7 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
                 task.cancel()
         self._receive_task = None
         self._keepalive_task = None
+        self._last_config = None
         ws, self._ws = self._ws, None
         if ws is not None:
             try:

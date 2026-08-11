@@ -169,6 +169,21 @@ _HISTORY_MAX_TURNS = 20
 # Sentence boundary for the guardrail sentence-hold streaming mode (Latin
 # terminators plus the Devanagari danda).
 _SENTENCE_END_RE = re.compile(r"[.!?।]['\"”)\]]*\s*$")
+# INTERIOR sentence boundary: a terminator followed by whitespace anywhere in
+# the held buffer. The end-anchored pattern above misses a boundary that lands
+# mid-chunk ("…kar dijiye. Aur"), which held finished sentences hostage until
+# the next one ended.
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?।]['\"”)\]]*\s")
+# Force-release cap for the sentence hold: a reply that runs this long without
+# a terminator (amounts, dates, comma-chained Hindi) is released at the last
+# word break after a guardrail check — without a cap, first audio waited for
+# the ENTIRE generation on such replies.
+_HOLD_FORCE_RELEASE_CHARS = 250
+# Released text cannot be unspoken; the streaming guardrail check scans this
+# much already-released tail plus everything held, so a blocked phrase forming
+# across the release boundary is still caught without rescanning the whole
+# reply on every token (block patterns are phrase-level, far shorter).
+_GUARD_TAIL_CHARS = 120
 
 
 def _parse_expiry(value) -> float | None:
@@ -204,6 +219,12 @@ class _GuardrailBlockedReply(Exception):
 # Mid-response flush: if the LLM stalls this long with text already buffered,
 # nudge the TTS to start rendering what we have.
 _LLM_PAUSE_FLUSH_SECONDS = 0.6
+# First-token deadline for the reply generation. The provider request timeout
+# (15 s) bounds the WHOLE request; a hung/queued provider otherwise produced
+# up to 15 s of dead air on a path that has a deterministic fallback. Past
+# this deadline the attempt is abandoned exactly like a pre-first-token
+# stream failure: one bounded retry, then the fallback/canned reply.
+_LLM_FIRST_TOKEN_DEADLINE_S = 3.0
 # End-of-turn stabilization: once the turn controller closes the user's turn
 # (or an orphan final arrives with no open turn), wait this long for straggler
 # STT finals before running the LLM — Sarvam finalizes per VAD flush, so one
@@ -232,6 +253,12 @@ _CLARIFY_MERGE_WINDOW = 6.0
 # replay a final on reconnect or SDK callback retry; a replay must not extend
 # the current utterance with duplicated text or open a second turn.
 _SEEN_FINALS_MAX = 64
+# A replay arrives within moments of the original final (SDK callback retry,
+# reconnect re-delivery) — never minutes later. Bounding the dedup window in
+# TIME is what lets identity keys without provider metrics stay safe: a caller
+# genuinely repeating the same words later in the call is real speech and must
+# be answered, while an immediate identical re-delivery is a replay.
+_SEEN_FINALS_REPLAY_WINDOW = 12.0
 
 # Runtime speaking style for every voice bot: natural but disciplined
 # acknowledgements, no pressure-looping after a clear refusal, and an absolute
@@ -562,6 +589,8 @@ class ConversationBrain(FrameProcessor):
         # while the endpoint timer runs (dead time) — (text, task). Consumed
         # by the dispatched turn only when the text still matches exactly.
         self._decision_prefetch: tuple[str, asyncio.Task] | None = None
+        # Speculative knowledge retrieval for the turn being decided.
+        self._kb_prefetch: tuple[str, asyncio.Task] | None = None
         # Monotonic time of the newest accepted final, used to tell "stragglers
         # are still arriving" from "the utterance has settled".
         self._last_final_at: float | None = None
@@ -583,7 +612,7 @@ class ConversationBrain(FrameProcessor):
         # Whether the bot is audibly speaking right now (barge-in telemetry).
         self._bot_speaking = False
         # Final-event identities already consumed (provider replay protection).
-        self._seen_finals: dict[str, None] = {}
+        self._seen_finals: dict[str, float] = {}
         # Partial hypotheses seen for the utterance in progress; the final's
         # agreement with them is one weak transcript-stability signal.
         self._interim_texts: list[str] = []
@@ -907,16 +936,21 @@ class ConversationBrain(FrameProcessor):
     def _is_duplicate_final(self, frame: TranscriptionFrame, text: str) -> bool:
         # Identity is per SEGMENT, not per provider request id: Sarvam's
         # request_id identifies the socket connection and is shared by every
-        # final on it (see voice_runtime.stt_events).
+        # final on it (see voice_runtime.stt_events). Duplicate only within
+        # the replay window: identity keys carry no timestamp (a replayed
+        # message would get a fresh one), so time-bounding here is what keeps
+        # a caller who genuinely repeats the same words later answerable.
         identity = final_event_key(frame, text)
         if identity is None:
             return False
-        if identity in self._seen_finals:
-            return True
-        self._seen_finals[identity] = None
+        now = time.monotonic()
+        seen_at = self._seen_finals.pop(identity, None)
+        self._seen_finals[identity] = now
         while len(self._seen_finals) > _SEEN_FINALS_MAX:
             self._seen_finals.pop(next(iter(self._seen_finals)))
-        return False
+        return (
+            seen_at is not None and now - seen_at <= _SEEN_FINALS_REPLAY_WINDOW
+        )
 
     def _interim_agreement(self, text: str) -> float | None:
         """Token overlap between a final and the partials that preceded it.
@@ -1071,7 +1105,20 @@ class ConversationBrain(FrameProcessor):
                 "stt_segment_held_during_bot_audio", text=text[:200]
             )
             return
-        await self._schedule_finalize()
+        # Orphan final (no open turn, bot quiet): the same adaptive endpoint
+        # as the open-turn path applies — a self-contained "haan" the VAD
+        # missed must not wait the full grace an incomplete thought gets.
+        # min() so the endpoint never regresses below the configured grace.
+        buffered = " ".join(self._pending_segments).strip()
+        if utterance_looks_complete(buffered):
+            endpoint = (
+                self._short_reply_endpoint
+                if is_short_complete_reply(buffered)
+                else self._complete_endpoint
+            )
+            await self._schedule_finalize(min(endpoint, self._finalize_grace))
+        else:
+            await self._schedule_finalize()
 
     async def _reject_segment(self, text: str, quality, verdict) -> None:
         """Drop one gated-out STT segment, keeping an audit trail.
@@ -1172,8 +1219,11 @@ class ConversationBrain(FrameProcessor):
         # Engine call for the CURRENT buffered text starts now and overlaps
         # it. If a straggler final changes the text before dispatch, the
         # prefetch is discarded and the decision runs fresh on the real turn.
-        if wait > 0.05:
-            self._start_decision_prefetch()
+        # Armed even at zero wait: dispatch still runs the router, guardrail
+        # input check and policy observation before the decision is consumed,
+        # and skipping here made the slowest stage of the turn fully serial on
+        # exactly the turns the endpointing worked hardest to make fast.
+        self._start_decision_prefetch()
 
     def _start_decision_prefetch(self, text_override: str | None = None) -> None:
         """Start (or keep) a speculative Goal Engine decision.
@@ -1239,6 +1289,39 @@ class ConversationBrain(FrameProcessor):
             self._recorder.add_event(
                 "decision_prefetch_discarded", reason=reason
             )
+
+    def _start_kb_prefetch(self, text: str) -> None:
+        """Start knowledge retrieval concurrently with the decision stage.
+
+        The retrieval query is the user text, available the moment the router
+        routes the turn to KNOWLEDGE — awaiting it only inside
+        ``_generate_reply`` serialized retrieval behind the (much slower)
+        decision call. Consumed by exact-text match; the result is never used
+        for a turn the decision later moved off-goal.
+        """
+        if self._knowledge is None or self._closing:
+            return
+        existing = self._kb_prefetch
+        if existing is not None:
+            if existing[0] == text and not existing[1].done():
+                return
+            existing[1].cancel()
+        self._kb_prefetch = (
+            text,
+            self.create_task(self._knowledge.search(
+                RetrievalRequest(
+                    tenant_id=self._config.tenant_id,
+                    kb_ids=self._config.kb_ids or None,
+                    bot_id=self._config.bot_id,
+                    query=text,
+                )
+            )),
+        )
+
+    def _discard_kb_prefetch(self) -> None:
+        prefetch, self._kb_prefetch = self._kb_prefetch, None
+        if prefetch is not None and not prefetch[1].done():
+            prefetch[1].cancel()
 
     async def _cancel_finalize(self) -> None:
         task, self._finalize_task = self._finalize_task, None
@@ -1331,6 +1414,13 @@ class ConversationBrain(FrameProcessor):
         # Remembered so a provider re-emitting this turn's transcript as the
         # prefix of the next final cannot answer the same words twice.
         self._last_dispatched_turn = (text, time.monotonic())
+        # Merge protection must cover the WHOLE generation lifetime: the
+        # decision stage alone can run seconds, and a caller who resumes
+        # speaking inside that window must rewind THIS text into the merged
+        # turn — with the marker set only after the decision, the dispatched
+        # text existed nowhere and the continuation ran without its first
+        # half. The turn record fills in once _handle_turn builds it.
+        self._open_turn_text, self._open_turn_record = text, None
         self._generation = self.create_task(self._handle_turn(text))
 
     def _supported_languages(self) -> list[str]:
@@ -1472,6 +1562,7 @@ class ConversationBrain(FrameProcessor):
 
     async def _cancel_generation(self, reason: str) -> None:
         generation, self._generation = self._generation, None
+        self._discard_kb_prefetch()
         if reason != "late_transcript_merge":
             # Only a late-final merge may rewind the cancelled turn; any other
             # cancellation (barge-in, hang-up, cleanup) must not leave markers
@@ -1485,7 +1576,11 @@ class ConversationBrain(FrameProcessor):
             # speak. The task ends right after anyway.
             return
         await self.cancel_task(generation)
-        await self._recorder.flush_event("generation_cancelled", reason=reason)
+        # Persistence must not sit on the interruption path: a degraded Mongo
+        # (server-selection timeout) here kept the bot talking over the
+        # caller for seconds. The event is recorded in memory immediately and
+        # written in the background.
+        self._recorder.flush_event_soon("generation_cancelled", reason=reason)
 
     async def _begin_hangup(self, text: str | None) -> None:
         """Caller asked to end the call — highest-priority, irreversible.
@@ -1502,6 +1597,7 @@ class ConversationBrain(FrameProcessor):
         self._active_workflow = None
         self._clarify_rollback = None
         self._open_turn_text = self._open_turn_record = None
+        self._discard_decision_prefetch("hangup")
         await self._cancel_finalize()
         await self._cancel_generation("hangup")
         # Kill any reply still rendering/playing (TTS contexts are cancelled,
@@ -1511,7 +1607,7 @@ class ConversationBrain(FrameProcessor):
             # Fast-path detection: the routed path already recorded the turn.
             self._recorder.add_turn(TurnRecord(role="user", text=text,
                                                route=RouteKind.CALL_CONTROL.value))
-        await self._recorder.flush_event("call_control", action="hangup")
+        self._recorder.flush_event_soon("call_control", action="hangup")
         await self._say(canned("hangup_ack", self._conversation_language))
         # Queued behind the acknowledgement: the worker drains it, then ends
         # (telephony serializers translate this into the protocol `stop`).
@@ -1534,6 +1630,7 @@ class ConversationBrain(FrameProcessor):
         self._active_workflow = None
         self._clarify_rollback = None
         self._open_turn_text = self._open_turn_record = None
+        self._discard_decision_prefetch("do_not_call")
         await self._cancel_finalize()
         await self._cancel_generation("do_not_call")
         await self.push_frame(InterruptionFrame())
@@ -1546,7 +1643,7 @@ class ConversationBrain(FrameProcessor):
             "last_disposition": "do_not_call",
             "is_final_transcript": True,
         }
-        await self._recorder.flush_event("call_control", action="do_not_call")
+        self._recorder.flush_event_soon("call_control", action="do_not_call")
         await self._say(canned("dnc_ack", self._conversation_language))
         await self.push_frame(EndWorkerFrame(reason="do_not_call_request"))
 
@@ -1724,7 +1821,10 @@ class ConversationBrain(FrameProcessor):
             ))
             self._history.append({"role": "user", "content": safe_text})
             del self._history[:-_HISTORY_MAX_TURNS]
-            await self._recorder.flush_event(
+            # Early return: the dispatch-time merge marker must not survive a
+            # turn that was fully answered by the safe reply.
+            self._open_turn_text = self._open_turn_record = None
+            self._recorder.flush_event_soon(
                 "guardrail_blocked_turn",
                 stage="input",
                 rules=[h.rule.code for h in guard_input.hits],
@@ -1734,6 +1834,10 @@ class ConversationBrain(FrameProcessor):
                 guardrail_exempt=True,
             )
             return
+        if decision.kind == RouteKind.KNOWLEDGE:
+            # Retrieval runs concurrently with the decision stage below; the
+            # embedding + pgvector round trip is otherwise pure serial time.
+            self._start_kb_prefetch(text)
         # Business understanding of the COMPLETED turn: deterministic platform
         # commands were already decided above (and hang-up/DNC even earlier,
         # per segment). Everything else runs Stage A — ONE structured Goal
@@ -1863,9 +1967,10 @@ class ConversationBrain(FrameProcessor):
         )
         self._history.append({"role": "user", "content": text})
         del self._history[:-_HISTORY_MAX_TURNS]
-        # Mark the turn the generation below is answering: a straggler STT
-        # final can rewind it (merge) as long as no reply was committed.
-        self._open_turn_text, self._open_turn_record = text, turn
+        # The text marker was set at dispatch (merge protection covers the
+        # decision stage too); the record joins it now that it exists, so a
+        # rewind can also drop the transcript entry.
+        self._open_turn_record = turn
 
         try:
             if decision.kind == RouteKind.CALL_CONTROL:
@@ -2080,7 +2185,11 @@ class ConversationBrain(FrameProcessor):
             await self._say(canned("error", self._conversation_language))
         # Deliberately NOT in a finally: when the generation is cancelled the
         # markers must survive so a late-final merge can rewind this turn.
-        if self._open_turn_record is turn:
+        # A record of None means this turn errored before its record was
+        # built — the text marker set at dispatch must still be cleared.
+        if self._open_turn_record is turn or (
+            self._open_turn_record is None and self._open_turn_text == text
+        ):
             self._open_turn_text = self._open_turn_record = None
 
     def _conversation_stage(self) -> str:
@@ -2504,7 +2613,10 @@ class ConversationBrain(FrameProcessor):
         Returns a system-prompt block describing the verified result.
         """
         policy = self._policy
-        await self._recorder.flush_event(
+        # Recorded immediately, persisted concurrently with the verification
+        # tool call below — the durable write no longer adds a Mongo RTT
+        # ahead of the reply on the turn the caller feels most.
+        self._recorder.flush_event_soon(
             "transaction_reference_captured",
             reference=reference,
             valid=is_valid_transaction_reference(reference),
@@ -2548,7 +2660,7 @@ class ConversationBrain(FrameProcessor):
             self._payment_tool,
             for_reference=True,
         )
-        await self._recorder.flush_event(
+        self._recorder.flush_event_soon(
             "payment_verification",
             outcome=policy.verification_outcome,
             raw_status=str(status) if status is not None else None,
@@ -2586,13 +2698,13 @@ class ConversationBrain(FrameProcessor):
                 or canned("repeat_none", self._conversation_language)
             )
         elif decision.action == "slower":
-            await self._recorder.flush_event("call_control", action="slower")
+            self._recorder.flush_event_soon("call_control", action="slower")
             await self._say(canned("slower_ack", self._conversation_language))
         else:
             await self._say(canned("ack", self._conversation_language))
 
     async def _handle_handoff(self, decision: RouteDecision) -> None:
-        await self._recorder.flush_event("handoff", reason=decision.reason)
+        self._recorder.flush_event_soon("handoff", reason=decision.reason)
         await self._say(canned("handoff", self._conversation_language))
         self._queue_control({
             "type": "telephony_control",
@@ -2797,14 +2909,24 @@ class ConversationBrain(FrameProcessor):
 
         if decision.kind == RouteKind.KNOWLEDGE and self._knowledge is not None:
             self._recorder.usage["kb_searches"] += 1
-            result = await self._knowledge.search(
-                RetrievalRequest(
-                    tenant_id=self._config.tenant_id,
-                    kb_ids=self._config.kb_ids or None,
-                    bot_id=self._config.bot_id,
-                    query=text,
+            prefetch, self._kb_prefetch = self._kb_prefetch, None
+            if prefetch is not None and prefetch[0] != text:
+                prefetch[1].cancel()
+                prefetch = None
+            if prefetch is not None:
+                try:
+                    result = await prefetch[1]
+                except asyncio.CancelledError:
+                    prefetch = None
+            if prefetch is None:
+                result = await self._knowledge.search(
+                    RetrievalRequest(
+                        tenant_id=self._config.tenant_id,
+                        kb_ids=self._config.kb_ids or None,
+                        bot_id=self._config.bot_id,
+                        query=text,
+                    )
                 )
-            )
             retrieval_ms = result.duration_ms
             self._recorder.add_event(
                 "kb_retrieval",
@@ -2866,7 +2988,7 @@ class ConversationBrain(FrameProcessor):
             # truthful (only the sentences actually spoken), and answer with
             # the localized safe reply.
             self._record_llm_usage("".join(reply_parts))
-            await self._recorder.flush_event(
+            self._recorder.flush_event_soon(
                 "guardrail_blocked_turn",
                 stage="output",
                 rules=guardrail_block.rules,
@@ -3009,7 +3131,13 @@ class ConversationBrain(FrameProcessor):
         held: list[str] = []
 
         def _guard_check() -> None:
-            check = self._guardrails.check_output_stream("".join(reply_parts))
+            # Scan a bounded tail of the released text plus everything held:
+            # already-released sentences each passed a check of their own, so
+            # only a phrase forming across the release boundary is new — and
+            # block patterns are far shorter than the tail window. Rescanning
+            # the whole reply per token was O(n²) for no additional safety.
+            tail = "".join(spoken_parts)[-_GUARD_TAIL_CHARS:]
+            check = self._guardrails.check_output_stream(tail + "".join(held))
             if check.blocked:
                 raise _GuardrailBlockedReply(
                     reply_key=check.reply_key,
@@ -3017,18 +3145,47 @@ class ConversationBrain(FrameProcessor):
                     spoken="".join(spoken_parts),
                 )
 
+        async def _release(text: str) -> None:
+            spoken_parts.append(text)
+            await self.push_frame(TextFrame(text))
+
+        async def _release_held(force: bool = False) -> None:
+            """Release checked text from the hold buffer.
+
+            Complete sentences release on any boundary — including one that
+            landed mid-chunk. ``force`` releases everything held (LLM stall,
+            end of stream); the cap releases at the last word break when a
+            reply runs long without a terminator. Every release path runs
+            after ``_guard_check`` passed on the full held buffer.
+            """
+            buffered = "".join(held)
+            if not buffered:
+                return
+            if force or _SENTENCE_END_RE.search(buffered):
+                held.clear()
+                await _release(buffered)
+                return
+            last = None
+            for last in _SENTENCE_BOUNDARY_RE.finditer(buffered):
+                pass
+            if last is not None:
+                held[:] = [buffered[last.end():]]
+                await _release(buffered[: last.end()])
+                return
+            if len(buffered) >= _HOLD_FORCE_RELEASE_CHARS:
+                cut = buffered.rfind(" ")
+                if cut <= 0:
+                    cut = len(buffered)
+                held[:] = [buffered[cut:]]
+                await _release(buffered[:cut])
+
         async def _forward(chunk: str) -> None:
             if not hold_sentences:
-                spoken_parts.append(chunk)
-                await self.push_frame(TextFrame(chunk))
+                await _release(chunk)
                 return
             held.append(chunk)
             _guard_check()
-            buffered = "".join(held)
-            if _SENTENCE_END_RE.search(buffered):
-                held.clear()
-                spoken_parts.append(buffered)
-                await self.push_frame(TextFrame(buffered))
+            await _release_held()
 
         while True:
             attempts += 1
@@ -3038,6 +3195,7 @@ class ConversationBrain(FrameProcessor):
             placeholder_filter = StreamingPlaceholderFilter(self._placeholder_values())
             try:
                 self._latency.mark_llm_request()
+                request_at = time.monotonic()
                 stream = self._llm.stream(
                     self._generation_messages(),
                     system=system,
@@ -3051,8 +3209,27 @@ class ConversationBrain(FrameProcessor):
                         {pending}, timeout=_LLM_PAUSE_FLUSH_SECONDS
                     )
                     if not done:
-                        # LLM paused mid-reply: nudge buffered text into TTS once
-                        # per stall so speech starts without the next boundary.
+                        if (
+                            first_token_ms is None
+                            and time.monotonic() - request_at
+                            >= _LLM_FIRST_TOKEN_DEADLINE_S
+                        ):
+                            # Nothing has streamed: abandoning is free, and
+                            # the pre-first-token retry below is safe.
+                            pending.cancel()
+                            raise ProviderError(
+                                "llm", "timeout",
+                                "no first token within "
+                                f"{_LLM_FIRST_TOKEN_DEADLINE_S:.1f}s",
+                            )
+                        # LLM paused mid-reply: release checked held text (a
+                        # stall lands on natural pause points) and nudge the
+                        # TTS once per stall so speech starts without waiting
+                        # for the next boundary. Without the release, hold
+                        # mode flushed an empty aggregator — dead air.
+                        if hold_sentences and held:
+                            _guard_check()
+                            await _release_held(force=True)
                         if reply_parts and not hinted:
                             hinted = True
                             await self.push_frame(TTSFlushHintFrame())
@@ -3068,10 +3245,7 @@ class ConversationBrain(FrameProcessor):
                             # Reply ended mid-sentence: final check, then
                             # release the remainder.
                             _guard_check()
-                            remainder = "".join(held)
-                            held.clear()
-                            spoken_parts.append(remainder)
-                            await self.push_frame(TextFrame(remainder))
+                            await _release_held(force=True)
                         return first_token_ms
                     hinted = False
                     if first_token_ms is None:
@@ -3126,7 +3300,7 @@ class ConversationBrain(FrameProcessor):
         if text and not guardrail_exempt:
             check = self._guardrails.check_output_text(text)
             if check.blocked:
-                await self._recorder.flush_event(
+                self._recorder.flush_event_soon(
                     "guardrail_blocked_turn", stage="output", fixed_phrase=True,
                     rules=[h.rule.code for h in check.hits],
                 )

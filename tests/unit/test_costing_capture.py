@@ -359,6 +359,10 @@ class _RouterRecorder:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
 
 def make_router(recorder, *, fallback=False, pause_ms=0):
     from voice_runtime.tts_router import StreamingTTSRouter
@@ -402,6 +406,9 @@ class TestTtsDispatchBilling:
         router = make_router(recorder)
         seeded_generation(router, _DummyTTSProvider(), texts=("नमस्ते जी",))
         await router._finalize_generation("ctx-1", failed=True)
+        # The provider-used event is persisted off the caller's path now —
+        # let the scheduled task run before asserting on it.
+        await asyncio.sleep(0)
         assert recorder.billed == []
         assert ("tts_provider_used", {"provider": "sarvam", "voice": "anushka",
                                       "fallback_used": False, "failed": True}) \

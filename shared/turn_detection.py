@@ -17,6 +17,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "stop_secs": 0.2,
         "min_volume": 0.6,
         "barge_in_min_words": 2.0,
+        "barge_in_vad_fallback_secs": 1.0,
         "user_speech_timeout": 1.2,
         "finalize_grace": 0.3,
         "finalize_settle": 0.15,
@@ -35,6 +36,7 @@ TURN_DETECTION_DEFAULTS: dict[str, dict[str, float]] = {
         "stop_secs": 0.2,
         "min_volume": 0.4,
         "barge_in_min_words": 2.0,
+        "barge_in_vad_fallback_secs": 1.0,
         "user_speech_timeout": 0.7,
         "finalize_grace": 0.12,
         "finalize_settle": 0.1,
@@ -55,6 +57,10 @@ TURN_DETECTION_BOUNDS: dict[str, tuple[float, float]] = {
     # hears as chopped, stuttering audio. 0 disables the word gate entirely
     # (any voice activity interrupts instantly, the pre-2026-08 behaviour).
     "barge_in_min_words": (0.0, 10.0),
+    # Sustained gated VAD speech that confirms a barge-in with NO transcript
+    # (providers without interim transcripts cannot produce one while the
+    # caller keeps talking). 0 disables the fallback.
+    "barge_in_vad_fallback_secs": (0.0, 5.0),
     "user_speech_timeout": (0.2, 3.0),
     "finalize_grace": (0.0, 1.5),
     # How stale the newest STT final must be, at the moment the turn controller
@@ -103,9 +109,15 @@ NOISE_GATE_DEFAULTS: dict[str, dict[str, float]] = {
         "echo_min_speech_ms": 200.0,
         "hangover_ms": 350.0,
         "preroll_ms": 160.0,
-        "echo_margin_db": 8.0,
+        # The sustained-speech requirement (echo_min_speech_ms) already
+        # filters echo blips; stacking a full 8 dB on the noise margin made
+        # normal-volume callers inaudible while the bot spoke — the exact
+        # "you must shout to interrupt" symptom.
+        "echo_margin_db": 5.0,
         "echo_tail_ms": 300.0,
-        "min_threshold_dbfs": -45.0,
+        # Must not be STRICTER than the (louder) browser medium: callers
+        # between -50 and -45 dBFS were permanently inaudible on PSTN.
+        "min_threshold_dbfs": -50.0,
     },
 }
 

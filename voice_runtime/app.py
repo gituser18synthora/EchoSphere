@@ -299,11 +299,13 @@ async def _run_call(
         release_session_engine,
     )
 
-    effective_guardrails = await asyncio.to_thread(
-        load_effective_guardrails_sync, config.tenant_id, config.bot_id
-    )
-    compliance_policies = await asyncio.to_thread(
-        load_active_policies_sync, config.tenant_id
+    # Independent control-plane reads; loading them serially added a full DB
+    # round trip to every call's time-to-greeting.
+    effective_guardrails, compliance_policies = await asyncio.gather(
+        asyncio.to_thread(
+            load_effective_guardrails_sync, config.tenant_id, config.bot_id
+        ),
+        asyncio.to_thread(load_active_policies_sync, config.tenant_id),
     )
 
     # Second deterministic checkpoint (the webhook already refused before the

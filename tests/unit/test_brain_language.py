@@ -28,6 +28,10 @@ class _RecorderStub:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
 
 def make_brain(language="hi-IN", languages=("en-IN", "hi-IN")) -> ConversationBrain:
     config = ResolvedBotConfig(

@@ -59,6 +59,8 @@ class SessionRecorder:
         self._stt_seconds = Decimal(0)
         self._stt_basis: str | None = None  # provider_metrics | pcm
         self._stt_request_ids: set[str] = set()
+        # Keep background event-persistence tasks alive until they complete.
+        self._background_flushes: set[asyncio.Task] = set()
         # Per-engine TTS breakdown ("provider|model|voice" → counters) so a
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
@@ -166,6 +168,29 @@ class SessionRecorder:
     async def flush_event(self, kind: str, **data) -> None:
         """Persist a single event immediately (barge-in, handoff, errors)."""
         self.add_event(kind, **data)
+        await self._persist_event(kind, data)
+
+    def flush_event_soon(self, kind: str, **data) -> None:
+        """Record the event now, persist it in the background.
+
+        For events emitted on the realtime path (interruption handling, the
+        window between a transcript final and the reply's first audio): the
+        in-memory record still reaches the transcript at finalize, but the
+        Mongo round trip must never sit ahead of caller-audible work — a
+        degraded Mongo (serverSelectionTimeoutMS) otherwise stalls the call
+        for seconds per event.
+        """
+        self.add_event(kind, **data)
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._persist_event(kind, data)
+            )
+        except RuntimeError:
+            return  # no running loop (sync tests) — the in-memory event stands
+        self._background_flushes.add(task)
+        task.add_done_callback(self._background_flushes.discard)
+
+    async def _persist_event(self, kind: str, data: dict) -> None:
         try:
             await Mongo.voice_events().insert_one({
                 "session_id": self.session_id,
@@ -182,6 +207,12 @@ class SessionRecorder:
         """Persist transcript + session summary. Called once at call end."""
         self.end_reason = reason
         duration = int(time.time() - self.started_at)
+        if self._background_flushes:
+            # Drain deferred event writes so nothing scheduled during the call
+            # races the transcript write or is cancelled by teardown.
+            await asyncio.gather(
+                *list(self._background_flushes), return_exceptions=True
+            )
         if self.recording_writer is not None:
             # Flush the audio tail and wrap the WAV — idempotent with the
             # pipeline's own stop hook, whichever fires first.

@@ -11,12 +11,35 @@ Protections:
 
 import ipaddress
 import socket
+import threading
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import httpx
 
 from shared.config import get_settings
+
+# Pooled keep-alive client for the tool-execution hot path (fetch_json): a
+# fresh TCP+TLS handshake per tool call was pure latency. httpx.Client is
+# thread-safe for concurrent requests; redirects stay disabled and the SSRF
+# policy (validate_outbound_url) still runs per request — the pool changes
+# connection reuse only, never the security checks. Timeouts are per-request.
+_pooled_client: httpx.Client | None = None
+_pooled_client_lock = threading.Lock()
+
+
+def _get_pooled_client() -> httpx.Client:
+    global _pooled_client
+    if _pooled_client is None:
+        with _pooled_client_lock:
+            if _pooled_client is None:
+                _pooled_client = httpx.Client(
+                    follow_redirects=False,
+                    limits=httpx.Limits(
+                        max_keepalive_connections=10, max_connections=20
+                    ),
+                )
+    return _pooled_client
 
 
 class UnsafeUrlError(Exception):
@@ -192,37 +215,36 @@ def fetch_json(
 
     started = time.monotonic()
     try:
-        with httpx.Client(timeout=timeout_ms / 1000, follow_redirects=False) as client:
-            with client.stream(
-                method, url, headers=headers or {}, params=params or None,
-                json=json_body,
-            ) as resp:
-                body = b""
-                truncated = False
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    body += chunk
-                    if len(body) >= max_bytes:
-                        truncated = True
-                        break
-                latency_ms = round((time.monotonic() - started) * 1000)
-                parsed: dict | list | None = None
-                error = None
-                if truncated:
-                    error = "Response exceeded the configured size limit."
-                elif body:
-                    try:
-                        parsed = _json.loads(body.decode("utf-8", errors="replace"))
-                    except ValueError:
-                        error = "Response was not valid JSON."
-                return JsonResponse(
-                    status_code=resp.status_code,
-                    ok=200 <= resp.status_code < 400
-                    and not resp.is_redirect and error is None,
-                    latency_ms=latency_ms,
-                    body=parsed,
-                    error=error,
-                    truncated=truncated,
-                )
+        with _get_pooled_client().stream(
+            method, url, headers=headers or {}, params=params or None,
+            json=json_body, timeout=timeout_ms / 1000,
+        ) as resp:
+            body = b""
+            truncated = False
+            for chunk in resp.iter_bytes(chunk_size=8192):
+                body += chunk
+                if len(body) >= max_bytes:
+                    truncated = True
+                    break
+            latency_ms = round((time.monotonic() - started) * 1000)
+            parsed: dict | list | None = None
+            error = None
+            if truncated:
+                error = "Response exceeded the configured size limit."
+            elif body:
+                try:
+                    parsed = _json.loads(body.decode("utf-8", errors="replace"))
+                except ValueError:
+                    error = "Response was not valid JSON."
+            return JsonResponse(
+                status_code=resp.status_code,
+                ok=200 <= resp.status_code < 400
+                and not resp.is_redirect and error is None,
+                latency_ms=latency_ms,
+                body=parsed,
+                error=error,
+                truncated=truncated,
+            )
     except httpx.TimeoutException:
         return JsonResponse(
             status_code=504, ok=False,

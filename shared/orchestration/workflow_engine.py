@@ -13,6 +13,8 @@ same session resumes from the last checkpoint.
 import asyncio
 import logging
 import re
+import threading
+import time
 from typing import Any, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -425,6 +427,15 @@ def slugify_workflow_name(name: str) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", (name or "").lower())).strip("_")
 
 
+# Definition lookups run on EVERY workflow turn (via to_thread) — a short
+# in-process TTL cache keeps the per-turn cost at a dict hit instead of a
+# control-plane query. Staleness is bounded by the TTL only (a saved edit
+# shows up within 30 s); no cross-process invalidation by design.
+_DEFINITION_CACHE_TTL_SECONDS = 30.0
+_definition_cache: dict[tuple[str, str, str], tuple[float, dict | None]] = {}
+_definition_cache_lock = threading.Lock()
+
+
 def load_workflow_definition(
     tenant_id: str, bot_id: str, workflow_name: str
 ) -> dict | None:
@@ -441,37 +452,54 @@ def load_workflow_definition(
     target = (workflow_name or "").strip().lower()
     if not target:
         return None
+
+    cache_key = (tenant_id, bot_id, workflow_name)
+    now = time.monotonic()
+    with _definition_cache_lock:
+        cached = _definition_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _DEFINITION_CACHE_TTL_SECONDS:
+            return cached[1]
+
     session = get_sessionmaker()()
     try:
-        rows = (
-            session.execute(
-                select(Workflow)
-                .where(
-                    Workflow.tenant_id == tenant_id,
-                    Workflow.bot_id == bot_id,
-                    Workflow.is_deleted.is_(False),
-                )
-                .order_by(Workflow.version.desc())
+        # Two-phase lookup: match on the cheap id/version/name projection
+        # first, then load ONLY the matching row's full definition — never
+        # every version's nodes/edges JSON.
+        rows = session.execute(
+            select(Workflow.id, Workflow.version, Workflow.name)
+            .where(
+                Workflow.tenant_id == tenant_id,
+                Workflow.bot_id == bot_id,
+                Workflow.is_deleted.is_(False),
             )
-            .scalars()
-            .all()
-        )
-        for w in rows:
-            if not w.nodes:
-                continue
-            if (
-                w.id == workflow_name
-                or slugify_workflow_name(w.name) == target
-                or (w.name or "").strip().lower() == target
+            .order_by(Workflow.version.desc())
+        ).all()
+        definition: dict | None = None
+        for row_id, _version, name in rows:
+            if not (
+                row_id == workflow_name
+                or slugify_workflow_name(name) == target
+                or (name or "").strip().lower() == target
             ):
-                return {
-                    "id": w.id,
-                    "version": w.version,
-                    "name": w.name,
-                    "nodes": w.nodes or [],
-                    "edges": w.edges or [],
-                }
-        return None
+                continue
+            w = (
+                session.execute(select(Workflow).where(Workflow.id == row_id))
+                .scalars()
+                .first()
+            )
+            if w is None or not w.nodes:
+                continue  # empty definition — keep looking, as before
+            definition = {
+                "id": w.id,
+                "version": w.version,
+                "name": w.name,
+                "nodes": w.nodes or [],
+                "edges": w.edges or [],
+            }
+            break
+        with _definition_cache_lock:
+            _definition_cache[cache_key] = (time.monotonic(), definition)
+        return definition
     finally:
         session.close()
 

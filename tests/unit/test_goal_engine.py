@@ -241,6 +241,33 @@ class TestGoalEngineDecide:
         assert engine.last_fallback_reason == "engine_disabled"
         assert llm.calls == []
 
+    async def test_three_consecutive_timeouts_disable_the_engine(self):
+        engine, llm = make_engine({"scope": "in_scope"}, delay=2.0)
+        for _ in range(3):
+            assert await engine.decide("hello", []) is None
+            assert engine.last_fallback_reason == "timeout"
+        # Disabled for the remainder: immediate None, no model call.
+        assert await engine.decide("hello", []) is None
+        assert engine.last_fallback_reason == "disabled_after_timeouts"
+        assert len(llm.calls) == 3
+
+    async def test_a_successful_decision_resets_the_timeout_streak(self):
+        engine, llm = make_engine({"scope": "in_scope"}, delay=2.0)
+        for _ in range(2):
+            assert await engine.decide("hello", []) is None
+            assert engine.last_fallback_reason == "timeout"
+        llm._delay = 0.0
+        assert await engine.decide("hello", []) is not None
+        # The streak restarted: two more timeouts still leave the engine on.
+        llm._delay = 2.0
+        for _ in range(2):
+            assert await engine.decide("hello", []) is None
+            assert engine.last_fallback_reason == "timeout"
+        llm._delay = 0.0
+        decision = await engine.decide("hello", [])
+        assert decision is not None
+        assert engine.last_fallback_reason is None
+
     async def test_live_state_reaches_the_user_message(self):
         engine, llm = make_engine({"decision": "ambiguous"})
         await engine.decide("क्या?", [], state={

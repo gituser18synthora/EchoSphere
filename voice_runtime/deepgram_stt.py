@@ -101,6 +101,13 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
             self._bot_audible = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_audible = False
+            if self._turn_start_held and not self._turn_start_announced:
+                # The caller began speaking over the bot's final syllables and
+                # the word gate held the turn; with the bot now quiet there is
+                # nothing to protect — open the turn (no interruption
+                # broadcast: nothing is playing to interrupt).
+                self._turn_start_announced = True
+                await self.broadcast_frame(UserStartedSpeakingFrame)
         await super().process_frame(frame, direction)
 
     @property
@@ -124,7 +131,11 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
             yield None
             return
         self._send_buffer.extend(audio)
-        if len(self._send_buffer) < self._chunk_bytes:
+        # While the bot is audibly speaking, every millisecond of coalescing
+        # delays the words that could confirm a barge-in — ship each frame as
+        # it arrives; the ~80 ms batching is a bandwidth nicety, not a
+        # requirement.
+        if len(self._send_buffer) < self._chunk_bytes and not self._bot_audible:
             yield None
             return
         chunk = bytes(self._send_buffer)

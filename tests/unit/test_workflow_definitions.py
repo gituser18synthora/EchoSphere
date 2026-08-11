@@ -416,3 +416,98 @@ class TestLadderSignals:
         fresh = await _ladder_turn(engine, "namaste", "li-2")
         assert fresh["trace"] == ["n_start", "n_push"]
         assert "क्या आप अभी payment करेंगे" in fresh["reply"]
+
+
+# ── definition lookup cache: one DB scan per TTL window ─────────────────────
+
+
+class _FakeResult:
+    def __init__(self, rows=None, scalar=None):
+        self._rows = rows or []
+        self._scalar = scalar
+
+    def all(self):
+        return self._rows
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self._scalar
+
+
+class _FakeWorkflowRow:
+    id = "wf_db"
+    version = 2
+    name = "Payment Plan"
+    nodes = [{"id": "n1", "kind": "start"}]
+    edges = []
+
+
+class _FakeDefinitionSession:
+    """Serves the narrowed two-phase lookup: a cheap (id, version, name)
+    projection first, then the single matching row's full definition."""
+
+    def __init__(self, counters):
+        self._counters = counters
+
+    def execute(self, stmt):
+        self._counters["queries"] += 1
+        if len(stmt.selected_columns) == 3:  # projection phase
+            return _FakeResult(rows=[("wf_db", 2, "Payment Plan"),
+                                     ("wf_old", 1, "Payment Plan")])
+        return _FakeResult(scalar=_FakeWorkflowRow())  # full-row phase
+
+    def close(self):
+        pass
+
+
+class TestDefinitionLookupCache:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        wfe._definition_cache.clear()
+        yield
+        wfe._definition_cache.clear()
+
+    def _patch_db(self, monkeypatch):
+        import shared.db.mysql as mysql_db
+
+        counters = {"sessions": 0, "queries": 0}
+
+        def factory():
+            counters["sessions"] += 1
+            return _FakeDefinitionSession(counters)
+
+        monkeypatch.setattr(mysql_db, "get_sessionmaker", lambda: factory)
+        return counters
+
+    def test_second_lookup_within_ttl_never_hits_the_db(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        first = wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        assert first == {
+            "id": "wf_db", "version": 2, "name": "Payment Plan",
+            "nodes": [{"id": "n1", "kind": "start"}], "edges": [],
+        }
+        assert counters["sessions"] == 1
+        second = wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        assert second == first
+        assert counters["sessions"] == 1  # served from the cache
+
+    def test_no_match_is_cached_too(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        assert wfe.load_workflow_definition("tn_x", "bot_x", "other_flow") is None
+        assert wfe.load_workflow_definition("tn_x", "bot_x", "other_flow") is None
+        assert counters["sessions"] == 1
+
+    def test_expired_entry_requeries(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        monkeypatch.setattr(wfe, "_DEFINITION_CACHE_TTL_SECONDS", 0.0)
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        assert counters["sessions"] == 2
+
+    def test_only_the_matching_row_loads_its_definition(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        # One projection query + ONE full-row load, never one per version.
+        assert counters["queries"] == 2

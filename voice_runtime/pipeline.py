@@ -555,7 +555,14 @@ def build_voice_pipeline(
         # let ambient speech reaching the mic cancel replies mid-word (see
         # voice_runtime.barge_in). 0 restores pure-VAD interruption.
         start_strategy = (
-            WordConfirmedBargeInStrategy(min_words=barge_in_min_words)
+            WordConfirmedBargeInStrategy(
+                min_words=barge_in_min_words,
+                # Sustained-speech fallback: Sarvam produces no interim
+                # transcripts, so without this a caller who keeps talking
+                # could never interrupt (the word gate's arbiter only exists
+                # after a VAD stop + flush).
+                vad_fallback_secs=turn["barge_in_vad_fallback_secs"],
+            )
             if barge_in_min_words > 0
             else VADUserTurnStartStrategy()
         )
@@ -569,7 +576,14 @@ def build_voice_pipeline(
             # UserStoppedSpeakingFrame, so this timeout IS the pause window
             # a caller gets before the bot takes the turn.
             stop=[SpeechTimeoutUserTurnStopStrategy(
-                user_speech_timeout=turn["user_speech_timeout"],
+                # The strategy's timer starts AT the VAD stop, which itself
+                # required stop_secs of silence — charging both stacked the
+                # windows (0.9 s effective on telephony where 0.7 s was
+                # configured). The caller's total pause budget IS
+                # user_speech_timeout; deduct the silence already spent.
+                user_speech_timeout=max(
+                    0.2, turn["user_speech_timeout"] - turn["stop_secs"]
+                ),
                 wait_for_transcript=False,
             )],
         )
