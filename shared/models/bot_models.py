@@ -50,6 +50,13 @@ class VoiceBot(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedM
     voice_id: Mapped[str | None] = mapped_column(
         String(ID_LEN), ForeignKey("voice_profiles.id"), nullable=True
     )
+    # Optional bot-specific guardrail profile. NULL → the bot inherits the
+    # tenant's default profile; an explicit assignment stays unchanged when
+    # the tenant default changes. Mandatory platform guardrails apply either
+    # way and can never be weakened by this override.
+    guardrail_profile_id: Mapped[str | None] = mapped_column(
+        String(ID_LEN), nullable=True
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     readiness_items: Mapped[list["VoiceBotReadiness"]] = relationship(

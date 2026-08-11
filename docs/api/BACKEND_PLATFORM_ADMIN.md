@@ -798,8 +798,12 @@ Response `200`: serialized alert. `404` unknown alert.
 **Auth: JWT bearer. Super Admin only.** No parameters.
 
 ```json
-{ "success": true, "data": [ { "id": "gr_…", "name": "PII redaction", "category": "privacy", "description": "…", "enforcement": "redact", "enabled": true, "triggers30d": 12 } ] }
+{ "success": true, "data": [ { "id": "gr_…", "code": "pii_redaction", "name": "PII redaction in transcripts", "category": "Privacy", "description": "…", "enforcement": "redact", "enabled": true, "isMandatory": true, "triggers30d": 12 } ] }
 ```
+
+`code` is the stable machine key the runtime enforcement registry dispatches
+on. `isMandatory` marks platform rules that apply to EVERY tenant regardless
+of the assigned profile.
 
 ### Update guardrail
 `PATCH /api/v1/guardrails/{guardrail_id}`
@@ -816,7 +820,109 @@ Path parameter: `guardrail_id` (string, required guardrail id). No query params.
 | enabled | bool \| null | no | |
 | enforcement | string \| null | no | `block`\|`flag`\|`redact` |
 
-Response `200`: serialized guardrail. `404` unknown.
+Response `200`: serialized guardrail. `404` unknown. `409` when the guardrail
+is mandatory and the change would disable it or alter its enforcement —
+mandatory platform guardrails cannot be disabled or weakened.
+
+### Guardrail profiles
+
+Named bundles of guardrails assigned to tenants (`tenants.guardrail_profile_id`).
+The platform seeds `standard`, `healthcare` and `finance`; each industry can
+recommend one as its onboarding default (`industries.default_guardrail_profile_id`
+— a suggestion only, never a lock). Mandatory guardrails are implied in every
+profile and are not listed as profile rules. The voice/chat runtime resolves
+`mandatory ∪ profile rules` at call start (`shared/guardrails/loader.py`, fail-closed
+onto the built-in mandatory floor) and enforces them deterministically
+(`shared/guardrails/engine.py`): caller-input checks, pre-TTS output blocking,
+tool-call gating in `ToolExecutor`, and transcript/log redaction.
+
+#### List guardrail profiles
+`GET /api/v1/guardrail-profiles` — **Super Admin only.** Returns every
+non-deleted profile (active and inactive) with its linked rules and the count
+of tenants assigned to it.
+
+```json
+{ "success": true, "data": [ { "id": "gp_…", "code": "healthcare", "name": "Healthcare", "description": "…", "status": "active", "version": 1, "usageCount": 3, "guardrailIds": ["gr_…"], "guardrails": [ { "id": "gr_…", "code": "medical_advice_boundary", "…": "…" } ], "createdAt": "…", "updatedAt": "…", "createdBy": "usr_…", "updatedBy": "" } ] }
+```
+
+#### Create guardrail profile
+`POST /api/v1/guardrail-profiles` — **Super Admin only.** Audited.
+
+```json
+{ "code": "retail", "name": "Retail", "description": "…", "guardrailIds": ["gr_…"] }
+```
+
+Response `201`: serialized profile. `409` duplicate code, `422` unknown guardrail id.
+
+#### Update guardrail profile
+`PATCH /api/v1/guardrail-profiles/{profile_id}` — **Super Admin only.** Audited.
+`guardrailIds` REPLACES the rule membership. Any change bumps `version`, which
+triggers and call events pin so "which rules ran on this call" stays answerable.
+
+```json
+{ "name": "Retail", "description": "…", "guardrailIds": ["gr_…", "gr_…"] }
+```
+
+#### Change profile status
+`POST /api/v1/guardrail-profiles/{profile_id}/status` — **Super Admin only.** Audited.
+
+```json
+{ "status": "inactive" }
+```
+
+`active`|`inactive`|`archived`. Deactivation blocks NEW tenant assignments
+only — tenants already assigned keep the profile (readable and enforced).
+`409` when archiving a profile that tenants still use.
+
+#### Tenant effective guardrails
+`GET /api/v1/tenants/{tenant_id}/effective-guardrails` — **Super Admin or the
+tenant's own admin.** The rules actually enforced at runtime: every enabled
+mandatory guardrail plus the assigned profile's enabled rules.
+
+```json
+{ "success": true, "data": { "tenantId": "tn_…", "profile": { "id": "gp_…", "code": "healthcare", "name": "Healthcare", "status": "active", "version": 1 }, "rules": [ { "guardrailId": "gr_…", "code": "pii_redaction", "name": "…", "category": "Privacy", "action": "redact", "mandatory": true } ], "degraded": false } }
+```
+
+#### Guardrail triggers
+`GET /api/v1/guardrail-triggers?tenantId=…&limit=200` — runtime enforcement
+ledger (one row per block/redact/flag/escalate hit, with rule, stage, profile
+id + version and a NON-sensitive detail string — raw matched values are never
+stored). **Tenant admins are always scoped to their own tenant** (the
+`tenantId` filter is forced); Super Admin may filter by any tenant.
+
+Tenant create/update (`POST /api/v1/tenants`, `PATCH /api/v1/tenants/{id}`)
+accept `guardrailProfileId` (profile id or code). Only ACTIVE profiles are
+valid for new assignments; omitted on create → the industry's recommended
+default, falling back to `standard`. Changing a tenant's `industry` NEVER
+changes its assigned profile — reassignment must be explicit. An empty string
+on update clears the assignment (mandatory rules only).
+
+#### Bot-level guardrail profile
+`PATCH /api/v1/bots/{bot_id}/guardrail-profile` — **Super Admin only.** Audited.
+Body `{ "guardrailProfileId": "gp_…" }`; `""` clears the explicit assignment
+so the bot inherits the tenant default. New assignments require an ACTIVE
+profile (`422` otherwise); an existing assignment stays readable after the
+profile is deactivated. An explicit assignment is unaffected by later
+tenant-default changes.
+
+`GET /api/v1/bots/{bot_id}/effective-guardrails` — Super Admin or the bot's
+own tenant members. Returns `inherited` (bool), `profile`,
+`tenantDefaultProfile`, the effective `rules` (mandatory ∪ resolved profile)
+and the tenant's ACTIVE `compliancePolicies` (code, version, regulator,
+timezone, calling windows).
+
+### Compliance policies
+`GET/POST /api/v1/compliance-policies`,
+`PATCH /api/v1/compliance-policies/{id}` (draft-only),
+`POST /api/v1/compliance-policies/{id}/status`,
+`POST /api/v1/compliance-policies/{id}/wordings` — **Super Admin only.** All
+audited. Versioned per (tenant, code); lifecycle `draft → approved → active →
+retired`; approving/activating requires `approvalNote` and stamps
+`approvedBy`/`approvedAt`; activating a version retires the previous active
+one; active/approved policies are immutable (create the next version).
+Wordings are immutable versioned legal templates (create-only). Only ACTIVE,
+effective-dated policies enforce at runtime (calling windows, contact limits,
+prohibited conduct, waiver authorization — see docs/VOICE_RUNTIME.md).
 
 ### Admin dashboard
 `GET /api/v1/dashboard/admin`

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.date_filters import parse_date_range
 from backend.core.transcripts import find_transcript_doc, ui_turns
 from backend.core.deps import (
     assert_tenant_access,
@@ -138,6 +139,8 @@ def export_operational_data(
     sentiment: str | None = Query(None, max_length=20),
     contained: bool | None = Query(None),
     flagged: bool | None = Query(None),
+    date_from: str | None = Query(None, alias="dateFrom", max_length=40),
+    date_to: str | None = Query(None, alias="dateTo", max_length=40),
     user: User = Depends(require_permission("billing.manage", "conversations.view")),
     db: Session = Depends(get_db),
 ):
@@ -165,6 +168,8 @@ def export_operational_data(
             ("sentiment", sentiment),
             ("contained", contained),
             ("flagged", flagged),
+            ("dateFrom", date_from),
+            ("dateTo", date_to),
         ):
             _reject_filter(export_type, field, value)
         if plan:
@@ -198,6 +203,8 @@ def export_operational_data(
             ("sentiment", sentiment),
             ("contained", contained),
             ("flagged", flagged),
+            ("dateFrom", date_from),
+            ("dateTo", date_to),
         ):
             _reject_filter(export_type, field, value)
         report = build_invoices_export(
@@ -227,6 +234,7 @@ def export_operational_data(
             )
             if bot is None:
                 raise NotFoundError("VoiceBot")
+        started_from, started_to = parse_date_range(date_from, date_to)
         report = build_conversations_export(
             db,
             tenant_id=effective_tenant_id,
@@ -235,6 +243,8 @@ def export_operational_data(
             sentiment=sentiment,
             contained=contained,
             flagged=flagged,
+            started_from=started_from,
+            started_to=started_to,
         )
         audit_filters.update(
             {
@@ -242,6 +252,8 @@ def export_operational_data(
                 "sentiment": sentiment,
                 "contained": contained,
                 "flagged": flagged,
+                "dateFrom": date_from,
+                "dateTo": date_to,
             }
         )
 

@@ -16,6 +16,8 @@ vi.mock("@/services/api", () => ({
   setMasterStatus: vi.fn(),
   getProviderCatalog: vi.fn(),
   listProviderModels: vi.fn(),
+  // The Industries form's default-guardrail-profile select loads lazily.
+  listGuardrailProfiles: vi.fn(() => Promise.resolve([])),
 }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),

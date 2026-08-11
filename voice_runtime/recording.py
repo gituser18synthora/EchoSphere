@@ -81,6 +81,10 @@ class SessionRecorder:
         # MySQL conversation_sessions row are created already linked (the API
         # looks the transcript up by this id).
         self.control_plane_id: str = new_id("cv")
+        # The call's guardrail engine (set at call start). Owns transcript
+        # redaction and the trigger ledger persisted at finalize.
+        self.guardrails = None
+        self._guardrail_triggers_persisted = False
         # Set by CallRecordingWriter when call audio was captured.
         self.recording_info: dict | None = None
         # The active audio writer (if recording is enabled) — finalized here
@@ -101,6 +105,14 @@ class SessionRecorder:
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
+
+    def _redact_for_transcript(self, text: str) -> str:
+        """Profile-driven redaction for stored turn text. Falls back to the
+        pre-profile PII masking when no engine was attached — stored
+        transcripts are never less protected than before."""
+        if self.guardrails is not None:
+            return self.guardrails.redact_for_persistence(text)
+        return mask_pii(text, kinds={"card_number", "aadhaar", "pan"})
 
     def add_stt_usage(
         self,
@@ -177,7 +189,7 @@ class SessionRecorder:
         transcript = [
             {
                 "role": t.role,
-                "text": mask_pii(t.text, kinds={"card_number", "aadhaar", "pan"}),
+                "text": self._redact_for_transcript(t.text),
                 "ts": t.timestamp,
                 "route": t.route,
                 "kbUsed": t.kb_used,
@@ -221,6 +233,26 @@ class SessionRecorder:
             logger.exception("transcript persistence failed for %s", self.session_id)
 
         await asyncio.to_thread(self._write_control_plane_row, duration, reason)
+
+        # Tenant-scoped guardrail-trigger ledger (MySQL), written once —
+        # includes the transcript-redaction hits recorded just above.
+        if (
+            self.guardrails is not None
+            and self.guardrails.hits
+            and not self._guardrail_triggers_persisted
+        ):
+            self._guardrail_triggers_persisted = True
+            from shared.guardrails import persist_triggers_sync
+
+            await asyncio.to_thread(
+                persist_triggers_sync,
+                list(self.guardrails.hits),
+                tenant_id=self.config.tenant_id,
+                bot_id=self.config.bot_id,
+                session_id=self.session_id,
+                channel=self.channel,
+                effective=self.guardrails.effective,
+            )
 
         if self.customer_context_id and self.call_state:
             # Record verification/dispute/complaint/payment/callback state

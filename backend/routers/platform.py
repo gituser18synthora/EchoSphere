@@ -3,7 +3,7 @@ phone numbers, SIP trunks, reference templates, system settings."""
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
@@ -11,6 +11,7 @@ from backend.core.deps import (
     get_current_user,
     is_super_admin,
     require_super_admin,
+    require_tenant_admin,
 )
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
@@ -20,6 +21,9 @@ from shared.models import (
     ApprovedModel,
     ChannelConfig,
     Guardrail,
+    GuardrailProfile,
+    GuardrailProfileRule,
+    GuardrailTrigger,
     HealthMetric,
     PhoneNumber,
     PlatformAlert,
@@ -33,6 +37,8 @@ from shared.models import (
 from backend.serializers import (
     serialize_alert,
     serialize_guardrail,
+    serialize_guardrail_profile,
+    serialize_guardrail_trigger,
     serialize_health_metric,
     serialize_model,
     serialize_phone_number,
@@ -169,6 +175,12 @@ def update_guardrail(
     row = db.get(Guardrail, guardrail_id)
     if row is None or row.is_deleted:
         raise NotFoundError("Guardrail")
+    if row.is_mandatory and (
+        body.enabled is False or (body.enforcement and body.enforcement != row.enforcement)
+    ):
+        raise ApiError(
+            "Mandatory platform guardrails cannot be disabled or weakened.", 409
+        )
     before = {"enabled": row.enabled, "enforcement": row.enforcement}
     if body.enabled is not None:
         row.enabled = body.enabled
@@ -183,6 +195,218 @@ def update_guardrail(
     )
     db.commit()
     return ok(serialize_guardrail(row))
+
+
+# ── Guardrail profiles ───────────────────────────────────────────────────────
+
+
+def _profile_guardrails(db: Session, profile_id: str) -> list[Guardrail]:
+    return list(db.scalars(
+        select(Guardrail)
+        .join(GuardrailProfileRule, GuardrailProfileRule.guardrail_id == Guardrail.id)
+        .where(GuardrailProfileRule.profile_id == profile_id,
+               Guardrail.is_deleted.is_(False))
+        .order_by(Guardrail.created_at.asc())
+    ))
+
+
+def _profile_usage(db: Session, profile_id: str) -> int:
+    return db.scalar(
+        select(func.count()).select_from(Tenant).where(
+            Tenant.guardrail_profile_id == profile_id, Tenant.is_deleted.is_(False)
+        )
+    ) or 0
+
+
+def _serialized_profile(db: Session, p: GuardrailProfile) -> dict:
+    return serialize_guardrail_profile(
+        p, _profile_guardrails(db, p.id), usage=_profile_usage(db, p.id)
+    )
+
+
+def _validated_guardrail_ids(db: Session, ids: list[str]) -> list[Guardrail]:
+    rows = []
+    for gid in dict.fromkeys(ids):  # de-dupe, keep order
+        g = db.get(Guardrail, gid)
+        if g is None or g.is_deleted:
+            raise ApiError(f"Unknown guardrail: '{gid}'.", 422)
+        rows.append(g)
+    return rows
+
+
+@router.get("/guardrail-profiles")
+def list_guardrail_profiles(
+    user: User = Depends(require_super_admin), db: Session = Depends(get_db)
+):
+    rows = db.scalars(
+        select(GuardrailProfile)
+        .where(GuardrailProfile.is_deleted.is_(False))
+        .order_by(GuardrailProfile.created_at.asc())
+    ).all()
+    return ok([_serialized_profile(db, p) for p in rows])
+
+
+class GuardrailProfileCreateRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=150)
+    description: str | None = None
+    guardrail_ids: list[str] = Field(default_factory=list, alias="guardrailIds")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/guardrail-profiles", status_code=201)
+def create_guardrail_profile(
+    body: GuardrailProfileCreateRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    code = body.code.strip().lower().replace(" ", "_")
+    if db.scalar(select(GuardrailProfile).where(GuardrailProfile.code == code)):
+        raise ApiError(f"A guardrail profile with code '{code}' already exists.", 409)
+    guardrails = _validated_guardrail_ids(db, body.guardrail_ids)
+    profile = GuardrailProfile(
+        id=new_id("gp"), code=code, name=body.name.strip(),
+        description=body.description, created_by=user.id,
+    )
+    db.add(profile)
+    db.flush()
+    for g in guardrails:
+        db.add(GuardrailProfileRule(
+            id=new_id("gpr"), profile_id=profile.id, guardrail_id=g.id,
+            created_by=user.id,
+        ))
+    record_audit(
+        db, user=user, action="Created guardrail profile",
+        entity_type="guardrail_profile", entity_id=profile.id,
+        target_label=profile.name,
+        new_value={"code": code, "guardrails": [g.code or g.name for g in guardrails]},
+        request=request,
+    )
+    db.commit()
+    return ok(_serialized_profile(db, profile))
+
+
+class GuardrailProfileUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=150)
+    description: str | None = None
+    guardrail_ids: list[str] | None = Field(default=None, alias="guardrailIds")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.patch("/guardrail-profiles/{profile_id}")
+def update_guardrail_profile(
+    profile_id: str,
+    body: GuardrailProfileUpdateRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    profile = db.get(GuardrailProfile, profile_id)
+    if profile is None or profile.is_deleted:
+        raise NotFoundError("Guardrail profile")
+    before_rules = [g.code or g.name for g in _profile_guardrails(db, profile.id)]
+    before = {"name": profile.name, "description": profile.description or "",
+              "version": profile.version, "guardrails": before_rules}
+    changed = False
+    if body.name is not None and body.name.strip() != profile.name:
+        profile.name = body.name.strip()
+        changed = True
+    if body.description is not None and body.description != (profile.description or ""):
+        profile.description = body.description
+        changed = True
+    if body.guardrail_ids is not None:
+        guardrails = _validated_guardrail_ids(db, body.guardrail_ids)
+        new_ids = [g.id for g in guardrails]
+        current = db.scalars(select(GuardrailProfileRule).where(
+            GuardrailProfileRule.profile_id == profile.id
+        )).all()
+        current_ids = [r.guardrail_id for r in current]
+        if set(new_ids) != set(current_ids):
+            for r in current:
+                if r.guardrail_id not in new_ids:
+                    db.delete(r)
+            for gid in new_ids:
+                if gid not in current_ids:
+                    db.add(GuardrailProfileRule(
+                        id=new_id("gpr"), profile_id=profile.id,
+                        guardrail_id=gid, created_by=user.id,
+                    ))
+            changed = True
+    if changed:
+        # Version pins which profile revision a call/trigger ran under.
+        profile.version += 1
+        profile.updated_by = user.id
+        db.flush()
+        record_audit(
+            db, user=user, action="Updated guardrail profile",
+            entity_type="guardrail_profile", entity_id=profile.id,
+            target_label=profile.name, previous_value=before,
+            new_value={"name": profile.name,
+                       "description": profile.description or "",
+                       "version": profile.version,
+                       "guardrails": [g.code or g.name
+                                      for g in _profile_guardrails(db, profile.id)]},
+            request=request,
+        )
+    db.commit()
+    return ok(_serialized_profile(db, profile))
+
+
+class GuardrailProfileStatusRequest(BaseModel):
+    status: str = Field(pattern="^(active|inactive|archived)$")
+
+
+@router.post("/guardrail-profiles/{profile_id}/status")
+def set_guardrail_profile_status(
+    profile_id: str,
+    body: GuardrailProfileStatusRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    profile = db.get(GuardrailProfile, profile_id)
+    if profile is None or profile.is_deleted:
+        raise NotFoundError("Guardrail profile")
+    if body.status == "archived" and _profile_usage(db, profile.id) > 0:
+        raise ApiError(
+            "This profile is assigned to tenants and cannot be archived. "
+            "Deactivate it instead — existing assignments keep working; only "
+            "new assignments are blocked.", 409,
+        )
+    before = {"status": profile.status}
+    profile.status = body.status
+    profile.updated_by = user.id
+    record_audit(
+        db, user=user, action="Changed guardrail profile status",
+        entity_type="guardrail_profile", entity_id=profile.id,
+        target_label=profile.name, previous_value=before,
+        new_value={"status": profile.status}, request=request,
+    )
+    db.commit()
+    return ok(_serialized_profile(db, profile))
+
+
+@router.get("/guardrail-triggers")
+def list_guardrail_triggers(
+    tenant_id: str | None = Query(None, alias="tenantId"),
+    limit: int = Query(200, ge=1, le=1000),
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Runtime guardrail-enforcement ledger. Tenant admins see their own
+    tenant only; Super Admin may filter by tenant."""
+    stmt = select(GuardrailTrigger)
+    if not is_super_admin(user):
+        stmt = stmt.where(GuardrailTrigger.tenant_id == user.tenant_id)
+    elif tenant_id:
+        stmt = stmt.where(GuardrailTrigger.tenant_id == tenant_id)
+    rows = db.scalars(
+        stmt.order_by(GuardrailTrigger.created_at.desc()).limit(limit)
+    ).all()
+    return ok([serialize_guardrail_trigger(t) for t in rows])
 
 
 # ── Phone numbers ────────────────────────────────────────────────────────────

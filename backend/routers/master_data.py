@@ -25,6 +25,7 @@ from shared.models import (
     Country,
     Currency,
     DataRegion,
+    GuardrailProfile,
     ExchangeRate,
     Industry,
     Plan,
@@ -410,6 +411,8 @@ _AI_PROFILE_STACK = (
 # Fields where an explicit empty string clears the column (needed when a
 # provider change invalidates the previously selected model).
 _CLEARABLE: dict[str, set[str]] = {
+    # Clearing the default profile removes the industry's recommendation.
+    "industries": {"default_guardrail_profile_id"},
     "ai-profiles": {f for pair in _AI_PROFILE_STACK for f in pair[:2]} | {"default_voice"},
     "voices": {"locale", "provider_voice_id", "accent"},
     # Clearing the selling price returns the row to cost-only (no markup).
@@ -453,6 +456,19 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
             errors.append({"field": _camel(field), "message": "Must be a number."})
         elif value < 0:
             errors.append({"field": _camel(field), "message": "Must be zero or greater."})
+
+    if mtype == "industries" and payload.get("default_guardrail_profile_id"):
+        profile = db.scalar(
+            select(GuardrailProfile).where(
+                GuardrailProfile.id == payload["default_guardrail_profile_id"],
+                GuardrailProfile.is_deleted.is_(False),
+            )
+        )
+        if profile is None or profile.status != "active":
+            errors.append({
+                "field": "defaultGuardrailProfileId",
+                "message": "Select an active guardrail profile.",
+            })
 
     if mtype == "plans" and payload.get("currency") is not None:
         code = str(payload["currency"]).strip().upper()
@@ -1570,8 +1586,18 @@ def onboarding_options(
         select(SupportedLanguage).where(SupportedLanguage.enabled.is_(True))
         .order_by(SupportedLanguage.sort_order, SupportedLanguage.code)
     ).all()
+    guardrail_profiles = db.scalars(
+        select(GuardrailProfile).where(
+            GuardrailProfile.is_deleted.is_(False),
+            GuardrailProfile.status == "active",
+        ).order_by(GuardrailProfile.created_at)
+    ).all()
     return ok({
-        "industries": [{"code": i.code, "name": i.name, "icon": i.icon or ""} for i in industries],
+        "industries": [
+            {"code": i.code, "name": i.name, "icon": i.icon or "",
+             "defaultGuardrailProfileId": i.default_guardrail_profile_id or ""}
+            for i in industries
+        ],
         "dataRegions": [
             {"code": r.code, "name": r.name, "infrastructureReady": r.infrastructure_ready}
             for r in regions
@@ -1592,5 +1618,10 @@ def onboarding_options(
             {"code": l.code, "name": l.name, "nativeName": l.native_name or "",
              "direction": l.direction}
             for l in languages
+        ],
+        "guardrailProfiles": [
+            {"id": p.id, "code": p.code, "name": p.name,
+             "description": p.description or ""}
+            for p in guardrail_profiles
         ],
     })

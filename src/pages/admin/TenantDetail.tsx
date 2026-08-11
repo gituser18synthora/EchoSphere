@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  getOnboardingOptions, getTenant, getTenantAnalytics, listAudit, listBots,
-  listKnowledge, listReleases, listSubscriptions, listTeam, resetUserPassword,
-  updateTenant,
+  getOnboardingOptions, getTenant, getTenantAnalytics,
+  getTenantEffectiveGuardrails, listAudit, listBots,
+  listGuardrailProfiles, listKnowledge, listReleases, listSubscriptions,
+  listTeam, resetUserPassword, updateTenant,
 } from "@/services/api";
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
@@ -54,7 +55,10 @@ export default function TenantDetail() {
               {t.name}
               <StatusChip status={t.status} />
             </h1>
-            <p className="page-sub">{t.domain} · {t.industry} · {t.region} · customer since {new Date(t.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}</p>
+            <p className="page-sub">
+              {t.domain} · {t.industry} · {t.region} · customer since {new Date(t.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+              {" · "}{t.guardrailProfile ? `${t.guardrailProfile.name} guardrails${t.guardrailProfile.status !== "active" ? ` (${t.guardrailProfile.status})` : ""}` : "mandatory guardrails only"}
+            </p>
           </div>
         </div>
         <div className="page-actions">
@@ -116,6 +120,7 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     region: tenant.region,
     industry: tenant.industry,
     aiProfile: tenant.aiProfileCode ?? "",
+    guardrailProfile: tenant.guardrailProfileId ?? "",
     adminEmail: tenant.adminEmail,
     languages: [...(tenant.defaultLanguages ?? [])],
     callSummaryEnabled: tenant.callSummaryEnabled ?? false,
@@ -142,6 +147,7 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
     if (form.region !== tenant.region) diff.region = form.region;
     if (form.industry !== tenant.industry) diff.industry = form.industry;
     if (form.aiProfile !== (tenant.aiProfileCode ?? "")) diff.aiProfileCode = form.aiProfile;
+    if (form.guardrailProfile !== (tenant.guardrailProfileId ?? "")) diff.guardrailProfileId = form.guardrailProfile;
     if (form.adminEmail.trim() !== tenant.adminEmail) diff.adminEmail = form.adminEmail.trim();
     if (JSON.stringify(form.languages) !== JSON.stringify(tenant.defaultLanguages ?? [])) {
       diff.defaultLanguages = form.languages;
@@ -253,6 +259,20 @@ function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose
               <select className="select" value={form.aiProfile} onChange={(e) => set("aiProfile", e.target.value)}>
                 {form.aiProfile === "" && <option value="">— Not set —</option>}
                 {withCurrent(opts.aiProfiles, form.aiProfile).map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Guardrail profile" hint="Changing the industry never changes this — reassignment is always explicit. Mandatory platform guardrails apply regardless.">
+              <select className="select" value={form.guardrailProfile} onChange={(e) => set("guardrailProfile", e.target.value)}>
+                <option value="">— None (mandatory rules only) —</option>
+                {form.guardrailProfile !== "" &&
+                  !(opts.guardrailProfiles ?? []).some((p) => p.id === form.guardrailProfile) && (
+                    <option value={form.guardrailProfile}>
+                      {tenant.guardrailProfile?.name ?? form.guardrailProfile}
+                      {tenant.guardrailProfile?.status && tenant.guardrailProfile.status !== "active"
+                        ? ` (${tenant.guardrailProfile.status})` : " (unavailable)"}
+                    </option>
+                  )}
+                {(opts.guardrailProfiles ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </Field>
             <Field label="Admin email">
@@ -431,9 +451,18 @@ function UsersTab({ tenantId }: { tenantId: string }) {
 
 function BotsTab({ tenantId }: { tenantId: string }) {
   const q = useAsync(() => listBots(tenantId), [tenantId]);
+  const profilesQ = useAsync(listGuardrailProfiles, []);
+  const profileName = (id: string) =>
+    (profilesQ.data ?? []).find((p) => p.id === id)?.name ?? id;
   const cols: Column<VoiceBot>[] = [
     { key: "name", header: "Bot", sortValue: (b) => b.name, render: (b) => <div><div className="t-strong">{b.name}</div><div className="t-micro">{b.useCase}</div></div> },
     { key: "status", header: "Status", render: (b) => <StatusChip status={b.status} /> },
+    {
+      key: "guardrails", header: "Guardrails",
+      render: (b) => b.guardrailProfileId
+        ? <span className="chip chip-brand">{profileName(b.guardrailProfileId)}</span>
+        : <span className="t-micro">Inherited (tenant default)</span>,
+    },
     { key: "version", header: "Live version", render: (b) => <code>{b.liveVersion ?? "—"}</code> },
     { key: "health", header: "Health", render: (b) => <Health level={b.health} /> },
     { key: "calls", header: "Calls / mo", align: "right", sortValue: (b) => b.callsMonth, render: (b) => <span className="t-num">{fmtNum(b.callsMonth)}</span> },
@@ -545,10 +574,45 @@ function AiUsageTab({ tenantId }: { tenantId: string }) {
       <div className="card card-pad col gap-12">
         <span className="card-title">Governance notes</span>
         <p className="t-sub">Model routing, embedding configuration and token budgets for this tenant are managed centrally under <b>AI Governance</b>. Tenant admins see only approved voices and capabilities — never provider credentials or raw model settings.</p>
-        <div className="callout callout-info">
-          <Icon name="info" size={15} />
-          <div className="callout-body">This tenant uses the platform-default conversation model with the standard PII redaction and medical-advice guardrails enabled.</div>
-        </div>
+        <EffectiveGuardrailsPanel tenantId={tenantId} />
+      </div>
+    </div>
+  );
+}
+
+/** The guardrails ACTUALLY enforced for this tenant at call start: mandatory
+    platform rules plus the assigned profile's rules — live API data, never a
+    static claim. */
+function EffectiveGuardrailsPanel({ tenantId }: { tenantId: string }) {
+  const q = useAsync(() => getTenantEffectiveGuardrails(tenantId), [tenantId]);
+  if (q.loading) return <CardSkeleton rows={3} />;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
+  const eff = q.data;
+  if (!eff) return null;
+  return (
+    <div className="col gap-8" aria-label="Effective guardrails">
+      <div className="row gap-8">
+        <span className="t-label">Guardrail profile</span>
+        {eff.profile ? (
+          <>
+            <span className="t-strong" style={{ fontSize: 13 }}>{eff.profile.name}</span>
+            <span className="t-micro">v{eff.profile.version}</span>
+            {eff.profile.status !== "active" && <StatusChip status={eff.profile.status} />}
+          </>
+        ) : (
+          <span className="t-sub">None assigned — mandatory platform rules only</span>
+        )}
+      </div>
+      <div className="col gap-4">
+        {eff.rules.map((r) => (
+          <div key={r.code} className="row-between" style={{ padding: "6px 0", borderBottom: "1px solid var(--hairline)" }}>
+            <span style={{ fontSize: 13 }}>
+              {r.name}
+              {r.mandatory && <span className="tag" style={{ marginLeft: 8 }}>Mandatory</span>}
+            </span>
+            <span className="chip chip-neutral" style={{ textTransform: "capitalize" }}>{r.action}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

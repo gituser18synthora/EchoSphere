@@ -21,6 +21,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Mandatory secret-leakage guardrail at the logging boundary: no handler can
+# write a provider credential, whichever library raised.
+from shared.logging_utils import install_log_redaction  # noqa: E402
+
+install_log_redaction()
 logger = logging.getLogger("backend")
 
 
@@ -102,6 +107,7 @@ def create_app() -> FastAPI:
         bots,
         catalog,
         channels,
+        compliance,
         conversations,
         customer_context,
         exports,
@@ -131,7 +137,7 @@ def create_app() -> FastAPI:
     for module in (
         auth, users, tenants, billing, bots, catalog, knowledge, knowledge_documents,
         knowledge_review, prompts, intents, apis, workflows, channels, testing, releases,
-        conversations, customer_context, runtime_context, exports, platform, integrations,
+        conversations, customer_context, runtime_context, exports, platform, compliance, integrations,
         audit, analytics, reports,
         voice_sessions, telephony, master_data, providers, usage, voice_clones,
     ):

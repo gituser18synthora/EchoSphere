@@ -22,7 +22,7 @@ const initial: FormState = {
   company: "", domain: "", industry: "", region: "",
   plan: "", seats: "10",
   adminName: "", adminEmail: "",
-  aiProfile: "", guardrailProfile: "standard", languages: [],
+  aiProfile: "", guardrailProfile: "", languages: [],
   callSummaryEnabled: false, usePreviousCallSummary: false,
   telephonyMode: "platform", numberCountry: "US",
   sso: true, mfa: true, retention: "90", residency: false,
@@ -49,20 +49,45 @@ export default function Onboarding() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [tasks, setTasks] = useState<ProvTask[] | null>(null);
 
+  /* The Super Admin's explicit guardrail choice is sticky: once they pick a
+     profile, industry changes stop re-suggesting the industry default. */
+  const [guardrailTouched, setGuardrailTouched] = useState(false);
+
   const optionsQ = useAsync(getOnboardingOptions, []);
   const opts = optionsQ.data;
+
+  /** The recommended profile id for an industry: its configured default,
+      falling back to the platform "standard" profile. */
+  const suggestedGuardrailProfile = (industryCode: string): string => {
+    if (!opts) return "";
+    const profiles = opts.guardrailProfiles ?? [];
+    const industry = opts.industries.find((i) => i.code === industryCode);
+    if (industry?.defaultGuardrailProfileId
+        && profiles.some((p) => p.id === industry.defaultGuardrailProfileId)) {
+      return industry.defaultGuardrailProfileId;
+    }
+    return profiles.find((p) => p.code === "standard")?.id ?? profiles[0]?.id ?? "";
+  };
 
   /* Default selections once the platform option catalog loads. */
   useEffect(() => {
     if (!opts) return;
-    setForm((f) => ({
-      ...f,
-      industry: f.industry || (opts.industries[0]?.code ?? ""),
-      region: f.region || (opts.dataRegions[0]?.code ?? ""),
-      plan: f.plan || (opts.plans.find((p) => p.isRecommended)?.code ?? opts.plans[0]?.code ?? ""),
-      aiProfile: f.aiProfile || (opts.aiProfiles[0]?.code ?? ""),
-      languages: f.languages.length > 0 ? f.languages : opts.languages[0] ? [opts.languages[0].code] : [],
-    }));
+    setForm((f) => {
+      const industry = f.industry || (opts.industries[0]?.code ?? "");
+      return {
+        ...f,
+        industry,
+        region: f.region || (opts.dataRegions[0]?.code ?? ""),
+        plan: f.plan || (opts.plans.find((p) => p.isRecommended)?.code ?? opts.plans[0]?.code ?? ""),
+        aiProfile: f.aiProfile || (opts.aiProfiles[0]?.code ?? ""),
+        guardrailProfile: f.guardrailProfile || (
+          (opts.industries.find((i) => i.code === industry)?.defaultGuardrailProfileId)
+          || (opts.guardrailProfiles ?? []).find((p) => p.code === "standard")?.id
+          || (opts.guardrailProfiles ?? [])[0]?.id || ""
+        ),
+        languages: f.languages.length > 0 ? f.languages : opts.languages[0] ? [opts.languages[0].code] : [],
+      };
+    });
   }, [opts]);
 
   const selectedPlan = opts?.plans.find((p) => p.code === form.plan);
@@ -71,6 +96,17 @@ export default function Onboarding() {
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
     setErrors((e) => ({ ...e, [k]: "" }));
+  };
+
+  /** Industry drives the SUGGESTED guardrail profile — but never overrides a
+      manual selection, and unrelated field edits never reset it. */
+  const setIndustry = (code: string) => {
+    setForm((f) => ({
+      ...f,
+      industry: code,
+      guardrailProfile: guardrailTouched ? f.guardrailProfile : suggestedGuardrailProfile(code),
+    }));
+    setErrors((e) => ({ ...e, industry: "" }));
   };
 
   const validate = (): boolean => {
@@ -112,6 +148,7 @@ export default function Onboarding() {
         region: form.region,
         planCode: form.plan,
         aiProfileCode: form.aiProfile,
+        guardrailProfileId: form.guardrailProfile || undefined,
         adminEmail: form.adminEmail,
         adminName: form.adminName,
         seats: Number(form.seats) || undefined,
@@ -158,13 +195,14 @@ export default function Onboarding() {
     const regionName = opts?.dataRegions.find((r) => r.code === form.region)?.name ?? form.region;
     const planSel = opts?.plans.find((p) => p.code === form.plan);
     const profileName = opts?.aiProfiles.find((p) => p.code === form.aiProfile)?.name ?? form.aiProfile;
+    const guardrailName = (opts?.guardrailProfiles ?? []).find((p) => p.id === form.guardrailProfile)?.name ?? "Standard";
     const langNames = form.languages.map((c) => opts?.languages.find((l) => l.code === c)?.name ?? c);
     return [
       ["Company", `${form.company || "—"} (${form.domain || "—"})`],
       ["Industry / region", `${industryName} · ${regionName}`],
       ["Plan", `${planSel?.name ?? form.plan} · ${form.seats} seats · ${(planSel?.minutesIncluded ?? 0).toLocaleString()} min/mo`],
       ["Admin", `${form.adminName || "—"} <${form.adminEmail || "—"}>`],
-      ["AI profile", `${profileName} · ${form.guardrailProfile} guardrails · ${langNames.join(", ")}`],
+      ["AI profile", `${profileName} · ${guardrailName} guardrails · ${langNames.join(", ")}`],
       ["Call summary", `Generate: ${form.callSummaryEnabled ? "yes" : "no"} · Use previous: ${form.usePreviousCallSummary ? "yes" : "no"}`],
       ["Telephony", form.telephonyMode === "platform" ? `Platform-managed number (${form.numberCountry})` : "Customer SIP trunk (BYOC)"],
       ["Security", `${form.sso ? "SSO" : "Password"} · ${form.mfa ? "MFA required" : "MFA optional"} · ${form.retention}-day retention${form.residency ? " · EU residency" : ""}`],
@@ -209,8 +247,8 @@ export default function Onboarding() {
                 <Field label="Primary domain" required error={errors.domain} hint="Used for admin email validation and SSO.">
                   <input className="input" value={form.domain} onChange={(e) => set("domain", e.target.value)} placeholder="groveutilities.com" aria-invalid={!!errors.domain} />
                 </Field>
-                <Field label="Industry">
-                  <select className="select" value={form.industry} onChange={(e) => set("industry", e.target.value)}>
+                <Field label="Industry" hint="Suggests the recommended guardrail profile — you can override it in AI Configuration.">
+                  <select className="select" value={form.industry} onChange={(e) => setIndustry(e.target.value)}>
                     {opts.industries.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
                   </select>
                 </Field>
@@ -270,11 +308,22 @@ export default function Onboarding() {
                     {selectedProfile && <span className="chip chip-neutral" style={{ textTransform: "capitalize", whiteSpace: "nowrap" }}>{selectedProfile.costCategory} cost</span>}
                   </div>
                 </Field>
-                <Field label="Guardrail profile">
-                  <select className="select" value={form.guardrailProfile} onChange={(e) => set("guardrailProfile", e.target.value)}>
-                    <option value="standard">Standard — PII redaction + abuse handling</option>
-                    <option value="healthcare">Healthcare — adds medical-advice boundary</option>
-                    <option value="finance">Finance — adds payment & advice restrictions</option>
+                <Field
+                  label="Guardrail profile"
+                  hint={
+                    !guardrailTouched && form.guardrailProfile === suggestedGuardrailProfile(form.industry)
+                      ? `Suggested by the ${opts.industries.find((i) => i.code === form.industry)?.name ?? "selected"} industry. Mandatory platform guardrails always apply.`
+                      : "Manually selected — industry changes will not replace it. Mandatory platform guardrails always apply."
+                  }
+                >
+                  <select
+                    className="select"
+                    value={form.guardrailProfile}
+                    onChange={(e) => { setGuardrailTouched(true); set("guardrailProfile", e.target.value); }}
+                  >
+                    {(opts.guardrailProfiles ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}{p.description ? ` — ${p.description}` : ""}</option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Call Summary" hint="Both settings are independent and can be changed later from Edit tenant.">

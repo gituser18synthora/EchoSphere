@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.date_filters import parse_date_range
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
@@ -62,10 +63,19 @@ def list_conversations(
     sentiment: str | None = Query(None),
     contained: bool | None = Query(None),
     flagged: bool | None = Query(None),
+    date_from: str | None = Query(
+        None, alias="dateFrom", max_length=40,
+        description="Inclusive start of the call date range (YYYY-MM-DD or ISO-8601 instant)",
+    ),
+    date_to: str | None = Query(
+        None, alias="dateTo", max_length=40,
+        description="Inclusive end of the call date range (YYYY-MM-DD or ISO-8601 instant)",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
+    started_from, started_to = parse_date_range(date_from, date_to)
     stmt = select(ConversationSession).where(
         ConversationSession.tenant_id == tid, ConversationSession.is_deleted.is_(False)
     )
@@ -79,6 +89,13 @@ def list_conversations(
         stmt = stmt.where(ConversationSession.contained.is_(contained))
     if flagged is not None:
         stmt = stmt.where(ConversationSession.flagged.is_(flagged))
+    # Filtering on started_at (not created_at): the review page is about when
+    # the call happened. Rows with no start time cannot be placed on a day and
+    # are therefore outside any range.
+    if started_from is not None:
+        stmt = stmt.where(ConversationSession.started_at >= started_from)
+    if started_to is not None:
+        stmt = stmt.where(ConversationSession.started_at <= started_to)
     if params.search:
         like = f"%{params.search}%"
         stmt = stmt.where(

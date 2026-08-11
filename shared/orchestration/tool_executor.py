@@ -186,9 +186,25 @@ class ToolExecutor:
         customer_verified: bool = False,
         context_values: dict | None = None,
         mock_results: dict | None = None,
+        guardrails=None,
     ) -> ToolResult:
         args = dict(args or {})
         started = time.monotonic()
+
+        # Guardrail gate (mandatory unsafe_tool_call_block): once a blocking
+        # guardrail fired in this turn, NO tool call may proceed — the single
+        # choke point covers voice, workflow api nodes and Testing Studio.
+        # Call sites that only know the session id (workflow api nodes)
+        # resolve the live engine from the session registry.
+        if guardrails is None and session_id:
+            from shared.guardrails import session_engine
+
+            guardrails = session_engine(session_id)
+        if guardrails is not None:
+            gate = guardrails.check_tool_call(intent=intent, workflow=workflow)
+            if not gate.allowed:
+                return ToolResult(tool=tool, ok=False, status="denied",
+                                  error=gate.reason)
 
         connection = await asyncio.to_thread(
             _load_connection_sync, tenant_id, bot_id, tool
@@ -197,24 +213,43 @@ class ToolExecutor:
             return ToolResult(tool=tool, ok=False, status="not_found",
                               error="No such tool is configured for this bot.")
 
+        def _denied(error: str) -> ToolResult:
+            if guardrails is not None:
+                # Audit-visible under the mandatory unsafe-tool guardrail.
+                guardrails.record_tool_denial(
+                    intent=intent, workflow=workflow, reason=error
+                )
+            return ToolResult(tool=tool, ok=False, status="denied", error=error)
+
         # Permission: intent/workflow restrictions are a closed allow-list.
         allowed_intents = connection["allowed_intents"]
         if allowed_intents and intent and intent not in allowed_intents:
-            return ToolResult(tool=tool, ok=False, status="denied",
-                              error=f"Tool is not allowed for intent '{intent}'.")
+            return _denied(f"Tool is not allowed for intent '{intent}'.")
         allowed_workflows = connection["allowed_workflows"]
         if allowed_workflows and workflow and workflow not in allowed_workflows:
-            return ToolResult(tool=tool, ok=False, status="denied",
-                              error=f"Tool is not allowed for workflow '{workflow}'.")
+            return _denied(f"Tool is not allowed for workflow '{workflow}'.")
+
+        # Development/sandbox profile rule: state-changing tools may never
+        # execute for real, whatever arguments the model produced. Mocked
+        # Testing Studio runs (mock_results) stay usable — nothing external
+        # happens there.
+        if connection["is_state_changing"] and guardrails is not None and not (
+            mock_results is not None and tool in mock_results
+        ):
+            gate = guardrails.check_state_changing_tool(
+                intent=intent, workflow=workflow
+            )
+            if not gate.allowed:
+                return ToolResult(tool=tool, ok=False, status="denied",
+                                  error=gate.reason)
 
         # Business rule: a state-changing tool that demands confirmation may
         # not act for an unverified caller — whoever picked up the phone is
         # not yet the customer.
         if connection["is_state_changing"] and connection["require_confirmation"] \
                 and not customer_verified:
-            return ToolResult(
-                tool=tool, ok=False, status="denied",
-                error="Customer identity must be verified before this action.",
+            return _denied(
+                "Customer identity must be verified before this action."
             )
 
         problems = validate_args(connection["request_schema"], args)

@@ -60,6 +60,12 @@ from shared.models.billing_models import (
     ProviderPricing,
     UsageEvent,
 )
+from shared.models.guardrail_models import (
+    GuardrailProfile,
+    GuardrailProfileRule,
+    GuardrailTrigger,
+)
+from shared.models.compliance_models import CompliancePolicy, ComplianceWording
 from shared.models.collections_models import CustomerCollectionContext
 from shared.models.context_models import RuntimeContextRecord, RuntimeContextSchema
 from shared.models.memory_models import ConversationMemory
@@ -75,6 +81,8 @@ __all__ = [
     "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
+    "GuardrailProfile", "GuardrailProfileRule", "GuardrailTrigger",
+    "CompliancePolicy", "ComplianceWording",
     "Industry", "Country", "DataRegion", "AiConfigProfile", "ProviderDef", "ProviderModel",
     "Currency", "ExchangeRate", "ProviderPricing", "UsageEvent",
     "CustomerCollectionContext",
