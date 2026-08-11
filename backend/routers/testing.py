@@ -405,6 +405,14 @@ async def chat_test(
     state model of a live call.
     """
     from shared.db.redis import get_redis
+    from shared.guardrails import (
+        GuardrailEngine,
+        guardrail_reply,
+        load_effective_guardrails_sync,
+        persist_triggers_sync,
+        register_session_engine,
+        release_session_engine,
+    )
     from shared.orchestration.phrases import canned
     from shared.orchestration.router import RouteKind
     from shared.orchestration.workflow_engine import get_workflow_engine
@@ -426,23 +434,45 @@ async def chat_test(
     except Exception:  # noqa: BLE001 — degrade to single-turn routing
         active_workflow = None
 
+    # The chat runtime enforces the same bot-effective guardrails and active
+    # compliance policies as a voice call: input check before any
+    # routing/LLM/tool, output check on the produced reply, and the tool
+    # executor's session-registry gate for workflow api nodes.
+    from shared.compliance import load_active_policies_sync, substitute_wordings
+
+    effective_guardrails = load_effective_guardrails_sync(
+        bot.tenant_id, bot.id, session=db
+    )
+    compliance_policies = load_active_policies_sync(bot.tenant_id, session=db)
+    guardrails = GuardrailEngine(effective_guardrails, compliance=compliance_policies)
+    guardrails.begin_turn()
+
     decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
 
     reply = ""
     done = True
     workflow_detail: dict | None = None
-    if decision.kind == RouteKind.WORKFLOW:
+    guard_input = guardrails.check_user_input(body.message)
+    if guard_input.blocked:
+        decision_route = "guardrail"
+        reply = guardrail_reply(guard_input.reply_key, conversation_language)
+    elif decision.kind == RouteKind.WORKFLOW:
         name = decision.action or active_workflow
         if name:
             engine = get_workflow_engine()
-            result = await engine.handle_turn_detailed(
-                session_id=f"test:{bot.id}:{session}",
-                tenant_id=bot.tenant_id,
-                bot_id=bot.id,
-                workflow_name=name,
-                user_text=body.message,
-                language=conversation_language,
-            )
+            workflow_session = f"test:{bot.id}:{session}"
+            register_session_engine(workflow_session, guardrails)
+            try:
+                result = await engine.handle_turn_detailed(
+                    session_id=workflow_session,
+                    tenant_id=bot.tenant_id,
+                    bot_id=bot.id,
+                    workflow_name=name,
+                    user_text=body.message,
+                    language=conversation_language,
+                )
+            finally:
+                release_session_engine(workflow_session)
             reply, done = result["reply"], result["done"]
             if result.get("offScript"):
                 # The workflow held its node; a live call answers this turn
@@ -486,9 +516,38 @@ async def chat_test(
         except Exception:  # noqa: BLE001 — one provider failure must stay readable
             reply = canned("error", conversation_language)
 
+    if not guard_input.blocked and compliance_policies and reply and "{{" in reply:
+        # Approved legal wordings substitute verbatim, version recorded.
+        reply = substitute_wordings(
+            reply, compliance_policies, conversation_language,
+            on_use=guardrails.record_wording_use,
+        )
+    if guard_input.blocked:
+        pass  # the safe reply above is final
+    elif decision.kind != RouteKind.SAFETY:
+        # Output enforcement (the SAFETY canned phrase legitimately names
+        # card numbers/OTP and is exempt): a blocking rule swaps in the safe
+        # reply, redaction rules rewrite the returned text.
+        guard_output = guardrails.check_output_text(reply)
+        if guard_output.blocked:
+            reply = guardrail_reply(guard_output.reply_key, conversation_language)
+        else:
+            reply = guard_output.text
+    if not guard_input.blocked:
+        decision_route = decision.kind.value
+
+    if guardrails.hits:
+        # No call finalize exists here — persist the trigger ledger now.
+        persist_triggers_sync(
+            guardrails.hits, tenant_id=bot.tenant_id, bot_id=bot.id,
+            session_id=session, channel="chat_test",
+            effective=effective_guardrails, session=db,
+        )
+        db.commit()
+
     return ok({
         "sessionId": session,
-        "route": decision.kind.value,
+        "route": decision_route,
         "action": decision.action,
         "matchedIntent": decision.intent,
         "confidence": round(decision.confidence, 3),
@@ -496,6 +555,11 @@ async def chat_test(
         "reply": reply,
         "done": done,
         "language": conversation_language,
+        "guardrail": (
+            {"blocked": guardrails.turn_blocked,
+             "rules": sorted({h.rule.code for h in guardrails.hits})}
+            if guardrails.hits else None
+        ),
         "latencyMs": round((time.perf_counter() - started) * 1000),
         "at": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "activeWorkflow": (workflow_detail or {}).get("name") if workflow_detail and not done else None,

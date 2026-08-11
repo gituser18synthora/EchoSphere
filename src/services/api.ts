@@ -10,7 +10,9 @@ import type {
   ChannelConfig, ChannelProviderConfig, Conversation, CustomerContext,
   CustomerContextCallState, CustomerContextInput,
   DocumentStatus, DocumentUploadResult, EntityDef,
-  EntityExtraction, Guardrail, HealthMetric, Intent, IntentTestResult,
+  BotEffectiveGuardrails,
+  EffectiveGuardrails, EntityExtraction, Guardrail, GuardrailProfile,
+  GuardrailTrigger, HealthMetric, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
@@ -46,12 +48,15 @@ export const listTenants = async (): Promise<Tenant[]> =>
 export const getTenant = (id: string): Promise<Tenant> => http.get(`/tenants/${id}`);
 export const createTenant = (body: {
   name: string; code?: string; domain: string; industry?: string; region?: string;
-  aiProfileCode?: string; planCode: string; adminEmail: string; adminName?: string;
+  aiProfileCode?: string; guardrailProfileId?: string; planCode: string;
+  adminEmail: string; adminName?: string;
   status?: string; seats?: number; defaultLanguages?: string[];
   callSummaryEnabled?: boolean; usePreviousCallSummary?: boolean;
 }) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string } }>("/tenants", body);
-export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages" | "callSummaryEnabled" | "usePreviousCallSummary"> & { planCode: string; aiProfileCode: string }>) =>
+export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages" | "callSummaryEnabled" | "usePreviousCallSummary"> & { planCode: string; aiProfileCode: string; guardrailProfileId: string }>) =>
   http.patch<Tenant>(`/tenants/${id}`, body);
+export const getTenantEffectiveGuardrails = (id: string): Promise<EffectiveGuardrails> =>
+  http.get(`/tenants/${id}/effective-guardrails`);
 export const archiveTenant = (id: string) => http.delete<{ archived: boolean }>(`/tenants/${id}`);
 
 export const listSubscriptions = async (): Promise<Subscription[]> =>
@@ -424,13 +429,19 @@ export const updateReleaseStage = (releaseId: string, stage: string) =>
   http.patch<Release>(`/releases/${releaseId}`, { stage });
 
 /* ---------- Conversations ---------- */
-export const listConversations = async (filters?: { botId?: string; channel?: string; sentiment?: string; flagged?: boolean; search?: string }): Promise<Conversation[]> => {
+/** `dateFrom`/`dateTo` bound `startedAt` inclusively. Send instants (ISO-8601)
+    rather than bare days: the server stores UTC, so the caller decides which
+    timezone's day boundaries it means — the Conversations page sends the
+    viewer's local day so the filter agrees with the dates it renders. */
+export const listConversations = async (filters?: { botId?: string; channel?: string; sentiment?: string; flagged?: boolean; search?: string; dateFrom?: string; dateTo?: string }): Promise<Conversation[]> => {
   const params = new URLSearchParams({ pageSize: "100" });
   if (filters?.botId) params.set("botId", filters.botId);
   if (filters?.channel) params.set("channel", filters.channel);
   if (filters?.sentiment) params.set("sentiment", filters.sentiment);
   if (filters?.flagged !== undefined) params.set("flagged", String(filters.flagged));
   if (filters?.search) params.set("search", filters.search);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
   return (await http.getPaged<Conversation>(`/conversations?${params}`)).items;
 };
 /** `currency` selects the display currency for the cost breakdown only; the
@@ -451,6 +462,19 @@ export const updateModelStatus = (id: string, status: string) => http.patch<Appr
 export const listGuardrails = (): Promise<Guardrail[]> => http.get("/guardrails");
 export const updateGuardrail = (id: string, body: { enabled?: boolean; enforcement?: string }) =>
   http.patch<Guardrail>(`/guardrails/${id}`, body);
+export const listGuardrailProfiles = (): Promise<GuardrailProfile[]> => http.get("/guardrail-profiles");
+export const createGuardrailProfile = (body: { code: string; name: string; description?: string; guardrailIds?: string[] }) =>
+  http.post<GuardrailProfile>("/guardrail-profiles", body);
+export const updateGuardrailProfile = (id: string, body: { name?: string; description?: string; guardrailIds?: string[] }) =>
+  http.patch<GuardrailProfile>(`/guardrail-profiles/${id}`, body);
+export const setGuardrailProfileStatus = (id: string, status: "active" | "inactive" | "archived") =>
+  http.post<GuardrailProfile>(`/guardrail-profiles/${id}/status`, { status });
+export const listGuardrailTriggers = (tenantId?: string): Promise<GuardrailTrigger[]> =>
+  http.get(`/guardrail-triggers${tenantId ? `?tenantId=${tenantId}` : ""}`);
+export const setBotGuardrailProfile = (botId: string, guardrailProfileId: string) =>
+  http.patch<VoiceBot>(`/bots/${botId}/guardrail-profile`, { guardrailProfileId });
+export const getBotEffectiveGuardrails = (botId: string): Promise<BotEffectiveGuardrails> =>
+  http.get(`/bots/${botId}/effective-guardrails`);
 export const listPhoneNumbers = (): Promise<PhoneNumber[]> => http.get("/phone-numbers");
 export const updatePhoneNumber = (
   id: string,

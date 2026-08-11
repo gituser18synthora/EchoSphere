@@ -173,11 +173,18 @@ def _sanitize_variables(raw: object) -> dict[str, str]:
 
 async def _extract_call_details(
     provider: str, request: Request
-) -> tuple[str, str | None, str | None, dict[str, str], str | None]:
-    """Returns (called_number, caller_number, call_id, variables, bot_id)."""
+) -> tuple[str, str | None, str | None, dict[str, str], str | None, str | None]:
+    """Returns (called_number, caller_number, call_id, variables, bot_id,
+    direction). ``direction`` is the dialer's own declaration when present
+    ("inbound"/"outbound"); compliance policies may configure an assumption
+    for payloads that omit it."""
     if provider == "twilio":
         form = await request.form()
-        return form.get("To", ""), form.get("From"), form.get("CallSid"), {}, None
+        direction = str(form.get("Direction") or "").strip().lower() or None
+        if direction and "outbound" in direction:
+            direction = "outbound"
+        return (form.get("To", ""), form.get("From"), form.get("CallSid"),
+                {}, None, direction)
     body = {}
     try:
         body = await request.json()
@@ -193,6 +200,9 @@ async def _extract_call_details(
         body.get("CallSid") or body.get("callId") or body.get("call_id") or None
     )
     variables = _sanitize_variables(body.get("variables"))
+    direction = str(body.get("Direction") or body.get("direction") or "").strip().lower() or None
+    if direction not in (None, "inbound", "outbound"):
+        direction = "outbound" if "outbound" in direction else "inbound"
     # Optional per-campaign bot selection (see resolve_bot_for_dialer): the
     # dialed number stays the tenant authority; botId only picks within it.
     bot_id = body.get("botId") or body.get("bot_id") or None
@@ -200,7 +210,87 @@ async def _extract_call_details(
         bot_id = str(bot_id).strip()
         if not _BOT_ID.match(bot_id):
             raise ApiError("Invalid botId in webhook payload", status_code=422)
-    return called, caller, (str(call_id)[:64] if call_id else None), variables, bot_id
+    return (called, caller, (str(call_id)[:64] if call_id else None),
+            variables, bot_id, direction)
+
+
+async def enforce_pre_call_compliance(
+    *,
+    tenant_id: str,
+    bot_id: str,
+    caller: str | None,
+    direction: str | None,
+    call_id: str | None = None,
+    channel: str = "phone",
+    now=None,
+) -> None:
+    """Deterministic pre-connect gate — the platform's 'immediately before
+    dialing' checkpoint (the external dialer initiates; this is where the
+    platform accepts or refuses the call, before any media flows).
+
+    Enforces, in order: the bot's effective ``outbound_call_block`` guardrail
+    (development/sandbox profiles), then every ACTIVE compliance policy's
+    calling window and per-day contact limit. A refusal raises a sanitized
+    403 and writes a tenant-scoped trigger row carrying the policy code and
+    version — never the caller's number.
+    """
+    import asyncio
+
+    from shared.compliance import (
+        check_and_count_contact,
+        check_calling_window,
+        load_active_policies_sync,
+        record_policy_trigger_sync,
+    )
+    from shared.guardrails import load_effective_guardrails_sync
+
+    effective = await asyncio.to_thread(
+        load_effective_guardrails_sync, tenant_id, bot_id
+    )
+    if effective.has("outbound_call_block"):
+        await asyncio.to_thread(
+            record_policy_trigger_sync,
+            tenant_id=tenant_id, bot_id=bot_id, session_id=call_id,
+            rule="outbound_call_block", action="block", stage="call",
+            outcome="blocked", channel=channel,
+            detail="telephony disabled by the bot's guardrail profile",
+        )
+        raise ApiError("This number is not accepting calls.", status_code=403)
+
+    policies = await asyncio.to_thread(load_active_policies_sync, tenant_id)
+    contact_counted = False
+    for policy in policies:
+        if not policy.applies(
+            channel=channel, direction=policy.effective_direction(direction)
+        ):
+            continue
+        decision = check_calling_window(policy, now)
+        if not decision.allowed:
+            await asyncio.to_thread(
+                record_policy_trigger_sync,
+                tenant_id=tenant_id, bot_id=bot_id, session_id=call_id,
+                rule="calling_window", action="block", stage="call",
+                outcome="blocked", policy=policy, channel=channel,
+                detail=f"{decision.reason} (local {decision.local_time})",
+            )
+            raise ApiError("Calls are not permitted at this time.", status_code=403)
+        if not contact_counted and (policy.contact_limits or {}).get("per_day"):
+            contact_counted = True  # one shared counter — never double-count
+            allowed, attempts = await check_and_count_contact(
+                policy, tenant_id=tenant_id, caller=caller, now=now
+            )
+            if not allowed:
+                await asyncio.to_thread(
+                    record_policy_trigger_sync,
+                    tenant_id=tenant_id, bot_id=bot_id, session_id=call_id,
+                    rule="contact_limit", action="block", stage="call",
+                    outcome="blocked", policy=policy, channel=channel,
+                    detail=f"daily contact limit reached (attempt {attempts})",
+                )
+                raise ApiError(
+                    "The daily contact limit for this number has been reached.",
+                    status_code=403,
+                )
 
 
 async def handle_inbound_call_webhook(provider: str, request: Request) -> Response:
@@ -232,8 +322,8 @@ async def handle_inbound_call_webhook(provider: str, request: Request) -> Respon
         await check_replay(signature)
 
     # ── trusted routing: number (+ botId) → tenant → bot → published config ─
-    called, caller, call_id, variables, requested_bot = await _extract_call_details(
-        provider, request
+    called, caller, call_id, variables, requested_bot, direction = (
+        await _extract_call_details(provider, request)
     )
     if not called:
         raise ApiError("Webhook payload missing the dialed number", status_code=422)
@@ -241,6 +331,17 @@ async def handle_inbound_call_webhook(provider: str, request: Request) -> Respon
 
     # A deactivated voice channel must not receive calls (sanitized error).
     _assert_voice_channel_enabled(config.bot_id)
+
+    # Deterministic compliance gate BEFORE the session exists: development
+    # profiles that disable telephony, active-policy calling windows and
+    # contact limits all refuse here — the dialer never gets a media URL.
+    await enforce_pre_call_compliance(
+        tenant_id=config.tenant_id,
+        bot_id=config.bot_id,
+        caller=caller,
+        direction=direction,
+        call_id=call_id,
+    )
 
     session = await create_voice_session(
         tenant_id=config.tenant_id,

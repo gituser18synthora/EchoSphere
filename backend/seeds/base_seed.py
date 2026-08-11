@@ -9,7 +9,7 @@ opt-in development dataset).
 import logging
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from shared.config import get_settings
@@ -23,6 +23,8 @@ from shared.models import (
     Currency,
     DataRegion,
     Guardrail,
+    GuardrailProfile,
+    GuardrailProfileRule,
     HealthMetric,
     Industry,
     Integration,
@@ -310,12 +312,60 @@ VOICES = [
 ]
 
 GUARDRAILS = [
-    ("PII redaction in transcripts", "Privacy", "Redacts SSN, card numbers and DOB from stored transcripts and logs.", "redact", True),
-    ("Medical advice boundary", "Safety", "Blocks diagnosis or dosage advice; routes to licensed staff.", "block", True),
-    ("Payment collection restriction", "Compliance", "Bots may reference balances but never collect card numbers by voice.", "block", True),
-    ("Competitor mention flag", "Brand", "Flags conversations where competitors are discussed for QA review.", "flag", False),
-    ("Profanity / abuse de-escalation", "Safety", "Switches to calm register and offers human handover on repeated abuse.", "flag", True),
+    # (code, name, category, description, enforcement, enabled, is_mandatory)
+    # Mandatory rules apply to EVERY tenant regardless of profile and cannot
+    # be disabled via the API — the runtime enforces them even when the
+    # guardrail lookup fails (see shared/guardrails/loader.py).
+    ("pii_redaction", "PII redaction in transcripts", "Privacy",
+     "Redacts card numbers, Aadhaar, PAN and phone numbers from stored transcripts and logs.", "redact", True, True),
+    ("secret_leakage_prevention", "Secret & credential leakage prevention", "Privacy",
+     "Redacts API keys, tokens and passwords from model output, transcripts and process logs.", "redact", True, True),
+    ("unsafe_tool_call_block", "Unsafe tool-call blocking", "Security",
+     "Blocks tool/API calls outside the bot's allow-list and any tool call after a blocking guardrail fired in the same turn.", "block", True, True),
+    ("prompt_injection_protection", "Prompt-injection protection", "Security",
+     "Flags injection attempts in caller speech and retrieved knowledge; scope rules force the bot back on-goal.", "flag", True, True),
+    ("medical_advice_boundary", "Medical advice boundary", "Safety",
+     "Blocks diagnosis or dosage advice; routes to licensed staff.", "block", True, False),
+    ("payment_collection_restriction", "Payment collection restriction", "Compliance",
+     "Bots may reference balances but never collect card numbers by voice.", "block", True, False),
+    ("competitor_mention_flag", "Competitor mention flag", "Brand",
+     "Flags conversations where competitors are discussed for QA review.", "flag", False, False),
+    ("profanity_deescalation", "Profanity / abuse de-escalation", "Safety",
+     "Switches to calm register and offers human handover on repeated abuse.", "flag", True, False),
+    # Development/sandbox restrictions — profile rules for internal bots, so
+    # a test bot can never dial real numbers or hit production account APIs.
+    ("outbound_call_block", "Telephony calls disabled", "Development",
+     "Blocks telephony calls for this bot — browser/web test sessions only.", "block", True, False),
+    ("state_changing_tool_block", "Account-changing tools disabled", "Development",
+     "Blocks state-changing (non-mock) tool/API executions for this bot.", "block", True, False),
 ]
+
+GUARDRAIL_PROFILES = [
+    # (code, name, description, [guardrail codes])
+    # Mandatory platform rules are implied in every profile — profiles only
+    # list the additional, industry-flavored rules.
+    ("standard", "Standard",
+     "Baseline conversational safety: PII redaction plus abuse de-escalation on top of the mandatory platform rules.",
+     ["profanity_deescalation"]),
+    ("healthcare", "Healthcare",
+     "Standard plus a medical-advice boundary — no diagnosis or dosage advice by voice.",
+     ["profanity_deescalation", "medical_advice_boundary"]),
+    ("finance", "Finance",
+     "Standard plus payment & advice restrictions — balances may be referenced, card numbers never collected.",
+     ["profanity_deescalation", "payment_collection_restriction"]),
+    ("development", "Development / Internal",
+     "Internal test bots: no real telephony calls, no state-changing tools. Mandatory platform rules still apply.",
+     ["outbound_call_block", "state_changing_tool_block"]),
+]
+
+# Industry code → recommended default profile code (a suggestion surfaced at
+# onboarding, never a lock). Unmapped industries default to "standard".
+INDUSTRY_DEFAULT_PROFILES = {
+    "healthcare": "healthcare",
+    "banking": "finance",
+    "insurance": "finance",
+    "financial_services": "finance",
+}
 
 # Legacy approved-model registry shown on the AI Governance page. Entries must
 # stay inside the governed provider matrix; out-of-matrix vendors are
@@ -485,7 +535,8 @@ def run_base_seed(db: Session | None = None) -> dict:
     if own_session:
         db = get_sessionmaker()()
     created = {"roles": 0, "permissions": 0, "plans": 0, "languages": 0, "voices": 0,
-               "guardrails": 0, "models": 0, "integrations": 0, "health_metrics": 0,
+               "guardrails": 0, "guardrail_profiles": 0,
+               "models": 0, "integrations": 0, "health_metrics": 0,
                "settings": 0, "templates": 0, "users": 0,
                "industries": 0, "countries": 0, "data_regions": 0,
                "ai_profiles": 0, "providers": 0,
@@ -662,13 +713,61 @@ def run_base_seed(db: Session | None = None) -> dict:
         # bootstrap so long-lived databases pick up governance changes too.
         created.update(reconcile_provider_governance(db))
 
-        for name, category, desc, enforcement, enabled in GUARDRAILS:
-            if db.scalar(select(Guardrail).where(Guardrail.name == name)) is None:
-                db.add(Guardrail(
-                    id=new_id("gr"), name=name, category=category, description=desc,
-                    enforcement=enforcement, enabled=enabled,
-                ))
+        guardrail_map: dict[str, Guardrail] = {}
+        for code, name, category, desc, enforcement, enabled, mandatory in GUARDRAILS:
+            row = db.scalar(select(Guardrail).where(
+                or_(Guardrail.code == code, Guardrail.name == name)
+            ))
+            if row is None:
+                row = Guardrail(
+                    id=new_id("gr"), code=code, name=name, category=category,
+                    description=desc, enforcement=enforcement, enabled=enabled,
+                    is_mandatory=mandatory,
+                )
+                db.add(row)
                 created["guardrails"] += 1
+            else:
+                # Converge safety-critical columns: pre-code rows get their
+                # stable code, and mandatory platform rules are forced on —
+                # a mandatory guardrail must never stay disabled or demoted.
+                if row.code is None:
+                    row.code = code
+                if mandatory and not (row.is_mandatory and row.enabled):
+                    row.is_mandatory = True
+                    row.enabled = True
+            guardrail_map[code] = row
+        db.flush()  # profile rules reference guardrail ids
+
+        for code, name, desc, rule_codes in GUARDRAIL_PROFILES:
+            profile = db.scalar(select(GuardrailProfile).where(GuardrailProfile.code == code))
+            if profile is None:
+                profile = GuardrailProfile(
+                    id=new_id("gp"), code=code, name=name, description=desc,
+                )
+                db.add(profile)
+                db.flush()
+                for rule_code in rule_codes:
+                    guardrail = guardrail_map.get(rule_code)
+                    if guardrail is not None:
+                        db.add(GuardrailProfileRule(
+                            id=new_id("gpr"), profile_id=profile.id,
+                            guardrail_id=guardrail.id,
+                        ))
+                created["guardrail_profiles"] += 1
+            # Existing profiles keep their operator-managed rule membership.
+
+        # Recommended per-industry defaults — fill only where unset so a
+        # Super Admin's explicit choice is never overwritten on re-seed.
+        profile_ids = dict(db.execute(
+            select(GuardrailProfile.code, GuardrailProfile.id)
+            .where(GuardrailProfile.is_deleted.is_(False))
+        ).all())
+        for industry in db.scalars(select(Industry).where(Industry.is_deleted.is_(False))):
+            if industry.default_guardrail_profile_id:
+                continue
+            profile_code = INDUSTRY_DEFAULT_PROFILES.get(industry.code, "standard")
+            if profile_ids.get(profile_code):
+                industry.default_guardrail_profile_id = profile_ids[profile_code]
 
         for name, provider, purpose, status, cost, latency in MODELS:
             exists = db.scalar(

@@ -61,6 +61,7 @@ results only ever feed the live client UI — they never become turns.
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -82,6 +83,12 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from shared.guardrails import (
+    MANDATORY_FLOOR,
+    EffectiveGuardrails,
+    GuardrailEngine,
+    guardrail_reply,
+)
 from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
 from shared.orchestration.delivery import delivery_instructions
@@ -158,6 +165,42 @@ from voice_runtime.turn_metrics import TurnLatencyTracker
 logger = logging.getLogger(__name__)
 
 _HISTORY_MAX_TURNS = 20
+
+# Sentence boundary for the guardrail sentence-hold streaming mode (Latin
+# terminators plus the Devanagari danda).
+_SENTENCE_END_RE = re.compile(r"[.!?।]['\"”)\]]*\s*$")
+
+
+def _parse_expiry(value) -> float | None:
+    """Tool-supplied waiver expiry → epoch seconds (float, ISO 8601 or None)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except ValueError:
+        return None
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class _GuardrailBlockedReply(Exception):
+    """A blocking output guardrail fired mid-generation. ``spoken`` is the
+    text already forwarded to TTS (complete, checked sentences only)."""
+
+    def __init__(self, *, reply_key: str | None, rules: list[str], spoken: str):
+        super().__init__(rules[0] if rules else "guardrail_blocked")
+        self.reply_key = reply_key
+        self.rules = rules
+        self.spoken = spoken
 # Mid-response flush: if the LLM stalls this long with text already buffered,
 # nudge the TTS to start rendering what we have.
 _LLM_PAUSE_FLUSH_SECONDS = 0.6
@@ -276,11 +319,17 @@ class ConversationBrain(FrameProcessor):
         audio_gate=None,
         authoritative_eot: bool = False,
         previous_memory=None,
+        guardrails: GuardrailEngine | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._llm = llm
         self._recorder = recorder
+        # Tenant-effective guardrail enforcement. A brain constructed without
+        # one (tests, tooling) still enforces the mandatory platform floor.
+        self._guardrails = guardrails or GuardrailEngine(
+            EffectiveGuardrails(rules=MANDATORY_FLOOR)
+        )
         # Structured memory of this customer's most recent analyzed call
         # (shared.post_call.recall.PreviousCallMemory) — context, never
         # current truth: the prompt block it contributes states precedence
@@ -1652,6 +1701,39 @@ class ConversationBrain(FrameProcessor):
             "at": turn_time_iso(turn_timestamp),
         })
         decision = self._router.decide(text, active_workflow=self._active_workflow)
+        # Deterministic guardrail check on the caller's words, BEFORE any
+        # understanding, tools, knowledge or generation. A blocked turn is
+        # recorded, answered with the localized safe reply and goes no
+        # further; the mandatory unsafe-tool rule keeps every tool call in
+        # this turn denied. Call-control/handoff still work — a caller who
+        # says a card number and asks to hang up gets both protections.
+        self._guardrails.begin_turn()
+        guard_input = self._guardrails.check_user_input(text)
+        if guard_input.blocked and decision.kind not in (
+            RouteKind.CALL_CONTROL, RouteKind.HANDOFF,
+        ):
+            # The blocked utterance enters the turn record and LLM history
+            # only in redacted form — a spoken card number must not resurface
+            # through conversation history in a later generation.
+            safe_text = self._guardrails.redact_for_persistence(text, record=False)
+            self._recorder.add_turn(TurnRecord(
+                role="user",
+                text=safe_text,
+                timestamp=turn_timestamp,
+                route="guardrail",
+            ))
+            self._history.append({"role": "user", "content": safe_text})
+            del self._history[:-_HISTORY_MAX_TURNS]
+            await self._recorder.flush_event(
+                "guardrail_blocked_turn",
+                stage="input",
+                rules=[h.rule.code for h in guard_input.hits],
+            )
+            await self._say(
+                guardrail_reply(guard_input.reply_key, self._conversation_language),
+                guardrail_exempt=True,
+            )
+            return
         # Business understanding of the COMPLETED turn: deterministic platform
         # commands were already decided above (and hang-up/DNC even earlier,
         # per segment). Everything else runs Stage A — ONE structured Goal
@@ -2366,6 +2448,7 @@ class ConversationBrain(FrameProcessor):
             session_id=self._recorder.session_id,
             customer_verified=bool(self._policy and self._policy.verified),
             context_values=context_values,
+            guardrails=self._guardrails,
         )
         self._latency.mark_tool_done()
         self._recorder.add_event("tool_executed", **result.as_event())
@@ -2386,6 +2469,17 @@ class ConversationBrain(FrameProcessor):
             status = payload.get("payment_status") or payload.get("status")
             self._policy.record_payment_verification(
                 str(status) if status is not None else None, tool_name
+            )
+        # Waiver/settlement authorization contract: an authorized backend tool
+        # returns `waiver_approved` + `approval_reference` (optionally
+        # `waiver_expires_at` epoch/ISO and `waiver_max_amount`). Only this
+        # verified result — never model output — unlocks waiver wording under
+        # an active compliance policy.
+        if payload.get("waiver_approved") and payload.get("approval_reference"):
+            self._guardrails.record_waiver_authorization(
+                reference=str(payload["approval_reference"]),
+                expires_at=_parse_expiry(payload.get("waiver_expires_at")),
+                max_amount=_as_float(payload.get("waiver_max_amount")),
             )
         facts = "\n".join(
             f"- {key}: {value}" for key, value in list(payload.items())[:12]
@@ -2438,6 +2532,7 @@ class ConversationBrain(FrameProcessor):
             session_id=self._recorder.session_id,
             customer_verified=bool(policy.verified),
             context_values=context_values,
+            guardrails=self._guardrails,
         )
         self._latency.mark_tool_done()
         self._recorder.add_event("tool_executed", **result.as_event())
@@ -2536,8 +2631,14 @@ class ConversationBrain(FrameProcessor):
             await self._generate_reply(text, decision, started, extra_system=extra)
             return
         reply = result["reply"]
+        # A step carrying an approved legal wording reference must be spoken
+        # VERBATIM through the fixed-phrase path (where the template
+        # substitutes) — never re-delivered by generation, which could
+        # paraphrase legally-exact text.
+        contains_exact_wording = bool(reply) and "{{wording:" in reply.replace(" ", "")
         if (
             reply
+            and not contains_exact_wording
             and self._conversation_language != self._config.language
             and not self._decision_text_matches_language(reply)
         ):
@@ -2743,10 +2844,13 @@ class ConversationBrain(FrameProcessor):
         first_token_ms: float | None = None
         reply_parts: list[str] = []
         generation_failed = False
+        guardrail_block: _GuardrailBlockedReply | None = None
         await self.push_frame(LLMFullResponseStartFrame())
         try:
             first_token_ms = await self._stream_llm_tokens(reply_parts, system, started)
             self._latency.mark_llm_completed()
+        except _GuardrailBlockedReply as blocked:
+            guardrail_block = blocked
         except ProviderError:
             # The agentic path failed to produce this turn's reply: the
             # deterministic fallback text (scripted phrase) covers the turn
@@ -2756,6 +2860,31 @@ class ConversationBrain(FrameProcessor):
             generation_failed = True
         finally:
             await self.push_frame(LLMFullResponseEndFrame())
+        if guardrail_block is not None:
+            # A blocking output guardrail suppressed the rest of this reply
+            # before it reached TTS. Bill what was generated, keep history
+            # truthful (only the sentences actually spoken), and answer with
+            # the localized safe reply.
+            self._record_llm_usage("".join(reply_parts))
+            await self._recorder.flush_event(
+                "guardrail_blocked_turn",
+                stage="output",
+                rules=guardrail_block.rules,
+                route=decision.kind.value,
+            )
+            spoken = guardrail_block.spoken.strip()
+            if spoken:
+                self._history.append({"role": "assistant", "content": spoken})
+                self._recorder.add_turn(TurnRecord(
+                    role="bot", text=spoken, route=decision.kind.value,
+                ))
+            await self._say(
+                guardrail_reply(
+                    guardrail_block.reply_key, self._conversation_language
+                ),
+                guardrail_exempt=True,
+            )
+            return
         if generation_failed:
             self._recorder.add_event(
                 "orchestration_fallback_reply", route=decision.kind.value,
@@ -2765,6 +2894,14 @@ class ConversationBrain(FrameProcessor):
 
         reply = "".join(reply_parts).strip()
         self._record_llm_usage(reply)
+        if reply:
+            # Redaction rules rewrite what enters history / the client UI /
+            # the stored transcript. (For a streamed reply the audio itself
+            # already played — the deterministic guarantee here is that a
+            # credential or card number never PERSISTS; blocking rules were
+            # enforced pre-TTS above.)
+            out_check = self._guardrails.check_output_text(reply)
+            reply = "" if out_check.blocked else out_check.text
         if not reply:
             logger.warning(
                 "turn[%s] llm returned an empty reply", self._recorder.session_id
@@ -2858,9 +2995,41 @@ class ConversationBrain(FrameProcessor):
 
         Retries (bounded by the configured retry policy) only when the stream
         fails before the first token — a mid-reply retry would repeat audio.
+
+        Guardrail hold: when the tenant's effective guardrails contain a
+        BLOCKING output rule (medical-advice / payment-credential requests),
+        text is forwarded to TTS one checked sentence at a time instead of
+        per token — a violating sentence is never synthesized. A block raises
+        :class:`_GuardrailBlockedReply` carrying what was already spoken.
         """
         first_token_ms: float | None = None
         attempts = 0
+        hold_sentences = self._guardrails.has_output_block_rules
+        spoken_parts: list[str] = []
+        held: list[str] = []
+
+        def _guard_check() -> None:
+            check = self._guardrails.check_output_stream("".join(reply_parts))
+            if check.blocked:
+                raise _GuardrailBlockedReply(
+                    reply_key=check.reply_key,
+                    rules=[h.rule.code for h in check.hits],
+                    spoken="".join(spoken_parts),
+                )
+
+        async def _forward(chunk: str) -> None:
+            if not hold_sentences:
+                spoken_parts.append(chunk)
+                await self.push_frame(TextFrame(chunk))
+                return
+            held.append(chunk)
+            _guard_check()
+            buffered = "".join(held)
+            if _SENTENCE_END_RE.search(buffered):
+                held.clear()
+                spoken_parts.append(buffered)
+                await self.push_frame(TextFrame(buffered))
+
         while True:
             attempts += 1
             # Placeholder guard on the token stream: text inside an unclosed
@@ -2894,7 +3063,15 @@ class ConversationBrain(FrameProcessor):
                         tail = placeholder_filter.flush()
                         if tail:
                             reply_parts.append(tail)
-                            await self.push_frame(TextFrame(tail))
+                            await _forward(tail)
+                        if held:
+                            # Reply ended mid-sentence: final check, then
+                            # release the remainder.
+                            _guard_check()
+                            remainder = "".join(held)
+                            held.clear()
+                            spoken_parts.append(remainder)
+                            await self.push_frame(TextFrame(remainder))
                         return first_token_ms
                     hinted = False
                     if first_token_ms is None:
@@ -2903,9 +3080,13 @@ class ConversationBrain(FrameProcessor):
                     speakable = placeholder_filter.feed(token)
                     if speakable:
                         reply_parts.append(speakable)
-                        await self.push_frame(TextFrame(speakable))
+                        await _forward(speakable)
                     pending = asyncio.ensure_future(anext(stream))
             except asyncio.CancelledError:
+                if "pending" in locals() and not pending.done():
+                    pending.cancel()
+                raise
+            except _GuardrailBlockedReply:
                 if "pending" in locals() and not pending.done():
                     pending.cancel()
                 raise
@@ -2915,18 +3096,43 @@ class ConversationBrain(FrameProcessor):
                 logger.warning("llm stream failed before first token (%s); retrying", exc.category)
                 await asyncio.sleep(0.2 * attempts)
 
-    async def _say(self, text: str) -> TurnRecord | None:
+    async def _say(self, text: str, *, guardrail_exempt: bool = False) -> TurnRecord | None:
         """Speak a fixed phrase through the TTS path.
 
         Greetings, canned phrases and workflow replies are author-written and
         may carry template variables — resolve them from the call context and
         strip anything unresolved; placeholders are never spoken.
+
+        Every fixed phrase is guardrail-checked BEFORE any audio renders —
+        a blocking rule swaps in the localized safe reply, redaction rules
+        rewrite the text. ``guardrail_exempt`` marks the guardrails' own
+        safe replies (they mention 'card numbers'/'OTP' and would otherwise
+        trip the very pattern that produced them).
         """
+        if self._guardrails.compliance and text and "{{" in text:
+            # Approved legal wordings substitute VERBATIM before any other
+            # processing — the exact template version spoken is recorded.
+            from shared.compliance import substitute_wordings
+
+            text = substitute_wordings(
+                text, self._guardrails.compliance, self._conversation_language,
+                on_use=self._guardrails.record_wording_use,
+            )
         text = sanitize_spoken_text(text, self._placeholder_values())
         text = adapt_authored_speaker_grammar(
             text,
             active_voice_identity(self._config.tts, self._conversation_language),
         )
+        if text and not guardrail_exempt:
+            check = self._guardrails.check_output_text(text)
+            if check.blocked:
+                await self._recorder.flush_event(
+                    "guardrail_blocked_turn", stage="output", fixed_phrase=True,
+                    rules=[h.rule.code for h in check.hits],
+                )
+                text = guardrail_reply(check.reply_key, self._conversation_language)
+            else:
+                text = check.text
         if not text:
             return None
         logger.info(

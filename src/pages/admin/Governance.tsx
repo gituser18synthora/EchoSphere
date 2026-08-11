@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  createMaster, listGuardrails, listMaster, listModels, listTemplates, setMasterStatus,
-  updateGuardrail, updateModelStatus,
+  createMaster, listGuardrailProfiles, listGuardrails, listMaster, listModels,
+  listTemplates, setGuardrailProfileStatus, setMasterStatus,
+  updateGuardrail, updateGuardrailProfile, updateModelStatus,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
-import type { ProviderMaster, ProviderModelMaster, VoiceCapability } from "@/types/domain";
+import type { Guardrail, GuardrailProfile, ProviderMaster, ProviderModelMaster, VoiceCapability } from "@/types/domain";
 import { DataTable } from "@/components/DataTable";
 import {
   Button, Callout, CardSkeleton, EmptyState, ErrorState, Field, Modal,
@@ -563,25 +564,26 @@ function GuardrailsTab() {
   return (
     <>
       <Callout tone="warning" title="Production impact">
-        Guardrail changes apply to live traffic within one minute, are versioned, and are recorded in the audit log. Disabling a privacy guardrail requires a second approver.
+        Guardrail changes apply at the next call start and are recorded in the audit log. Mandatory platform guardrails cannot be disabled or weakened — they protect every tenant regardless of the assigned profile.
       </Callout>
       <div className="card mt-16">
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
           empty={{ icon: "shield", title: "No guardrails configured" }}
           columns={[
-            { key: "name", header: "Guardrail", sortValue: (g) => g.name, render: (g) => <div><div className="t-strong">{g.name}</div><div className="t-micro" style={{ maxWidth: 380 }}>{g.description}</div></div> },
+            { key: "name", header: "Guardrail", sortValue: (g) => g.name, render: (g) => <div><div className="t-strong">{g.name}{g.isMandatory && <span className="tag" style={{ marginLeft: 8 }}>Mandatory</span>}</div><div className="t-micro" style={{ maxWidth: 380 }}>{g.description}</div></div> },
             { key: "category", header: "Category", sortValue: (g) => g.category, render: (g) => <span className="tag">{g.category}</span> },
             { key: "enforcement", header: "Enforcement", render: (g) => <StatusChip status={g.enforcement === "block" ? "critical" : g.enforcement === "redact" ? "info" : "warning"} label={g.enforcement} /> },
             { key: "triggers", header: "Triggers (30d)", align: "right", sortValue: (g) => g.triggers30d, render: (g) => <span className="t-num">{fmtNum(g.triggers30d)}</span> },
             {
               key: "enabled", header: "Enabled",
-              render: (g) => (
+              render: (g) => g.isMandatory ? (
+                <span className="t-micro" title="Mandatory platform guardrails cannot be disabled">Always on</span>
+              ) : (
                 <Toggle
                   checked={g.enabled}
                   label={`Toggle ${g.name}`}
                   onChange={async (v) => {
-                    if (!v && g.category === "Privacy") { toast("Privacy guardrails need a second approver to disable", "error"); return; }
                     try {
                       await updateGuardrail(g.id, { enabled: v });
                       toast(`${g.name} ${v ? "enabled" : "disabled"} — audit entry created`);
@@ -596,7 +598,130 @@ function GuardrailsTab() {
           ]}
         />
       </div>
+      <GuardrailProfilesPanel guardrails={q.data ?? []} />
     </>
+  );
+}
+
+/** Guardrail profiles: named rule bundles assigned to tenants. Membership is
+    editable; deactivation blocks NEW assignments only — tenants already on
+    the profile keep enforcing it. */
+function GuardrailProfilesPanel({ guardrails }: { guardrails: Guardrail[] }) {
+  const q = useAsync(listGuardrailProfiles, []);
+  const { toast } = useApp();
+  const [editing, setEditing] = useState<GuardrailProfile | null>(null);
+  return (
+    <div className="card mt-16">
+      <div className="card-header">
+        <div className="col gap-2">
+          <span className="card-title">Guardrail profiles</span>
+          <span className="t-micro">Assigned per tenant at onboarding (industry suggests a default). Mandatory rules are implied in every profile and are not listed.</span>
+        </div>
+      </div>
+      <DataTable
+        loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
+        empty={{ icon: "shield", title: "No guardrail profiles", body: "Run the platform seed to create Standard, Healthcare and Finance." }}
+        columns={[
+          { key: "name", header: "Profile", sortValue: (p) => p.name, render: (p) => <div><div className="t-strong">{p.name} <span className="t-micro">v{p.version}</span></div><div className="t-micro" style={{ maxWidth: 360 }}>{p.description}</div></div> },
+          { key: "rules", header: "Profile rules", render: (p) => (
+              <div className="row wrap gap-4">
+                {p.guardrails.length === 0
+                  ? <span className="t-micro">Mandatory rules only</span>
+                  : p.guardrails.filter((g) => !g.isMandatory).map((g) => <span key={g.id} className="chip chip-neutral">{g.name}</span>)}
+              </div>
+            ) },
+          { key: "usage", header: "Tenants", align: "right", sortValue: (p) => p.usageCount, render: (p) => <span className="t-num">{p.usageCount}</span> },
+          { key: "status", header: "Status", render: (p) => <StatusChip status={p.status} /> },
+          { key: "actions", header: "", render: (p) => (
+              <div className="row gap-6" style={{ justifyContent: "flex-end" }}>
+                <Button size="sm" icon="edit" onClick={() => setEditing(p)}>Edit</Button>
+                <Button size="sm" onClick={async () => {
+                  const next = p.status === "active" ? "inactive" : "active";
+                  try {
+                    await setGuardrailProfileStatus(p.id, next);
+                    toast(`${p.name} ${next === "active" ? "activated" : "deactivated — existing tenant assignments keep working"}`);
+                    q.reload();
+                  } catch (e) {
+                    toast(e instanceof Error ? e.message : "Status change failed", "error");
+                  }
+                }}>{p.status === "active" ? "Deactivate" : "Activate"}</Button>
+              </div>
+            ) },
+        ]}
+      />
+      {editing && (
+        <EditGuardrailProfileModal
+          profile={editing}
+          guardrails={guardrails}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); q.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditGuardrailProfileModal({ profile, guardrails, onClose, onSaved }: {
+  profile: GuardrailProfile; guardrails: Guardrail[]; onClose: () => void; onSaved: () => void;
+}) {
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [name, setName] = useState(profile.name);
+  const [description, setDescription] = useState(profile.description);
+  const [ruleIds, setRuleIds] = useState<string[]>(profile.guardrailIds);
+  const selectable = guardrails.filter((g) => !g.isMandatory);
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateGuardrailProfile(profile.id, { name: name.trim(), description, guardrailIds: ruleIds });
+      toast(`${name.trim()} updated — version bumped, audit entry created`);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title={`Edit ${profile.name}`}
+      sub="Membership changes bump the profile version; live calls pick up the new rules at their next call start."
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="primary" icon="check" busy={busy} disabled={busy} onClick={() => void save()}>Save changes</Button>
+        </>
+      }>
+      <div className="col gap-14">
+        {err && <Callout tone="critical">{err}</Callout>}
+        <Field label="Name" required>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Description">
+          <textarea className="textarea" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        <Field label="Profile rules" hint="Mandatory platform guardrails apply to every tenant and cannot be removed here.">
+          <div className="col gap-6" role="group" aria-label="Profile rules">
+            {selectable.map((g) => {
+              const on = ruleIds.includes(g.id);
+              return (
+                <button key={g.id} type="button" aria-pressed={on}
+                  className="row-between card-pad-sm gap-12"
+                  style={{ border: `1px solid ${on ? "var(--brand-500)" : "var(--hairline)"}`, borderRadius: 10, background: on ? "var(--surface-2)" : "transparent", textAlign: "left", cursor: "pointer" }}
+                  onClick={() => setRuleIds(on ? ruleIds.filter((id) => id !== g.id) : [...ruleIds, g.id])}>
+                  <div>
+                    <div className="t-strong" style={{ fontSize: 13 }}>{g.name}</div>
+                    <div className="t-micro">{g.description}</div>
+                  </div>
+                  <span className="chip chip-neutral" style={{ textTransform: "capitalize" }}>{g.enforcement}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+      </div>
+    </Modal>
   );
 }
 

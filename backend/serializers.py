@@ -63,7 +63,8 @@ def iso(value: datetime | date | None) -> str | None:
 def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
                      calls_month: int, minutes_month: float, mrr: float,
                      ai_cost_month: float,
-                     default_languages: list[str] | None = None) -> dict:
+                     default_languages: list[str] | None = None,
+                     guardrail_profile: dict | None = None) -> dict:
     return {
         "id": t.id,
         "name": t.name,
@@ -72,6 +73,11 @@ def serialize_tenant(t, *, plan: str | None, users: int, bots: int,
         "industry": t.industry or "",
         "region": t.region or "",
         "aiProfileCode": t.ai_profile_code or "",
+        "guardrailProfileId": t.guardrail_profile_id or "",
+        # Summary of the assigned profile (code/name/status) — present even
+        # when the profile was deactivated after assignment, so existing
+        # tenants stay fully readable.
+        "guardrailProfile": guardrail_profile,
         "defaultLanguages": default_languages or [],
         "plan": plan or "starter",
         "status": t.status,
@@ -354,6 +360,8 @@ def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
         "csat": b.csat,
         "channels": channels,
         "voiceId": b.voice_id,
+        # Explicit bot-level guardrail profile; "" → inherits the tenant default.
+        "guardrailProfileId": b.guardrail_profile_id or "",
         "updatedAt": iso(b.updated_at),
         "publishedAt": iso(b.published_at),
         "readiness": [
@@ -692,6 +700,13 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "escalationReason": c.escalation_reason,
         "csat": c.csat,
         "costUsd": float(c.cost_usd),
+        # Rate view of the same stored total over the call's real length —
+        # derived HERE so the client renders it rather than computing it.
+        # Null (not 0) when the call never connected: a rate over zero
+        # minutes is meaningless, and 0 would read as "free".
+        "costPerMinuteUsd": (
+            float(c.cost_usd) * 60.0 / c.duration_sec if c.duration_sec else None
+        ),
         "cost": cost_breakdown,
         "language": c.language or "en-US",
         "qaScore": c.qa_score,
@@ -891,12 +906,55 @@ def serialize_model(m: ApprovedModel) -> dict:
 def serialize_guardrail(g: Guardrail) -> dict:
     return {
         "id": g.id,
+        "code": g.code or "",
         "name": g.name,
         "category": g.category or "",
         "description": g.description or "",
         "enforcement": g.enforcement,
         "enabled": g.enabled,
+        "isMandatory": bool(g.is_mandatory),
         "triggers30d": g.triggers_30d,
+    }
+
+
+def serialize_guardrail_profile(p, guardrails: list[Guardrail], *, usage: int = 0) -> dict:
+    """`guardrails` are the profile's linked rule rows (resolved by the caller)."""
+    return {
+        "id": p.id,
+        "code": p.code,
+        "name": p.name,
+        "description": p.description or "",
+        "status": p.status,
+        "version": p.version,
+        "usageCount": usage,
+        "guardrailIds": [g.id for g in guardrails],
+        "guardrails": [serialize_guardrail(g) for g in guardrails],
+        "createdAt": iso(p.created_at),
+        "updatedAt": iso(p.updated_at),
+        "createdBy": p.created_by or "",
+        "updatedBy": p.updated_by or "",
+    }
+
+
+def serialize_guardrail_trigger(t) -> dict:
+    return {
+        "id": t.id,
+        "tenantId": t.tenant_id or "",
+        "botId": t.bot_id or "",
+        "sessionId": t.session_id or "",
+        "guardrailId": t.guardrail_id or "",
+        "guardrailCode": t.guardrail_code,
+        "ruleName": t.rule_name or "",
+        "action": t.action,
+        "stage": t.stage,
+        "detail": t.detail or "",
+        "profileId": t.profile_id or "",
+        "profileVersion": t.profile_version,
+        "policyCode": t.policy_code or "",
+        "policyVersion": t.policy_version,
+        "outcome": t.outcome or "",
+        "channel": t.channel or "",
+        "createdAt": iso(t.created_at),
     }
 
 

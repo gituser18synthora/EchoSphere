@@ -12,6 +12,9 @@ export interface OperationalExportFilters {
   sentiment?: string;
   contained?: boolean;
   flagged?: boolean;
+  /** Inclusive `startedAt` bounds as ISO-8601 instants (conversations only). */
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 const MIME_BY_FORMAT: Record<StructuredExportFormat, string> = {

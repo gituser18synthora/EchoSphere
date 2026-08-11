@@ -174,6 +174,10 @@ class Guardrail(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "guardrails"
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    # Stable machine key the runtime enforcement registry dispatches on
+    # (names are display text and may be reworded). Nullable: custom rows
+    # without a runtime implementation are registry/QA entries only.
+    code: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -181,6 +185,9 @@ class Guardrail(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(20), default="flag", nullable=False
     )  # block | flag | redact
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Platform-mandatory rules apply to every tenant regardless of the
+    # assigned profile and cannot be disabled or weakened via the API.
+    is_mandatory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     triggers_30d: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 

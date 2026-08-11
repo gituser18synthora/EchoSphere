@@ -442,6 +442,7 @@ def build_voice_pipeline(
     runtime_context=None,
     transport_kind: str = "browser",
     previous_memory=None,
+    guardrails=None,
 ) -> tuple[PipelineWorker, ConversationBrain]:
     """Assemble the Pipecat pipeline for one call session."""
     # Deepgram Flux runs its own model-integrated turn detection server-side:
@@ -513,6 +514,7 @@ def build_voice_pipeline(
         audio_gate=audio_gate,
         authoritative_eot=provider_owns_turns,
         previous_memory=previous_memory,
+        guardrails=guardrails,
     )
     processors = [transport.input()]
     if audio_gate is not None:

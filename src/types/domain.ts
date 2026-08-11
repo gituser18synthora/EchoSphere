@@ -277,6 +277,10 @@ export interface Tenant {
   industry: string;
   region: string;
   aiProfileCode?: string;
+  /** Assigned guardrail profile id ("" → platform-mandatory rules only). */
+  guardrailProfileId: string;
+  /** Summary of the assigned profile — readable even after deactivation. */
+  guardrailProfile: GuardrailProfileSummary | null;
   defaultLanguages: string[];
   plan: PlanTier;
   status: TenantStatus;
@@ -377,6 +381,8 @@ export interface VoiceBot {
   csat: number;
   channels: ChannelType[];
   voiceId?: string;
+  /** Explicit bot-level guardrail profile id; "" → inherits the tenant default. */
+  guardrailProfileId: string;
   updatedAt: string;
   publishedAt?: string;
   readiness: ReadinessItem[];
@@ -1180,6 +1186,8 @@ export interface IndustryMaster extends MasterCommon {
   description: string;
   icon: string;
   sortOrder: number;
+  /** Recommended default guardrail profile — a suggestion, never a lock. */
+  defaultGuardrailProfileId: string | null;
 }
 
 export interface CountryMaster extends MasterCommon {
@@ -1341,11 +1349,12 @@ export interface LanguageMaster {
 }
 
 export interface OnboardingOptions {
-  industries: { code: string; name: string; icon: string }[];
+  industries: { code: string; name: string; icon: string; defaultGuardrailProfileId: string }[];
   dataRegions: { code: string; name: string; infrastructureReady: boolean }[];
   plans: { code: string; name: string; description: string; priceMonthly: number; minutesIncluded: number; botLimit: number; seatsIncluded: number; isRecommended: boolean }[];
   aiProfiles: { code: string; name: string; description: string; costCategory: string }[];
   languages: { code: string; name: string; nativeName: string; direction: string }[];
+  guardrailProfiles: { id: string; code: string; name: string; description: string }[];
 }
 
 export interface UploadConfig {
@@ -1523,6 +1532,9 @@ export interface Conversation {
       backend from this call's usage events. The same value backs the list row,
       the recording row and the breakdown — clients never recompute it. */
   costUsd: number;
+  /** costUsd as a per-minute rate over the call's stored duration, derived by
+      the backend. Null when the call has no duration (never connected). */
+  costPerMinuteUsd?: number | null;
   language: string;
   qaScore?: number;
   flagged: boolean;
@@ -1687,12 +1699,95 @@ export interface ApprovedModel {
 
 export interface Guardrail {
   id: string;
+  /** Stable machine key the runtime enforcement dispatches on. */
+  code: string;
   name: string;
   category: string;
   description: string;
   enforcement: "block" | "flag" | "redact";
   enabled: boolean;
+  /** Platform-mandatory: applies to every tenant, cannot be disabled. */
+  isMandatory: boolean;
   triggers30d: number;
+}
+
+export interface GuardrailProfileSummary {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  version: number;
+}
+
+export interface GuardrailProfile {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  status: string;
+  version: number;
+  usageCount: number;
+  guardrailIds: string[];
+  guardrails: Guardrail[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+export interface EffectiveGuardrailRule {
+  guardrailId: string;
+  code: string;
+  name: string;
+  category: string;
+  action: "block" | "flag" | "redact";
+  mandatory: boolean;
+}
+
+export interface EffectiveGuardrails {
+  tenantId: string;
+  profile: GuardrailProfileSummary | null;
+  rules: EffectiveGuardrailRule[];
+  degraded: boolean;
+}
+
+export interface CompliancePolicySummary {
+  code: string;
+  version: number;
+  name: string;
+  regulator: string;
+  jurisdiction: string;
+  timezone: string;
+  callingWindows: { days?: number[]; start: string; end: string }[];
+}
+
+export interface BotEffectiveGuardrails {
+  botId: string;
+  tenantId: string;
+  /** True when the bot has no explicit profile and follows the tenant default. */
+  inherited: boolean;
+  profile: GuardrailProfileSummary | null;
+  tenantDefaultProfile: GuardrailProfileSummary | null;
+  rules: EffectiveGuardrailRule[];
+  compliancePolicies: CompliancePolicySummary[];
+  degraded: boolean;
+}
+
+export interface GuardrailTrigger {
+  id: string;
+  tenantId: string;
+  botId: string;
+  sessionId: string;
+  guardrailId: string;
+  guardrailCode: string;
+  ruleName: string;
+  action: "block" | "flag" | "redact" | "escalate";
+  stage: "input" | "output" | "tool" | "transcript" | "log";
+  detail: string;
+  profileId: string;
+  profileVersion: number | null;
+  channel: string;
+  createdAt: string;
 }
 
 export interface PhoneNumber {

@@ -143,6 +143,7 @@ code, .mono {
 }
 .grow { flex: 1; min-width: 0; }
 .wrap { flex-wrap: wrap; }
+.nowrap { white-space: nowrap; }
 .gap-2 { gap: 2px; }
 .gap-4 { gap: 4px; }
 .gap-6 { gap: 6px; }

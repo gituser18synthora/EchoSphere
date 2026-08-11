@@ -30,6 +30,7 @@ from shared.db.mysql import get_db
 from shared.models import (
     AiConfigProfile,
     DataRegion,
+    GuardrailProfile,
     Industry,
     Plan,
     Role,
@@ -41,6 +42,7 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_tenant, serialize_tenant_settings
+from shared.guardrails import load_effective_guardrails_sync
 from shared.tenant_languages import validate_language_assignment
 
 
@@ -58,6 +60,50 @@ def _validate_master_code(db: Session, model, value: str | None, label: str) -> 
     if row is None or row.status != "active":
         raise ApiError(f"Unknown or inactive {label}: '{value}'.", 422)
     return row.code
+
+
+def _validate_guardrail_profile(db: Session, value: str) -> GuardrailProfile:
+    """Resolve a guardrail profile by id or code. Only ACTIVE profiles are
+    valid for new assignments; tenants already assigned to a profile keep it
+    (and stay readable) after deactivation."""
+    row = db.scalar(
+        select(GuardrailProfile).where(
+            or_(GuardrailProfile.id == value, GuardrailProfile.code == value),
+            GuardrailProfile.is_deleted.is_(False),
+        )
+    )
+    if row is None or row.status != "active":
+        raise ApiError(f"Unknown or inactive guardrail profile: '{value}'.", 422)
+    return row
+
+
+def _default_guardrail_profile(db: Session, industry_code: str | None) -> GuardrailProfile | None:
+    """Recommended default when onboarding didn't pick one: the industry's
+    default profile, else the platform 'standard' profile — active only."""
+    if industry_code:
+        default_id = db.scalar(
+            select(Industry.default_guardrail_profile_id).where(
+                Industry.code == industry_code, Industry.is_deleted.is_(False)
+            )
+        )
+        if default_id:
+            row = db.get(GuardrailProfile, default_id)
+            if row is not None and not row.is_deleted and row.status == "active":
+                return row
+    row = db.scalar(
+        select(GuardrailProfile).where(
+            GuardrailProfile.code == "standard",
+            GuardrailProfile.is_deleted.is_(False),
+        )
+    )
+    return row if row is not None and row.status == "active" else None
+
+
+def _profile_summary(p: GuardrailProfile | None) -> dict | None:
+    if p is None:
+        return None
+    return {"id": p.id, "code": p.code, "name": p.name,
+            "status": p.status, "version": p.version}
 
 router = APIRouter(tags=["Tenants"])
 
@@ -119,6 +165,13 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
         select(TenantSetting.tenant_id, TenantSetting.default_languages)
         .where(TenantSetting.tenant_id.in_(ids))
     ).all())
+    profile_ids = {t.guardrail_profile_id for t in tenants if t.guardrail_profile_id}
+    profiles = {
+        p.id: p
+        for p in db.scalars(
+            select(GuardrailProfile).where(GuardrailProfile.id.in_(profile_ids))
+        )
+    } if profile_ids else {}
 
     out = []
     for t in tenants:
@@ -135,6 +188,9 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
                 mrr=s.get("mrr", 0.0),
                 ai_cost_month=u.get("ai_cost", 0.0),
                 default_languages=tenant_languages.get(t.id),
+                guardrail_profile=_profile_summary(
+                    profiles.get(t.guardrail_profile_id)
+                ),
             )
         )
     return out
@@ -185,6 +241,11 @@ class CreateTenantRequest(BaseModel):
     industry: str | None = None
     region: str | None = None
     ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
+    # Guardrail profile id or code. Omitted → the industry's recommended
+    # default, falling back to the platform 'standard' profile.
+    guardrail_profile_id: str | None = Field(
+        default=None, alias="guardrailProfileId"
+    )
     plan_code: str = Field(default="starter", alias="planCode")
     admin_email: EmailStr = Field(alias="adminEmail")
     admin_name: str = Field(default="Tenant Admin", alias="adminName")
@@ -223,6 +284,10 @@ def create_tenant(
     industry = _validate_master_code(db, Industry, body.industry, "industry")
     region = _validate_master_code(db, DataRegion, body.region, "data region")
     ai_profile = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    if body.guardrail_profile_id:
+        guardrail_profile = _validate_guardrail_profile(db, body.guardrail_profile_id)
+    else:
+        guardrail_profile = _default_guardrail_profile(db, industry)
     default_languages = None
     if body.default_languages is not None:
         default_languages, invalid = validate_language_assignment(
@@ -248,6 +313,7 @@ def create_tenant(
         industry=industry,
         region=region,
         ai_profile_code=ai_profile,
+        guardrail_profile_id=guardrail_profile.id if guardrail_profile else None,
         status=body.status,
         health="neutral",
         admin_email=body.admin_email.lower(),
@@ -313,7 +379,8 @@ def create_tenant(
     record_audit(
         db, user=user, action="Created tenant", entity_type="tenant",
         entity_id=tenant.id, target_label=tenant.name, tenant_id=tenant.id,
-        new_value={"name": tenant.name, "domain": tenant.domain, "plan": plan.code},
+        new_value={"name": tenant.name, "domain": tenant.domain, "plan": plan.code,
+                   "guardrailProfile": guardrail_profile.code if guardrail_profile else None},
         request=request,
     )
     db.commit()
@@ -323,12 +390,48 @@ def create_tenant(
     return ok(data)
 
 
+@router.get("/tenants/{tenant_id}/effective-guardrails")
+def tenant_effective_guardrails(
+    tenant_id: str,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """The guardrails actually enforced for this tenant at runtime:
+    mandatory platform rules ∪ assigned-profile rules."""
+    if not is_super_admin(user) and user.tenant_id != tenant_id:
+        raise NotFoundError("Tenant")
+    t = db.get(Tenant, tenant_id)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    profile = db.get(GuardrailProfile, t.guardrail_profile_id) \
+        if t.guardrail_profile_id else None
+    if profile is not None and profile.is_deleted:
+        profile = None
+    effective = load_effective_guardrails_sync(tenant_id, session=db)
+    rules = sorted(effective.rules, key=lambda r: (not r.mandatory, r.name))
+    return ok({
+        "tenantId": tenant_id,
+        "profile": _profile_summary(profile),
+        "rules": [
+            {"guardrailId": r.guardrail_id or "", "code": r.code, "name": r.name,
+             "category": r.category, "action": r.action, "mandatory": r.mandatory}
+            for r in rules
+        ],
+        "degraded": effective.degraded,
+    })
+
+
 class UpdateTenantRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     code: str | None = Field(default=None, max_length=50)
     industry: str | None = None
     region: str | None = None
     ai_profile_code: str | None = Field(default=None, alias="aiProfileCode")
+    # Explicit-only: changing the tenant's industry NEVER silently changes
+    # the assigned guardrail profile. Empty string clears the assignment.
+    guardrail_profile_id: str | None = Field(
+        default=None, alias="guardrailProfileId"
+    )
     plan_code: str | None = Field(default=None, alias="planCode")
     status: str | None = Field(default=None, pattern="^(active|trial|suspended|provisioning)$")
     health: str | None = Field(default=None, pattern="^(good|warning|serious|critical|neutral)$")
@@ -359,6 +462,7 @@ def update_tenant(
         raise NotFoundError("Tenant")
     before = {"name": t.name, "status": t.status, "health": t.health,
               "region": t.region, "code": t.code,
+              "guardrailProfileId": t.guardrail_profile_id,
               "callSummaryEnabled": bool(t.call_summary_enabled),
               "usePreviousCallSummary": bool(t.use_previous_call_summary)}
     for field in ("name", "status", "health",
@@ -372,6 +476,14 @@ def update_tenant(
         t.region = _validate_master_code(db, DataRegion, body.region, "data region")
     if body.ai_profile_code is not None:
         t.ai_profile_code = _validate_master_code(db, AiConfigProfile, body.ai_profile_code, "AI profile")
+    if body.guardrail_profile_id is not None:
+        value = body.guardrail_profile_id.strip()
+        if not value:
+            t.guardrail_profile_id = None
+        elif value != t.guardrail_profile_id:
+            # Re-assignment requires an ACTIVE profile; keeping the current
+            # (possibly deactivated) one untouched is always allowed.
+            t.guardrail_profile_id = _validate_guardrail_profile(db, value).id
     if body.code is not None:
         code = body.code.strip().lower() or None
         if code and code != t.code and db.scalar(select(Tenant).where(Tenant.code == code)):
@@ -424,6 +536,7 @@ def update_tenant(
             "name": t.name,
             "status": t.status,
             "health": t.health,
+            "guardrailProfileId": t.guardrail_profile_id,
             "callSummaryEnabled": bool(t.call_summary_enabled),
             "usePreviousCallSummary": bool(t.use_previous_call_summary),
             **(

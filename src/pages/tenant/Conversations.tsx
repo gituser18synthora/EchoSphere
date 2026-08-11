@@ -11,6 +11,7 @@ import type {
 } from "@/types/domain";
 import { Button, Drawer, EmptyState, ErrorState, MenuButton, StatusChip, Tabs } from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
+import { DateRangePicker } from "@/components/DateRangePicker";
 import { ExportControls } from "@/components/ExportControls";
 import { Icon, type IconName } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
@@ -25,8 +26,44 @@ import { formatChatTime } from "@/services/chatTime";
 
 const channelIcon: Record<string, IconName> = { voice: "phone", whatsapp: "whatsapp", web: "monitor", mobile: "smartphone" };
 
-function fmtDur(sec: number) {
-  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/* The call's real length: conversation_sessions.duration_sec, written by the
+   runtime at finalize from the call's own wall clock. Never derived from
+   transcript or row timestamps, which would drift from what was billed. */
+function fmtDuration(sec: number | null | undefined) {
+  if (sec == null || Number.isNaN(sec)) return "—";
+  const total = Math.max(0, Math.round(sec));
+  if (total < 60) return `${total} sec`;
+  if (total < 3600) return `${Math.floor(total / 60)}m ${pad2(total % 60)}s`;
+  return `${Math.floor(total / 3600)}h ${pad2(Math.floor((total % 3600) / 60))}m ${pad2(total % 60)}s`;
+}
+
+/* Instants come from the API in UTC and are rendered in the viewer's own
+   timezone, matching every other date in the product. The date filter converts
+   local day boundaries back to instants (see localDayBound) so a row can never
+   be filtered out of the day it is displayed under. */
+function fmtDateTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}, ${
+    d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/** A `YYYY-MM-DD` picker value as the ISO instant of that local day's first or
+    last millisecond — what the API filters `startedAt` against. */
+function localDayBound(day: string, edge: "start" | "end"): string | undefined {
+  const [y, m, d] = day.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  const at = edge === "start"
+    ? new Date(y, m - 1, d, 0, 0, 0, 0)
+    : new Date(y, m - 1, d, 23, 59, 59, 999);
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
+}
+
+function todayLocal() {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
 /* Mirrors shared.billing.conversation_cost.HIGH_COST_USD — a call above this
@@ -34,12 +71,19 @@ function fmtDur(sec: number) {
 const HIGH_COST_USD = 0.5;
 
 export default function Conversations() {
-  const q = useAsync(listConversations, []);
   const money = useDisplayCurrency();
   const [open, setOpen] = useState<Conversation | null>(null);
   const [filter, setFilter] = useState("all");
   const [botFilter, setBotFilter] = useState("all");
   const [query, setQuery] = useState("");
+  // Date pickers hold local `YYYY-MM-DD`; the range is applied by the API, not
+  // by trimming an already-fetched page — otherwise a busy day beyond the first
+  // 100 rows would silently disappear from an older date's results.
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const dateFrom = fromDate ? localDayBound(fromDate, "start") : undefined;
+  const dateTo = toDate ? localDayBound(toDate, "end") : undefined;
+  const q = useAsync(() => listConversations({ dateFrom, dateTo }), [dateFrom, dateTo]);
 
   const rows = useMemo(() => {
     let r = q.data ?? [];
@@ -89,6 +133,8 @@ export default function Conversations() {
                 sentiment: filter === "negative" ? "negative" : undefined,
                 contained: filter === "escalated" ? false : undefined,
                 flagged: filter === "flagged" ? true : undefined,
+                dateFrom,
+                dateTo,
               },
             )}
           />
@@ -115,6 +161,12 @@ export default function Conversations() {
           <option value="all">All bots</option>
           {bots.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
+        <DateRangePicker
+          from={fromDate}
+          to={toDate}
+          max={todayLocal()}
+          onChange={(f, t) => { setFromDate(f); setToDate(t); }}
+        />
         <span className="conversation-result-count">
           <strong>{rows.length}</strong> of {q.data?.length ?? 0} conversations
         </span>
@@ -124,16 +176,21 @@ export default function Conversations() {
         <DataTable
           loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
           onRowClick={(c) => setOpen(c)}
-          empty={{ icon: "headphones", title: "No conversations match", body: "Try widening the filters — new calls appear here within seconds of ending." }}
+          empty={{ icon: "headphones", title: "No conversations match", body: "Try widening the filters or the date range — new calls appear here within seconds of ending." }}
           columns={[
             {
-              key: "id", header: "Call", sortValue: (c) => c.startedAt,
+              key: "id", header: "Call", width: 216, sortValue: (c) => c.caller,
               render: (c) => (
                 <div className="row gap-10">
                   <span className="icon-tile neutral" style={{ width: 30, height: 30 }}><Icon name={channelIcon[c.channel]} size={14} /></span>
-                  <div>
-                    <div className="t-strong t-num">{new Date(c.startedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} · {fmtDur(c.durationSec)}</div>
-                    <div className="t-micro row gap-4">{c.caller} · {c.language}{c.flagged && <span className="row gap-2" style={{ color: "var(--status-serious)", fontWeight: 650 }}><Icon name="flag" size={11} />flagged</span>}</div>
+                  <div className="conversation-call-cell">
+                    <div className="t-strong row gap-6 nowrap">
+                      {c.caller}
+                      {c.flagged && <span className="row gap-2" style={{ color: "var(--status-serious)", fontWeight: 650, fontSize: 11 }}><Icon name="flag" size={11} />flagged</span>}
+                    </div>
+                    {/* The id is what QA quotes and what the search box matches,
+                        so it belongs on the row rather than in a tooltip. */}
+                    <div className="t-micro conversation-call-meta"><code>{c.id}</code> · {c.language}</div>
                   </div>
                 </div>
               ),
@@ -160,18 +217,43 @@ export default function Conversations() {
                the runtime never writes conversation.csat, so it only has a value
                for ingested/seeded calls. The field still ships in the API and the
                operational export — restore the column when surveys go live. */
-            { key: "qa", header: "QA score", align: "right", sortValue: (c) => c.qaScore ?? 0, render: (c) => c.qaScore ? <span className={`t-num t-strong ${c.qaScore < 70 ? "t-bad" : ""}`}>{c.qaScore}</span> : <span className="t-micro">—</span> },
+            /* QA score is temporarily hidden from the conversation list. */
             // The list shows the SAME backend-metered total the detail
             // breakdown itemises — never a client-side calculation — rendered
             // in the selected display currency.
+            // When the call happened and how long it ran, stacked in one
+            // column right next to what it cost — both straight from the call
+            // record (startedAt, durationSec), never reconstructed from
+            // message timestamps.
+            {
+              key: "startedAt", header: "Date / Time & Duration", width: 176, sortValue: (c) => c.startedAt,
+              render: (c) => (
+                <div className="col gap-2">
+                  <time className="t-num nowrap" dateTime={c.startedAt} title={new Date(c.startedAt).toLocaleString()}>
+                    {fmtDateTime(c.startedAt)}
+                  </time>
+                  <span className="t-micro nowrap">Duration: <span className="t-num">{fmtDuration(c.durationSec)}</span></span>
+                </div>
+              ),
+            },
+            // Total on top, backend-derived per-minute rate under it (the
+            // client only renders the rate, per the no-client-side-cost-math
+            // rule above) — one column keeps the table compact.
             ...(flags.tenantCostVisibility ? [{
               key: "cost", header: `Cost (${money.currency})`, align: "right" as const,
               sortValue: (c: Conversation) => c.costUsd,
               render: (c: Conversation) => (
-                <span className={`t-num ${c.costUsd > HIGH_COST_USD ? "t-bad t-strong" : ""}`}
-                      title={c.costUsd > HIGH_COST_USD ? "Unusually high for one call — open the cost breakdown" : undefined}>
-                  {money.display(c.costUsd, { precise: true })}
-                </span>
+                <div className="col gap-2" style={{ alignItems: "flex-end" }}>
+                  <span className={`t-num nowrap ${c.costUsd > HIGH_COST_USD ? "t-bad t-strong" : ""}`}
+                        title={c.costUsd > HIGH_COST_USD ? "Unusually high for one call — open the cost breakdown" : undefined}>
+                    Total: <span className="t-strong">{money.display(c.costUsd, { precise: true })}</span>
+                  </span>
+                  <span className="t-micro nowrap">
+                    Per min: {c.costPerMinuteUsd != null
+                      ? <span className="t-num">{money.display(c.costPerMinuteUsd, { precise: true })}</span>
+                      : "—"}
+                  </span>
+                </div>
               ),
             }] : []),
           ]}
@@ -242,8 +324,8 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
         <span className="conversation-drawer-sub">
           <span><Icon name="bot" size={12} />{conv.bot}</span>
           <span><Icon name={channelIcon[conv.channel] ?? "message"} size={12} />{conv.channel}</span>
-          <span><Icon name="clock" size={12} />{new Date(conv.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-          <span>{fmtDur(conv.durationSec)}</span>
+          <span><Icon name="clock" size={12} />{fmtDateTime(conv.startedAt)}</span>
+          <span>{fmtDuration(conv.durationSec)}</span>
           <span>{conv.caller}</span>
         </span>
       )}
@@ -702,7 +784,7 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
           <span className="t-micro">No call recording is available for this conversation.</span>
         )}
         {!loading && recording && audioState === "loading" && (
-          <span className="t-micro">Loading recording · {fmtDur(Math.round(recording.durationSec))}…</span>
+          <span className="t-micro">Loading recording · {fmtDuration(recording.durationSec)}…</span>
         )}
         {!loading && recording && audioState === "error" && (
           <span className="row gap-8" style={{ flexWrap: "wrap" }}>

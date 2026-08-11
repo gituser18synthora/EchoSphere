@@ -41,6 +41,13 @@ class Tenant(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )  # active | trial | suspended | provisioning
     health: Mapped[str] = mapped_column(String(20), default="neutral", nullable=False)
     admin_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Assigned guardrail profile (Super Admin controlled). Validated
+    # app-side like industry/region: only ACTIVE profiles may be newly
+    # assigned, but an existing assignment stays readable after the profile
+    # is deactivated. NULL → platform-mandatory guardrails only.
+    guardrail_profile_id: Mapped[str | None] = mapped_column(
+        String(ID_LEN), nullable=True
+    )
     # Tenant profile (tenant-admin editable, within permissions)
     website: Mapped[str | None] = mapped_column(String(300), nullable=True)
     contact_name: Mapped[str | None] = mapped_column(String(150), nullable=True)

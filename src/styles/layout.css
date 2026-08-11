@@ -1085,6 +1085,26 @@
 }
 .conversation-result-count strong { color: var(--ink-2); }
 .conversation-list-card { overflow: hidden; }
+/* Seven review columns with two-line cells: denser side padding than the
+   default table so the Cost column still fits on 1280px laptops — without it
+   the last column clips behind the horizontal scroll and looks truncated. */
+.conversation-list-card .table th,
+.conversation-list-card .table td { padding-left: 10px; padding-right: 10px; }
+/* Caller on top, then the id QA quotes: the id must stay on one line, or it
+   breaks mid-token into an unreadable stack when the range filter narrows the
+   table and the browser starts stealing width from this column. */
+.conversation-call-cell { min-width: 0; max-width: 200px; }
+.conversation-call-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conversation-call-meta code {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
 .conversation-list-card .table th { position: sticky; top: 0; z-index: 1; }
 .conversation-list-card .table tbody tr.row-click:focus-visible {
   outline: 2px solid var(--brand-400);
@@ -1181,7 +1201,8 @@
 @media (max-width: 720px) {
   .conversation-toolbar { align-items: stretch; }
   .conversation-toolbar .search-box,
-  .conversation-toolbar .select { width: 100%; }
+  .conversation-toolbar .select,
+  .conversation-toolbar .drp-trigger { width: 100%; }
   .conversation-result-count { margin-left: 0; padding: 0 2px; }
   .conversation-drawer { width: 100vw; max-width: none; }
   .conversation-drawer .drawer-header { padding: 14px 16px; }

@@ -792,6 +792,140 @@
 .menu-item.danger:hover { background: var(--status-critical-bg); }
 .menu-sep { height: 1px; background: var(--hairline); margin: 5px 4px; }
 
+/* ---------- Date-range picker ---------- */
+/* The trigger reads like the neighbouring .select controls; the popover is
+   portalled + fixed (like .menu) so it can never be clipped by a table header,
+   sticky bar or overflow container. */
+.drp-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 11px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.drp-trigger:hover { border-color: var(--brand-300); }
+.drp-trigger:focus-visible {
+  border-color: var(--brand-400);
+  box-shadow: 0 0 0 3px var(--brand-100);
+  outline: none;
+}
+.drp-trigger.has-value { color: var(--ink); }
+.drp-trigger.has-value .drp-trigger-value { font-weight: 550; }
+.drp-trigger-value { font-variant-numeric: tabular-nums; }
+.drp-pop {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: calc(100vw - 16px);
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in 0.12s ease-out;
+}
+.drp-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 108px;
+  padding-right: 12px;
+  border-right: 1px solid var(--hairline);
+}
+.drp-preset {
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ink-2);
+  text-align: left;
+  white-space: nowrap;
+}
+.drp-preset:hover { background: var(--surface-3); color: var(--ink); }
+.drp-cal { width: 240px; }
+.drp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.drp-month { font-size: 13px; font-weight: 650; }
+.drp-nav {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+}
+.drp-nav:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.drp-nav:disabled { opacity: 0.35; cursor: default; }
+.drp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.drp-dow {
+  padding: 3px 0;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: center;
+  text-transform: uppercase;
+}
+.drp-day {
+  display: grid;
+  place-items: center;
+  height: 29px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.drp-day:hover:not(:disabled) { background: var(--brand-100); }
+.drp-day:disabled { opacity: 0.3; cursor: default; }
+.drp-day.outside { color: var(--ink-3); }
+.drp-day.in-range { background: var(--brand-50); }
+.drp-day.edge { background: var(--brand-500); color: #fff; font-weight: 650; }
+.drp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.drp-clear {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-600);
+  white-space: nowrap;
+}
+.drp-clear:hover { text-decoration: underline; }
+@media (max-width: 480px) {
+  .drp-presets {
+    flex-direction: row;
+    flex-wrap: wrap;
+    min-width: 0;
+    width: 100%;
+    padding-right: 0;
+    padding-bottom: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+}
+
 /* Add-knowledge dropzone & file rows (KnowledgeTab) */
 .dropzone {
   display: flex;

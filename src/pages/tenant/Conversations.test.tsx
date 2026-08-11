@@ -41,6 +41,8 @@ const CONVERSATION = {
   escalationReason: "API timeout",
   csat: 2,
   costUsd: 0.12,
+  // Backend-derived: 0.12 USD over 75s = 0.096 USD/min.
+  costPerMinuteUsd: 0.096,
   language: "en-IN",
   qaScore: 60,
   flagged: true,
@@ -65,9 +67,16 @@ const RECORDING = {
   sizeBytes: 2400000,
 };
 
+/* Mirrors the page's formatter so the expectations hold in whatever timezone
+   the test machine is in — the assertion is "rendered in local time", not a
+   hardcoded clock reading. */
+const fmtDateTime = (d: Date) =>
+  `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}, ${
+    d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`;
+
 async function openDrawer(user: ReturnType<typeof userEvent.setup>) {
   render(<MemoryRouter><Conversations /></MemoryRouter>);
-  await user.click(await screen.findByText(/1:15/));
+  await user.click(await screen.findByText("1m 15s"));
   return screen.findByRole("dialog");
 }
 
@@ -132,6 +141,161 @@ describe("Tenant conversation review", () => {
     localStorage.clear();
   });
 
+  it("shows the call date and hides the QA score column", async () => {
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+
+    expect(await screen.findByText(/24 Jul 2026/)).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: /QA score/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps the combined Date / Time & Duration column immediately before Cost", async () => {
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+
+    const headers = (await screen.findAllByRole("columnheader")).map((h) => h.textContent?.trim());
+    // One combined call-timing column, directly before the cost column.
+    const at = headers.indexOf("Date / Time & Duration");
+    expect(at).toBeGreaterThan(-1);
+    expect(headers[at + 1]).toMatch(/^Cost \(USD\)/);
+    expect(headers.filter((h) => h === "Date / Time & Duration")).toHaveLength(1);
+
+    // "24 Jul 2026, 03:30 PM" on the first line (viewer's timezone, from the
+    // call's own startedAt), the labelled duration on the second — same cell.
+    const started = new Date(CONVERSATION.startedAt);
+    const dateTime = screen.getByText(fmtDateTime(started));
+    const duration = screen.getByText("1m 15s");
+    expect(dateTime.closest("td")).toBe(duration.closest("td"));
+    expect(screen.getByText(/^Duration:/)).toBeInTheDocument();
+    // The machine-readable value is the instant the API returned.
+    expect(dateTime.closest("time")).toHaveAttribute("datetime", CONVERSATION.startedAt);
+  });
+
+  it("sorts by Date / Time & Duration both ways from the header", async () => {
+    const later = {
+      ...CONVERSATION,
+      id: "cv-002",
+      startedAt: "2026-07-25T10:00:00Z",
+      durationSec: 35,
+    };
+    vi.mocked(api.listConversations).mockResolvedValue([CONVERSATION, later] as never);
+    const user = userEvent.setup();
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    await screen.findByText("1m 15s");
+
+    const header = screen.getByRole("columnheader", { name: "Date / Time & Duration" });
+    const firstRowId = () => screen.getAllByRole("row")[1].textContent;
+
+    // The chevron's slot is reserved (hidden) before any sort, so the column
+    // cannot widen and shift the table when sorting starts.
+    const chevron = header.querySelector("svg")!;
+    expect(chevron).not.toBeNull();
+    expect(chevron.style.visibility).toBe("hidden");
+
+    await user.click(header);
+    expect(header).toHaveAttribute("aria-sort", "ascending");
+    expect(firstRowId()).toContain("cv-001");
+    expect(chevron.style.visibility).toBe("visible");
+
+    await user.click(header);
+    expect(header).toHaveAttribute("aria-sort", "descending");
+    expect(firstRowId()).toContain("cv-002");
+  });
+
+  it.each([
+    [35, "35 sec"],
+    [0, "0 sec"],
+    [134, "2m 14s"],
+    [3932, "1h 05m 32s"],
+  ])("renders a %i second call as %s", async (durationSec, expected) => {
+    vi.mocked(api.listConversations).mockResolvedValue(
+      [{ ...CONVERSATION, durationSec }] as never,
+    );
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
+  /** Walk the picker's calendar back to the month with the given title. */
+  async function gotoMonth(user: ReturnType<typeof userEvent.setup>, title: string) {
+    const dialog = await screen.findByRole("dialog", { name: "Choose date range" });
+    for (let hops = 0; hops < 48 && !within(dialog).queryByText(title); hops++) {
+      await user.click(within(dialog).getByRole("button", { name: "Previous month" }));
+    }
+    expect(within(dialog).getByText(title)).toBeInTheDocument();
+    return dialog;
+  }
+
+  it("filters by date range through the API, in the viewer's timezone", async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    await screen.findByText("1m 15s");
+
+    await user.click(screen.getByRole("button", { name: "Filter by date range" }));
+    const dialog = await gotoMonth(user, "July 2026");
+    await user.click(within(dialog).getByRole("button", { name: "20 July 2026" }));
+    await user.click(within(dialog).getByRole("button", { name: "24 July 2026" }));
+
+    // The picked local days are sent as instants, so the range selects exactly
+    // the calls the page displays under those dates.
+    await waitFor(() => expect(api.listConversations).toHaveBeenLastCalledWith({
+      dateFrom: new Date(2026, 6, 20, 0, 0, 0, 0).toISOString(),
+      dateTo: new Date(2026, 6, 24, 23, 59, 59, 999).toISOString(),
+    }));
+    // The trigger echoes the committed range and the popover is gone.
+    expect(screen.getByRole("button", { name: "Filter by date range" })).toHaveTextContent("20 Jul – 24 Jul 2026");
+    expect(screen.queryByRole("dialog", { name: "Choose date range" })).not.toBeInTheDocument();
+
+    // The same window travels with the export.
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    expect(exportApi.downloadOperationalExport).toHaveBeenCalledWith(
+      "conversations",
+      expect.any(String),
+      expect.objectContaining({
+        dateFrom: new Date(2026, 6, 20, 0, 0, 0, 0).toISOString(),
+        dateTo: new Date(2026, 6, 24, 23, 59, 59, 999).toISOString(),
+      }),
+    );
+
+    // Clearing goes back to an unbounded window.
+    await user.click(screen.getByRole("button", { name: "Filter by date range" }));
+    await user.click(await screen.findByRole("button", { name: "Clear dates" }));
+    await waitFor(() => expect(api.listConversations).toHaveBeenLastCalledWith({
+      dateFrom: undefined,
+      dateTo: undefined,
+    }));
+    expect(screen.getByRole("button", { name: "Filter by date range" })).toHaveTextContent("All dates");
+  });
+
+  it("supports single-day ranges and never sends an inverted one", async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    await screen.findByText("1m 15s");
+
+    // Clicking the same day twice = that whole day.
+    await user.click(screen.getByRole("button", { name: "Filter by date range" }));
+    let dialog = await gotoMonth(user, "July 2026");
+    await user.click(within(dialog).getByRole("button", { name: "24 July 2026" }));
+    await user.click(within(dialog).getByRole("button", { name: "24 July 2026" }));
+    await waitFor(() => expect(api.listConversations).toHaveBeenLastCalledWith({
+      dateFrom: new Date(2026, 6, 24, 0, 0, 0, 0).toISOString(),
+      dateTo: new Date(2026, 6, 24, 23, 59, 59, 999).toISOString(),
+    }));
+
+    // Picking the earlier day second swaps the ends instead of asking the API
+    // for a range it would reject with a 422 (blanking the table).
+    await user.click(screen.getByRole("button", { name: "Filter by date range" }));
+    dialog = await screen.findByRole("dialog", { name: "Choose date range" });
+    await user.click(within(dialog).getByRole("button", { name: "24 July 2026" }));
+    await user.click(within(dialog).getByRole("button", { name: "20 July 2026" }));
+    await waitFor(() => expect(api.listConversations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ dateFrom: new Date(2026, 6, 20, 0, 0, 0, 0).toISOString() }),
+    ));
+
+    for (const call of vi.mocked(api.listConversations).mock.calls) {
+      const { dateFrom: start, dateTo: end } = call[0] ?? {};
+      if (start && end) expect(new Date(start).getTime()).toBeLessThan(new Date(end).getTime());
+    }
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+
   it("exports current filters and offers CSV/Excel transcript actions", async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><Conversations /></MemoryRouter>);
@@ -149,7 +313,7 @@ describe("Tenant conversation review", () => {
       expect.objectContaining({ search: "billing", botId: "bot-001", contained: false }),
     );
 
-    await user.click(screen.getByText(/1:15/));
+    await user.click(screen.getByText("1m 15s"));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "More actions" }));
     // MenuButton portals its popup to document.body so it cannot be clipped by
@@ -271,10 +435,25 @@ describe("Conversation costing display", () => {
     localStorage.clear();
   });
 
-  it("shows the metered cost in the list, headed with the display currency", async () => {
+  it("stacks the metered total and per-minute rate in one cost column", async () => {
     render(<MemoryRouter><Conversations /></MemoryRouter>);
     expect(await screen.findByRole("columnheader", { name: /Cost \(USD\)/ })).toBeInTheDocument();
-    expect(screen.getByText("$0.12")).toBeInTheDocument();
+    // Total on the first line, the backend-derived rate on the second — both
+    // rendered as given, in the same cell.
+    const total = screen.getByText("$0.12");
+    const perMin = screen.getByText("$0.096");
+    expect(total.closest("td")).toBe(perMin.closest("td"));
+    expect(screen.getByText(/^Total:/)).toBeInTheDocument();
+    expect(screen.getByText(/^Per min:/)).toBeInTheDocument();
+  });
+
+  it("shows a dash, not a rate, for a call that never connected", async () => {
+    vi.mocked(api.listConversations).mockResolvedValue(
+      [{ ...CONVERSATION, durationSec: 0, costUsd: 0, costPerMinuteUsd: null }] as never,
+    );
+    render(<MemoryRouter><Conversations /></MemoryRouter>);
+    await screen.findByText("0 sec");
+    expect(screen.getByText(/^Per min:/)).toHaveTextContent("Per min: —");
   });
 
   it("renders the list, recording row and breakdown from ONE backend total", async () => {

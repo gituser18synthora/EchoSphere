@@ -34,6 +34,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Mandatory secret-leakage guardrail at the logging boundary: no handler
+# (std logging or pipecat/loguru) can write a provider credential.
+from shared.logging_utils import install_log_redaction  # noqa: E402
+
+install_log_redaction()
 logger = logging.getLogger("voice_runtime.app")
 
 # Fail fast on missing mandatory configuration before serving any call.
@@ -275,6 +280,103 @@ async def _run_call(
         caller=session.get("caller"),
     )
 
+    # Effective guardrails for this bot (mandatory platform rules ∪ the bot's
+    # explicit profile, else the tenant default), plus the tenant's ACTIVE
+    # compliance policies, resolved server-side at call start. The guardrail
+    # loader FAILS CLOSED onto the built-in mandatory floor, so a
+    # control-plane outage can never run a call without PII/secret/tool/
+    # injection protection. Hits are buffered onto the recorder as they
+    # happen and the trigger ledger is persisted at finalize.
+    from shared.compliance import (
+        check_calling_window,
+        load_active_policies_sync,
+        record_policy_trigger_sync,
+    )
+    from shared.guardrails import (
+        GuardrailEngine,
+        load_effective_guardrails_sync,
+        register_session_engine,
+        release_session_engine,
+    )
+
+    effective_guardrails = await asyncio.to_thread(
+        load_effective_guardrails_sync, config.tenant_id, config.bot_id
+    )
+    compliance_policies = await asyncio.to_thread(
+        load_active_policies_sync, config.tenant_id
+    )
+
+    # Second deterministic checkpoint (the webhook already refused before the
+    # session was minted; this covers every other path to a live telephony
+    # pipeline): a development profile that disables telephony, or an active
+    # policy's calling window, closes the socket before any audio.
+    if telephony_provider:
+        blocked_reason = None
+        blocking_policy = None
+        if effective_guardrails.has("outbound_call_block"):
+            blocked_reason = ("outbound_call_block",
+                             "telephony disabled by the bot's guardrail profile")
+        else:
+            for policy in compliance_policies:
+                if not policy.applies(
+                    channel="phone",
+                    direction=policy.effective_direction(None),
+                ):
+                    continue
+                decision = check_calling_window(policy)
+                if not decision.allowed:
+                    blocked_reason = (
+                        "calling_window",
+                        f"{decision.reason} (local {decision.local_time})",
+                    )
+                    blocking_policy = policy
+                    break
+        if blocked_reason is not None:
+            rule, detail = blocked_reason
+            await recorder.flush_event(
+                "call_blocked_by_policy", rule=rule, detail=detail,
+            )
+            await asyncio.to_thread(
+                record_policy_trigger_sync,
+                tenant_id=config.tenant_id, bot_id=config.bot_id,
+                session_id=session_id, rule=rule, action="block",
+                stage="call", outcome="blocked", policy=blocking_policy,
+                channel=recorder.channel, detail=detail,
+            )
+            _active_sessions.pop(session_id, None)
+            await _close_websocket(websocket, code=4403, reason="call not permitted")
+            return
+
+    def _on_guardrail_hit(hit) -> None:
+        recorder.add_event(
+            "guardrail_trigger",
+            code=hit.rule.code,
+            action=hit.action,
+            stage=hit.stage,
+            detail=hit.detail,
+            policy_code=hit.policy_code,
+            policy_version=hit.policy_version,
+            outcome=hit.outcome,
+        )
+
+    guardrails = GuardrailEngine(
+        effective_guardrails, on_hit=_on_guardrail_hit,
+        compliance=compliance_policies,
+    )
+    recorder.guardrails = guardrails
+    # Deep call sites that only know the session id (workflow api nodes →
+    # ToolExecutor) resolve this engine from the registry.
+    register_session_engine(session_id, guardrails)
+    await recorder.flush_event(
+        "guardrails_loaded",
+        profile_id=effective_guardrails.profile_id,
+        profile_code=effective_guardrails.profile_code,
+        profile_version=effective_guardrails.profile_version,
+        rules=[r.code for r in effective_guardrails.rules],
+        policies=[f"{p.code}@v{p.version}" for p in compliance_policies],
+        degraded=effective_guardrails.degraded,
+    )
+
     # Runtime context: the server-trusted user/customer details this call
     # runs against. The GENERIC path (tenant-defined schema: User Details
     # API, manual test JSON, or stored records — any domain) is tried first;
@@ -443,10 +545,12 @@ async def _run_call(
             runtime_context=runtime_context,
             transport_kind=transport_kind,
             previous_memory=previous_memory,
+            guardrails=guardrails,
         )
     except Exception:  # noqa: BLE001 — misconfigured providers must not crash the worker
         logger.exception("pipeline construction failed for %s", session_id)
         await recorder.flush_event("pipeline_build_failed")
+        release_session_engine(session_id)
         _active_sessions.pop(session_id, None)
         await _close_websocket(websocket, code=4500, reason="voice engine configuration error")
         return
@@ -486,6 +590,7 @@ async def _run_call(
     finally:
         max_duration_handle.cancel()
         _active_sessions.pop(session_id, None)
+        release_session_engine(session_id)
         await end_voice_session(session_id)
         # _close_websocket is idempotent: it no-ops when the transport (or a
         # client disconnect) already completed the close handshake.

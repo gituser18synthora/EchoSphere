@@ -6,7 +6,7 @@ before fetching rows and has a stable ordering, so pagination in the UI cannot
 truncate or reorder the downloaded dataset.
 """
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import String, cast, extract, func, or_, select
 from sqlalchemy.orm import Session
@@ -269,6 +269,8 @@ def build_conversations_export(
     sentiment: str | None = None,
     contained: bool | None = None,
     flagged: bool | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
 ) -> ReportData:
     stmt = (
         select(ConversationSession, VoiceBot.name)
@@ -287,6 +289,12 @@ def build_conversations_export(
         stmt = stmt.where(ConversationSession.contained.is_(contained))
     if flagged is not None:
         stmt = stmt.where(ConversationSession.flagged.is_(flagged))
+    # Same inclusive started_at window the list endpoint applies, so an export
+    # taken from a date-filtered page contains exactly the rows on screen.
+    if started_from is not None:
+        stmt = stmt.where(ConversationSession.started_at >= started_from)
+    if started_to is not None:
+        stmt = stmt.where(ConversationSession.started_at <= started_to)
     if search:
         pattern = _search_pattern(search)
         stmt = stmt.where(

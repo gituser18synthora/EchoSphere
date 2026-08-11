@@ -15,7 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/state/AppContext";
 import {
   createMaster, deleteMaster, duplicatePlan, getMasterAudit, getModelLanguages,
-  listMaster, listPlanTenants, setMasterStatus, updateMaster, type MasterType,
+  listGuardrailProfiles, listMaster, listPlanTenants, setMasterStatus,
+  updateMaster, type MasterType,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import type { ModelLanguagesInfo, ProviderSettings, VoiceCapability } from "@/types/domain";
@@ -45,7 +46,7 @@ type Row = Record<string, unknown> & {
 interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider" | "datetime";
+  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider" | "datetime" | "guardrailProfile";
   options?: { value: string; label: string }[];
   required?: boolean;
   /** Required only while creating; legacy records can still be edited. */
@@ -222,6 +223,11 @@ const ALL_SPECS: TypeSpec[] = [
       text("code", "Code", { required: true, createOnly: true, hint: "Stable identifier, e.g. banking", section: "Identity" }),
       text("name", "Name", { required: true, section: "Identity" }),
       { key: "description", label: "Description", type: "textarea", section: "Identity" },
+      {
+        key: "defaultGuardrailProfileId", label: "Default guardrail profile",
+        type: "guardrailProfile", section: "Governance", clearable: true,
+        hint: "Recommended default suggested during onboarding — the Super Admin can override it per tenant.",
+      },
       text("icon", "Icon", { section: "Presentation" }),
       num("sortOrder", "Order", { section: "Presentation" }),
     ],
@@ -795,6 +801,12 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
           disabled={locked} onChange={(code) => set(f.key, code)} />
       );
     }
+    if (f.type === "guardrailProfile") {
+      return (
+        <GuardrailProfileSelect value={String(form[f.key] ?? "")} label={f.label}
+          disabled={locked} onChange={(id) => set(f.key, id)} />
+      );
+    }
     if (f.type === "model" && f.capability && f.providerKey) {
       return (
         <ModelSelect capability={f.capability} provider={String(form[f.providerKey] ?? "")}
@@ -1275,6 +1287,42 @@ function VoiceProviderSelect({ value, onChange, disabled, label }: {
       <option value="">—</option>
       {value && !known && <option value={value}>{value} (unavailable — inactive)</option>}
       {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+    </select>
+  );
+}
+
+/** Guardrail profile options for the Industries default-profile field.
+    Inactive profiles stay visible (an industry may still point at one) but
+    cannot be newly selected; an unknown current value stays selectable so
+    editing an unrelated field never silently clears it. */
+function GuardrailProfileSelect({ value, onChange, disabled, label }: {
+  value: string; onChange: (id: string) => void; disabled?: boolean; label?: string;
+}) {
+  const [profiles, setProfiles] = useState<
+    { id: string; name: string; status: string }[] | null
+  >(null);
+  useEffect(() => {
+    let alive = true;
+    listGuardrailProfiles()
+      .then((rows) => {
+        if (alive) setProfiles(rows.map((p) => ({ id: p.id, name: p.name, status: p.status })));
+      })
+      .catch(() => { if (alive) setProfiles([]); });
+    return () => { alive = false; };
+  }, []);
+  const loading = profiles === null;
+  const known = (profiles ?? []).some((p) => p.id === value);
+  return (
+    <select className="select" value={value} disabled={disabled || loading}
+      aria-label={label ?? "Default guardrail profile"}
+      onChange={(e) => onChange(e.target.value)}>
+      <option value="">{loading ? "Loading profiles…" : "No default (mandatory rules only)"}</option>
+      {value && !loading && !known && <option value={value}>{value} (unavailable)</option>}
+      {(profiles ?? []).map((p) => (
+        <option key={p.id} value={p.id} disabled={p.status !== "active" && p.id !== value}>
+          {p.name}{p.status !== "active" ? " (inactive)" : ""}
+        </option>
+      ))}
     </select>
   );
 }

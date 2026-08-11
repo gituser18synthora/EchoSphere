@@ -11,6 +11,7 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
+    require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
 )
@@ -577,3 +578,108 @@ def update_voice_settings(
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(_serialize_voice_settings(s), meta={"warnings": warnings} if warnings else None)
+
+
+# ── Bot-level guardrail profile ───────────────────────────────────────────────
+#
+# Hierarchy: mandatory platform guardrails (always) → the bot's explicit
+# profile when set → else the tenant's default profile. Assignment is a
+# governance action (Super Admin); tenant members can VIEW the effective
+# result for their own bots.
+
+
+class BotGuardrailProfileRequest(BaseModel):
+    # "" clears the explicit assignment → the bot inherits the tenant default.
+    guardrail_profile_id: str = Field(alias="guardrailProfileId", max_length=50)
+
+    model_config = {"populate_by_name": True}
+
+
+@router.patch("/bots/{bot_id}/guardrail-profile")
+def set_bot_guardrail_profile(
+    bot_id: str,
+    body: BotGuardrailProfileRequest,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    from backend.routers.tenants import _validate_guardrail_profile
+
+    bot = db.get(VoiceBot, bot_id)
+    if bot is None or bot.is_deleted:
+        raise NotFoundError("Bot")
+    before = {"guardrailProfileId": bot.guardrail_profile_id}
+    value = body.guardrail_profile_id.strip()
+    if not value:
+        bot.guardrail_profile_id = None
+    elif value != bot.guardrail_profile_id:
+        # New assignments require an ACTIVE profile; keeping the current
+        # (possibly deactivated) one untouched is always allowed.
+        bot.guardrail_profile_id = _validate_guardrail_profile(db, value).id
+    bot.updated_by = user.id
+    record_audit(
+        db, user=user,
+        action="Assigned bot guardrail profile" if bot.guardrail_profile_id
+        else "Cleared bot guardrail profile (inherits tenant default)",
+        entity_type="bot", entity_id=bot.id, target_label=bot.name,
+        tenant_id=bot.tenant_id, previous_value=before,
+        new_value={"guardrailProfileId": bot.guardrail_profile_id},
+        request=request,
+    )
+    db.commit()
+    from shared.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
+    return ok(_serialize_many(db, [bot])[0])
+
+
+@router.get("/bots/{bot_id}/effective-guardrails")
+def bot_effective_guardrails(
+    bot_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The guardrails and compliance policies actually enforced for this bot
+    at call start: mandatory rules ∪ (explicit bot profile ∥ tenant default),
+    plus every ACTIVE compliance policy version."""
+    from shared.compliance import load_active_policies_sync
+    from shared.guardrails import load_effective_guardrails_sync
+    from shared.models import GuardrailProfile
+
+    bot = _get_bot_checked(db, bot_id, user)
+    effective = load_effective_guardrails_sync(bot.tenant_id, bot.id, session=db)
+    tenant = db.get(Tenant, bot.tenant_id)
+    tenant_profile = db.get(GuardrailProfile, tenant.guardrail_profile_id) \
+        if tenant is not None and tenant.guardrail_profile_id else None
+    explicit_profile = db.get(GuardrailProfile, bot.guardrail_profile_id) \
+        if bot.guardrail_profile_id else None
+    policies = load_active_policies_sync(bot.tenant_id, session=db)
+
+    def _summary(p):
+        if p is None or p.is_deleted:
+            return None
+        return {"id": p.id, "code": p.code, "name": p.name,
+                "status": p.status, "version": p.version}
+
+    rules = sorted(effective.rules, key=lambda r: (not r.mandatory, r.name))
+    return ok({
+        "botId": bot.id,
+        "tenantId": bot.tenant_id,
+        "inherited": bot.guardrail_profile_id is None,
+        "profile": _summary(explicit_profile) if bot.guardrail_profile_id
+        else _summary(tenant_profile),
+        "tenantDefaultProfile": _summary(tenant_profile),
+        "rules": [
+            {"guardrailId": r.guardrail_id or "", "code": r.code, "name": r.name,
+             "category": r.category, "action": r.action, "mandatory": r.mandatory}
+            for r in rules
+        ],
+        "compliancePolicies": [
+            {"code": p.code, "version": p.version, "name": p.name,
+             "regulator": p.regulator, "jurisdiction": p.jurisdiction,
+             "timezone": p.timezone,
+             "callingWindows": list(p.calling_windows)}
+            for p in policies
+        ],
+        "degraded": effective.degraded,
+    })

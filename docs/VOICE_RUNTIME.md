@@ -183,6 +183,97 @@ availability list. Save-time validation and `resolve_bot_config` require an
 active provider and active model in the database catalog; primary engines fail
 closed instead of silently switching to an inactive adapter.
 
+## Guardrail enforcement
+
+Every call loads the tenant's **effective guardrails** at call start
+(`_run_call` → `shared/guardrails/loader.py`): the mandatory platform rules
+(PII redaction, secret-leakage prevention, unsafe-tool blocking,
+prompt-injection protection — `guardrails.is_mandatory`, can never be
+disabled) ∪ the rules linked to the tenant's assigned guardrail profile
+(`tenants.guardrail_profile_id`; profiles managed under
+`/api/v1/guardrail-profiles`). The loader FAILS CLOSED: a broken control-plane
+lookup degrades to the built-in mandatory floor, never to "no guardrails".
+A deactivated profile keeps enforcing for tenants already assigned to it.
+
+The per-call `GuardrailEngine` (`shared/guardrails/engine.py`) enforces
+deterministically — pattern checks no model output can bypass:
+
+- **Caller input** (`_handle_turn`, before understanding/tools/LLM): a spoken
+  card number under the payment restriction blocks the turn; injection
+  attempts are flagged (scope rules already redirect them).
+- **Assistant output**: fixed phrases (`_say`) are checked before any audio
+  renders; when a blocking output rule is active (medical advice / payment
+  credential requests) the LLM stream switches to sentence-hold mode — each
+  sentence is checked before it is forwarded to TTS, so a violating sentence
+  is never synthesized. Blocked turns speak a localized safe reply
+  (en/hi via `shared/orchestration/phrases.resolve_phrase`).
+- **Tool calls**: `ToolExecutor.execute` denies every tool call in a turn
+  where a blocking guardrail fired (mandatory `unsafe_tool_call_block`).
+  Workflow `api` nodes are covered through the session-engine registry
+  (`register_session_engine`), so the gate holds without threading objects
+  through checkpointed workflow state.
+- **Persistence**: transcript turns are redacted through the engine
+  (PII + credential patterns) at finalize; `install_log_redaction()` is
+  installed in both processes so provider credentials cannot reach logs.
+
+Every hit is recorded (rule code, action, stage, profile id + version,
+policy code + version, outcome, non-sensitive detail — never the matched
+value): buffered as `guardrail_trigger` events on the transcript, flushed
+immediately for blocks, and written to the tenant-scoped MySQL
+`guardrail_triggers` ledger at finalize (`GET /api/v1/guardrail-triggers`).
+The chat runtime (`POST /bots/{id}/testing/chat`) runs the same
+input/output/tool enforcement and persists its triggers per turn.
+
+**Bot-level profiles.** Profile resolution is hierarchical: mandatory
+platform rules always apply; a bot with an explicit
+`voice_bots.guardrail_profile_id` uses that profile; a NULL column inherits
+the tenant default (`tenants.guardrail_profile_id`) — so tenant-default
+changes follow inheriting bots and never touch explicit assignments.
+Assignment: `PATCH /api/v1/bots/{id}/guardrail-profile` (Super Admin,
+audited, active-only for new assignments, `""` → inherit); the effective
+result (inherited/explicit flag, rules, active compliance-policy versions):
+`GET /api/v1/bots/{id}/effective-guardrails`. The seeded
+`development` profile (rules `outbound_call_block`,
+`state_changing_tool_block`) is for genuinely internal bots: telephony calls
+are refused pre-connect and real state-changing tools are denied at the
+executor (mocked Testing Studio runs still work).
+
+## Compliance policies (collections)
+
+`compliance_policies` rows (managed under `/api/v1/compliance-policies`,
+Super Admin) carry versioned, regulator-attributed policy data: IANA
+timezone, permitted calling windows, per-day contact limits, prohibited
+conduct pattern sets, waiver-authorization rules and immutable legal wording
+templates, each with primary-source references and approval metadata. Only
+`status='active'` policies whose effective date has arrived enforce; drafts
+never gate a call, and activation requires a compliance-owner approval note
+(`draft → approved → active → retired`; activating a version retires the
+previous one).
+
+Enforcement points:
+
+- **Pre-dial** (`shared/telephony_webhooks.enforce_pre_call_compliance`,
+  called by the signed webhook before connect instructions are returned, and
+  re-checked at `_run_call` before the pipeline starts): calling windows are
+  evaluated in the policy timezone via `zoneinfo` (DST-safe, injectable
+  clock), per-day contact limits count atomically in Redis under a hashed
+  caller key, and the development profile's `outbound_call_block` refuses
+  telephony entirely. Refusals are sanitized 403s plus a ledger row with the
+  policy code/version — the LLM is never consulted.
+- **Output** (`GuardrailEngine`): policy conduct rules (threats, third-party
+  disclosure, misleading representations…) and waiver rules become
+  data-driven pre-TTS blocks riding the sentence-hold stream; a
+  waiver/discount/settlement promise is blocked and escalated
+  (`guardrail_waiver` reply) unless a tool-verified authorization
+  (`waiver_approved` + `approval_reference`, optional expiry/limit) was
+  recorded THIS call via `record_waiver_authorization` — prompt text can
+  never authorize.
+- **Legal wording**: authored content references `{{wording:code}}`; the
+  approved template substitutes VERBATIM in the fixed-phrase speech path
+  (never through generation — a workflow step carrying a wording reference
+  skips language-adaptation), and the exact template version spoken is
+  recorded as an `emitted` trigger.
+
 ## Persistence
 
 `SessionRecorder` (`voice_runtime/recording.py`) accumulates turns/events/usage
