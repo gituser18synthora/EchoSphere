@@ -91,7 +91,12 @@ class AnthropicLLM(LLMProvider):
         )
         if not key:
             raise ProviderError(self.name, "auth", "Missing API key reference")
-        self._client = AsyncAnthropic(api_key=key, timeout=config.timeout_seconds)
+        # max_retries=0: the SDK's default 2 hidden retries stack under the
+        # callers' own bounded retries and blow the voice latency budget —
+        # retry policy is owned by the brain/API layers, never the SDK.
+        self._client = AsyncAnthropic(
+            api_key=key, timeout=config.timeout_seconds, max_retries=0
+        )
         self._model = config.model or _DEFAULT_MODEL
 
     def _request_kwargs(

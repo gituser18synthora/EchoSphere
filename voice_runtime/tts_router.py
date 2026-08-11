@@ -69,7 +69,11 @@ _SUPPORTED_RATES = {
     "elevenlabs": {8000, 16000, 22050, 24000},
 }
 
-_FIRST_AUDIO_TIMEOUT_S = 10.0
+# Healthy warm TTFB is 35-700ms; a dialer gives up on prolonged dead air
+# (observed live 2026-07-29: socket closed after ~12.7s of silence). 4s leaves
+# room for a cold reconnect while still triggering fallback well before the
+# dialer hangs up.
+_FIRST_AUDIO_TIMEOUT_S = 4.0
 
 # Failure categories that no retry, fallback or later turn can heal: the
 # credentials or the engine configuration are wrong. Leaving the call up
@@ -126,6 +130,11 @@ class _Generation:
     # here never gets trailing silence.
     gap_pending: bool = False
     turn_complete: bool = False
+    # A provider "final" arrived while the LLM was still streaming the turn
+    # (Sarvam emits one per flush, so a flush-hint produces one). It is
+    # ignored, but remembered: if no more text follows, the end-of-turn
+    # close-out must not wait for a second final that will never come.
+    midturn_final_seen: bool = False
     seq: int = 0
 
 
@@ -289,6 +298,30 @@ class StreamingTTSRouter(TTSService):
             await provider.configure(stream_settings)
         return provider
 
+    async def _warm_engine(self, engine: dict, locale: str) -> None:
+        """Best-effort background warm-up of a not-yet-used engine: failures
+        are logged and left to the synthesis path, which has retry/fallback."""
+        try:
+            provider = await self._get_provider(engine, locale)
+            await provider.connect()
+        except Exception:  # noqa: BLE001 — warm-up must never affect the call
+            logger.warning(
+                "tts-router: language-switch warm-up failed", exc_info=True
+            )
+
+    def _flush_event_background(self, kind: str, **data) -> None:
+        """Persist a recorder event without blocking the caller: an awaited
+        Mongo write here would stall the single event-pump consumer for the
+        duration of a network round-trip. flush_event appends to the
+        in-memory event list before persisting, and tasks run in creation
+        order, so event ordering is preserved."""
+        coro = self._recorder.flush_event(kind, **data)
+        if getattr(self, "_task_manager", None) is not None:
+            self.create_task(coro)
+        else:
+            # Not wired into a pipeline (bare-router tests / teardown edge).
+            asyncio.create_task(coro)
+
     # ── frame handling ──────────────────────────────────────────────────
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, SwitchVoiceLanguageFrame):
@@ -300,8 +333,12 @@ class StreamingTTSRouter(TTSService):
                     engine.get("provider"), engine.get("voice"),
                 )
                 self._current_language = frame.language
+                if self._engine_key(engine) not in self._providers:
+                    # Warm the newly-mapped engine before its first reply
+                    # needs it — same best-effort contract as start().
+                    self.create_task(self._warm_engine(engine, frame.language))
                 if self._recorder is not None:
-                    await self._recorder.flush_event(
+                    self._flush_event_background(
                         "tts_language_switched",
                         language=frame.language,
                         provider=engine.get("provider"),
@@ -372,6 +409,9 @@ class StreamingTTSRouter(TTSService):
             else:
                 await state.provider.synthesize_stream(text, generation_id=context_id)
                 state.dispatched_chars += len(text)
+                # New text after an ignored flush-hint final: the provider
+                # owes this generation a fresh final again.
+                state.midturn_final_seen = False
         except ProviderError as exc:
             handled = await self._try_fallback(context_id, exc)
             if not handled:
@@ -408,15 +448,24 @@ class StreamingTTSRouter(TTSService):
 
     async def on_turn_context_completed(self):
         context_id = self._turn_context_id
-        await super().on_turn_context_completed()
         state = self._generations.get(context_id) if context_id else None
+        if state is not None:
+            # Marked BEFORE super() runs the end-of-turn flush, so the
+            # provider final that flush produces is attributed to a completed
+            # turn — never mistaken for a mid-turn flush-hint final.
+            state.turn_complete = True
+        await super().on_turn_context_completed()
         if state is None:
             return
         if self._pause_ms > 0:
-            state.turn_complete = True
             if state.active is None and not state.pending:
                 # The last sentence's final already arrived — close out now.
                 await self._finalize_generation(context_id, failed=False)
+            return
+        if state.midturn_final_seen:
+            # No text followed the ignored flush-hint final, so the provider
+            # owes no further final for this generation — close out directly.
+            await self._finalize_generation(context_id, failed=False)
             return
         try:
             await state.provider.finish(context_id)
@@ -559,8 +608,18 @@ class StreamingTTSRouter(TTSService):
                 return
             if self._pause_ms > 0:
                 await self._on_sentence_final(context_id, generation, state)
-            else:
+            elif state.turn_complete:
                 await self._finalize_generation(context_id, failed=False)
+            else:
+                # A flush-hint flush produced this final while the LLM is
+                # still streaming the turn: finalizing here would pop the
+                # generation and reject all subsequent audio. The generation
+                # stays open and synthesis continues on it.
+                state.midturn_final_seen = True
+                logger.debug(
+                    "tts-router: ignoring mid-turn provider final (context=%s)",
+                    str(context_id)[:8],
+                )
         elif event.kind == "error":
             error = event.error or ProviderError("tts", "upstream", "unknown TTS error")
             if generation and state is not None:
@@ -701,7 +760,7 @@ class StreamingTTSRouter(TTSService):
             # transient-failure categories are not charged by the providers.
             if not failed:
                 self._bill_generation(state)
-            await self._recorder.flush_event(
+            self._flush_event_background(
                 "tts_provider_used",
                 provider=state.engine.get("provider"),
                 voice=state.engine.get("voice"),
@@ -784,6 +843,7 @@ class StreamingTTSRouter(TTSService):
                 for text in state.texts:
                     await provider.synthesize_stream(text, generation_id=context_id)
                     state.dispatched_chars += len(text)
+                state.midturn_final_seen = False
                 if state.flushed:
                     await provider.flush(context_id)
                     await provider.finish(context_id)
@@ -793,7 +853,7 @@ class StreamingTTSRouter(TTSService):
             return False
 
         if self._recorder is not None:
-            await self._recorder.flush_event(
+            self._flush_event_background(
                 "tts_fallback",
                 from_provider=error.provider,
                 to_provider=self._fallback_engine.get("provider"),

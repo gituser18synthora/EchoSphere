@@ -67,10 +67,13 @@ def final_event_key(frame, text: str) -> str | None:
             # Connection + what the provider measured for THIS segment.
             return f"seg:{connection}|{text}|{duration}|{latency}"
         if connection and text:
-            # No metrics on this shape: fall back to connection + text, which
-            # still separates distinct utterances within a connection.
-            timestamp = getattr(frame, "timestamp", None) or ""
-            return f"seg:{connection}|{text}|{timestamp}"
+            # No metrics on this shape: fall back to connection + text. The
+            # frame timestamp is deliberately NOT part of the key — pipecat
+            # stamps it at frame construction, so a replayed provider message
+            # would get a fresh timestamp and never read as a duplicate. The
+            # consumer's dedup is time-bounded (brain._is_duplicate_final), so
+            # a caller repeating the same words later is still answered.
+            return f"seg:{connection}|{text}"
     timestamp = getattr(frame, "timestamp", None)
     if timestamp:
         return f"ts:{timestamp}|{text}"

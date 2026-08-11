@@ -206,6 +206,37 @@ class TestSarvamProvider:
         assert server.connections == 2  # lazy reconnect for the new generation
         assert len(server.configs) == 2  # config re-sent on the new connection
 
+    async def test_cancel_schedules_background_reconnect(self, monkeypatch):
+        """Barge-in tears the socket down (Sarvam has no server-side cancel);
+        a background reconnect must rebuild it so the next reply doesn't pay
+        the cold-connect handshake inline."""
+        async with MockSarvamTTSServer(behavior="silent") as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings())
+            await provider.synthesize_stream("First reply.", generation_id="g1")
+            await provider.cancel("g1")
+            async with asyncio.timeout(3):
+                while server.connections < 2:
+                    await asyncio.sleep(0.02)
+            await provider.close()
+        assert server.connections == 2  # reconnected without a new dispatch
+        assert provider._reconnect_task is None  # close() cleaned it up
+
+    async def test_redundant_config_resend_is_skipped(self, monkeypatch):
+        """A config resend auto-flushes server-side — identical settings on
+        the same socket must not send a second config message."""
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings())
+            await provider.connect()
+            await provider.configure(sarvam_settings())  # nothing changed
+            await asyncio.sleep(0.1)
+            assert len(server.configs) == 1
+            await provider.configure(sarvam_settings(voice="ritu"))
+            await asyncio.sleep(0.1)
+            await provider.close()
+        assert len(server.configs) == 2  # a real change still resends
+
     async def test_configure_reuses_connection_for_voice_switch(self, monkeypatch):
         async with MockSarvamTTSServer() as server:
             monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
@@ -358,6 +389,42 @@ class TestElevenLabsProvider:
             await provider.close()
         assert server.connections == 2
         assert "WQAp2s6GVJHv6IkTFqO0" in server.paths[1]
+
+    async def test_language_flip_on_non_enforcing_model_keeps_socket(self, monkeypatch):
+        """language only reaches the URL for Flash/Turbo v2.5 — a language
+        flip on any other model changes nothing on the wire and must not
+        tear the connection down."""
+        async with MockElevenLabsServer() as server:
+            monkeypatch.setattr(elevenlabs_ws, "_WS_BASE", server.url)
+            provider = ElevenLabsWebSocketTTSProvider(
+                eleven_settings(model="eleven_multilingual_v2")
+            )
+            await provider.connect()
+            await provider.configure(
+                eleven_settings(model="eleven_multilingual_v2", language="en-IN")
+            )
+            await provider.connect()
+            await provider.close()
+        assert server.connections == 1
+
+    async def test_language_flip_on_enforcing_model_reconnects(self, monkeypatch):
+        """Flash v2.5 carries language_code on the URL — a language flip
+        changes the wire URL and must reconnect."""
+        async with MockElevenLabsServer() as server:
+            monkeypatch.setattr(elevenlabs_ws, "_WS_BASE", server.url)
+            provider = ElevenLabsWebSocketTTSProvider(eleven_settings())
+            await provider.connect()
+            await provider.configure(eleven_settings(language="en-IN"))
+            await provider.connect()
+            await provider.close()
+        assert server.connections == 2
+        assert "language_code=en" in server.paths[1]
+
+    def test_event_queue_is_bounded(self):
+        # A stalled consumer must backpressure the receive loop, not buffer
+        # unbounded audio in memory.
+        provider = ElevenLabsWebSocketTTSProvider(eleven_settings())
+        assert provider.events.maxsize == 256
 
 
 class TestCloseCategorization:

@@ -6,6 +6,8 @@ schema, idempotent state changes, and masked traces. Mocked execution
 (Testing Studio) must pass the same ladder with only the HTTP hop replaced.
 """
 
+import pytest
+
 import shared.orchestration.tool_executor as tool_executor_module
 from shared.orchestration.tool_executor import ToolExecutor, validate_args
 
@@ -228,3 +230,112 @@ class TestSecrets:
         # …and exists nowhere in what the caller (and the LLM) can see.
         assert "super-secret-token" not in str(result.trace)
         assert "super-secret-token" not in str(result.data)
+
+
+class _FakeConnectionRow:
+    """Attribute bag mirroring the ApiConnection columns _load_connection_sync reads."""
+
+    def __init__(self, **overrides):
+        self.id = "api_1"
+        self.name = "check_payment_status"
+        self.bot_id = "b"
+        self.method = "POST"
+        self.url = "https://lms.example/payments/status"
+        self.auth_type = "bearer"
+        self.secret_ref = "secret://LMS_KEY"
+        self.headers = {}
+        self.query_params = {}
+        self.path_params = {}
+        self.body_template = None
+        self.request_schema = None
+        self.success_condition = "status < 400"
+        self.sensitive_masks = []
+        self.allowed_intents = []
+        self.allowed_workflows = []
+        self.is_state_changing = False
+        self.require_confirmation = False
+        self.timeout_ms = 4000
+        self.retries = 1
+        self.response_mapping = []
+        for key, value in overrides.items():
+            setattr(self, key, value)
+
+
+class _FakeConnectionQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeConnectionSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, model):
+        return _FakeConnectionQuery(self._rows)
+
+    def close(self):
+        pass
+
+
+class TestConnectionCache:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        tool_executor_module._connection_cache.clear()
+        yield
+        tool_executor_module._connection_cache.clear()
+
+    def _patch_db(self, monkeypatch, rows):
+        import shared.db.mysql as mysql_db
+
+        counters = {"sessions": 0}
+
+        def factory():
+            counters["sessions"] += 1
+            return _FakeConnectionSession(rows)
+
+        monkeypatch.setattr(mysql_db, "get_sessionmaker", lambda: factory)
+        return counters
+
+    def test_second_resolution_within_ttl_never_hits_the_db(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        first = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert first is not None and first["id"] == "api_1"
+        second = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert second == first
+        assert counters["sessions"] == 1  # served from the cache
+
+    def test_cached_entry_is_a_copy_not_a_shared_dict(self, monkeypatch):
+        self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        first = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        first["url"] = "https://tampered.example"
+        second = tool_executor_module._load_connection_sync(
+            "tn-a", "b", "check_payment_status"
+        )
+        assert second["url"] == "https://lms.example/payments/status"
+
+    def test_miss_is_not_cached(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [])
+        assert tool_executor_module._load_connection_sync("tn-a", "b", "ghost") is None
+        assert tool_executor_module._load_connection_sync("tn-a", "b", "ghost") is None
+        assert counters["sessions"] == 2  # a fresh tool resolves immediately
+
+    def test_expired_entry_requeries(self, monkeypatch):
+        counters = self._patch_db(monkeypatch, [_FakeConnectionRow()])
+        monkeypatch.setattr(
+            tool_executor_module, "_CONNECTION_CACHE_TTL_SECONDS", 0.0
+        )
+        tool_executor_module._load_connection_sync("tn-a", "b", "check_payment_status")
+        tool_executor_module._load_connection_sync("tn-a", "b", "check_payment_status")
+        assert counters["sessions"] == 2

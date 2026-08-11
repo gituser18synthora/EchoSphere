@@ -41,6 +41,10 @@ class _RecorderStub:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
     def event_kinds(self):
         return [kind for kind, _ in self.events]
 

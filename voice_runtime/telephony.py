@@ -13,8 +13,9 @@ import json
 import logging
 import os
 import time
-from array import array
 from pathlib import Path
+
+import numpy as np
 
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
@@ -192,8 +193,10 @@ class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
             usable = len(wire_audio) - (len(wire_audio) % 4)
             if usable == 0:
                 return None
-            stereo_samples = array("h")
-            stereo_samples.frombytes(wire_audio[:usable])
+            # Vectorized: the previous pure-Python per-sample scans ran three
+            # generator passes per 20 ms frame on the event loop (~25k
+            # iterations/second/call).
+            stereo_samples = np.frombuffer(wire_audio[:usable], dtype="<i2")
             first_channel = stereo_samples[0::2]
             second_channel = stereo_samples[1::2]
             if self._debug_audio_remaining:
@@ -213,22 +216,29 @@ class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
                     self._debug_first_file = None
                     self._debug_second_file = None
                     logger.warning("FreeSWITCH audio debug capture completed")
+            # int32 before abs(): |-32768| overflows int16.
+            first_peak = (
+                int(np.abs(first_channel.astype(np.int32)).max())
+                if first_channel.size else 0
+            )
+            second_peak = (
+                int(np.abs(second_channel.astype(np.int32)).max())
+                if second_channel.size else 0
+            )
             self._first_channel_interval_peak = max(
-                self._first_channel_interval_peak,
-                max((abs(sample) for sample in first_channel), default=0),
+                self._first_channel_interval_peak, first_peak
             )
             self._second_channel_interval_peak = max(
-                self._second_channel_interval_peak,
-                max((abs(sample) for sample in second_channel), default=0),
+                self._second_channel_interval_peak, second_peak
             )
-            caller_samples = first_channel
-            audio = caller_samples.tobytes()
+            audio = first_channel.tobytes()
             self._inbound_bytes += len(audio)
             self._inbound_interval_bytes += len(audio)
-            samples = array("h")
-            samples.frombytes(audio[:len(audio) - (len(audio) % 2)])
-            peak = max((abs(sample) for sample in samples), default=0)
-            self._inbound_interval_peak = max(self._inbound_interval_peak, peak)
+            # The selected caller channel IS the first channel — its peak was
+            # already computed; the third per-sample pass recomputed it.
+            self._inbound_interval_peak = max(
+                self._inbound_interval_peak, first_peak
+            )
             now = time.monotonic()
             if self._last_inbound_log == 0.0 or now - self._last_inbound_log >= 5.0:
                 logger.info(
@@ -334,9 +344,11 @@ class FreeSwitchAudioForkSerializer(_RampedAudioMixin, FrameSerializer):
             audio = audio[:len(audio) - (len(audio) % 2)]
             if not audio:
                 return None
-            samples = array("h")
-            samples.frombytes(audio)
-            peak = max((abs(sample) for sample in samples), default=0)
+            samples = np.frombuffer(audio, dtype="<i2")
+            peak = (
+                int(np.abs(samples.astype(np.int32)).max())
+                if samples.size else 0
+            )
             self._inbound_bytes += len(audio)
             self._inbound_interval_bytes += len(audio)
             self._inbound_interval_peak = max(

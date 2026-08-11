@@ -48,7 +48,11 @@ logger = logging.getLogger("providers.tts.elevenlabs_ws")
 # and mocked end-to-end verification.
 _WS_BASE = os.environ.get("ELEVENLABS_WS_BASE", "wss://api.elevenlabs.io")
 _KEEPALIVE_SECONDS = 10
-_MAX_CONNECT_ATTEMPTS = 3
+# Connect attempts happen inline on the reply path: two short attempts, then
+# error/fallback — never tens of seconds of handshake retries while the
+# caller waits in silence.
+_MAX_CONNECT_ATTEMPTS = 2
+_CONNECT_TIMEOUT_S = 3.0
 _CLOSE_HANDSHAKE_TIMEOUT = 2.0
 
 # Models that accept the language_code enforcement query parameter.
@@ -83,6 +87,9 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._keepalive_task: asyncio.Task | None = None
         self._initialized_contexts: set[str] = set()
         self._send_lock = asyncio.Lock()
+        # Serializes concurrent connect() calls (a background warm-up racing
+        # the next dispatch) so only one socket is opened.
+        self._connect_lock = asyncio.Lock()
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> None:
@@ -97,54 +104,57 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
             )
             await self._emit_error("invalid_input", message)
             raise ProviderError(self.name, "invalid_input", message)
-        if self._ws is not None and self._ws.state is State.OPEN:
-            return
-        url = self._build_url()
-        last_category = "timeout"
-        for attempt in range(_MAX_CONNECT_ATTEMPTS):
-            try:
-                self._ws = await asyncio.wait_for(
-                    websocket_connect(
-                        url,
-                        additional_headers={"xi-api-key": self._settings.api_key},
-                        max_size=16 * 1024 * 1024,
-                    ),
-                    timeout=self._settings.timeout_seconds,
-                )
-                break
-            except InvalidStatus as exc:
-                status = exc.response.status_code
-                category = self.categorize_close(status)
-                await self._emit_error(
-                    category, f"ElevenLabs handshake rejected ({status})"
-                )
-                if category == "auth":
-                    raise ProviderError(self.name, "auth",
-                                        "ElevenLabs rejected the API key") from exc
-                last_category = category
-            except (TimeoutError, OSError, ConnectionClosed):
-                last_category = "timeout"
-                await asyncio.sleep(0.2 * (attempt + 1))
-        else:
-            await self._emit_error(last_category, "Could not connect to ElevenLabs")
-            raise ProviderError(self.name, last_category, "Could not connect to ElevenLabs")
+        async with self._connect_lock:
+            if self._ws is not None and self._ws.state is State.OPEN:
+                return
+            url = self._build_url()
+            last_category = "timeout"
+            for attempt in range(_MAX_CONNECT_ATTEMPTS):
+                try:
+                    self._ws = await asyncio.wait_for(
+                        websocket_connect(
+                            url,
+                            additional_headers={"xi-api-key": self._settings.api_key},
+                            max_size=16 * 1024 * 1024,
+                        ),
+                        timeout=min(_CONNECT_TIMEOUT_S, self._settings.timeout_seconds),
+                    )
+                    break
+                except InvalidStatus as exc:
+                    status = exc.response.status_code
+                    category = self.categorize_close(status)
+                    await self._emit_error(
+                        category, f"ElevenLabs handshake rejected ({status})"
+                    )
+                    if category == "auth":
+                        raise ProviderError(self.name, "auth",
+                                            "ElevenLabs rejected the API key") from exc
+                    last_category = category
+                except (TimeoutError, OSError, ConnectionClosed):
+                    last_category = "timeout"
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            else:
+                await self._emit_error(last_category, "Could not connect to ElevenLabs")
+                raise ProviderError(self.name, last_category, "Could not connect to ElevenLabs")
 
-        self._initialized_contexts.clear()
-        if self._receive_task is None or self._receive_task.done():
-            self._receive_task = asyncio.create_task(self._receive_loop())
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            self._initialized_contexts.clear()
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = asyncio.create_task(self._receive_loop())
+            if self._keepalive_task is None or self._keepalive_task.done():
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def configure(self, settings: TTSStreamSettings) -> None:
-        """Apply new settings. A voice or URL-level change forces a reconnect."""
-        needs_reconnect = (
-            settings.voice != self._settings.voice
-            or settings.model != self._settings.model
-            or settings.codec != self._settings.codec
-            or settings.sample_rate != self._settings.sample_rate
-            or settings.language != self._settings.language
-        )
+        """Apply new settings. Reconnect only when the connection itself — the
+        wire URL (voice/model/codec/rate, and language only on enforcing
+        models) or the handshake credential — actually changes; anything else
+        (e.g. a language flip on a non-enforcing model, per-context
+        voice_settings) applies without dropping the socket."""
+        old_url = self._build_url()
+        old_key = self._settings.api_key
         self._settings = settings
+        needs_reconnect = (
+            self._build_url() != old_url or settings.api_key != old_key
+        )
         if needs_reconnect and self._ws is not None:
             await self._teardown_socket()
 

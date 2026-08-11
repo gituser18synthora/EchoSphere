@@ -92,6 +92,17 @@ WEAK_DURATION_SECONDS = 0.45
 # never votes alone. (Translate-mode STT legitimately rewrites the text, which
 # is precisely why this is a weak signal.)
 WEAK_INTERIM_AGREEMENT = 0.25
+# A segment this far above the line's measured noise floor was heard clearly;
+# speaker echo reaching the mic does not sit 12 dB over the floor, so a clear
+# lone word captured during bot audio is the caller answering promptly, not
+# bleed. Used to break the single_token+bot_audio_overlap pair that otherwise
+# rejects exactly the data answers a collections flow asks for.
+HEALTHY_SNR_DB = 12.0
+# Bare numeric/reference answers ("5000", "12,500.50", "22/08") are
+# self-contained data the flow explicitly asked for — a hallucination out of
+# noise essentially never takes this shape, so they are exempt from the
+# weak-evidence pair the same way lexicon short replies are.
+_DATA_TOKEN_RE = re.compile(r"\d[\d,./-]*")
 
 # ── script heuristics (shared with the brain's language following) ──────────
 _DEVANAGARI_CHARS = re.compile(r"[ऀ-ॿ]")
@@ -543,12 +554,28 @@ def assess_transcript(
     # every meaningful-looking hallucination and leave this rule inert. What
     # must be protected is the genuinely self-contained reply — "haan", "nahi",
     # "ji", "yes", "no", "ok" — which trips several of these signals by nature.
-    if not is_short_complete_reply(stripped):
+    if not is_short_complete_reply(stripped) and not _is_data_token(stripped):
         weak = weak_noise_signals(stripped, quality)
+        if (
+            "single_token" in weak
+            and "bot_audio_overlap" in weak
+            and quality.snr_db is not None
+            and quality.snr_db >= HEALTHY_SNR_DB
+        ):
+            # A clearly-heard lone word during (or just after) bot audio is a
+            # prompt answer, not echo: names, amounts and references land
+            # exactly here. The overlap signal keeps voting when the audio was
+            # ALSO quiet — genuine bleed sits near the floor.
+            weak.remove("bot_audio_overlap")
         if len(weak) >= WEAK_EVIDENCE_REJECT_COUNT:
             return GateVerdict(False, "weak_signal:" + "+".join(weak), language)
 
     return GateVerdict(True, "ok", language)
+
+
+def _is_data_token(text: str) -> bool:
+    """Whether the utterance is a bare numeric/reference token ("5000")."""
+    return bool(_DATA_TOKEN_RE.fullmatch(text))
 
 
 def weak_noise_signals(text: str, quality: SegmentQuality) -> list[str]:

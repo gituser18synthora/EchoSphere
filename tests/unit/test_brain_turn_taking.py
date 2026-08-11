@@ -55,6 +55,10 @@ class _RecorderStub:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
     def event_kinds(self):
         return [kind for kind, _ in self.events]
 
@@ -216,7 +220,15 @@ class TestTurnGating:
         await brain.process_frame(transcript("दूसरा सवाल यह है"), FrameDirection.DOWNSTREAM)
         await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await asyncio.wait_for(started.wait(), 1)
-        assert handled == ["पहला सवाल यह है", "दूसरा सवाल यह है"]
+        # NO reply audio was heard before the caller resumed, so this is the
+        # late-final merge, not a barge-in: the first (unanswered) turn is
+        # rewound and the combined utterance runs once. The merge marker is
+        # set at dispatch, so it covers the whole in-flight window — the old
+        # expectation (two independent turns) silently dropped the first
+        # utterance whenever the caller resumed during the decision stage.
+        assert handled == [
+            "पहला सवाल यह है", "पहला सवाल यह है दूसरा सवाल यह है",
+        ]
 
 
 class TestSegmentsHeldDuringBotAudio:
@@ -463,3 +475,41 @@ class TestTurnDetectionConfig:
         assert turn["user_speech_timeout"] == 3.0
         assert turn["stop_secs"] == 0.1
         assert turn["confidence"] == TURN_DETECTION_DEFAULTS["browser"]["confidence"]
+
+
+class TestDecisionWindowMerge:
+    async def test_resume_during_decision_window_rewinds_the_dispatched_text(self):
+        # The open-turn marker is set at DISPATCH, not after the (seconds-
+        # long) decision stage: a caller who resumes speaking while the turn
+        # task is still deciding must get the dispatched text rewound into
+        # the merged turn. Before the fix the text existed nowhere — the
+        # continuation ran without its first half.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("नहीं मैं कल"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await asyncio.wait_for(started.wait(), 1)
+        assert handled == ["नहीं मैं कल"]
+        # No reply audio yet: resuming is a late-final merge, not a barge-in.
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(
+            transcript("पेमेंट कर दूँगा"), FrameDirection.DOWNSTREAM
+        )
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled[-1] == "नहीं मैं कल पेमेंट कर दूँगा"
+
+    async def test_resume_after_reply_audio_is_a_real_barge_in(self):
+        # Once the caller has heard reply audio, resuming must NOT merge: the
+        # answered turn stands and the new speech is a new turn.
+        brain = make_brain()
+        handled, started = stub_turn_handler(brain, block=True)
+        await brain.process_frame(transcript("पेमेंट कब तक"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await asyncio.wait_for(started.wait(), 1)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(transcript("रुको एक मिनट"), FrameDirection.DOWNSTREAM)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled[-1] == "रुको एक मिनट"

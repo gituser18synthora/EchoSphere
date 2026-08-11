@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -36,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_TTL_SECONDS = 24 * 3600
 _MAX_ARG_BYTES = 16_384
+# Connection lookups run on every tool call — a short in-process TTL cache
+# keeps the hot path at a dict hit. Staleness is bounded by the TTL only
+# (an edited connection applies within 45 s); misses are not cached so a
+# freshly configured tool resolves immediately.
+_CONNECTION_CACHE_TTL_SECONDS = 45.0
+_connection_cache: dict[tuple[str, str, str], tuple[float, dict]] = {}
+_connection_cache_lock = threading.Lock()
 
 _TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
@@ -132,6 +140,13 @@ def _load_connection_sync(tenant_id: str, bot_id: str, tool: str) -> dict | None
     from shared.db.mysql import get_sessionmaker
     from shared.models import ApiConnection
 
+    cache_key = (tenant_id, bot_id, tool)
+    now = time.monotonic()
+    with _connection_cache_lock:
+        cached = _connection_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _CONNECTION_CACHE_TTL_SECONDS:
+            return dict(cached[1])  # copy — callers never touch the cached entry
+
     session = get_sessionmaker()()
     try:
         query = (
@@ -150,7 +165,7 @@ def _load_connection_sync(tenant_id: str, bot_id: str, tool: str) -> dict | None
             return None
         rows.sort(key=lambda r: r.bot_id is None)  # bot-scoped first
         row = rows[0]
-        return {
+        connection = {
             "id": row.id, "name": row.name, "method": row.method, "url": row.url,
             "auth_type": row.auth_type, "secret_ref": row.secret_ref,
             "headers": row.headers or {}, "query_params": row.query_params or {},
@@ -166,6 +181,9 @@ def _load_connection_sync(tenant_id: str, bot_id: str, tool: str) -> dict | None
             "retries": max(0, int(row.retries or 0)),
             "response_mapping": row.response_mapping or [],
         }
+        with _connection_cache_lock:
+            _connection_cache[cache_key] = (time.monotonic(), dict(connection))
+        return connection
     finally:
         session.close()
 

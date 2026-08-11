@@ -67,6 +67,10 @@ class _Recorder:
     async def flush_event(self, kind, **data):
         self.events.append((kind, data))
 
+    def flush_event_soon(self, kind, **data):
+        self.events.append((kind, data))
+
+
 
 def _make_brain(*, finalize_grace, finalize_settle, complete_endpoint):
     config = ResolvedBotConfig(

@@ -125,7 +125,12 @@ class CallerAudioGate(FrameProcessor):
         self._min_speech_ms = min_speech_ms
         self._echo_min_speech_ms = echo_min_speech_ms
         self._hangover_ms = hangover_ms
-        self._preroll_ms = preroll_ms
+        # The gate can only open AFTER the sustained-speech requirement is
+        # met, so preroll shorter than that requirement guarantees the first
+        # syllables of every utterance are evicted before the gate opens —
+        # clipping exactly the audio the STT (and the barge-in word gate)
+        # needs. Clamp so retention always covers the open delay.
+        self._preroll_ms = max(preroll_ms, min_speech_ms, echo_min_speech_ms)
         self._echo_margin_db = echo_margin_db
         self._echo_tail_ms = echo_tail_ms
         self._min_threshold_dbfs = min_threshold_dbfs

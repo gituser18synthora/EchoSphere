@@ -65,6 +65,12 @@ _MAX_HISTORY_CHARS = 240
 # response_text) measures well under this; a cap that truncated valid output
 # would surface as unparseable_output fallbacks (validated in tests).
 _DEFAULT_MAX_TOKENS = 200
+# A chronically slow orchestration provider burns the full timeout budget
+# every turn and still delivers only fallback quality — after this many
+# CONSECUTIVE decision timeouts the engine disables itself for the rest of
+# the call (one GoalEngine instance per ConversationBrain/call) so later
+# turns fall back immediately instead of stalling first.
+_MAX_CONSECUTIVE_TIMEOUTS = 3
 # Bounds shared with API validation (backend.core.provider_catalog).
 TIMEOUT_BOUNDS = (0.5, 5.0)
 MAX_TOKENS_BOUNDS = (64, 340)
@@ -263,6 +269,10 @@ class GoalEngine:
         self.last_usage: tuple[int, int] | None = None
         # Why the most recent decide() returned None (observability).
         self.last_fallback_reason: str | None = None
+        # Consecutive-timeout streak; at _MAX_CONSECUTIVE_TIMEOUTS the engine
+        # disables itself for the remainder of the call.
+        self._consecutive_timeouts = 0
+        self._disabled_after_timeouts = False
 
     @property
     def enabled(self) -> bool:
@@ -286,6 +296,9 @@ class GoalEngine:
         if not self._enabled:
             self.last_fallback_reason = "engine_disabled"
             return None
+        if self._disabled_after_timeouts:
+            self.last_fallback_reason = "disabled_after_timeouts"
+            return None
         started = time.perf_counter()
         try:
             raw = await asyncio.wait_for(
@@ -295,6 +308,14 @@ class GoalEngine:
         except asyncio.TimeoutError:
             logger.warning("goal engine decision timed out (%.1fs)", self._timeout)
             self.last_fallback_reason = "timeout"
+            self._consecutive_timeouts += 1
+            if self._consecutive_timeouts >= _MAX_CONSECUTIVE_TIMEOUTS:
+                self._disabled_after_timeouts = True
+                logger.warning(
+                    "goal engine disabled for the rest of the call after "
+                    "%d consecutive decision timeouts",
+                    self._consecutive_timeouts,
+                )
             return None
         except Exception:  # noqa: BLE001 — the engine degrades, never raises
             logger.exception("goal engine decision failed")
@@ -308,6 +329,7 @@ class GoalEngine:
         if decision is None:
             self.last_fallback_reason = "unparseable_output"
             return None
+        self._consecutive_timeouts = 0  # any successful decision resets the streak
         decision.source = "llm"
         decision.latency_ms = (time.perf_counter() - started) * 1000
         return decision
