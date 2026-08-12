@@ -4,10 +4,12 @@ from shared.orchestration.voice_identity import (
     VoiceIdentity,
     adapt_authored_speaker_grammar,
     active_voice_identity,
+    resolve_tts_engine,
     voice_context_values,
     voice_identity_instruction,
     voice_identity_state,
 )
+from voice_runtime.tts_router import StreamingTTSRouter
 
 
 def test_default_voice_name_and_gender_are_catalog_driven():
@@ -39,6 +41,55 @@ def test_female_language_override_changes_the_active_identity():
     identity = active_voice_identity(tts, "hi-IN")
     assert identity == VoiceIdentity("Hindi Speaker", "female")
     assert "grammatically female forms" in voice_identity_instruction(identity)
+
+
+def test_base_locale_fallback_engine_and_identity_cannot_disagree():
+    tts = {
+        "streaming": True,
+        "provider": "sarvam",
+        "voice": "default-male",
+        "voice_name": "Default Male",
+        "voice_gender": "male",
+        "language_map": {
+            "hi": {
+                "provider": "sarvam",
+                "voice": "hindi-female",
+                "voice_name": "Hindi Female",
+                "voice_gender": "female",
+            },
+        },
+    }
+
+    engine = resolve_tts_engine(tts, "hi-IN")
+    identity = active_voice_identity(tts, "hi-IN")
+    assert engine["voice"] == "hindi-female"
+    assert identity == VoiceIdentity("Hindi Female", "female")
+
+
+def test_streaming_router_uses_the_same_base_locale_female_engine():
+    tts = {
+        "streaming": True,
+        "provider": "sarvam",
+        "model": "bulbul:v3",
+        "voice": "default-male",
+        "voice_name": "Default Male",
+        "voice_gender": "male",
+        "language_map": {
+            "hi": {
+                "provider": "sarvam",
+                "model": "bulbul:v3",
+                "voice": "hindi-female",
+                "voice_name": "Hindi Female",
+                "voice_gender": "female",
+            },
+        },
+    }
+    router = StreamingTTSRouter(
+        tts_config=tts, language="hi-IN", sample_rate=16000
+    )
+
+    assert router._engine_for_language("hi-IN")["voice"] == "hindi-female"
+    assert active_voice_identity(tts, "hi-IN").gender == "female"
 
 
 def test_non_streaming_engine_keeps_its_actual_default_voice():

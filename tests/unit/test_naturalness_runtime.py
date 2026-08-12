@@ -9,23 +9,29 @@ Covers the three integration seams:
 """
 
 import asyncio
+import logging
 import random
+from types import SimpleNamespace
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     TextFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 
 from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.intent_classifier import IntentClassification
 from shared.orchestration.naturalness import SpeechNaturalnessPlanner, TurnSpeechPlan
+from shared.orchestration.router import RouteDecision, RouteKind
 from shared.providers.tts.streaming import TTSStreamEvent, TTSStreamSettings
 from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.frames import TTSFlushHintFrame
 from voice_runtime.tts_router import _Generation, _Sentence
+from voice_runtime.services import EchoTTSService
 
 from tests.unit.test_tts_router_flush_finals import (
     ENGINE,
@@ -183,6 +189,37 @@ async def test_disabled_naturalness_changes_nothing():
     assert event["naturalness"]["filler_used"] is False
 
 
+def test_runtime_derives_structured_criticality_before_speech():
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    ordinary_plan = SimpleNamespace(
+        action="", verify_reference=None, scripted_final=False
+    )
+
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.SAFETY), None, ordinary_plan, None, False
+    ) == "compliance_route"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.TOOL),
+        IntentClassification(tool_name="lookup_customer"),
+        ordinary_plan,
+        None,
+        True,
+    ) == "tool_result"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.CHAT), None, ordinary_plan,
+        "payment_intent", False,
+    ) == "repayment_commitment"
+    assert brain._naturalness_critical_reason(
+        RouteDecision(RouteKind.CHAT), None,
+        SimpleNamespace(
+            action="ask_identity_confirmation", verify_reference=None,
+            scripted_final=False,
+        ),
+        None,
+        False,
+    ) == "identity_verification"
+
+
 async def test_direct_say_preface_keeps_history_semantic():
     brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
     brain._turn_speech_plan = TurnSpeechPlan(
@@ -233,6 +270,22 @@ async def test_backchannel_never_becomes_a_turn_or_reply():
     await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
     assert brain._backchannel_active is False
     assert brain._bot_speaking is False
+
+
+async def test_preface_and_backchannel_logs_do_not_include_spoken_variant(caplog):
+    brain = make_brain(llm=_StreamingLLMStub([]), naturalness=planner())
+    brain._turn_speech_plan = TurnSpeechPlan(
+        preface="Sensitive Name 9876543210...", preface_kind="checking"
+    )
+    with caplog.at_level(logging.INFO, logger="voice_runtime.brain"):
+        await brain._speak_preface()
+        await brain._play_backchannel("UTR ZXCV123456")
+
+    assert "Sensitive Name" not in caplog.text
+    assert "9876543210" not in caplog.text
+    assert "ZXCV123456" not in caplog.text
+    assert "preface started" in caplog.text
+    assert "backchannel played" in caplog.text
 
 
 async def test_reply_audio_bookkeeping_intact_without_backchannel():
@@ -344,6 +397,80 @@ async def test_per_sentence_speed_reconfigures_elevenlabs_only():
     state2.pending.append(_Sentence(text="Do.", speed_scale=0.95))
     await router._dispatch_next_sentence("ctx2", state2)
     assert ("configure",) not in provider2.calls
+
+
+class _RestProvider:
+    name = "sarvam-tts"
+    output_sample_rate = 16000
+
+    def __init__(self):
+        self.calls = []
+
+    async def stream_synthesize(self, text, *, voice=None, language=None, speed=1.0):
+        self.calls.append({"text": text, "speed": speed, "language": language})
+        yield b"\x01\x02" * 20
+
+
+async def _no_metrics(*args, **kwargs):
+    return None
+
+
+async def test_rest_tts_uses_planned_gap_and_supported_segment_rate():
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="hi-IN", speed=1.0, pause_ms=150,
+        sample_rate=16000, provider_name="sarvam", model="bulbul:v3",
+        naturalness=_ForcedPlanner(pause_after_ms=320, speed_scale=0.95),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    first = [frame async for frame in service.run_tts("Pehla vaakya.", "ctx")]
+    second = [frame async for frame in service.run_tts("Doosra vaakya.", "ctx")]
+
+    assert all(isinstance(frame, TTSAudioRawFrame) for frame in first + second)
+    assert provider.calls[0]["speed"] == 0.95
+    assert provider.calls[1]["speed"] == 0.95
+    # The second sentence begins with the first sentence's planned 320 ms gap.
+    assert len(second[0].audio) == int(16000 * 320 / 1000) * 2
+
+
+async def test_rest_tts_unsupported_capability_keeps_base_rate():
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="en-IN", speed=1.1, pause_ms=150,
+        sample_rate=16000, provider_name="custom", model="unknown",
+        naturalness=_ForcedPlanner(speed_scale=0.9),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    _ = [frame async for frame in service.run_tts("Normal sentence.", "ctx")]
+    assert provider.calls[0]["speed"] == 1.1
+
+
+async def test_naturalness_segment_logs_never_include_sensitive_spoken_text(caplog):
+    sensitive = "Call 9876543210 at 12 Lake Road, UTR ZXCV123456, OTP 4321"
+    provider = _RestProvider()
+    service = EchoTTSService(
+        provider, language="en-IN", speed=1.0, pause_ms=150,
+        sample_rate=16000, provider_name="sarvam", model="bulbul:v3",
+        naturalness=planner(),
+    )
+    service.start_ttfb_metrics = _no_metrics
+    service.stop_ttfb_metrics = _no_metrics
+    service._sample_rate = 16000  # Pipecat normally sets this from StartFrame.
+
+    with caplog.at_level(logging.INFO, logger="voice_runtime.services"):
+        _ = [frame async for frame in service.run_tts(sensitive, "ctx")]
+
+    logged = caplog.text
+    for secret in ("9876543210", "Lake Road", "ZXCV123456", "4321"):
+        assert secret not in logged
+    assert "character_count" in logged
+    assert "critical_content" in logged
 
 
 # ── caller audio gate: backchannel window ────────────────────────────────

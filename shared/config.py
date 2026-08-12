@@ -215,6 +215,13 @@ class Settings(BaseSettings):
     # already-shipped bot audio keeps playing over the caller. Disable only
     # if the installed module build logs errors on unknown message types.
     freeswitch_send_kill_audio: bool = True
+    # Transfer lifecycle monitoring over the FreeSWITCH event socket (per
+    # transferred call). If no agent bridge appears within the ring window a
+    # `transfer_unconfirmed` event is recorded (the monitor keeps watching —
+    # queue hold can take longer); the max window bounds the monitor's
+    # lifetime for calls whose hangup event never arrives.
+    freeswitch_transfer_ring_seconds: float = 120.0
+    freeswitch_transfer_monitor_max_seconds: float = 7200.0
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not

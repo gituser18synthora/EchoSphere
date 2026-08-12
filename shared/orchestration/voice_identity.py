@@ -43,6 +43,39 @@ def _gender(value: object) -> str:
     return normalized if normalized in ("male", "female") else "neutral"
 
 
+def resolve_language_engine(
+    language_map: dict | None,
+    locale: str | None,
+    default_engine: dict | None,
+) -> dict:
+    """Resolve exact locale -> base language -> default TTS engine.
+
+    This is the single lookup rule shared by the streaming router and voice
+    identity. A mapping must be an engine object; legacy strings and malformed
+    entries safely fall through instead of producing a partial identity.
+    """
+    mapping = language_map or {}
+    code = str(locale or "").strip()
+    if code:
+        exact = mapping.get(code)
+        if isinstance(exact, dict):
+            return exact
+        base = re.split(r"[-_]", code, maxsplit=1)[0]
+        if base and base != code:
+            fallback = mapping.get(base)
+            if isinstance(fallback, dict):
+                return fallback
+    return default_engine or {}
+
+
+def resolve_tts_engine(tts: dict | None, locale: str | None) -> dict:
+    """Resolve the engine a configured runtime will actually synthesize with."""
+    tts = tts or {}
+    if tts.get("streaming") is False:
+        return tts
+    return resolve_language_engine(tts.get("language_map"), locale, tts)
+
+
 def active_voice_identity(tts: dict | None, locale: str | None) -> VoiceIdentity:
     """Return the voice the TTS pipeline actually uses for ``locale``.
 
@@ -50,12 +83,7 @@ def active_voice_identity(tts: dict | None, locale: str | None) -> VoiceIdentity
     primary engine cannot switch voices mid-call, so its default identity wins
     even when a stale language map is present.
     """
-    tts = tts or {}
-    engine = tts
-    if tts.get("streaming") is not False and locale:
-        override = (tts.get("language_map") or {}).get(locale)
-        if isinstance(override, dict):
-            engine = override
+    engine = resolve_tts_engine(tts, locale)
     name = str(engine.get("voice_name") or engine.get("voice") or "").strip()
     return VoiceIdentity(name=name, gender=_gender(engine.get("voice_gender")))
 

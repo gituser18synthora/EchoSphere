@@ -116,6 +116,7 @@ from shared.orchestration.intent_classifier import (
 from shared.orchestration.naturalness import (
     SpeechNaturalnessPlanner,
     TurnSpeechPlan,
+    is_serious_caller_state,
 )
 from shared.orchestration.router import (
     RouteDecision,
@@ -129,6 +130,7 @@ from shared.orchestration.tool_executor import get_tool_executor
 from shared.orchestration.voice_identity import (
     adapt_authored_speaker_grammar,
     active_voice_identity,
+    resolve_tts_engine,
     voice_context_values,
     voice_identity_instruction,
     voice_identity_state,
@@ -668,6 +670,10 @@ class ConversationBrain(FrameProcessor):
         # never mistakes it for a reply.
         self._backchannel_task: asyncio.Task | None = None
         self._backchannel_active = False
+        # Most recent trusted caller-state signal. Accepted STT finals may set
+        # a deterministic serious signal while the caller still owns the
+        # floor; the orchestrator's validated signal replaces it at turn end.
+        self._latest_caller_signal = ""
 
     def _build_orchestration_llm(self, default_llm):
         """The LLM the Goal Engine decides with.
@@ -1100,6 +1106,9 @@ class ConversationBrain(FrameProcessor):
             await self._begin_do_not_call(" ".join(self._pending_segments).strip())
             return
         self._append_segment(text)
+        live_signal = classify_user_signal(" ".join(self._pending_segments).strip())
+        if is_serious_caller_state(live_signal):
+            self._latest_caller_signal = live_signal or ""
         if self._authoritative_eot:
             # The provider's turn detector (Flux EndOfTurn) already decided
             # the caller is done: dispatch NOW. Debounce and adaptive
@@ -1182,8 +1191,8 @@ class ConversationBrain(FrameProcessor):
         follower emits — without the text ever reaching the LLM.
         """
         logger.info(
-            "turn[%s] stt segment rejected (%s): %r",
-            self._recorder.session_id, verdict.reason, text[:120],
+            "turn[%s] stt segment rejected (reason=%s chars=%d)",
+            self._recorder.session_id, verdict.reason, len(text),
         )
         detail = {
             key: value
@@ -1662,6 +1671,7 @@ class ConversationBrain(FrameProcessor):
             self._recorder.add_turn(TurnRecord(role="user", text=text,
                                                route=RouteKind.CALL_CONTROL.value))
         self._recorder.flush_event_soon("call_control", action="hangup")
+        self._naturalness.set_turn_criticality(True, "call_control")
         await self._say(canned("hangup_ack", self._conversation_language))
         # Queued behind the acknowledgement: the worker drains it, then ends
         # (telephony serializers translate this into the protocol `stop`).
@@ -1698,6 +1708,7 @@ class ConversationBrain(FrameProcessor):
             "is_final_transcript": True,
         }
         self._recorder.flush_event_soon("call_control", action="do_not_call")
+        self._naturalness.set_turn_criticality(True, "compliance_route")
         await self._say(canned("dnc_ack", self._conversation_language))
         await self.push_frame(EndWorkerFrame(reason="do_not_call_request"))
 
@@ -1754,11 +1765,7 @@ class ConversationBrain(FrameProcessor):
         """Provider/model/voice the TTS router resolves for the current
         conversation language (same precedence: per-language map → default)."""
         tts = self._config.tts or {}
-        engine = tts
-        if tts.get("streaming") is not False:
-            override = (tts.get("language_map") or {}).get(self._conversation_language)
-            if isinstance(override, dict):
-                engine = override
+        engine = resolve_tts_engine(tts, self._conversation_language)
         return {
             "provider": engine.get("provider") or tts.get("provider") or "",
             "model": engine.get("model") or tts.get("model") or "",
@@ -1816,9 +1823,22 @@ class ConversationBrain(FrameProcessor):
                 token = self._naturalness.plan_backchannel(
                     language=self._conversation_language,
                     identity=self._active_identity(),
+                    caller_state=self._latest_caller_signal,
                 )
                 if token:
                     await self._play_backchannel(token)
+                elif self._naturalness.last_backchannel_suppression_reason.startswith(
+                    "serious_context:"
+                ):
+                    self._recorder.add_event(
+                        "backchannel_suppressed",
+                        reason=self._naturalness.last_backchannel_suppression_reason,
+                        language=self._conversation_language,
+                        live_speech_evidence=(
+                            "audio_gate" if self._audio_gate is not None
+                            else "open_turn_vad"
+                        ),
+                    )
         except asyncio.CancelledError:
             raise
 
@@ -1839,7 +1859,9 @@ class ConversationBrain(FrameProcessor):
             count=self._naturalness.backchannels_played,
         )
         logger.info(
-            "turn[%s] backchannel: %r", self._recorder.session_id, token
+            "turn[%s] backchannel played (language=%s count=%d)",
+            self._recorder.session_id, self._conversation_language,
+            self._naturalness.backchannels_played,
         )
         await self._speak_transient(token)
 
@@ -1986,16 +2008,56 @@ class ConversationBrain(FrameProcessor):
         preface = self._consume_speech_preface()
         if preface:
             logger.info(
-                "turn[%s] naturalness preface (pre-lookup): %r",
-                self._recorder.session_id, preface,
+                "turn[%s] naturalness preface started (type=%s chars=%d)",
+                self._recorder.session_id,
+                self._turn_speech_plan.preface_kind if self._turn_speech_plan else "",
+                len(preface),
             )
             await self._speak_transient(preface)
+
+    def _naturalness_critical_reason(
+        self,
+        decision: RouteDecision,
+        classification: IntentClassification | None,
+        plan,
+        signal: str | None,
+        will_run_tool: bool,
+    ) -> str:
+        """Structured criticality known before any preface or response audio."""
+        action = str(getattr(plan, "action", "") or "")
+        intent = str(getattr(classification, "intent", "") or "").lower()
+        tool_name = str(getattr(classification, "tool_name", "") or "")
+        if decision.kind == RouteKind.SAFETY:
+            return "compliance_route"
+        if signal in ("wrong_person",) or "identity" in intent or action in (
+            "ask_identity_confirmation", "close_unverified", "wrong_person_close",
+        ):
+            return "identity_verification"
+        if getattr(plan, "verify_reference", None) or action in (
+            "verify_payment", "mark_payment_verified",
+            "mark_payment_details_recorded", "schedule_follow_up",
+            "ask_transaction_reference", "clarify_transaction_reference",
+        ):
+            return "payment_reference_verification"
+        if signal in ("payment_intent",) or action in (
+            "record_payment_commitment", "payment_commitment_recorded",
+            "promise_to_pay", "record_claim_for_follow_up",
+        ):
+            return "repayment_commitment"
+        if will_run_tool:
+            if signal == "already_paid" or (self._payment_tool and tool_name == self._payment_tool):
+                return "payment_reference_verification"
+            return "tool_result"
+        if bool(getattr(plan, "scripted_final", False)):
+            return "deterministic_financial_script"
+        return ""
 
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
         turn_timestamp = time.time()
         self._turn_counter += 1
         self._turn_speech_plan = None
+        self._naturalness.set_turn_criticality(False)
         self._latency.turn_id = self._turn_counter
         await self._notify_client({
             "type": "transcript",
@@ -2014,6 +2076,7 @@ class ConversationBrain(FrameProcessor):
         if guard_input.blocked and decision.kind not in (
             RouteKind.CALL_CONTROL, RouteKind.HANDOFF,
         ):
+            self._naturalness.set_turn_criticality(True, "compliance_route")
             # The blocked utterance enters the turn record and LLM history
             # only in redacted form — a spoken card number must not resurface
             # through conversation history in a later generation.
@@ -2111,29 +2174,15 @@ class ConversationBrain(FrameProcessor):
                 or decision.signal
                 or classify_user_signal(text)
             )
-        # Naturalness: decide HOW this turn's reply is delivered (an
-        # occasional acknowledgement/thinking preface, a spoken "let me
-        # check" over tool latency). Deterministic, config-driven and
-        # microsecond-cheap — it never changes WHAT is said, and serious
-        # caller signals suppress playful hesitation entirely.
-        naturalness_started = time.perf_counter()
         will_run_tool = bool(
             classification is not None
-            and classification.tool_name
+            and (
+                classification.tool_name
+                or (classification.signal == "already_paid" and self._payment_tool)
+            )
             and not self._closing
         )
-        self._turn_speech_plan = self._naturalness.plan_turn(
-            language=self._conversation_language,
-            identity=self._active_identity(),
-            signal=signal or "",
-            route_kind=(
-                "tool" if will_run_tool
-                else "kb" if decision.kind == RouteKind.KNOWLEDGE
-                else "llm"
-            ),
-            turn_index=self._turn_counter,
-        )
-        self._naturalness_ms = (time.perf_counter() - naturalness_started) * 1000
+        self._latest_caller_signal = signal or ""
         # Scope protection: an off-goal or injection-attempt turn never
         # reaches knowledge retrieval, tools or a workflow step — it is
         # answered by a redirect to the configured goal (see dispatch below).
@@ -2154,6 +2203,32 @@ class ConversationBrain(FrameProcessor):
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
             self._goal_session.apply(orchestrated)
+        # Naturalness is planned only after route, validated caller signal,
+        # policy action and tool intent are known. This prevents a streamed
+        # preface from escaping before a high-risk response category is known.
+        naturalness_started = time.perf_counter()
+        critical_reason = self._naturalness_critical_reason(
+            decision, classification, plan, signal, will_run_tool
+        )
+        route_kind = (
+            "tool" if will_run_tool or bool(getattr(plan, "verify_reference", None))
+            else "kb" if decision.kind == RouteKind.KNOWLEDGE
+            else "direct" if bool(getattr(plan, "scripted_reply", ""))
+            else "llm"
+        )
+        self._turn_speech_plan = self._naturalness.plan_turn(
+            language=self._conversation_language,
+            identity=self._active_identity(),
+            signal=signal or "",
+            route_kind=route_kind,
+            turn_index=self._turn_counter,
+            critical=bool(critical_reason),
+            critical_reason=critical_reason,
+            # Only a non-financial generic lookup gets an unambiguous
+            # "one moment, let me verify" preface. High-risk routes suppress it.
+            allow_safe_tool_preface=critical_reason == "tool_result",
+        )
+        self._naturalness_ms = (time.perf_counter() - naturalness_started) * 1000
         # Tool-backed verification for THIS turn, before any reply: the answer
         # must reflect what the system verified, not what anyone asserted.
         tool_instruction = ""
@@ -2181,9 +2256,9 @@ class ConversationBrain(FrameProcessor):
             )
             plan = self._policy.plan_turn(text, signal)
         logger.info(
-            "turn[%s] user said (route=%s signal=%s intent=%s): %r",
+            "turn[%s] caller turn accepted (route=%s signal=%s intent=%s chars=%d)",
             self._recorder.session_id, decision.kind.value, signal,
-            classification.intent if classification else None, text[:200],
+            classification.intent if classification else None, len(text),
         )
         turn = TurnRecord(
             role="user",
@@ -2413,8 +2488,7 @@ class ConversationBrain(FrameProcessor):
             )
             # One structured trace line per turn: everything needed to tell
             # from a single call log whether (and why/why not) the human
-            # speech layer acted. Filler text is platform pool content, never
-            # caller speech — privacy-safe by construction.
+            # speech layer acted. No spoken text or pool variant is logged.
             plan_t = (
                 self._turn_speech_plan.telemetry
                 if self._turn_speech_plan is not None else {}
@@ -2424,14 +2498,15 @@ class ConversationBrain(FrameProcessor):
                 "session": self._recorder.session_id,
                 "turn": self._turn_counter,
                 "naturalness_enabled": self._naturalness.enabled,
+                "human_speech_enabled": self._naturalness.enabled,
                 "language": self._conversation_language,
                 "gender_mode": plan_t.get("gender_mode"),
                 "route_kind": plan_t.get("route_kind"),
                 "signal": signal or "",
-                "selected_filler": plan_t.get("selected_filler", ""),
                 "filler_type": plan_t.get("filler_type", ""),
-                "acknowledgement": plan_t.get("filler_type") in (
-                    "acknowledgement", "empathy",
+                "filler_used": bool(plan_t.get("filler_used")),
+                "acknowledgement_used": bool(
+                    plan_t.get("acknowledgement_used")
                 ),
                 "preface_spoken": (
                     bool(plan_t.get("filler_used"))
@@ -2439,10 +2514,19 @@ class ConversationBrain(FrameProcessor):
                     and not self._turn_speech_plan.has_preface
                 ),
                 "suppression_reason": plan_t.get("suppression_reason", ""),
-                "backchannels_played": self._naturalness.backchannels_played,
+                "critical_content": bool(plan_t.get("critical_content")),
+                "speech_style": (
+                    "serious" if plan_t.get("critical_content")
+                    else "supportive" if is_serious_caller_state(signal)
+                    else "neutral"
+                ),
+                "backchannel_used": self._naturalness.backchannels_played > 0,
+                "backchannel_count": self._naturalness.backchannels_played,
                 "active_tts_provider": engine["provider"],
+                "active_tts_model": engine["model"],
                 "active_voice": engine["voice"],
-                "processing_ms": round(self._naturalness_ms, 3),
+                "configuration_level": plan_t.get("configuration_level"),
+                "naturalness_processing_ms": round(self._naturalness_ms, 3),
             }, ensure_ascii=False))
             if plan is not None and plan.close_after_reply:
                 # Executor-side completion gate: a close is honored only when
@@ -3326,9 +3410,9 @@ class ConversationBrain(FrameProcessor):
             )
         else:
             logger.info(
-                "turn[%s] llm reply (%d chars, first_token=%.0fms): %r",
-                self._recorder.session_id, len(reply), first_token_ms or -1.0,
-                reply[:200],
+                "turn[%s] llm reply ready (chars=%d words=%d first_token=%.0fms)",
+                self._recorder.session_id, len(reply), len(reply.split()),
+                first_token_ms or -1.0,
             )
         if reply:
             reply_timestamp = time.time()
@@ -3616,7 +3700,8 @@ class ConversationBrain(FrameProcessor):
         if not text:
             return None
         logger.info(
-            "turn[%s] bot says: %r", self._recorder.session_id, text[:200]
+            "turn[%s] bot response queued (chars=%d words=%d)",
+            self._recorder.session_id, len(text), len(text.split()),
         )
         self._last_bot_reply = text
         if self._policy is not None:
@@ -3671,6 +3756,10 @@ class ConversationBrain(FrameProcessor):
             )
         if self._previous_memory is not None and await self._speak_memory_greeting():
             return
+        self._naturalness.set_turn_criticality(
+            self._policy is not None,
+            "identity_verification" if self._policy is not None else "",
+        )
         await self._say(self._config.greeting)
 
     async def _speak_memory_greeting(self) -> bool:

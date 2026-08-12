@@ -119,6 +119,7 @@ def create_app() -> FastAPI:
         master_data,
         platform,
         prompts,
+        pronunciation,
         providers,
         releases,
         reports,
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
         conversations, customer_context, runtime_context, exports, platform, compliance, integrations,
         audit, analytics, reports,
         voice_sessions, telephony, master_data, providers, usage, voice_clones,
+        pronunciation,
     ):
         app.include_router(module.router, prefix=prefix)
 

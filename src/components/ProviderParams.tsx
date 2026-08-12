@@ -19,23 +19,65 @@ export function schemaDefaults(schema: Record<string, ParamSpec> | undefined): P
   return out;
 }
 
-/** Keep values still present in the new schema, fill the rest with defaults. */
+/** Coerce a carried-over value into what the NEW model's spec allows.
+    Returns undefined when the value cannot be represented at all, so the
+    schema default is used instead. */
+function coerceToSpec(spec: ParamSpec, value: ProviderSettingValue): ProviderSettingValue | undefined {
+  if (spec.type === "number" || spec.type === "integer") {
+    if (typeof value !== "number") return undefined;
+    const min = spec.min ?? Number.NEGATIVE_INFINITY;
+    const max = spec.max ?? Number.POSITIVE_INFINITY;
+    const clamped = Math.min(max, Math.max(min, value));
+    return spec.type === "integer" ? Math.round(clamped) : clamped;
+  }
+  if (spec.type === "enum") {
+    return (spec.values ?? []).includes(value as string | number) ? value : undefined;
+  }
+  if (spec.type === "boolean") return typeof value === "boolean" ? value : undefined;
+  return value;
+}
+
+/** Keep values still present in the new schema, fill the rest with defaults.
+
+    Values that survive a model switch are clamped into the new model's
+    documented range — switching Sarvam bulbul:v2 (pace up to 3.0) to
+    bulbul:v3 (max 2.0) must normalize the carried value rather than stage one
+    the backend would reject. Parameters the new model does not define are
+    dropped entirely, so a previous model's settings are never sent on. */
 export function reconcileSettings(schema: Record<string, ParamSpec> | undefined, prev: ProviderSettings): ProviderSettings {
   if (!schema) return {};
   const out = schemaDefaults(schema);
   for (const [key, value] of Object.entries(prev)) {
     const spec = schema[key];
-    if (spec && !spec.fixed) out[key] = value;
+    if (!spec || spec.fixed) continue;
+    const coerced = coerceToSpec(spec, value);
+    if (coerced !== undefined) out[key] = coerced;
   }
   return out;
 }
 
-export function ParamFields({ schema, values, onChange }: {
+/** True when the value differs from the schema default (i.e. reset is useful). */
+function isModified(spec: ParamSpec, value: ProviderSettingValue | undefined): boolean {
+  if (spec.fixed) return false;
+  if (value === undefined) return false;
+  const fallback = spec.default;
+  if (Array.isArray(value) || Array.isArray(fallback)) {
+    return JSON.stringify(value) !== JSON.stringify(fallback ?? []);
+  }
+  return value !== fallback;
+}
+
+export function ParamFields({ schema, values, onChange, showReset = false }: {
   schema: Record<string, ParamSpec> | undefined;
   values: ProviderSettings;
   onChange: (next: ProviderSettings) => void;
+  /** Render per-parameter "reset to default" affordances. */
+  showReset?: boolean;
 }) {
-  const entries = Object.entries(schema ?? {});
+  /* Entries with a `widget` are rendered by specialized components (e.g. the
+     pronunciation dictionary selector) — never as raw text inputs here. Their
+     values still live in the same settings object and schema validation. */
+  const entries = Object.entries(schema ?? {}).filter(([, s]) => !s.widget);
   if (entries.length === 0) return null;
   const basic = entries.filter(([, s]) => !s.advanced);
   const advanced = entries.filter(([, s]) => s.advanced);
@@ -45,18 +87,22 @@ export function ParamFields({ schema, values, onChange }: {
     else next[key] = v;
     onChange(next);
   };
+  const render = ([key, spec]: [string, ParamSpec]) => (
+    <ParamField
+      key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)}
+      onReset={showReset && isModified(spec, values[key])
+        ? () => set(key, spec.default)
+        : undefined}
+    />
+  );
   return (
     <div className="col gap-12">
-      {basic.map(([key, spec]) => (
-        <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
-      ))}
+      {basic.map(render)}
       {advanced.length > 0 && (
         <details>
           <summary className="t-label" style={{ cursor: "pointer" }}>Advanced ({advanced.length})</summary>
           <div className="col gap-12" style={{ marginTop: 10 }}>
-            {advanced.map(([key, spec]) => (
-              <ParamField key={key} spec={spec} value={values[key]} onChange={(v) => set(key, v)} />
-            ))}
+            {advanced.map(render)}
           </div>
         </details>
       )}
@@ -64,10 +110,33 @@ export function ParamFields({ schema, values, onChange }: {
   );
 }
 
-export function ParamField({ spec, value, onChange }: {
+export function ParamField({ spec, value, onChange, onReset }: {
   spec: ParamSpec; value: ProviderSettingValue | undefined;
   onChange: (v: ProviderSettingValue | undefined) => void;
+  /** Provided only when the value differs from the default — renders a reset. */
+  onReset?: () => void;
 }) {
+  const control = renderParamControl(spec, value, onChange);
+  if (!onReset) return control;
+  return (
+    <div className="param-resettable">
+      {control}
+      <button
+        type="button" className="param-reset" onClick={onReset}
+        aria-label={`Reset ${spec.label} to default`}
+        title={`Reset to default (${String(spec.default ?? "—")})`}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+function renderParamControl(
+  spec: ParamSpec,
+  value: ProviderSettingValue | undefined,
+  onChange: (v: ProviderSettingValue | undefined) => void,
+) {
   if (spec.fixed) {
     const text = spec.type === "boolean"
       ? (spec.default ? "Always on" : "Always off")

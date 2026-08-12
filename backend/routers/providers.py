@@ -43,11 +43,16 @@ from backend.core.provider_catalog import (
     list_voices,
     model_platform_languages,
     supports_voice_cloning,
+    validate_params,
     validate_voice_settings,
 )
 from backend.core.responses import ok
 from shared.audio.pcm import pcm_to_wav_bytes, silence_pcm
-from shared.providers.tts.delivery import apply_delivery_params
+from shared.providers.tts.delivery import (
+    apply_delivery_params,
+    speed_range,
+    strip_speed_params,
+)
 from shared.config import get_settings
 from shared.db.mysql import get_db
 from shared.errors import ApiError, NotFoundError
@@ -82,6 +87,12 @@ def _serialize_provider(row, capability: str) -> dict:
 
 
 def _serialize_model(row) -> dict:
+    # speedRange is the documented range of the model's own speed control
+    # (Sarvam `pace`, ElevenLabs `speed`), which Delivery tuning owns and maps
+    # onto. It is sent so the UI can bound its speaking-speed slider per model
+    # instead of hardcoding provider ranges; null means the model has no speed
+    # control at all (e.g. eleven_v3) and the slider is hidden.
+    bounds = speed_range(row.provider_code, row.code) if row.capability == "tts" else None
     return {
         "code": row.code,
         "displayName": row.display_name,
@@ -93,6 +104,7 @@ def _serialize_model(row) -> dict:
         "sampleRates": row.sample_rates or [],
         "streaming": row.streaming,
         "paramsSchema": row.params_schema or {},
+        "speedRange": list(bounds) if bounds else None,
         "isDefault": row.is_default,
     }
 
@@ -389,6 +401,30 @@ class PreviewRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# Friendly summaries per ProviderError category. Schema validation runs before
+# any provider call, so a category like invalid_input here means the provider
+# itself rejected something the catalog could not know (e.g. an account-level
+# restriction) — the sanitized provider message is appended for context.
+_PREVIEW_ERROR_SUMMARIES = {
+    "auth": "the provider rejected the platform credentials",
+    "timeout": "the provider did not answer in time",
+    "rate_limit": "the provider rate limit was hit — try again shortly",
+    "invalid_input": "the provider rejected the request",
+    "upstream": "the provider had an internal problem",
+}
+
+
+def _preview_provider_error(provider_name: str, exc: ProviderError) -> ApiError:
+    """Readable preview failure. ProviderError messages are sanitized at the
+    adapter layer and redacted again here before becoming user-facing."""
+    from shared.logging_utils import redact_secrets
+
+    summary = _PREVIEW_ERROR_SUMMARIES.get(exc.category, "the provider call failed")
+    detail = redact_secrets(str(exc)).split("] ", 1)[-1].strip()
+    suffix = f" ({detail[:180]})" if detail and exc.category != "auth" else ""
+    return ApiError(f"{provider_name} preview failed: {summary}{suffix}.", 502)
+
+
 async def _preview_sentences(text: str, pause_ms: int | None) -> list[str]:
     """Sentence segments for a preview — the runtime aggregator's rules.
 
@@ -483,12 +519,26 @@ async def tts_preview(
     wire_voice = voice_row.provider_voice_id or voice_row.name if voice_row else body.voice
     started = time.perf_counter()
 
+    # The draft settings are unsaved, so the save path's validation has not run
+    # on them — validate here against the SAME catalog schema before any of it
+    # reaches a provider. This is what stops a stale parameter from a
+    # previously selected model (bulbul:v2 pitch/loudness on bulbul:v3, speed
+    # on eleven_v3) being previewed with settings a real call could never use.
+    # Delivery owns pace/speed, so those are stripped rather than rejected —
+    # the canonical `speed` field below is the one authoritative control.
+    draft_params = strip_speed_params(body.params)
+    param_errors = validate_params(
+        model_row.params_schema, draft_params, prefix=f"{body.provider}/{body.model}"
+    )
+    if param_errors:
+        raise ApiError(param_errors[0], 422, errors=param_errors)
+
     # Delivery tuning uses the SAME provider mapping as live calls: canonical
     # speed overrides legacy pace/speed params; Energy maps only onto controls
     # the selected model documents. Empathy (and the conversational half of
     # Energy) shape LLM-generated replies and cannot rewrite fixed preview text.
     params = apply_delivery_params(
-        body.provider, body.model, body.params,
+        body.provider, body.model, draft_params,
         speed=body.speed, energy=body.energy,
     )
     sentences = await _preview_sentences(body.text, body.pause_ms)
@@ -545,7 +595,7 @@ async def tts_preview(
                     ttfa_ms = result.duration_ms
                 segments.append(result.audio)
         except ProviderError as exc:
-            raise ApiError(f"{provider_row.name} preview failed: {exc.category}.", 502) from exc
+            raise _preview_provider_error(provider_row.name, exc) from exc
         finally:
             await client.aclose()
         sample_rate = result.sample_rate
@@ -584,7 +634,7 @@ async def tts_preview(
                 client, sentences, pause_ms=body.pause_ms, sample_rate=sample_rate
             )
         except ProviderError as exc:
-            raise ApiError(f"{provider_row.name} preview failed: {exc.category}.", 502) from exc
+            raise _preview_provider_error(provider_row.name, exc) from exc
         finally:
             await client.close()
 

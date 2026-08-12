@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field as dc_field
 
@@ -45,7 +46,12 @@ from shared.audio.pcm import resample_pcm, silence_pcm
 from shared.audio.text import sanitize_for_tts
 from shared.config import get_settings
 from shared.providers.base import ProviderError
-from shared.providers.tts.delivery import apply_delivery_params, speed_param_name
+from shared.providers.tts.delivery import (
+    apply_delivery_params,
+    delivery_capabilities,
+    provider_speed,
+)
+from shared.orchestration.voice_identity import resolve_language_engine
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import (
@@ -105,6 +111,14 @@ class _Sentence:
     pause_after: bool = True
     pause_after_ms: int | None = None
     speed_scale: float | None = None
+    emphasis: str = "none"
+    pitch_scale: float | None = None
+    energy_scale: float | None = None
+    question_style: bool = False
+    speech_style: str = "neutral"
+    phrase_boundaries: tuple[int, ...] = ()
+    critical: bool = False
+    critical_reason: str = ""
 
 
 @dataclass
@@ -250,13 +264,9 @@ class StreamingTTSRouter(TTSService):
 
     # ── engine / provider management ────────────────────────────────────
     def _engine_for_language(self, locale: str) -> dict:
-        engine = self._language_map.get(locale)
-        if engine is None and "-" in locale:
-            # e.g. "hi" mapping selected but transcript reported "hi-IN"
-            engine = self._language_map.get(locale.split("-")[0])
-        if engine is None:
-            engine = self._default_engine
-        return engine
+        return resolve_language_engine(
+            self._language_map, locale, self._default_engine
+        )
 
     def _engine_key(self, engine: dict) -> tuple:
         return (engine.get("provider"), engine.get("model"), engine.get("voice"))
@@ -265,12 +275,26 @@ class StreamingTTSRouter(TTSService):
         self, engine: dict, locale: str, *, speed: float | None = None
     ) -> TTSStreamSettings:
         provider = engine.get("provider") or "sarvam"
-        params = {**self._base_params, **(engine.get("params") or {})}
+        model = engine.get("model") or ""
+        # The bot's saved tts_settings describe the DEFAULT engine's
+        # provider/model and were validated against that model's schema only.
+        # A per-language override or the fallback engine may run a different
+        # provider/model, whose parameters have different names and ranges, so
+        # the base settings apply solely to engines matching the default
+        # selection — an override carries its own validated params. Without
+        # this, bulbul:v2 loudness or eleven_flash speed would ride along to an
+        # engine that never accepts them.
+        inherits_base = (
+            provider == self._default_engine.get("provider")
+            and model == (self._default_engine.get("model") or "")
+        )
+        base = self._base_params if inherits_base else {}
+        params = {**base, **(engine.get("params") or {})}
         # Canonical Delivery tuning: speed OVERRIDES any legacy pace/speed left
         # in stored settings; Energy fills only fields the operator left unset
         # and only ones the model documents (shared.providers.tts.delivery).
         params = apply_delivery_params(
-            provider, engine.get("model") or "", params,
+            provider, model, params,
             speed=self._speed if speed is None else speed, energy=self._energy,
         )
         supported = _SUPPORTED_RATES.get(provider, {self.sample_rate})
@@ -284,7 +308,7 @@ class StreamingTTSRouter(TTSService):
             )
         return TTSStreamSettings(
             provider=provider,
-            model=engine.get("model") or "",
+            model=model,
             voice=engine.get("voice") or "",
             language=locale,
             sample_rate=rate,
@@ -415,36 +439,85 @@ class StreamingTTSRouter(TTSService):
                 state = _Generation(engine=engine, provider=provider)
                 self._generations[context_id] = state
             state.texts.append(text)
+            delivery = None
+            planning_ms = 0.0
+            if self._naturalness is not None and not self._mid_turn_flush:
+                planned_at = time.perf_counter()
+                delivery = self._naturalness.plan_segment(
+                    text, base_pause_ms=self._pause_ms,
+                    language=self._current_language,
+                )
+                planning_ms = (time.perf_counter() - planned_at) * 1000.0
             if self._pause_ms > 0:
                 # Pause mode: sentences are serialized so the provider's
                 # per-sentence completion marks where silence is inserted.
                 sentence = _Sentence(text=text, pause_after=not self._mid_turn_flush)
-                if self._naturalness is not None and not self._mid_turn_flush:
-                    delivery = self._naturalness.plan_segment(
-                        text, base_pause_ms=self._pause_ms,
-                        language=self._current_language,
-                    )
+                if delivery is not None:
                     sentence.pause_after_ms = delivery.pause_after_ms
                     sentence.speed_scale = delivery.speed_scale
-                    # Structured per-sentence delivery trace: what is ACTUALLY
-                    # being sent to the provider and with which naturalness
-                    # values (bot-spoken text only — already persisted in the
-                    # call transcript, truncated here).
-                    logger.info("naturalness_segment %s", json.dumps({
-                        "session": self._recorder.session_id if self._recorder else "?",
-                        "context": str(context_id)[:8],
-                        "provider": state.engine.get("provider"),
-                        "voice": state.engine.get("voice"),
-                        "language": self._current_language,
-                        "pause_after_ms": (
-                            sentence.pause_after_ms
-                            if sentence.pause_after_ms is not None
-                            else self._pause_ms
-                        ),
-                        "speed_scale": sentence.speed_scale,
-                        "critical_content": delivery.critical,
-                        "final_text_sent_to_tts": text[:120],
-                    }, ensure_ascii=False))
+                    sentence.emphasis = delivery.emphasis
+                    sentence.pitch_scale = delivery.pitch_scale
+                    sentence.energy_scale = delivery.energy_scale
+                    sentence.question_style = delivery.question_style
+                    sentence.speech_style = delivery.speech_style
+                    sentence.phrase_boundaries = delivery.phrase_boundaries
+                    sentence.critical = delivery.critical
+                    sentence.critical_reason = delivery.critical_reason
+            if delivery is not None:
+                provider_name = state.engine.get("provider") or ""
+                model = state.engine.get("model") or ""
+                capabilities = delivery_capabilities(
+                    provider_name, model, streaming=True
+                )
+                applied_scale = (
+                    delivery.speed_scale
+                    if self._pause_ms > 0 and capabilities.per_segment_rate
+                    else None
+                )
+                words = len((text or "").split())
+                logger.info("naturalness_segment %s", json.dumps({
+                    "session": self._recorder.session_id if self._recorder else "?",
+                    "context": str(context_id)[:8],
+                    "provider": provider_name,
+                    "model": model,
+                    "human_speech_enabled": bool(
+                        getattr(self._naturalness, "enabled", False)
+                    ),
+                    "language": self._current_language,
+                    "character_count": len(text),
+                    "word_count": words,
+                    "segment_type": (
+                        "critical" if delivery.critical
+                        else "question" if delivery.question_style
+                        else "short" if words <= 3 else "statement"
+                    ),
+                    "critical_content": delivery.critical,
+                    "critical_reason": delivery.critical_reason,
+                    "planned_pause_ms": (
+                        delivery.pause_after_ms
+                        if delivery.pause_after_ms is not None
+                        else self._pause_ms
+                    ),
+                    "speed_scale": applied_scale,
+                    "speaking_rate": (
+                        provider_speed(provider_name, model, self._speed * applied_scale)
+                        if applied_scale is not None else None
+                    ),
+                    "speech_style": delivery.speech_style,
+                    "emphasis": delivery.emphasis,
+                    "pitch_scale": (
+                        delivery.pitch_scale if capabilities.pitch else None
+                    ),
+                    "energy_scale": (
+                        delivery.energy_scale if capabilities.energy else None
+                    ),
+                    "question_style": (
+                        delivery.question_style if capabilities.question_style else False
+                    ),
+                    "phrase_boundary_count": len(delivery.phrase_boundaries),
+                    "naturalness_processing_ms": round(planning_ms, 3),
+                }, ensure_ascii=False))
+            if self._pause_ms > 0:
                 state.pending.append(sentence)
                 if state.active is None:
                     await self._dispatch_next_sentence(context_id, state)
@@ -709,10 +782,11 @@ class StreamingTTSRouter(TTSService):
         corrupt an in-flight turn. Neutral scales (≈1.0) skip the reconfigure.
         """
         provider_name = state.engine.get("provider") or ""
+        model = state.engine.get("model") or ""
+        capabilities = delivery_capabilities(provider_name, model, streaming=True)
         if (
             self._naturalness is None
-            or provider_name != "elevenlabs"
-            or speed_param_name(provider_name, state.engine.get("model") or "") is None
+            or not capabilities.per_segment_rate
         ):
             return
         scale = sentence.speed_scale if sentence.speed_scale is not None else 1.0

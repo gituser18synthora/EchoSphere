@@ -22,7 +22,8 @@ import type {
   VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
   ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
   ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
-  ModelLanguagesInfo, ProviderInfo, ProviderModelInfo, ProviderSettings,
+  ModelLanguagesInfo, PronunciationDictionary, PronunciationMap,
+  ProviderInfo, ProviderModelInfo, ProviderSettings,
   ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability,
   VoiceCloneConfig, VoiceOption,
 } from "@/types/domain";
@@ -296,6 +297,23 @@ export const generateTtsPreview = (body: {
   speed?: number; pauseMs?: number; energy?: number;
 }): Promise<TtsPreviewResult> => http.post("/providers/tts-preview", body);
 
+/* ---------- Pronunciation dictionaries (Sarvam dict_id) ---------- */
+export const listPronunciationDictionaries = (): Promise<PronunciationDictionary[]> =>
+  http.get("/pronunciation-dictionaries");
+export const getPronunciationDictionary = (id: string): Promise<PronunciationDictionary> =>
+  http.get(`/pronunciation-dictionaries/${id}`);
+export const createPronunciationDictionary = (
+  body: { name: string; description?: string; pronunciations: PronunciationMap },
+): Promise<PronunciationDictionary> => http.post("/pronunciation-dictionaries", body);
+export const updatePronunciationDictionary = (
+  id: string,
+  body: { name?: string; description?: string; pronunciations?: PronunciationMap },
+): Promise<PronunciationDictionary> => http.put(`/pronunciation-dictionaries/${id}`, body);
+export const deletePronunciationDictionary = (
+  id: string,
+): Promise<{ deleted: boolean; providerDeleted: boolean }> =>
+  http.delete(`/pronunciation-dictionaries/${id}`);
+
 /* ---------- Tenant voice cloning ---------- */
 export const getVoiceCloneConfig = (): Promise<VoiceCloneConfig> =>
   http.get("/voice-clones/config");
@@ -507,8 +525,22 @@ export const disconnectIntegration = (id: string) => http.post<Integration>(`/in
 /* ---------- Settings ---------- */
 export const getTenantSettings = (tenantId?: string): Promise<TenantSettings> =>
   http.get(`/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`);
-export const saveTenantSettings = (body: Partial<TenantSettings>, tenantId?: string) =>
-  http.put<TenantSettings>(`/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`, body);
+export const saveTenantSettings = (body: Partial<TenantSettings>, tenantId?: string) => {
+  // Effective/source metadata is read-only. Send only sparse overrides and
+  // editable tenant fields so a form can never persist a resolved value as a
+  // new override merely because it displayed it.
+  const {
+    humanSpeechEffective: _effective,
+    humanSpeechSources: _sources,
+    humanSpeechInherited: _inherited,
+    humanSpeechInheritedSources: _inheritedSources,
+    ...editable
+  } = body;
+  return http.put<TenantSettings>(
+    `/tenant/settings${tenantId ? `?tenantId=${tenantId}` : ""}`,
+    editable,
+  );
+};
 
 /* ---------- Analytics ---------- */
 export const getTenantAnalytics = (days = 30, botId?: string, tenantId?: string): Promise<AnalyticsBundle> =>

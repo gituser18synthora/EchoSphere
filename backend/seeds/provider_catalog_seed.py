@@ -138,20 +138,28 @@ _SARVAM_TTS_V3_SCHEMA = {
         "label": "Temperature",
         "help": "Synthesis randomness — lower is more deterministic (bulbul:v3 only).",
     },
+    # Documented Sarvam WebSocket streaming bounds (2026-08): 30–200, default 50.
     "min_buffer_size": {
-        "type": "integer", "min": 10, "max": 500, "default": 40,
+        "type": "integer", "min": 30, "max": 200, "default": 50,
         "label": "Min buffer size",
-        "help": "Characters buffered before audio generation starts. 30–40 recommended for realtime.",
+        "help": "Minimum characters buffered before Sarvam starts synthesis. "
+                "Lower values reduce initial buffering but may reduce sentence "
+                "context. Sarvam accepts 30–200 (WebSocket streaming only).",
     },
     "max_chunk_length": {
         "type": "integer", "min": 50, "max": 500, "default": 150,
         "label": "Max chunk length",
         "help": "Maximum characters per synthesis chunk. 120–150 recommended for realtime.",
     },
+    # Rendered as a dictionary selector (widget) in its own Pronunciation
+    # section — tenants pick a named dictionary; the Sarvam dict_id stays
+    # internal. bulbul:v3 only.
     "dict_id": {
         "type": "string", "default": None, "optional": True, "max_length": 100,
-        "label": "Pronunciation dictionary ID", "advanced": True,
-        "help": "Optional Sarvam pronunciation dictionary applied during synthesis.",
+        "label": "Pronunciation dictionary",
+        "widget": "dictionary", "section": "pronunciation",
+        "help": "Fixes how specific words (brands, acronyms, names) are spoken. "
+                "Supported by bulbul:v3 only.",
     },
     "send_completion_event": {
         "type": "boolean", "default": True, "label": "Completion event", "advanced": True,
@@ -161,7 +169,8 @@ _SARVAM_TTS_V3_SCHEMA = {
     # the UI can say so without offering a dead toggle.
     "enable_preprocessing": {
         "type": "boolean", "default": True, "fixed": True, "label": "Preprocessing",
-        "help": "Text normalization before synthesis. Always enabled for bulbul:v3.",
+        "help": "Text normalization (numbers, dates, currencies, mixed-language "
+                "text) before synthesis. Always enabled for bulbul:v3.",
     },
 }
 
@@ -180,7 +189,8 @@ _SARVAM_TTS_V2_SCHEMA = {
     },
     "enable_preprocessing": {
         "type": "boolean", "default": False, "label": "Preprocessing",
-        "help": "Enable text normalization before synthesis.",
+        "help": "Normalizes numbers, dates, currencies and mixed-language text "
+                "before synthesis.",
     },
     "min_buffer_size": _SARVAM_TTS_V3_SCHEMA["min_buffer_size"],
     "max_chunk_length": _SARVAM_TTS_V3_SCHEMA["max_chunk_length"],

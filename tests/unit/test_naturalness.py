@@ -8,10 +8,13 @@ import pytest
 
 from shared.orchestration.naturalness import (
     HUMAN_SPEECH_DEFAULTS,
+    _POOLS,
     SpeechNaturalnessPlanner,
     base_language,
     contains_critical_content,
+    normalize_spoken_variant,
     resolve_human_speech,
+    resolve_human_speech_with_sources,
     validate_human_speech,
 )
 from shared.orchestration.voice_identity import VoiceIdentity
@@ -62,6 +65,26 @@ class TestConfigResolution:
     def test_validate_accepts_a_sparse_override(self):
         assert validate_human_speech({"backchannels": False}) == []
 
+    def test_effective_sources_follow_platform_tenant_bot_precedence(self):
+        effective, sources = resolve_human_speech_with_sources(
+            {"backchannel_probability": 0.2, "micro_pauses": False},
+            {"backchannel_probability": 0.1},
+        )
+        assert effective["backchannel_probability"] == 0.1
+        assert sources["backchannel_probability"] == "bot"
+        assert effective["micro_pauses"] is False
+        assert sources["micro_pauses"] == "tenant"
+        assert sources["enabled"] == "platform"
+
+    def test_legacy_boolean_cannot_override_a_probability_or_its_source(self):
+        effective, sources = resolve_human_speech_with_sources(
+            {"backchannel_probability": True}
+        )
+        assert effective["backchannel_probability"] == HUMAN_SPEECH_DEFAULTS[
+            "backchannel_probability"
+        ]
+        assert sources["backchannel_probability"] == "platform"
+
 
 # ── critical content ─────────────────────────────────────────────────────
 
@@ -75,17 +98,26 @@ class TestCriticalContent:
         "Your account number ends in 8842",
         "Transaction reference TXN123 verify karte hain",
         "The due date is 12/08",
+        "The due date is 12.08.2026",
         "Payment on August 15 confirm karein",
         "यह कॉल रिकॉर्ड की जा रही है",
         "आपका minimum payable पच्चीस हज़ार रुपये है।",
         "You need to pay two thousand rupees today",
+        "Please call me on +91 98765 43210",
+        "My address is 12 Lake Road, Sector 4",
+        "I will pay by next Monday",
+        "The repayment commitment is for Friday",
+        "I promise to pay tomorrow",
+        "Kya aap aaj payment kar sakte hain?",
+        "Your identity verification is required",
+        "By continuing you consent to these terms and conditions",
+        "The due date is twenty fifth of August",
     ])
     def test_detects_critical(self, text):
         assert contains_critical_content(text)
 
     @pytest.mark.parametrize("text", [
         "Achha, theek hai, main dekh raha hoon",
-        "Kya aap aaj payment kar sakte hain?",
         "",
     ])
     def test_ignores_ordinary_speech(self, text):
@@ -168,6 +200,83 @@ class TestPlanTurn:
             assert plan.preface != last
             last = plan.preface
 
+    def test_cross_pool_normalized_repetition_is_prevented(self):
+        p = planner(seed=1)
+        spoken = [
+            p._pick("hi", "thinking", MALE),
+            p._pick("hi", "acknowledgement", MALE),
+            p._pick("hi", "backchannel", MALE),
+        ]
+        normalized = [normalize_spoken_variant(item) for item in spoken]
+        assert normalized[1] != normalized[0]
+        assert normalized[2] not in normalized[:2]
+
+    def test_spoken_variant_normalization_folds_case_space_and_ellipsis(self):
+        assert normalize_spoken_variant("  ACHHA  ... ") == normalize_spoken_variant(
+            "achha…"
+        )
+
+    def test_single_safe_variant_still_works(self):
+        p = planner(seed=3)
+        first = p._pick("gu", "critical_checking", NEUTRAL)
+        second = p._pick("gu", "critical_checking", NEUTRAL)
+        assert first and second == first
+
+    @pytest.mark.parametrize(
+        ("locale", "base"),
+        [
+            ("en-IN", "en"), ("hi-IN", "hi"), ("gu-IN", "gu"),
+            ("ml-IN", "ml"), ("mr-IN", "mr"), ("pa-IN", "pa"),
+            ("ta-IN", "ta"), ("te-IN", "te"), ("ur-IN", "ur"),
+        ],
+    )
+    def test_every_enabled_language_selects_only_its_native_pool(self, locale, base):
+        p = planner({"tool_ack_probability": 1.0}, seed=9)
+        plan = p.plan_turn(
+            language=locale, identity=MALE, route_kind="tool", turn_index=2
+        )
+        expected = {
+            normalize_spoken_variant(p._adapted(item, MALE))
+            for item in _POOLS[base]["checking"]
+        }
+        assert normalize_spoken_variant(plan.preface) in expected
+
+    def test_unknown_locale_never_borrows_another_language_pool(self):
+        p = planner({"tool_ack_probability": 1.0}, seed=9)
+        plan = p.plan_turn(
+            language="bn-IN", identity=MALE, route_kind="tool", turn_index=2
+        )
+        assert plan.preface == ""
+        assert plan.telemetry["suppression_reason"] == "no_pool_language:bn"
+
+    def test_structured_critical_turn_suppresses_preface_and_correction(self):
+        p = planner({
+            "tool_ack_probability": 1.0,
+            "thinking_filler_probability": 1.0,
+            "self_correction": True,
+            "self_correction_probability": 1.0,
+        })
+        plan = p.plan_turn(
+            language="hi-IN", identity=FEMALE, route_kind="direct",
+            turn_index=3, critical=True, critical_reason="repayment_commitment",
+        )
+        assert not plan.preface
+        assert plan.allow_self_correction is False
+        assert plan.telemetry["critical_content"] is True
+        assert plan.telemetry["suppression_reason"] == "critical:repayment_commitment"
+
+    def test_generic_tool_lookup_allows_only_safe_verification_preface(self):
+        p = planner({"tool_ack_probability": 1.0})
+        plan = p.plan_turn(
+            language="en-IN", identity=NEUTRAL, route_kind="tool",
+            turn_index=2, critical=True, critical_reason="tool_result",
+            allow_safe_tool_preface=True,
+        )
+        assert plan.preface in _POOLS["en"]["critical_checking"]
+        assert plan.preface_kind == "checking"
+        assert plan.allow_self_correction is False
+        assert plan.telemetry["acknowledgement_used"] is True
+
     def test_probability_zero_means_never(self):
         p = planner({
             "thinking_filler_probability": 0.0,
@@ -211,6 +320,20 @@ class TestPlanSegment:
         assert seg.critical is True
         assert seg.speed_scale is not None and seg.speed_scale <= 1.0
         assert seg.pause_after_ms == 270  # base + 120, clear boundary
+        assert seg.speech_style == "serious"
+        assert seg.emphasis == "moderate"
+
+    def test_structured_turn_criticality_is_not_regex_dependent(self):
+        p = planner()
+        p.set_turn_criticality(True, "tool_result")
+        seg = p.plan_segment(
+            "The lookup completed successfully.",
+            base_pause_ms=150,
+            language="en-IN",
+        )
+        assert seg.critical is True
+        assert seg.critical_reason == "tool_result"
+        assert seg.speed_scale is not None and seg.speed_scale <= 1.0
 
     def test_question_is_slightly_slower(self):
         p = planner()
@@ -275,9 +398,28 @@ class TestBackchannels:
         # The failed roll must not be immediately re-rolled every monitor tick.
         assert p._last_backchannel_monotonic == 50.0
 
-    def test_unsupported_language_has_no_backchannels(self):
+    def test_unknown_language_has_no_backchannels(self):
         p = planner({"backchannel_probability": 1.0})
-        assert p.plan_backchannel(language="ta-IN", identity=MALE, now=5.0) == ""
+        assert p.plan_backchannel(language="bn-IN", identity=MALE, now=5.0) == ""
+
+    @pytest.mark.parametrize(
+        "signal", [
+            "complaint", "hardship", "refusal", "wrong_person",
+            "agent_request", "distress", "frustration",
+        ]
+    )
+    def test_serious_context_suppresses_backchannel(self, signal):
+        p = planner({"backchannel_probability": 1.0})
+        assert p.plan_backchannel(
+            language="hi-IN", identity=MALE, caller_state=signal, now=10.0
+        ) == ""
+        assert p.last_backchannel_suppression_reason == f"serious_context:{signal}"
+
+    def test_normal_context_still_allows_backchannel(self):
+        p = planner({"backchannel_probability": 1.0})
+        assert p.plan_backchannel(
+            language="hi-IN", identity=MALE, caller_state="question", now=10.0
+        )
 
 
 # ── self-correction ──────────────────────────────────────────────────────

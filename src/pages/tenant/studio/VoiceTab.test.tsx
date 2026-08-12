@@ -387,7 +387,7 @@ describe("VoiceTab — ElevenLabs model selection", () => {
     await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_v3"));
   });
 
-  it("fallback and per-language dropdowns offer only realtime-streaming models", async () => {
+  it("fallback and per-language dropdowns list every model, disabling non-streaming ones with the reason", async () => {
     const user = userEvent.setup();
     installDefaultMocks({
       ...SETTINGS,
@@ -396,18 +396,42 @@ describe("VoiceTab — ElevenLabs model selection", () => {
     render(<VoiceTab bot={BOT} />);
     await screen.findByText("Hindi");
 
+    /* The whole provider catalog is visible — a model that cannot serve a
+       realtime slot is disabled with an explanation, never silently hidden
+       (the old behavior read as "only 2.5 is supported"). */
     const fallbackModel = await screen.findByLabelText("Fallback model");
     await waitFor(() => expect(fallbackModel).toHaveValue("eleven_flash_v2_5"));
-    const fallbackLabels = within(fallbackModel).getAllByRole("option").map((o) => o.textContent);
-    expect(fallbackLabels).toContain("Eleven Flash v2.5 (default)");
-    expect(fallbackLabels).not.toContain("Eleven v3 (expressive)");
+    const fallbackV3 = within(fallbackModel).getByRole("option", {
+      name: /Eleven v3 \(expressive\) — no realtime streaming/,
+    }) as HTMLOptionElement;
+    expect(fallbackV3.disabled).toBe(true);
+    expect((within(fallbackModel).getByRole("option", {
+      name: "Eleven Flash v2.5 (default)",
+    }) as HTMLOptionElement).disabled).toBe(false);
 
     const hi = langRow("Hindi");
     await user.selectOptions(within(hi).getByLabelText("Voice provider for hi-IN"), ["elevenlabs"]);
     await waitFor(() => expect(within(hi).getByLabelText("Voice model for hi-IN")).toHaveValue("eleven_flash_v2_5"));
-    const rowLabels = within(within(hi).getByLabelText("Voice model for hi-IN"))
-      .getAllByRole("option").map((o) => o.textContent);
-    expect(rowLabels).not.toContain("Eleven v3 (expressive)");
+    const rowV3 = within(within(hi).getByLabelText("Voice model for hi-IN")).getByRole("option", {
+      name: /Eleven v3 \(expressive\) — no realtime streaming/,
+    }) as HTMLOptionElement;
+    expect(rowV3.disabled).toBe(true);
+  });
+
+  it("a saved non-streaming per-language model is flagged with the streaming reason", async () => {
+    installDefaultMocks({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "en-IN",
+        "en-IN": { provider: "elevenlabs", model: "eleven_v3", voice: "vp-rachel" },
+      },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    const en = langRow("English (India)");
+    await waitFor(() => expect(within(en).getByText("Unavailable")).toBeInTheDocument());
+    expect(within(en).getByText(/does not support realtime streaming/)).toBeInTheDocument();
   });
 });
 
@@ -487,8 +511,8 @@ describe("VoiceTab — Delivery tuning", () => {
     await user.click(screen.getByRole("button", { name: "Preview voice" }));
     const dialog = await screen.findByRole("dialog");
     // The modal explains exactly what the preview can and cannot apply.
-    expect(within(dialog).getByText(/Applies your Delivery tuning/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/not this fixed text/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/synthesizes this text with the draft settings/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/cannot rewrite this fixed sample text/)).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Generate" }));
     await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalledTimes(1));
