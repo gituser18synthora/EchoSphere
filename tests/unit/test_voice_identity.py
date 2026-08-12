@@ -6,6 +6,7 @@ from shared.orchestration.voice_identity import (
     active_voice_identity,
     voice_context_values,
     voice_identity_instruction,
+    voice_identity_state,
 )
 
 
@@ -57,9 +58,31 @@ def test_prompt_values_include_canonical_name_and_compatibility_alias():
     values = voice_context_values(VoiceIdentity("Ritu", "female"))
 
     assert values == {
+        "assistant_voice_gender": "female",
+        "assistant_voice_name": "Ritu",
         "voice_speaker_gender": "female",
         "voice_speaker_name": "Ritu",
         "voice_bot_spiker_name": "Ritu",
+    }
+
+
+def test_runtime_instruction_overrides_authored_gender_examples():
+    female = voice_identity_instruction(VoiceIdentity("Catalog Female", "female"))
+    male = voice_identity_instruction(VoiceIdentity("Catalog Male", "male"))
+
+    assert "`assistant_voice_gender = female`" in female
+    assert "मैं समझ सकती हूँ" in female
+    assert "never use masculine" in female
+    assert "`assistant_voice_gender = male`" in male
+    assert "मैं समझ सकता हूँ" in male
+    assert "never use feminine" in male
+    assert "overrides contrary gender forms" in female
+
+
+def test_goal_engine_state_uses_the_same_catalog_identity():
+    assert voice_identity_state(VoiceIdentity("Catalog Female", "female")) == {
+        "assistant_voice_name": "Catalog Female",
+        "assistant_voice_gender": "female",
     }
 
 

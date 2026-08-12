@@ -153,6 +153,15 @@ class CallerAudioGate(FrameProcessor):
         self._segment_ms = 0.0
         self._segment_during_bot_audio = False
         self._last_segment: dict | None = None
+        # Backchannel window: the bot is murmuring a short "hmm/ji" WHILE the
+        # caller holds the floor. For a segment that is already passing, that
+        # audio must be treated as decoration, not as the bot taking the
+        # floor — no echo-margin raise mid-utterance and no during_bot_audio
+        # latch, either of which would get the caller's own speech chopped or
+        # rejected by the transcript gate. A CLOSED gate keeps full echo
+        # protection so the backchannel's own acoustic echo cannot open it.
+        self._backchannel_active = False
+        self._backchannel_ended_at: float | None = None
         # Diagnostics only — no audio and no transcript text is ever retained.
         self._stats = {
             "opens": 0,
@@ -162,8 +171,40 @@ class CallerAudioGate(FrameProcessor):
         }
 
     # ── state helpers ────────────────────────────────────────────────────
+    def begin_backchannel_window(self) -> None:
+        self._backchannel_active = True
+        self._backchannel_ended_at = None
+
+    def end_backchannel_window(self) -> None:
+        if self._backchannel_active:
+            self._backchannel_active = False
+            self._backchannel_ended_at = time.monotonic()
+
+    def _backchannel_shielded(self) -> bool:
+        """Open-gate shield: the current bot audio (and its echo tail) is a
+        mid-caller-turn backchannel, so the live caller segment must not be
+        echo-guarded against it."""
+        if not self._open:
+            return False
+        if self._backchannel_active:
+            return True
+        if self._backchannel_ended_at is None:
+            return False
+        return (
+            time.monotonic() - self._backchannel_ended_at
+        ) * 1000.0 < self._echo_tail_ms
+
+    @property
+    def live_speech_ms(self) -> float:
+        """Duration of the caller speech segment currently passing (0 when
+        the gate is closed) — the backchannel controller's floor-holding
+        evidence."""
+        return self._segment_ms if self._open else 0.0
+
     def _echo_guarded(self) -> bool:
         """Whether bot audio may still be bleeding into the caller stream."""
+        if self._backchannel_shielded():
+            return False
         if self._bot_speaking:
             return True
         if self._bot_stopped_at is None:

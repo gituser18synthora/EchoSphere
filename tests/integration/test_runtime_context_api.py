@@ -418,6 +418,51 @@ class TestSimulator:
         assert trace["latencyMs"] >= 0
         assert trace["provider"] == "mock"
 
+    def test_testing_studio_uses_selected_female_catalog_gender(
+        self, client, tenant_admin, health_bot,
+    ):
+        from sqlalchemy import select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.models import VoiceBotSetting
+
+        session = get_sessionmaker()()
+        try:
+            settings = session.scalar(select(VoiceBotSetting).where(
+                VoiceBotSetting.bot_id == health_bot["id"]
+            ))
+            original = (
+                settings.tts_provider, settings.tts_model, settings.tts_voice,
+                settings.voice_id, settings.language_voice_map,
+            )
+            settings.tts_provider = "sarvam"
+            settings.tts_model = "bulbul:v3"
+            settings.tts_voice = "vp-sv-ritu"
+            settings.voice_id = "vp-sv-ritu"
+            settings.language_voice_map = {"default": "hi-IN"}
+            session.commit()
+
+            trace = _data(client.post(
+                f"{API}/bots/{health_bot['id']}/testing/simulate",
+                headers=tenant_admin,
+                json={
+                    "message": "मैं क्या कर सकती हूँ?",
+                    "contextSource": "manual",
+                    "contextPayload": HEALTHCARE_PAYLOAD,
+                    "language": "hi-IN",
+                },
+            ))
+        finally:
+            if "original" in locals():
+                (settings.tts_provider, settings.tts_model, settings.tts_voice,
+                 settings.voice_id, settings.language_voice_map) = original
+                session.commit()
+            session.close()
+
+        assert trace["voiceIdentity"] == {"name": "Ritu", "gender": "female"}
+        assert "assistant_voice_gender = female" in trace["renderedPrompt"]
+        assert "मैं समझ सकती हूँ" in trace["renderedPrompt"]
+
     def test_hangup_is_deterministic_in_simulator(self, client, tenant_admin, health_bot):
         trace = _data(client.post(
             f"{API}/bots/{health_bot['id']}/testing/simulate", headers=tenant_admin,

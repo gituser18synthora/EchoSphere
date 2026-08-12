@@ -30,6 +30,8 @@ class VoiceIdentity:
 # Canonical prompt variables plus the spelling used in an early tenant prompt.
 # The compatibility alias can be removed after that prompt is migrated.
 VOICE_IDENTITY_CONTEXT_KEYS = (
+    "assistant_voice_name",
+    "assistant_voice_gender",
     "voice_speaker_name",
     "voice_speaker_gender",
     "voice_bot_spiker_name",
@@ -62,12 +64,30 @@ def voice_context_values(identity: VoiceIdentity) -> dict[str, str]:
     """System-trusted placeholders for authored prompts and greetings."""
     if not identity.name and identity.gender == "neutral":
         return {}
-    values = {"voice_speaker_gender": identity.gender}
+    values = {
+        "assistant_voice_gender": identity.gender,
+        "voice_speaker_gender": identity.gender,
+    }
     if identity.name:
+        values["assistant_voice_name"] = identity.name
         values["voice_speaker_name"] = identity.name
         # Backward compatible with the placeholder supplied in the request.
         values["voice_bot_spiker_name"] = identity.name
     return values
+
+
+def voice_identity_state(identity: VoiceIdentity) -> dict[str, str]:
+    """Small trusted state block for LLM paths that do not render prompts.
+
+    The Stage-A conversation decision model receives structured live state
+    rather than the full runtime system prompt. Keeping these canonical keys
+    here ensures it uses the same catalog-derived identity as Stage B and the
+    Testing Studio, without teaching any call site about individual voices.
+    """
+    state = {"assistant_voice_gender": identity.gender}
+    if identity.name:
+        state["assistant_voice_name"] = identity.name
+    return state
 
 
 def voice_identity_instruction(identity: VoiceIdentity) -> str:
@@ -82,16 +102,32 @@ def voice_identity_instruction(identity: VoiceIdentity) -> str:
     lines = ["\n\n# Active TTS speaker identity (runtime-selected)"]
     if identity.name:
         lines.append(f"- Selected speaker name: {identity.name}")
+    lines.append(f"- `assistant_voice_gender = {identity.gender}`")
     if identity.gender in ("male", "female"):
         lines.extend([
             f"- The voice catalog marks this speaker as {identity.gender}.",
-            f"- In every first-person self-reference, use grammatically "
-            f"{identity.gender} forms in languages that mark speaker gender, "
-            "including Hindi and Hinglish. Keep that agreement consistent "
-            "across verbs, auxiliaries and participles.",
+            f"- For EVERY first-person reference made by the assistant, use "
+            f"grammatically {identity.gender} forms in any language where "
+            "speaker gender affects verbs, auxiliaries, participles, adjectives "
+            "or other agreement. This runtime value overrides contrary gender "
+            "forms in persona text, authored examples and conversation history.",
             "- This is the bot speaker's gender only. Never infer it from, or "
             "change it to match, the caller's gender.",
         ])
+        if identity.gender == "female":
+            lines.append(
+                "- Hindi/Hinglish self-reference must use feminine forms such "
+                "as ‘मैं समझ सकती हूँ’, ‘मैं करती हूँ’, ‘मैं बताती हूँ’, "
+                "‘मैं चाहती हूँ’ and ‘मैं आपकी मदद कर सकती हूँ’; never use "
+                "masculine सकता/करता/बताता/समझता/चाहता for the assistant."
+            )
+        else:
+            lines.append(
+                "- Hindi/Hinglish self-reference must use masculine forms such "
+                "as ‘मैं समझ सकता हूँ’, ‘मैं करता हूँ’, ‘मैं बताता हूँ’, "
+                "‘मैं चाहता हूँ’ and ‘मैं आपकी मदद कर सकता हूँ’; never use "
+                "feminine सकती/करती/बताती/समझती/चाहती for the assistant."
+            )
     else:
         lines.append(
             "- The catalog does not specify a male/female speaker gender. Use "
@@ -143,6 +179,11 @@ _ROMAN_FORMS = {
         ("baithi", "baitha"),
         ("khadi", "khada"),
         ("wali", "wala"),
+        ("dekhti", "dekhta"),
+        ("samajhti", "samajhta"),
+        ("bolti", "bolta"),
+        ("batati", "batata"),
+        ("chahti", "chahta"),
     ),
     "female": (
         ("raha", "rahi"),
@@ -153,6 +194,11 @@ _ROMAN_FORMS = {
         ("baitha", "baithi"),
         ("khada", "khadi"),
         ("wala", "wali"),
+        ("dekhta", "dekhti"),
+        ("samajhta", "samajhti"),
+        ("bolta", "bolti"),
+        ("batata", "batati"),
+        ("chahta", "chahti"),
     ),
 }
 

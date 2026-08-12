@@ -267,6 +267,31 @@ class TestPlaceholderSafety:
         instruction = brain._language_instruction()
         assert "Selected speaker name: Ritu" in instruction
         assert "grammatically female forms" in instruction
+        assert "assistant_voice_gender = female" in instruction
+        assert "मैं समझ सकती हूँ" in instruction
+
+    def test_selected_voice_gender_reaches_stage_a_decision_context(self):
+        brain = make_brain(tts={
+            "voice_name": "Ritu", "voice_gender": "female",
+        })
+
+        state = brain._orchestration_state()
+
+        assert state["assistant_voice_name"] == "Ritu"
+        assert state["assistant_voice_gender"] == "female"
+
+    async def test_generated_reply_is_not_gender_post_processed(self):
+        brain = make_brain(tts={
+            "voice_name": "Ritu", "voice_gender": "female",
+        })
+
+        record = await brain._say(
+            "मैं समझ सकता हूँ।", authored=False,
+        )
+
+        # Generated grammar must be correct because of LLM context, not a
+        # response mutation hidden in the TTS delivery path.
+        assert record.text == "मैं समझ सकता हूँ।"
 
     def test_language_voice_switch_changes_the_llm_grammar_identity(self):
         brain = make_brain(

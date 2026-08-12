@@ -404,6 +404,8 @@ class VoiceSettingsRequest(BaseModel):
     audio_settings: dict | None = Field(default=None, alias="audioSettings")
     # Goal Engine configuration ({} clears it back to the derived default).
     goal_policy: dict | None = Field(default=None, alias="goalPolicy")
+    # Human speech naturalness overrides ({} clears back to tenant/platform).
+    human_speech: dict | None = Field(default=None, alias="humanSpeech")
 
     model_config = {"populate_by_name": True}
 
@@ -414,7 +416,7 @@ _VOICE_SETTINGS_FIELDS = (
     "tts_provider", "tts_model", "tts_voice", "tts_settings",
     "llm_provider", "llm_model", "llm_settings",
     "fallback_provider", "fallback_model", "fallback_voice", "audio_settings",
-    "goal_policy",
+    "goal_policy", "human_speech",
 )
 
 # Delivery tuning's speaking speed is the single canonical speed control:
@@ -464,6 +466,7 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "fallbackVoice": s.fallback_voice,
         "audioSettings": s.audio_settings or {},
         "goalPolicy": s.goal_policy or {},
+        "humanSpeech": s.human_speech or {},
     }
 
 
@@ -528,6 +531,18 @@ def update_voice_settings(
             raise ApiError(
                 "Goal policy configuration is invalid.", 422,
                 errors=[{"field": "goalPolicy", "message": str(exc)[:300]}],
+            )
+
+    # Human speech overrides are sparse per-key; junk keys/values are
+    # rejected here rather than silently dropped at runtime resolution.
+    if body.human_speech:
+        from shared.orchestration.naturalness import validate_human_speech
+
+        problems = validate_human_speech(body.human_speech)
+        if problems:
+            raise ApiError(
+                "Human speech configuration is invalid.", 422,
+                errors=[{"field": "humanSpeech", "message": p} for p in problems],
             )
 
     # Sanitize legacy per-provider speed duplicates before validation and

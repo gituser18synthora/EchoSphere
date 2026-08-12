@@ -586,6 +586,8 @@ class TenantSettingsRequest(BaseModel):
     notifications: list | None = None
     security: dict | None = None
     retention_days: int | None = Field(default=None, alias="retentionDays", ge=1, le=3650)
+    # Tenant-wide human speech naturalness overrides ({} clears them).
+    human_speech: dict | None = Field(default=None, alias="humanSpeech")
 
     model_config = {"populate_by_name": True}
 
@@ -778,9 +780,22 @@ def update_tenant_settings(
                 f"Unknown or inactive language(s): {', '.join(invalid)}", 422
             )
         body.default_languages = languages
+    if body.human_speech:
+        from shared.orchestration.naturalness import validate_human_speech
+
+        problems = validate_human_speech(body.human_speech)
+        if problems:
+            raise ApiError(
+                "Human speech configuration is invalid.", 422,
+                errors=[{"field": "humanSpeech", "message": p} for p in problems],
+            )
+    human_speech_changed = (
+        body.human_speech is not None and body.human_speech != (s.human_speech or {})
+    )
     for field in (
         "display_name", "timezone", "default_languages", "branding",
         "business_hours", "holidays", "notifications", "security", "retention_days",
+        "human_speech",
     ):
         val = getattr(body, field)
         if val is not None:
@@ -792,4 +807,10 @@ def update_tenant_settings(
         previous_value=before, new_value=serialize_tenant_settings(s), request=request,
     )
     db.commit()
+    if human_speech_changed:
+        # The tenant layer feeds every bot's resolved snapshot; drop them all
+        # (rare admin action, 300s TTL bounds the cost of the broad flush).
+        from shared.bot_config import invalidate_all_bot_configs_sync
+
+        invalidate_all_bot_configs_sync()
     return ok(serialize_tenant_settings(s))

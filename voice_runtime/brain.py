@@ -113,6 +113,10 @@ from shared.orchestration.intent_classifier import (
     HybridIntentPipeline,
     IntentClassification,
 )
+from shared.orchestration.naturalness import (
+    SpeechNaturalnessPlanner,
+    TurnSpeechPlan,
+)
 from shared.orchestration.router import (
     RouteDecision,
     RouteKind,
@@ -127,6 +131,7 @@ from shared.orchestration.voice_identity import (
     active_voice_identity,
     voice_context_values,
     voice_identity_instruction,
+    voice_identity_state,
 )
 from shared.providers.base import LLMProvider, ProviderError
 from shared.providers.languages import to_platform_language
@@ -347,6 +352,7 @@ class ConversationBrain(FrameProcessor):
         authoritative_eot: bool = False,
         previous_memory=None,
         guardrails: GuardrailEngine | None = None,
+        naturalness: SpeechNaturalnessPlanner | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -637,6 +643,31 @@ class ConversationBrain(FrameProcessor):
         # Consent revoked this call: the do_not_call disposition/state is
         # authoritative and must survive the policy's own finalization.
         self._dnc = False
+        # Human speech naturalness: how the reply is DELIVERED (occasional
+        # fillers/acknowledgements, tool-lookup prefaces, sparse backchannels).
+        # Semantic content is never changed and history stays clean — prefaces
+        # are pushed as transient TTS text only. Live calls always receive the
+        # pipeline's shared planner (also used by the TTS router); a brain
+        # constructed directly (tests, tooling) gets naturalness only when its
+        # config explicitly carries a human_speech section, so exact-text
+        # assertions stay deterministic.
+        if naturalness is not None:
+            self._naturalness = naturalness
+        else:
+            explicit = getattr(config, "human_speech", None)
+            self._naturalness = SpeechNaturalnessPlanner(
+                explicit if explicit else {"enabled": False}
+            )
+        # The current turn's delivery plan; consumed by the first speaking
+        # path (tool preface / generation / direct reply) that uses it.
+        self._turn_speech_plan: TurnSpeechPlan | None = None
+        self._naturalness_ms = 0.0
+        # Backchannel controller: a monitor task runs while the caller holds
+        # the floor; ``_backchannel_active`` marks OUR short ack audio so the
+        # bot-speaking bookkeeping (latency marks, barge-in discrimination)
+        # never mistakes it for a reply.
+        self._backchannel_task: asyncio.Task | None = None
+        self._backchannel_active = False
 
     def _build_orchestration_llm(self, default_llm):
         """The LLM the Goal Engine decides with.
@@ -751,10 +782,12 @@ class ConversationBrain(FrameProcessor):
             )
             if not resumed_before_reply and (
                 self._bot_speaking or self._reply_audio_started
-            ):
+            ) and not self._backchannel_active:
                 # A genuine interruption of audible speech: the policy records
                 # it, and the cancelled generation below guarantees no stale
-                # reply continues past this point.
+                # reply continues past this point. A caller talking over the
+                # bot's own BACKCHANNEL is the expected outcome, never an
+                # interruption.
                 if self._policy is not None:
                     self._policy.interruption_detected = True
                 self._recorder.add_event("barge_in", during_bot_audio=True)
@@ -767,6 +800,10 @@ class ConversationBrain(FrameProcessor):
             # A barge-in during a transfer/stop announcement must not lose the
             # control event — the caller already asked for it.
             await self._flush_pending_controls()
+            if isinstance(frame, UserStartedSpeakingFrame):
+                # The caller holds the floor: watch for a long explanation
+                # that deserves a sparse "hmm/ji" backchannel.
+                self._start_backchannel_monitor()
             return
 
         if isinstance(frame, UserStoppedSpeakingFrame):
@@ -775,6 +812,7 @@ class ConversationBrain(FrameProcessor):
             # debounce only has work to do when one landed just now; otherwise
             # the utterance has settled and waiting again is pure dead time.
             was_active, self._turn_active = self._turn_active, False
+            self._stop_backchannel_monitor()
             await self.push_frame(frame, direction)
             if (
                 self._pending_segments
@@ -793,6 +831,17 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, BotStartedSpeakingFrame):
+            if self._backchannel_active and self._generation_in_flight():
+                # A reply was dispatched while the backchannel audio was still
+                # queued: from here on this IS the reply speaking.
+                self._end_backchannel_window()
+            if self._backchannel_active:
+                # Our own mid-caller-turn backchannel: it is not the reply, so
+                # it must not close the latency measurement or flip the
+                # barge-in/merge discriminator.
+                self._bot_speaking = True
+                await self.push_frame(frame, direction)
+                return
             # First audio of the reply reached the wire: this is the moment the
             # caller stops waiting, so it closes the turn's latency measurement.
             self._reply_audio_started = True
@@ -804,7 +853,10 @@ class ConversationBrain(FrameProcessor):
 
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
-            self._latency.mark_bot_stopped_speaking()
+            if self._backchannel_active:
+                self._end_backchannel_window()
+            else:
+                self._latency.mark_bot_stopped_speaking()
             await self.push_frame(frame, direction)
             await self._flush_pending_controls()
             if (
@@ -1390,6 +1442,8 @@ class ConversationBrain(FrameProcessor):
 
     async def _consume_pending_turn(self) -> None:
         await self._cancel_finalize()
+        # The caller's turn is closing — no backchannel may start now.
+        self._stop_backchannel_monitor()
         if not self._pending_segments:
             return
         generation = self._generation
@@ -1681,7 +1735,140 @@ class ConversationBrain(FrameProcessor):
         for payload in pending:
             await self._notify_client(payload)
 
+    # ── backchannel controller (human speech naturalness) ────────────────
+    #
+    # While the caller is giving a long explanation, a real agent murmurs
+    # "hmm / ji" without taking the floor. The monitor below runs only while
+    # the caller audibly holds the floor, emits at most a sparse, planner-
+    # gated token, and marks the resulting audio as a NON-reply so none of
+    # the turn bookkeeping (latency, barge-in discrimination, endpointing)
+    # mistakes it for the bot answering.
+
+    def _generation_in_flight(self) -> bool:
+        return self._generation is not None and not self._generation.done()
+
+    def _active_identity(self):
+        return active_voice_identity(self._config.tts, self._conversation_language)
+
+    def _active_tts_engine(self) -> dict:
+        """Provider/model/voice the TTS router resolves for the current
+        conversation language (same precedence: per-language map → default)."""
+        tts = self._config.tts or {}
+        engine = tts
+        if tts.get("streaming") is not False:
+            override = (tts.get("language_map") or {}).get(self._conversation_language)
+            if isinstance(override, dict):
+                engine = override
+        return {
+            "provider": engine.get("provider") or tts.get("provider") or "",
+            "model": engine.get("model") or tts.get("model") or "",
+            "voice": engine.get("voice_name") or engine.get("voice") or "",
+        }
+
+    def _start_backchannel_monitor(self) -> None:
+        if (
+            self._closing
+            or not self._naturalness.backchannels_enabled
+            or self._backchannel_task is not None
+            or self._bot_speaking
+            or not self._pipeline_started
+        ):
+            return
+        try:
+            self._backchannel_task = self.create_task(self._backchannel_monitor())
+        except Exception:  # noqa: BLE001 — decoration must never break a turn
+            logger.debug("backchannel monitor could not start", exc_info=True)
+
+    def _stop_backchannel_monitor(self) -> None:
+        task, self._backchannel_task = self._backchannel_task, None
+        if task is not None:
+            task.cancel()
+
+    async def _backchannel_monitor(self) -> None:
+        """Watch one caller utterance; maybe murmur once it runs long.
+
+        Floor-holding time is wall-clock since the turn OPENED: the turn-stop
+        strategy closes the turn (cancelling this monitor) after less than a
+        second of real silence, so an open turn is sustained speech by
+        construction. The audio gate's live segment cannot be the duration
+        source — it resets on every breath (hangover close), so a long
+        explanation with natural pauses would never accumulate. The gate is
+        instead the "speaking RIGHT NOW" check, so the murmur never lands in
+        a lull between the caller's sentences.
+        """
+        started = time.monotonic()
+        min_ms = self._naturalness.min_long_turn_for_backchannel_ms
+        try:
+            while True:
+                await asyncio.sleep(0.25)
+                if self._closing or self._bot_speaking or not self._turn_active:
+                    continue
+                if self._generation_in_flight() or self._finalize_pending():
+                    continue
+                held_ms = (time.monotonic() - started) * 1000.0
+                if held_ms < min_ms:
+                    continue
+                if (
+                    self._audio_gate is not None
+                    and self._audio_gate.live_speech_ms < 250.0
+                ):
+                    continue  # mid-breath: wait for audible speech to murmur over
+                token = self._naturalness.plan_backchannel(
+                    language=self._conversation_language,
+                    identity=self._active_identity(),
+                )
+                if token:
+                    await self._play_backchannel(token)
+        except asyncio.CancelledError:
+            raise
+
+    async def _play_backchannel(self, token: str) -> None:
+        """Speak one short backchannel without taking the floor.
+
+        The text is transient: never appended to conversation history, never
+        a turn record, never a client bot_text — a murmur, not a message.
+        Barge-in machinery still owns the audio (an InterruptionFrame kills
+        it like any bot audio).
+        """
+        self._backchannel_active = True
+        if self._audio_gate is not None:
+            self._audio_gate.begin_backchannel_window()
+        self._recorder.add_event(
+            "backchannel_played",
+            language=self._conversation_language,
+            count=self._naturalness.backchannels_played,
+        )
+        logger.info(
+            "turn[%s] backchannel: %r", self._recorder.session_id, token
+        )
+        await self._speak_transient(token)
+
+    def _end_backchannel_window(self) -> None:
+        self._backchannel_active = False
+        if self._audio_gate is not None:
+            self._audio_gate.end_backchannel_window()
+
+    async def _speak_transient(self, text: str) -> None:
+        """Push delivery-only speech (preface/backchannel) to TTS.
+
+        Deliberately NOT ``_say``: transient tokens stay out of conversation
+        history, turn records and the client transcript — they are delivery
+        metadata, not semantic content. They remain fully interruptible.
+
+        A trailing ASCII "..." is collapsed to a single ellipsis character:
+        the sentence aggregator otherwise splits "achha..." into "achha.."
+        plus an orphan "." segment — one wasted TTS sub-generation and an
+        unwanted extra pause.
+        """
+        if self._closing or not text:
+            return
+        text = re.sub(r"\.{2,}\s*$", "…", text)
+        await self.push_frame(LLMFullResponseStartFrame())
+        await self.push_frame(TextFrame(text))
+        await self.push_frame(LLMFullResponseEndFrame())
+
     async def cleanup(self):
+        self._stop_backchannel_monitor()
         await self._cancel_finalize()
         prefetch, self._decision_prefetch = self._decision_prefetch, None
         if prefetch is not None:
@@ -1787,10 +1974,28 @@ class ConversationBrain(FrameProcessor):
         logger.info("turn_timing %s", json.dumps(timing, ensure_ascii=False))
         self._recorder.add_event("turn_timing", **timing)
 
+    def _consume_speech_preface(self) -> str:
+        """Take this turn's planned preface (once); "" when none remains."""
+        plan = self._turn_speech_plan
+        if plan is None or not plan.has_preface:
+            return ""
+        preface, plan.preface = plan.preface, ""
+        return preface
+
+    async def _speak_preface(self) -> None:
+        preface = self._consume_speech_preface()
+        if preface:
+            logger.info(
+                "turn[%s] naturalness preface (pre-lookup): %r",
+                self._recorder.session_id, preface,
+            )
+            await self._speak_transient(preface)
+
     async def _handle_turn(self, text: str) -> None:
         started = time.perf_counter()
         turn_timestamp = time.time()
         self._turn_counter += 1
+        self._turn_speech_plan = None
         self._latency.turn_id = self._turn_counter
         await self._notify_client({
             "type": "transcript",
@@ -1906,6 +2111,29 @@ class ConversationBrain(FrameProcessor):
                 or decision.signal
                 or classify_user_signal(text)
             )
+        # Naturalness: decide HOW this turn's reply is delivered (an
+        # occasional acknowledgement/thinking preface, a spoken "let me
+        # check" over tool latency). Deterministic, config-driven and
+        # microsecond-cheap — it never changes WHAT is said, and serious
+        # caller signals suppress playful hesitation entirely.
+        naturalness_started = time.perf_counter()
+        will_run_tool = bool(
+            classification is not None
+            and classification.tool_name
+            and not self._closing
+        )
+        self._turn_speech_plan = self._naturalness.plan_turn(
+            language=self._conversation_language,
+            identity=self._active_identity(),
+            signal=signal or "",
+            route_kind=(
+                "tool" if will_run_tool
+                else "kb" if decision.kind == RouteKind.KNOWLEDGE
+                else "llm"
+            ),
+            turn_index=self._turn_counter,
+        )
+        self._naturalness_ms = (time.perf_counter() - naturalness_started) * 1000
         # Scope protection: an off-goal or injection-attempt turn never
         # reaches knowledge retrieval, tools or a workflow step — it is
         # answered by a redirect to the configured goal (see dispatch below).
@@ -1930,6 +2158,12 @@ class ConversationBrain(FrameProcessor):
         # must reflect what the system verified, not what anyone asserted.
         tool_instruction = ""
         if classification is not None and not self._closing:
+            if will_run_tool:
+                # Speak the "ek minute, main check karta hoon…" ack BEFORE the
+                # lookup runs: the words a human says while reaching for the
+                # keyboard, and they turn tool latency from dead air into a
+                # natural beat. Transient — never enters history.
+                await self._speak_preface()
             tool_instruction = await self._run_intent_tool(classification)
             if tool_instruction and plan is not None:
                 # Verification may have advanced the policy (e.g. an
@@ -1941,6 +2175,7 @@ class ConversationBrain(FrameProcessor):
             # A transaction reference was captured THIS turn: verify it with
             # the configured payment tool (or record honestly that no check
             # could run), then re-plan — the reply speaks the ACTUAL outcome.
+            await self._speak_preface()
             tool_instruction += await self._verify_payment_reference(
                 plan.verify_reference
             )
@@ -2044,7 +2279,7 @@ class ConversationBrain(FrameProcessor):
                         direct=bool(direct),
                     )
                     if direct:
-                        await self._say(direct)
+                        await self._say(direct, authored=False)
                     else:
                         await self._generate_reply(
                             text, decision, started,
@@ -2067,7 +2302,7 @@ class ConversationBrain(FrameProcessor):
                     direct=bool(direct),
                 )
                 if direct:
-                    await self._say(direct)
+                    await self._say(direct, authored=False)
                 else:
                     await self._generate_reply(
                         text, decision, started,
@@ -2099,7 +2334,7 @@ class ConversationBrain(FrameProcessor):
                     self._recorder.add_event(
                         "orchestration_direct_reply", route=decision.kind.value,
                     )
-                    await self._say(direct)
+                    await self._say(direct, authored=False)
                 else:
                     await self._generate_reply(
                         text, decision, started,
@@ -2117,7 +2352,7 @@ class ConversationBrain(FrameProcessor):
                 self._recorder.add_event(
                     "orchestration_direct_reply", route=decision.kind.value,
                 )
-                await self._say(direct)
+                await self._say(direct, authored=False)
             else:
                 await self._generate_reply(
                     text, decision, started, extra_system=tool_instruction
@@ -2161,7 +2396,54 @@ class ConversationBrain(FrameProcessor):
                     else self._goal_engine.last_fallback_reason
                 ),
                 route=decision.kind.value,
+                human_speech_enabled=self._naturalness.enabled,
+                naturalness=(
+                    {
+                        **self._turn_speech_plan.telemetry,
+                        # has_preface flips to False once a speaking path
+                        # consumed (spoke) the planned preface.
+                        "preface_spoken": (
+                            bool(self._turn_speech_plan.telemetry.get("filler_used"))
+                            and not self._turn_speech_plan.has_preface
+                        ),
+                        "processing_ms": round(self._naturalness_ms, 3),
+                    }
+                    if self._turn_speech_plan is not None else None
+                ),
             )
+            # One structured trace line per turn: everything needed to tell
+            # from a single call log whether (and why/why not) the human
+            # speech layer acted. Filler text is platform pool content, never
+            # caller speech — privacy-safe by construction.
+            plan_t = (
+                self._turn_speech_plan.telemetry
+                if self._turn_speech_plan is not None else {}
+            )
+            engine = self._active_tts_engine()
+            logger.info("naturalness_trace %s", json.dumps({
+                "session": self._recorder.session_id,
+                "turn": self._turn_counter,
+                "naturalness_enabled": self._naturalness.enabled,
+                "language": self._conversation_language,
+                "gender_mode": plan_t.get("gender_mode"),
+                "route_kind": plan_t.get("route_kind"),
+                "signal": signal or "",
+                "selected_filler": plan_t.get("selected_filler", ""),
+                "filler_type": plan_t.get("filler_type", ""),
+                "acknowledgement": plan_t.get("filler_type") in (
+                    "acknowledgement", "empathy",
+                ),
+                "preface_spoken": (
+                    bool(plan_t.get("filler_used"))
+                    and self._turn_speech_plan is not None
+                    and not self._turn_speech_plan.has_preface
+                ),
+                "suppression_reason": plan_t.get("suppression_reason", ""),
+                "backchannels_played": self._naturalness.backchannels_played,
+                "active_tts_provider": engine["provider"],
+                "active_voice": engine["voice"],
+                "processing_ms": round(self._naturalness_ms, 3),
+            }, ensure_ascii=False))
             if plan is not None and plan.close_after_reply:
                 # Executor-side completion gate: a close is honored only when
                 # the structured state + tool results say the goal is genuinely
@@ -2262,6 +2544,9 @@ class ConversationBrain(FrameProcessor):
             "language": self._conversation_language,
             "active_goal": self._goal_policy.primary_goal(),
         }
+        state.update(voice_identity_state(active_voice_identity(
+            self._config.tts, self._conversation_language,
+        )))
         if self._previous_memory is not None:
             # Compact previous-call context. The live-state label makes its
             # standing explicit: background, outranked by the current turn.
@@ -2405,7 +2690,7 @@ class ConversationBrain(FrameProcessor):
             )
             and self._decision_text_matches_language(orchestrated.response_text)
         ):
-            await self._say(orchestrated.response_text)
+            await self._say(orchestrated.response_text, authored=False)
             return
         redirect = self._goal_policy_redirect_instruction()
         extra = (plan.instruction if plan is not None else "") + redirect
@@ -2695,7 +2980,10 @@ class ConversationBrain(FrameProcessor):
         elif decision.action == "repeat":
             await self._say(
                 self._last_bot_reply
-                or canned("repeat_none", self._conversation_language)
+                or canned("repeat_none", self._conversation_language),
+                # The previous reply was already rendered for this voice;
+                # repeating it must not rewrite generated text.
+                authored=False,
             )
         elif decision.action == "slower":
             self._recorder.flush_event_soon("call_control", action="slower")
@@ -2968,6 +3256,14 @@ class ConversationBrain(FrameProcessor):
         generation_failed = False
         guardrail_block: _GuardrailBlockedReply | None = None
         await self.push_frame(LLMFullResponseStartFrame())
+        preface = self._consume_speech_preface()
+        if preface:
+            # Delivery-only preface ("Achha…"), spoken while the model is
+            # still thinking: synthesis starts NOW (flush hint), so it masks
+            # LLM first-token latency instead of adding to it. It is not part
+            # of reply_parts — history keeps only the semantic reply.
+            await self.push_frame(TextFrame(preface + " "))
+            await self.push_frame(TTSFlushHintFrame())
         try:
             first_token_ms = await self._stream_llm_tokens(reply_parts, system, started)
             self._latency.mark_llm_completed()
@@ -3270,7 +3566,13 @@ class ConversationBrain(FrameProcessor):
                 logger.warning("llm stream failed before first token (%s); retrying", exc.category)
                 await asyncio.sleep(0.2 * attempts)
 
-    async def _say(self, text: str, *, guardrail_exempt: bool = False) -> TurnRecord | None:
+    async def _say(
+        self,
+        text: str,
+        *,
+        guardrail_exempt: bool = False,
+        authored: bool = True,
+    ) -> TurnRecord | None:
         """Speak a fixed phrase through the TTS path.
 
         Greetings, canned phrases and workflow replies are author-written and
@@ -3293,10 +3595,14 @@ class ConversationBrain(FrameProcessor):
                 on_use=self._guardrails.record_wording_use,
             )
         text = sanitize_spoken_text(text, self._placeholder_values())
-        text = adapt_authored_speaker_grammar(
-            text,
-            active_voice_identity(self._config.tts, self._conversation_language),
-        )
+        # Deterministic authored phrases may need agreement because they never
+        # pass through an LLM. Generated text is controlled by the runtime
+        # voice-gender instruction and is deliberately never rewritten here.
+        if authored:
+            text = adapt_authored_speaker_grammar(
+                text,
+                active_voice_identity(self._config.tts, self._conversation_language),
+            )
         if text and not guardrail_exempt:
             check = self._guardrails.check_output_text(text)
             if check.blocked:
@@ -3323,8 +3629,24 @@ class ConversationBrain(FrameProcessor):
             "text": text,
             "at": turn_time_iso(record.timestamp),
         })
+        # Delivery decoration for decision-co-generated replies only: an
+        # optional planned preface, and (config-gated, off by default) a rare
+        # self-correction. History/turn record above keep the SEMANTIC text —
+        # delivery variants are spoken, never persisted. Authored phrases
+        # (greeting, canned, compliance) are never decorated.
+        preface, spoken = "", text
+        if not authored and not guardrail_exempt:
+            preface = self._consume_speech_preface()
+            plan = self._turn_speech_plan
+            if plan is not None and plan.allow_self_correction:
+                spoken = self._naturalness.maybe_self_correct(
+                    text, language=self._conversation_language,
+                    identity=self._active_identity(),
+                )
         await self.push_frame(LLMFullResponseStartFrame())
-        await self.push_frame(TextFrame(text))
+        if preface:
+            await self.push_frame(TextFrame(preface + " "))
+        await self.push_frame(TextFrame(spoken))
         await self.push_frame(LLMFullResponseEndFrame())
         return record
 
@@ -3424,7 +3746,7 @@ class ConversationBrain(FrameProcessor):
                 self._previous_memory.conversation_id
             ),
         )
-        await self._say(text)
+        await self._say(text, authored=False)
         return True
 
     async def speak_greeting(self) -> None:

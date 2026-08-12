@@ -23,6 +23,7 @@ call. Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import deque
 from dataclasses import dataclass, field as dc_field
@@ -44,7 +45,7 @@ from shared.audio.pcm import resample_pcm, silence_pcm
 from shared.audio.text import sanitize_for_tts
 from shared.config import get_settings
 from shared.providers.base import ProviderError
-from shared.providers.tts.delivery import apply_delivery_params
+from shared.providers.tts.delivery import apply_delivery_params, speed_param_name
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import (
@@ -93,10 +94,17 @@ class _Sentence:
     """One aggregated sentence queued for pause-aware dispatch.
 
     ``pause_after`` is False for mid-sentence flush-hint fragments — the gap
-    between a fragment and its continuation is not a sentence boundary."""
+    between a fragment and its continuation is not a sentence boundary.
+
+    ``pause_after_ms``/``speed_scale`` are optional naturalness-planner
+    overrides: a per-sentence silence duration (None → the router's
+    configured pause_ms) and a subtle multiplier on the bot's base speed
+    (applied only on providers that support per-sub-generation rate)."""
 
     text: str
     pause_after: bool = True
+    pause_after_ms: int | None = None
+    speed_scale: float | None = None
 
 
 @dataclass
@@ -124,11 +132,14 @@ class _Generation:
     pending: deque = dc_field(default_factory=deque)
     active: str | None = None            # provider sub-generation id in flight
     active_pause_after: bool = True
+    active_pause_after_ms: int | None = None
     active_got_audio: bool = False
     # A sentence finished audibly and the next one owes a leading pause. The
     # gap is materialized right before the NEXT dispatch, so a turn that ends
-    # here never gets trailing silence.
+    # here never gets trailing silence. ``gap_ms`` carries the planned
+    # per-sentence duration (None → router default).
     gap_pending: bool = False
+    gap_ms: int | None = None
     turn_complete: bool = False
     # A provider "final" arrived while the LLM was still streaming the turn
     # (Sarvam emits one per flush, so a flush-hint produces one). It is
@@ -151,6 +162,7 @@ class StreamingTTSRouter(TTSService):
         recorder=None,
         provider_factory=None,
         latency=None,
+        naturalness=None,
         first_audio_timeout: float = _FIRST_AUDIO_TIMEOUT_S,
         **kwargs,
     ):
@@ -195,6 +207,9 @@ class StreamingTTSRouter(TTSService):
         # place that sees when synthesis was actually requested and when the
         # provider's first byte came back.
         self._latency = latency
+        # Optional shared SpeechNaturalnessPlanner: per-sentence pause and
+        # subtle rate variation in pause mode. None → legacy fixed delivery.
+        self._naturalness = naturalness
         self._first_audio_timeout = first_audio_timeout
 
         self._providers: dict[tuple, StreamingTTSProvider] = {}
@@ -246,7 +261,9 @@ class StreamingTTSRouter(TTSService):
     def _engine_key(self, engine: dict) -> tuple:
         return (engine.get("provider"), engine.get("model"), engine.get("voice"))
 
-    def _stream_settings(self, engine: dict, locale: str) -> TTSStreamSettings:
+    def _stream_settings(
+        self, engine: dict, locale: str, *, speed: float | None = None
+    ) -> TTSStreamSettings:
         provider = engine.get("provider") or "sarvam"
         params = {**self._base_params, **(engine.get("params") or {})}
         # Canonical Delivery tuning: speed OVERRIDES any legacy pace/speed left
@@ -254,7 +271,7 @@ class StreamingTTSRouter(TTSService):
         # and only ones the model documents (shared.providers.tts.delivery).
         params = apply_delivery_params(
             provider, engine.get("model") or "", params,
-            speed=self._speed, energy=self._energy,
+            speed=self._speed if speed is None else speed, energy=self._energy,
         )
         supported = _SUPPORTED_RATES.get(provider, {self.sample_rate})
         rate = self.sample_rate if self.sample_rate in supported else max(supported)
@@ -401,9 +418,34 @@ class StreamingTTSRouter(TTSService):
             if self._pause_ms > 0:
                 # Pause mode: sentences are serialized so the provider's
                 # per-sentence completion marks where silence is inserted.
-                state.pending.append(
-                    _Sentence(text=text, pause_after=not self._mid_turn_flush)
-                )
+                sentence = _Sentence(text=text, pause_after=not self._mid_turn_flush)
+                if self._naturalness is not None and not self._mid_turn_flush:
+                    delivery = self._naturalness.plan_segment(
+                        text, base_pause_ms=self._pause_ms,
+                        language=self._current_language,
+                    )
+                    sentence.pause_after_ms = delivery.pause_after_ms
+                    sentence.speed_scale = delivery.speed_scale
+                    # Structured per-sentence delivery trace: what is ACTUALLY
+                    # being sent to the provider and with which naturalness
+                    # values (bot-spoken text only — already persisted in the
+                    # call transcript, truncated here).
+                    logger.info("naturalness_segment %s", json.dumps({
+                        "session": self._recorder.session_id if self._recorder else "?",
+                        "context": str(context_id)[:8],
+                        "provider": state.engine.get("provider"),
+                        "voice": state.engine.get("voice"),
+                        "language": self._current_language,
+                        "pause_after_ms": (
+                            sentence.pause_after_ms
+                            if sentence.pause_after_ms is not None
+                            else self._pause_ms
+                        ),
+                        "speed_scale": sentence.speed_scale,
+                        "critical_content": delivery.critical,
+                        "final_text_sent_to_tts": text[:120],
+                    }, ensure_ascii=False))
+                state.pending.append(sentence)
                 if state.active is None:
                     await self._dispatch_next_sentence(context_id, state)
             else:
@@ -649,11 +691,40 @@ class StreamingTTSRouter(TTSService):
         self._subgenerations[sub_id] = context_id
         state.active = sub_id
         state.active_pause_after = sentence.pause_after
+        state.active_pause_after_ms = sentence.pause_after_ms
         state.active_got_audio = False
+        await self._apply_sentence_speed(state, sentence)
         await state.provider.synthesize_stream(sentence.text, generation_id=sub_id)
         state.dispatched_chars += len(sentence.text)
         await state.provider.flush(sub_id)
         await state.provider.finish(sub_id)
+
+    async def _apply_sentence_speed(self, state: _Generation, sentence: _Sentence):
+        """Apply a planned per-sentence rate before dispatching it.
+
+        Only on ElevenLabs WS: each pause-mode sub-generation opens its own
+        context whose init carries voice_settings, so a reconfigure here is a
+        pure settings swap (no reconnect, no flush). Sarvam is excluded — a
+        config resend force-flushes the socket server-side, which would
+        corrupt an in-flight turn. Neutral scales (≈1.0) skip the reconfigure.
+        """
+        provider_name = state.engine.get("provider") or ""
+        if (
+            self._naturalness is None
+            or provider_name != "elevenlabs"
+            or speed_param_name(provider_name, state.engine.get("model") or "") is None
+        ):
+            return
+        scale = sentence.speed_scale if sentence.speed_scale is not None else 1.0
+        # Reconfigure back to the base rate too, so a scaled sentence never
+        # leaves its rate sticky on the ones that follow it.
+        try:
+            settings = self._stream_settings(
+                state.engine, self._current_language, speed=self._speed * scale
+            )
+            await state.provider.configure(settings)
+        except Exception:  # noqa: BLE001 — prosody is decoration, never fatal
+            logger.debug("tts-router: per-sentence speed configure failed", exc_info=True)
 
     async def _materialize_gap(self, context_id: str, state: _Generation):
         """Insert the owed inter-sentence silence right before a dispatch.
@@ -664,10 +735,12 @@ class StreamingTTSRouter(TTSService):
         """
         if not state.gap_pending:
             return
+        gap_ms = state.gap_ms if state.gap_ms is not None else self._pause_ms
         state.gap_pending = False
+        state.gap_ms = None
         if not self.audio_context_available(context_id):
             return
-        silence = silence_pcm(self.sample_rate, self._pause_ms)
+        silence = silence_pcm(self.sample_rate, gap_ms)
         if silence:
             state.audio_bytes += len(silence)
             state.audio_chunks += 1
@@ -687,6 +760,8 @@ class StreamingTTSRouter(TTSService):
         # turn that ends here drops the flag (no trailing silence).
         if state.active_pause_after and state.active_got_audio:
             state.gap_pending = True
+            state.gap_ms = state.active_pause_after_ms
+        state.active_pause_after_ms = None
         if state.pending:
             try:
                 await self._dispatch_next_sentence(context_id, state)

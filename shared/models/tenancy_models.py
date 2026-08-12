@@ -157,3 +157,6 @@ class TenantSetting(Base, TimestampMixin, AuditByMixin):
     notifications: Mapped[list | None] = mapped_column(JSON, nullable=True)
     security: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     retention_days: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
+    # Tenant-wide human speech naturalness overrides (sparse; see
+    # shared.orchestration.naturalness). Bots may override per key on top.
+    human_speech: Mapped[dict | None] = mapped_column(JSON, nullable=True)
