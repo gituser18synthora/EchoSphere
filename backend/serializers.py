@@ -1008,6 +1008,7 @@ def serialize_tenant_settings(s: TenantSetting) -> dict:
         "notifications": s.notifications or [],
         "security": s.security or {},
         "retentionDays": s.retention_days,
+        "humanSpeech": s.human_speech or {},
     }
 
 

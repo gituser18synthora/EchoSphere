@@ -111,6 +111,22 @@ class TestPerLanguageVoiceResolution:
         entry = config.tts["language_map"]["hi-IN"]
         assert entry["voice"] == "ritu"  # provider wire code, not the profile id
         assert entry["voice_name"] == "Ritu"
+        assert entry["voice_gender"] == "female"
+
+    def test_legacy_selected_voice_id_still_supplies_catalog_gender(self, sarvam_bot):
+        bot_id, session = sarvam_bot
+        vbs = session.query(VoiceBotSetting).filter(
+            VoiceBotSetting.bot_id == bot_id
+        ).one()
+        vbs.tts_voice = None
+        vbs.voice_id = "vp-sv-ritu"
+        session.commit()
+
+        config = _load_config_sync(bot_id, require_published=False)
+
+        assert config.tts["voice"] == "ritu"
+        assert config.tts["voice_name"] == "Ritu"
+        assert config.tts["voice_gender"] == "female"
 
     def test_incompatible_locale_uses_configured_fallback(self, sarvam_bot):
         bot_id, session = sarvam_bot

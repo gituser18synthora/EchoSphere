@@ -51,6 +51,7 @@ from shared.turn_detection import (
     TURN_DETECTION_DEFAULTS,
     resolve_bounded,
 )
+from shared.orchestration.naturalness import SpeechNaturalnessPlanner
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.audio_gate import CallerAudioGate
@@ -356,6 +357,7 @@ def build_tts_service(
     recorder: SessionRecorder,
     sample_rate: int = 24000,
     latency=None,
+    naturalness=None,
 ):
     """TTS service from bot config: streaming router or segmented fallback."""
     tts_conf = config.tts or {}
@@ -376,6 +378,7 @@ def build_tts_service(
             sample_rate=sample_rate,
             recorder=recorder,
             latency=latency,
+            naturalness=naturalness,
         )
 
     # Delivery tuning for the segmented REST path: canonical speed overrides
@@ -460,6 +463,11 @@ def build_voice_pipeline(
     # request/first-byte, and a turn-authoritative STT (Flux) stamps the
     # physical speech boundaries — all on the same per-call tracker.
     tracker = TurnLatencyTracker(session_id=recorder.session_id)
+    # One naturalness planner per call, shared by the brain (turn prefaces,
+    # backchannels) and the TTS router (per-sentence pause/rate variation) so
+    # variant no-repeat state and telemetry stay coherent. Resolved config
+    # comes fully merged from bot_config (platform -> tenant -> bot).
+    naturalness = SpeechNaturalnessPlanner(config.human_speech)
     # Local Silero owns speech boundaries in the normal pipeline. Enabling
     # Sarvam server VAD at the same time produces duplicate start/stop frames;
     # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
@@ -473,6 +481,7 @@ def build_voice_pipeline(
     )
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
+        naturalness=naturalness,
     )
     llm_provider = build_llm_provider(config)
     # The gate is the brain's source of caller audio energy for the transcript
@@ -515,6 +524,7 @@ def build_voice_pipeline(
         authoritative_eot=provider_owns_turns,
         previous_memory=previous_memory,
         guardrails=guardrails,
+        naturalness=naturalness,
     )
     processors = [transport.input()]
     if audio_gate is not None:

@@ -228,6 +228,10 @@ class VoiceBotSetting(Base, TimestampMixin, AuditByMixin):
     # completionCriteria, tone, outOfScope, safety). NULL → a safe default is
     # derived at runtime from the published prompt, intents and domain policy.
     goal_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Human speech naturalness overrides (shared.orchestration.naturalness
+    # HUMAN_SPEECH_DEFAULTS keys). Sparse: only keys the bot overrides are
+    # stored. NULL → tenant override / platform defaults apply.
+    human_speech: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ChannelConfig(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin, TenantOwnedMixin):

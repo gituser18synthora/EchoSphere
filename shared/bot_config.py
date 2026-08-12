@@ -27,10 +27,12 @@ from shared.models import (
     Prompt,
     ProviderDef,
     ProviderModel,
+    TenantSetting,
     VoiceBot,
     VoiceBotSetting,
     VoiceProfile,
 )
+from shared.orchestration.naturalness import resolve_human_speech
 from shared.orchestration.voice_identity import VoiceIdentity
 from shared.providers.tts.delivery import clamp_level, clamp_speed
 
@@ -250,7 +252,11 @@ def resolve_voice_identity_for_settings(
     voice = (
         voice_settings.tts_voice
         if voice_settings is not None and voice_settings.tts_voice
-        else default_voice
+        else (
+            voice_settings.voice_id
+            if voice_settings is not None and voice_settings.voice_id
+            else default_voice
+        )
     )
     language_map = (
         (voice_settings.language_voice_map or {}) if voice_settings is not None else {}
@@ -381,6 +387,11 @@ class ResolvedBotConfig:
     # Empty → the runtime derives a safe default from the published prompt,
     # intents and runtime-context domain policy (backward compatible).
     goal_policy: dict = field(default_factory=dict)
+    # Fully-resolved human speech naturalness config (platform defaults +
+    # tenant override + bot override, already merged and clamped). Cached
+    # snapshots written before this field existed resolve to {} — the runtime
+    # re-applies platform defaults in that case.
+    human_speech: dict = field(default_factory=dict)
     silence_timeout: int = 12
     max_call_duration: int = 3600
     audio_settings: dict = field(default_factory=dict)
@@ -618,7 +629,13 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             break
 
         default_voice_value = (
-            (vbs.tts_voice if vbs and vbs.tts_voice else settings.tts_voice) or voice_name
+            (
+                vbs.tts_voice
+                if vbs and vbs.tts_voice
+                else (vbs.voice_id if vbs and vbs.voice_id else bot.voice_id)
+            )
+            or settings.tts_voice
+            or voice_name
         )
         default_voice_identity = _voice_identity(
             session, tts_provider, default_voice_value, bot.tenant_id
@@ -701,6 +718,18 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                           **(((vbs.audio_settings if vbs else None) or {}).get("telephony") or {})},
         }
 
+        # Human speech naturalness: platform defaults <- tenant override <-
+        # bot override, merged and clamped once here so the runtime and every
+        # cached snapshot carry the final effective config.
+        tenant_human_speech = session.execute(
+            select(TenantSetting.human_speech).where(
+                TenantSetting.tenant_id == bot.tenant_id
+            )
+        ).scalar_one_or_none()
+        human_speech = resolve_human_speech(
+            tenant_human_speech, vbs.human_speech if vbs else None
+        )
+
         # Default call language: the explicit per-language voice map "default"
         # wins; otherwise the bot's own configured languages (bot_languages)
         # decide — a bare "en" here used to reach providers that only accept
@@ -744,6 +773,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             kb_ids=list(kb_rows),
             intents=intents,
             goal_policy=(vbs.goal_policy if vbs else None) or {},
+            human_speech=human_speech,
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
             audio_settings=audio_settings,

@@ -280,6 +280,25 @@ class TestGoalEngineDecide:
         assert "transaction_reference" in user
         assert "क्या?" in user
 
+    async def test_voice_gender_reaches_stage_a_response_generation(self):
+        engine, llm = make_engine({
+            "scope": "in_scope",
+            "response_text": "मैं समझ सकती हूँ।",
+        })
+
+        await engine.decide("मेरे पास पैसे नहीं हैं", [], state={
+            "language": "hi-IN",
+            "assistant_voice_name": "Catalog Female",
+            "assistant_voice_gender": "female",
+        })
+
+        user = llm.calls[-1]["messages"][-1]["content"]
+        system = llm.calls[-1]["system"]
+        assert "Assistant voice name (catalog metadata): Catalog Female" in user
+        assert "Assistant voice gender (authoritative): female" in user
+        assert "सकती हूँ" in system
+        assert "caller" in system
+
 
 # ── latency budget: bounded input, bounded output, hard deadline ─────────────
 
