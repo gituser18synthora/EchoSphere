@@ -103,6 +103,9 @@ class TestBotSettingsApi:
         bot_id, _ = bot
         got = data(client.get(f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin))
         assert got["humanSpeech"] == {}
+        assert got["humanSpeechEffective"] == HUMAN_SPEECH_DEFAULTS
+        assert set(got["humanSpeechSources"].values()) == {"platform"}
+        assert got["humanSpeechInherited"] == HUMAN_SPEECH_DEFAULTS
 
         saved = data(client.put(
             f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin,
@@ -112,6 +115,10 @@ class TestBotSettingsApi:
         assert saved["humanSpeech"] == {
             "backchannels": False, "thinking_filler_probability": 0.5,
         }
+        assert saved["humanSpeechEffective"]["backchannels"] is False
+        assert saved["humanSpeechSources"]["backchannels"] == "bot"
+        assert saved["humanSpeechSources"]["thinking_filler_probability"] == "bot"
+        assert saved["humanSpeechSources"]["enabled"] == "platform"
 
     def test_invalid_override_is_rejected(self, client, tenant_admin, bot):
         bot_id, _ = bot
@@ -143,6 +150,9 @@ class TestTenantSettingsApi:
             json={"humanSpeech": {"backchannel_probability": 0.2}},
         ))
         assert got["humanSpeech"] == {"backchannel_probability": 0.2}
+        assert got["humanSpeechEffective"]["backchannel_probability"] == 0.2
+        assert got["humanSpeechSources"]["backchannel_probability"] == "tenant"
+        assert got["humanSpeechSources"]["enabled"] == "platform"
 
         bad = client.put(
             f"{API}/tenant/settings", headers=tenant_admin,

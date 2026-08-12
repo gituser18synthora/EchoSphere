@@ -32,7 +32,7 @@ from shared.models import (
     VoiceBotSetting,
     VoiceProfile,
 )
-from shared.orchestration.naturalness import resolve_human_speech
+from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.orchestration.voice_identity import VoiceIdentity
 from shared.providers.tts.delivery import clamp_level, clamp_speed
 
@@ -392,6 +392,8 @@ class ResolvedBotConfig:
     # snapshots written before this field existed resolve to {} — the runtime
     # re-applies platform defaults in that case.
     human_speech: dict = field(default_factory=dict)
+    # Per-key provenance for privacy-safe runtime telemetry/UI inheritance.
+    human_speech_sources: dict = field(default_factory=dict)
     silence_timeout: int = 12
     max_call_duration: int = 3600
     audio_settings: dict = field(default_factory=dict)
@@ -726,7 +728,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 TenantSetting.tenant_id == bot.tenant_id
             )
         ).scalar_one_or_none()
-        human_speech = resolve_human_speech(
+        human_speech, human_speech_sources = resolve_human_speech_with_sources(
             tenant_human_speech, vbs.human_speech if vbs else None
         )
 
@@ -774,6 +776,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             intents=intents,
             goal_policy=(vbs.goal_policy if vbs else None) or {},
             human_speech=human_speech,
+            human_speech_sources=human_speech_sources,
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
             audio_settings=audio_settings,

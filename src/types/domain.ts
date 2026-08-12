@@ -75,6 +75,32 @@ export interface AudioSettings {
   telephony?: AudioTransportSettings;
 }
 
+/** Sparse platform -> tenant -> bot natural-conversation overrides. */
+export interface HumanSpeechSettings {
+  enabled?: boolean;
+  thinking_fillers?: boolean;
+  acknowledgements?: boolean;
+  backchannels?: boolean;
+  prosody_variation?: boolean;
+  gender_agreement?: boolean;
+  micro_pauses?: boolean;
+  self_correction?: boolean;
+  thinking_filler_probability?: number;
+  acknowledgement_probability?: number;
+  tool_ack_probability?: number;
+  backchannel_probability?: number;
+  micro_pause_probability?: number;
+  self_correction_probability?: number;
+  min_long_turn_for_backchannel_ms?: number;
+  min_gap_between_backchannels_ms?: number;
+  max_backchannels_per_call?: number;
+}
+
+export type HumanSpeechEffectiveSettings = Required<HumanSpeechSettings>;
+export type HumanSpeechSettingKey = keyof HumanSpeechSettings;
+export type HumanSpeechSettingSource = "platform" | "tenant" | "bot";
+export type HumanSpeechSources = Record<HumanSpeechSettingKey, HumanSpeechSettingSource>;
+
 export interface VoiceSettings {
   botId: string;
   voiceId: string | null;
@@ -108,6 +134,12 @@ export interface VoiceSettings {
    * and domain policy.
    */
   goalPolicy: Record<string, unknown>;
+  /** Sparse bot overrides; empty means inherit tenant/platform. */
+  humanSpeech: HumanSpeechSettings;
+  humanSpeechEffective: HumanSpeechEffectiveSettings;
+  humanSpeechSources: HumanSpeechSources;
+  humanSpeechInherited: HumanSpeechEffectiveSettings;
+  humanSpeechInheritedSources: HumanSpeechSources;
 }
 
 /* ---------- Provider catalog (database-driven) ---------- */
@@ -127,6 +159,10 @@ export interface ProviderInfo {
 
 export interface ParamSpec {
   type: "number" | "integer" | "boolean" | "enum" | "string" | "int_list" | "string_list";
+  /** Specialized control ("dictionary") rendered outside the generic fields. */
+  widget?: string;
+  /** Display grouping hint (e.g. "pronunciation"). */
+  section?: string;
   min?: number;
   max?: number;
   step?: number;
@@ -157,6 +193,10 @@ export interface ProviderModelInfo {
   sampleRates: number[];
   streaming: boolean;
   paramsSchema: Record<string, ParamSpec>;
+  /** TTS only: [min, max] of the model's own speed control (Sarvam `pace`,
+      ElevenLabs `speed`), which Delivery tuning's speaking speed maps onto.
+      null/absent means the model has no speed control (e.g. eleven_v3). */
+  speedRange?: [number, number] | null;
   isDefault: boolean;
 }
 
@@ -241,6 +281,12 @@ export interface TenantSettings {
   notifications: { id: string; label: string; enabled: boolean }[];
   security: { sso?: boolean; mfa?: boolean };
   retentionDays: number;
+  /** Sparse tenant overrides; empty means inherit platform. */
+  humanSpeech: HumanSpeechSettings;
+  humanSpeechEffective: HumanSpeechEffectiveSettings;
+  humanSpeechSources: HumanSpeechSources;
+  humanSpeechInherited: HumanSpeechEffectiveSettings;
+  humanSpeechInheritedSources: HumanSpeechSources;
 }
 
 export type Severity = "good" | "warning" | "serious" | "critical" | "neutral";
@@ -1041,6 +1087,25 @@ export interface VoiceTuning {
   pauseMs: number;
   empathy: number; // 0–100
   energy: number; // 0–100
+}
+
+/* ---------- Pronunciation dictionaries (Sarvam dict_id) ---------- */
+
+/** Word → "speak as" mappings keyed by platform locale code. */
+export type PronunciationMap = Record<string, Record<string, string>>;
+
+export interface PronunciationDictionary {
+  id: string;
+  provider: string;
+  /** Provider-assigned id (e.g. "p_5cb7faa6") — the value stored as dict_id. */
+  dictId: string;
+  name: string;
+  description: string | null;
+  languageWordCounts: Record<string, number>;
+  createdAt: string | null;
+  updatedAt: string | null;
+  /** Present on the detail endpoint only — live provider mappings. */
+  pronunciations?: PronunciationMap;
 }
 
 /* ---------- Intents & Entities ---------- */

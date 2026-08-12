@@ -997,6 +997,10 @@ def serialize_health_metric(h: HealthMetric) -> dict:
 
 
 def serialize_tenant_settings(s: TenantSetting) -> dict:
+    from shared.orchestration.naturalness import resolve_human_speech_with_sources
+
+    effective, sources = resolve_human_speech_with_sources(s.human_speech)
+    inherited, inherited_sources = resolve_human_speech_with_sources()
     return {
         "tenantId": s.tenant_id,
         "displayName": s.display_name,
@@ -1009,6 +1013,10 @@ def serialize_tenant_settings(s: TenantSetting) -> dict:
         "security": s.security or {},
         "retentionDays": s.retention_days,
         "humanSpeech": s.human_speech or {},
+        "humanSpeechEffective": effective,
+        "humanSpeechSources": sources,
+        "humanSpeechInherited": inherited,
+        "humanSpeechInheritedSources": inherited_sources,
     }
 
 

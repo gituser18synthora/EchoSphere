@@ -19,10 +19,16 @@ Precedence rules (tested in tests/unit/test_delivery_tuning.py):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 # Canonical delivery-speed range (matches the voice-settings API validation).
 SPEED_MIN, SPEED_MAX = 0.5, 2.0
+
+# Per-provider speed parameters that Delivery tuning owns. They are stripped
+# from stored/submitted provider settings (save AND preview) so a stale value
+# can never shadow the canonical speed after a provider/model change.
+LEGACY_SPEED_PARAMS = ("pace", "speed")
 
 # Documented per-provider/model speed-parameter ranges (catalog schemas).
 _SARVAM_PACE_RANGE = {"bulbul:v2": (0.3, 3.0)}
@@ -45,6 +51,91 @@ _SARVAM_V2_ENERGY = (
     (80, {"pitch": 0.05, "loudness": 1.15}),
     (100, {"pitch": 0.1, "loudness": 1.3}),
 )
+
+
+@dataclass(frozen=True)
+class DeliveryCapabilities:
+    """Native delivery controls safe for one provider/model transport.
+
+    ``per_segment_*`` is deliberately stricter than basic support: it is true
+    only when a setting can change between already-segmented sentences without
+    reconnecting or force-flushing a live socket. Unsupported dimensions stay
+    in the provider-neutral speech plan and degrade to phrase segmentation and
+    bounded pauses; adapters never receive guessed wire parameters.
+    """
+
+    speaking_rate: bool = False
+    per_segment_rate: bool = False
+    emphasis: bool = False
+    pitch: bool = False
+    energy: bool = False
+    question_style: bool = False
+    emotional_style: bool = False
+    phrase_boundaries: bool = False
+
+
+def delivery_capabilities(
+    provider: str,
+    model: str = "",
+    *,
+    streaming: bool = False,
+) -> DeliveryCapabilities:
+    """Return conservative, documented capabilities for the selected path."""
+    provider = (provider or "").strip().lower()
+    model = (model or "").strip()
+    if provider == "elevenlabs":
+        has_rate = speed_param_name(provider, model) is not None
+        # Every REST sentence is an independent request. ElevenLabs WS may
+        # vary settings safely only because pause mode creates independent
+        # multi-context sub-generations on the existing socket.
+        return DeliveryCapabilities(
+            speaking_rate=has_rate,
+            per_segment_rate=has_rate,
+            energy=True,
+            emotional_style=True,
+            phrase_boundaries=True,
+        )
+    if provider == "sarvam":
+        v2 = model in _SARVAM_PITCH_LOUDNESS_MODELS
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            # Re-sending Sarvam WS config force-flushes the socket. REST calls
+            # are independent and can safely carry their own pace.
+            per_segment_rate=not streaming,
+            pitch=v2,
+            energy=v2,
+            phrase_boundaries=True,
+        )
+    if provider in ("google", "openai"):
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            per_segment_rate=not streaming,
+            phrase_boundaries=True,
+        )
+    # Azure and unknown/custom adapters expose no safe native delivery knobs
+    # through EchoSphere's current contract. Sentence segmentation still
+    # preserves phrase boundaries without sending unsupported parameters.
+    return DeliveryCapabilities(phrase_boundaries=not streaming)
+
+
+def strip_speed_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop the Delivery-owned per-provider speed duplicates from settings."""
+    return {k: v for k, v in (params or {}).items() if k not in LEGACY_SPEED_PARAMS}
+
+
+def speed_range(provider: str, model: str = "") -> tuple[float, float] | None:
+    """Documented speed range for the model, or None when it has no control.
+
+    Exposed so the API can tell the UI which bounds to render for the
+    canonical speaking-speed control instead of hardcoding provider ranges.
+    """
+    if speed_param_name(provider, model) is None:
+        return None
+    if provider == "sarvam":
+        return _SARVAM_PACE_RANGE.get(model, _SARVAM_PACE_DEFAULT_RANGE)
+    if provider == "elevenlabs":
+        return _ELEVEN_SPEED_RANGE
+    return None
 
 
 def clamp_speed(value: float | int | None, default: float = 1.0) -> float:

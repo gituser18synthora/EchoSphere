@@ -22,6 +22,7 @@ from shared.providers.tts.delivery import (
     apply_delivery_params,
     clamp_level,
     clamp_speed,
+    delivery_capabilities,
     energy_params,
     provider_speed,
     speed_param_name,
@@ -146,6 +147,36 @@ class TestEnergyMapping:
 
     def test_unknown_provider_gets_no_native_energy(self):
         assert energy_params("openai", "tts-1", 90) == {}
+
+
+class TestDeliveryCapabilities:
+    def test_elevenlabs_streaming_supports_context_local_rate_and_style(self):
+        caps = delivery_capabilities(
+            "elevenlabs", "eleven_flash_v2_5", streaming=True
+        )
+        assert caps.speaking_rate is True
+        assert caps.per_segment_rate is True
+        assert caps.emotional_style is True
+        assert caps.pitch is False
+
+    def test_sarvam_streaming_does_not_reconfigure_per_segment(self):
+        caps = delivery_capabilities("sarvam", "bulbul:v2", streaming=True)
+        assert caps.speaking_rate is True
+        assert caps.per_segment_rate is False
+        assert caps.pitch is True and caps.energy is True
+
+    def test_sarvam_rest_can_vary_rate_per_independent_segment(self):
+        caps = delivery_capabilities("sarvam", "bulbul:v3", streaming=False)
+        assert caps.speaking_rate is True
+        assert caps.per_segment_rate is True
+        assert caps.pitch is False and caps.energy is False
+
+    def test_unsupported_provider_degrades_to_phrase_boundaries_only(self):
+        caps = delivery_capabilities("custom", "unknown", streaming=False)
+        assert caps.phrase_boundaries is True
+        assert caps.speaking_rate is False
+        assert caps.per_segment_rate is False
+        assert caps.emphasis is False
 
 
 class TestDeliveryInstructions:

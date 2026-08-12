@@ -34,7 +34,7 @@ from shared.orchestration.placeholders import (
 MAX_COMPILED_CHARS = 24_000
 # Full prompts are authored whole (compliance rules, flows, objection
 # handling); rejecting an oversized one beats truncating it mid-rule.
-MAX_FULL_PROMPT_CHARS = 32_000
+MAX_FULL_PROMPT_CHARS = 35_000
 
 PROMPT_MODES = ("structured", "full")
 

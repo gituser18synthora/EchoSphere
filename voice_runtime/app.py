@@ -557,6 +557,34 @@ async def _run_call(
         await _close_websocket(websocket, code=4500, reason="voice engine configuration error")
         return
 
+    # FreeSWITCH call control: the fork serializer turns the brain's
+    # telephony_control transfer into the module's transfer message. The hook
+    # below fires at that exact moment — it records the request, marks the
+    # session transferred (so teardown neither kills the now-agent-owned
+    # channel nor reports a generic shutdown), and starts the ESL transfer
+    # monitor that follows the dialplan's bridge/hangup events.
+    call_uuid = session.get("call_id")
+    if telephony_provider == "freeswitch" and serializer is not None:
+        from voice_runtime.freeswitch import start_transfer_monitor
+
+        async def _on_freeswitch_control(message: dict) -> None:
+            if message.get("event") != "transfer":
+                return
+            recorder.transferred = True
+            # Background persistence: the hook runs inside serialize(), so a
+            # degraded Mongo must never delay the transfer message itself.
+            recorder.flush_event_soon(
+                "transfer_requested",
+                reason=message.get("reason") or "transfer",
+                call_uuid=call_uuid,
+                transport=media_transport or "audio_stream",
+            )
+            start_transfer_monitor(
+                session_id=session_id, call_uuid=call_uuid, recorder=recorder
+            )
+
+        serializer.on_telephony_control = _on_freeswitch_control
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         await recorder.flush_event(
@@ -582,15 +610,27 @@ async def _run_call(
     )
     try:
         await runner.run(worker)
-        await recorder.finalize(reason="completed")
+        await recorder.finalize(
+            reason="transferred" if recorder.transferred else "completed"
+        )
     except asyncio.CancelledError:
-        await recorder.finalize(reason="worker_shutdown")
+        await recorder.finalize(
+            reason="transferred" if recorder.transferred else "worker_shutdown"
+        )
         raise
     except Exception:  # noqa: BLE001 - one call must not take down the worker
         logger.exception("voice session %s crashed", session_id)
         await recorder.finalize(reason="error")
     finally:
         max_duration_handle.cancel()
+        if telephony_provider == "freeswitch" and not recorder.transferred:
+            # The bot ending the call must end the PSTN leg too — the
+            # dialplan script cannot see the media socket close, and a
+            # transferred caller now belongs to the agent (never killed).
+            # Best-effort and silent when the caller already hung up.
+            from voice_runtime.freeswitch import hangup_channel_soon
+
+            hangup_channel_soon(call_uuid, session_id=session_id)
         _active_sessions.pop(session_id, None)
         release_session_engine(session_id)
         await end_voice_session(session_id)

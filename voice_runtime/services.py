@@ -5,7 +5,9 @@ drive the realtime pipeline, so the voice runtime and the REST platform share
 one provider implementation.
 """
 
+import json
 import logging
+import time
 
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame, TTSAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection
@@ -14,6 +16,7 @@ from pipecat.services.tts_service import TTSService
 from pipecat.utils.time import time_now_iso8601
 
 from shared.providers.base import ProviderError, STTProvider, TTSProvider
+from shared.providers.tts.delivery import delivery_capabilities, provider_speed
 from shared.audio.pcm import resample_pcm, silence_pcm, wav_to_pcm
 from voice_runtime.frames import SwitchVoiceLanguageFrame
 
@@ -90,6 +93,8 @@ class EchoTTSService(TTSService):
         sample_rate: int | None = None,
         recorder=None,
         model: str | None = None,
+        provider_name: str = "",
+        naturalness=None,
         **kwargs,
     ) -> None:
         from pipecat.services.settings import TTSSettings
@@ -106,12 +111,15 @@ class EchoTTSService(TTSService):
         self._pause_ms = max(0, int(pause_ms or 0))
         self._recorder = recorder
         self._model = model or ""
+        self._provider_name = provider_name or getattr(provider, "name", "tts")
+        self._naturalness = naturalness
         # Sentence pause bookkeeping: sentences of one turn share a context id
         # and synthesize strictly in sequence here, so "a previous sentence of
         # this context produced audio" IS the sentence boundary. A new turn
         # (or barge-in) gets a fresh context id, which resets the counter.
         self._pause_context_id: str | None = None
         self._spoken_in_context = 0
+        self._planned_gap_ms = self._pause_ms
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -132,10 +140,69 @@ class EchoTTSService(TTSService):
         if context_id != self._pause_context_id:
             self._pause_context_id = context_id
             self._spoken_in_context = 0
+            self._planned_gap_ms = self._pause_ms
         # The gap is PREPENDED to the next sentence's first audio, so a turn
         # never starts or ends with inserted silence, and interruption drops
         # it together with the rest of the audio context.
         gap_owed = self._pause_ms > 0 and self._spoken_in_context > 0
+        gap_ms = self._planned_gap_ms
+        delivery = None
+        planning_ms = 0.0
+        if self._naturalness is not None:
+            planned_at = time.perf_counter()
+            delivery = self._naturalness.plan_segment(
+                text, base_pause_ms=self._pause_ms, language=self._language or ""
+            )
+            planning_ms = (time.perf_counter() - planned_at) * 1000.0
+        capabilities = delivery_capabilities(
+            self._provider_name, self._model, streaming=False
+        )
+        speed_scale = (
+            delivery.speed_scale
+            if delivery is not None and capabilities.per_segment_rate
+            else None
+        )
+        segment_speed = self._speed * (speed_scale if speed_scale is not None else 1.0)
+        if delivery is not None:
+            words = len((text or "").split())
+            logger.info("naturalness_segment %s", json.dumps({
+                "session": self._recorder.session_id if self._recorder else "?",
+                "context": str(context_id)[:8],
+                "provider": self._provider_name,
+                "model": self._model,
+                "human_speech_enabled": bool(
+                    getattr(self._naturalness, "enabled", False)
+                ),
+                "language": self._language,
+                "character_count": len(text),
+                "word_count": words,
+                "segment_type": (
+                    "critical" if delivery.critical
+                    else "question" if delivery.question_style
+                    else "short" if words <= 3 else "statement"
+                ),
+                "critical_content": delivery.critical,
+                "critical_reason": delivery.critical_reason,
+                "planned_pause_ms": (
+                    delivery.pause_after_ms
+                    if delivery.pause_after_ms is not None else self._pause_ms
+                ),
+                "speed_scale": speed_scale,
+                "speaking_rate": (
+                    provider_speed(
+                        self._provider_name, self._model, segment_speed
+                    ) if capabilities.speaking_rate else None
+                ),
+                "speech_style": delivery.speech_style,
+                "emphasis": delivery.emphasis,
+                "pitch_scale": delivery.pitch_scale if capabilities.pitch else None,
+                "energy_scale": delivery.energy_scale if capabilities.energy else None,
+                "question_style": (
+                    delivery.question_style if capabilities.question_style else False
+                ),
+                "phrase_boundary_count": len(delivery.phrase_boundaries),
+                "naturalness_processing_ms": round(planning_ms, 3),
+            }, ensure_ascii=False))
         try:
             await self.start_ttfb_metrics()
             # REST providers emit a fixed rate (e.g. ElevenLabs pcm_16000);
@@ -144,7 +211,7 @@ class EchoTTSService(TTSService):
             provider_rate = getattr(self._provider, "output_sample_rate", None)
             first = True
             async for chunk in self._provider.stream_synthesize(
-                text, voice=self._voice, language=self._language, speed=self._speed
+                text, voice=self._voice, language=self._language, speed=segment_speed
             ):
                 if not chunk:
                     continue
@@ -154,8 +221,13 @@ class EchoTTSService(TTSService):
                     self._spoken_in_context += 1
                     if gap_owed:
                         yield TTSAudioRawFrame(
-                            silence_pcm(self.sample_rate, self._pause_ms),
+                            silence_pcm(self.sample_rate, gap_ms),
                             self.sample_rate, 1, context_id=context_id,
+                        )
+                    if delivery is not None:
+                        self._planned_gap_ms = (
+                            delivery.pause_after_ms
+                            if delivery.pause_after_ms is not None else self._pause_ms
                         )
                     add_usage = getattr(self._recorder, "add_tts_usage", None)
                     if add_usage is not None:

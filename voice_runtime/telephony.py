@@ -90,7 +90,68 @@ class _RampedAudioMixin:
             self._ramp_step += 1
 
 
-class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
+class _FreeSwitchControlMixin:
+    """Telephony control (`transfer`) handling shared by both FreeSWITCH
+    serializers.
+
+    The brain publishes handoff decisions as ``telephony_control`` transport
+    messages (the same contract the Vaani serializer speaks). Dropping them —
+    the pre-fix behavior — meant the bot ANNOUNCED the transfer and then kept
+    the call: ``voicebot.lua`` waits for the ``mod_audio_fork::transfer``
+    event that only our ``{"type": "transfer"}`` message can produce.
+    """
+
+    # Whether the module behind this serializer understands the transfer
+    # message. mod_audio_fork converts it into the CUSTOM event the dialplan
+    # script acts on; mod_audio_stream has no equivalent.
+    _TRANSFER_ON_WIRE = True
+
+    def _init_control(self) -> None:
+        self._transfer_sent = False
+        # Installed by the session host (app.py): observes control events at
+        # the moment they reach the wire (transfer bookkeeping + monitoring).
+        self.on_telephony_control = None
+
+    async def _serialize_control(self, message: dict) -> str | None:
+        if (
+            message.get("type") != "telephony_control"
+            or message.get("event") != "transfer"
+        ):
+            return None
+        if self._transfer_sent:
+            # A retried handoff decision must not re-trigger the dialplan.
+            return None
+        self._transfer_sent = True
+        await self._notify_control(message)
+        if not self._TRANSFER_ON_WIRE:
+            logger.error(
+                "freeswitch transfer requested but mod_audio_stream has no "
+                "transfer message — use the audio_fork transport "
+                "(voicebot.lua) for human handoff"
+            )
+            return None
+        data = {"reason": message.get("reason") or "transfer"}
+        if message.get("transfer_queue"):
+            data["transfer_queue"] = str(message["transfer_queue"])
+        if message.get("agent_id"):
+            data["agent_id"] = str(message["agent_id"])
+        wire_message = json.dumps({"type": "transfer", "data": data})
+        logger.info("freeswitch outbound transfer: %s", wire_message)
+        return wire_message
+
+    async def _notify_control(self, message: dict) -> None:
+        callback = getattr(self, "on_telephony_control", None)
+        if callback is None:
+            return
+        try:
+            await callback(message)
+        except Exception:  # noqa: BLE001 — bookkeeping must never break media
+            logger.exception("telephony control hook failed")
+
+
+class FreeSwitchAudioStreamSerializer(
+    _FreeSwitchControlMixin, _RampedAudioMixin, FrameSerializer
+):
     """Media wire format used by ``mod_audio_stream`` on FreeSWITCH.
 
     Audio arrives as stereo binary L16 PCM. The installed QA
@@ -101,8 +162,11 @@ class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
     output is not played.
     """
 
+    _TRANSFER_ON_WIRE = False  # mod_audio_stream has no transfer message
+
     def __init__(self, *, send_kill_audio: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._init_control()
         self._pending_audio = bytearray()
         # Barge-in: clearing local pending bytes is not enough — up to ~2 s of
         # already-shipped audio sits in the module's playback buffer and would
@@ -152,6 +216,13 @@ class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
             self._reset_ramp()
             if self._send_kill_audio:
                 return json.dumps({"type": "killAudio"})
+            return None
+        # Both message variants must be accepted (the urgent one is a
+        # SystemFrame, not a subclass) or transfer controls vanish.
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
+            return await self._serialize_control(frame.message or {})
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:
@@ -270,18 +341,24 @@ class FreeSwitchAudioStreamSerializer(_RampedAudioMixin, FrameSerializer):
         return None
 
 
-class FreeSwitchAudioForkSerializer(_RampedAudioMixin, FrameSerializer):
+class FreeSwitchAudioForkSerializer(
+    _FreeSwitchControlMixin, _RampedAudioMixin, FrameSerializer
+):
     """Bidirectional media wire format used by ``mod_audio_fork``.
 
     The fork is started in ``mono 16k`` mode, so inbound binary frames are
     already caller-only signed 16-bit L16 PCM and must not be deinterleaved.
     Bot audio is returned through the module's documented ``playAudio`` JSON
     envelope. ``killAudio`` clears both EchoSphere's pending audio and the
-    module's current playback when Pipecat raises an interruption.
+    module's current playback when Pipecat raises an interruption. A
+    ``telephony_control`` transfer becomes the module's ``transfer`` message,
+    which FreeSWITCH surfaces as the ``mod_audio_fork::transfer`` CUSTOM
+    event ``voicebot.lua`` acts on.
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._init_control()
         self._pending_audio = bytearray()
         self._init_ramp()
         self._inbound_bytes = 0
@@ -305,6 +382,10 @@ class FreeSwitchAudioForkSerializer(_RampedAudioMixin, FrameSerializer):
             self._pending_audio.clear()
             self._reset_ramp()
             return json.dumps({"type": "killAudio"})
+        if isinstance(
+            frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        ):
+            return await self._serialize_control(frame.message or {})
         return None
 
     def _pop_audio_chunk(self, *, force: bool) -> str | None:

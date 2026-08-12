@@ -410,6 +410,8 @@ def build_tts_service(
         sample_rate=sample_rate,
         recorder=recorder,
         model=tts_conf.get("model") or "",
+        provider_name=provider,
+        naturalness=naturalness,
     )
 
 
@@ -467,7 +469,10 @@ def build_voice_pipeline(
     # backchannels) and the TTS router (per-sentence pause/rate variation) so
     # variant no-repeat state and telemetry stay coherent. Resolved config
     # comes fully merged from bot_config (platform -> tenant -> bot).
-    naturalness = SpeechNaturalnessPlanner(config.human_speech)
+    naturalness = SpeechNaturalnessPlanner(
+        config.human_speech,
+        config_sources=config.human_speech_sources,
+    )
     # Local Silero owns speech boundaries in the normal pipeline. Enabling
     # Sarvam server VAD at the same time produces duplicate start/stop frames;
     # a normal pause can then look like barge-in and cancel the LLM/TTS reply.

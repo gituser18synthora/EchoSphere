@@ -257,13 +257,14 @@ export function Tabs({ tabs, active, onChange }: { tabs: TabDef[]; active: strin
 }
 
 /* ---------- Toggle ---------- */
-export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+export function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
   return (
     <button
       role="switch"
       aria-checked={checked}
       aria-label={label}
       className="switch"
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     />
   );

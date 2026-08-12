@@ -17,6 +17,8 @@ from backend.core.deps import (
 )
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
+from shared.providers.tts.delivery import strip_speed_params
+from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.softdelete import guard_hard_delete, soft_delete
@@ -26,6 +28,7 @@ from shared.models import (
     ChannelConfig,
     SupportedLanguage,
     Tenant,
+    TenantSetting,
     UsageRecord,
     User,
     VoiceBot,
@@ -422,13 +425,8 @@ _VOICE_SETTINGS_FIELDS = (
 # Delivery tuning's speaking speed is the single canonical speed control:
 # per-provider duplicates in stored TTS parameters are stripped on save and
 # hidden on read (the runtime additionally overrides any value that survives
-# in old rows — see shared/providers/tts/delivery.py).
-_LEGACY_SPEED_PARAMS = ("pace", "speed")
-
-
-def _strip_legacy_speed(params: dict | None) -> dict:
-    return {k: v for k, v in (params or {}).items() if k not in _LEGACY_SPEED_PARAMS}
-
+# in old rows). shared/providers/tts/delivery.py owns the key list so the save
+# path and the preview path strip exactly the same parameters.
 
 def _sanitize_language_voice_map(lang_map: dict | None) -> dict | None:
     if lang_map is None:
@@ -436,12 +434,20 @@ def _sanitize_language_voice_map(lang_map: dict | None) -> dict | None:
     sanitized: dict = {}
     for locale, entry in lang_map.items():
         if isinstance(entry, dict) and entry.get("params"):
-            entry = {**entry, "params": _strip_legacy_speed(entry["params"])}
+            entry = {**entry, "params": strip_speed_params(entry["params"])}
         sanitized[locale] = entry
     return sanitized
 
 
-def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
+def _serialize_voice_settings(
+    s: VoiceBotSetting, tenant_human_speech: dict | None = None
+) -> dict:
+    effective, sources = resolve_human_speech_with_sources(
+        tenant_human_speech, s.human_speech
+    )
+    inherited, inherited_sources = resolve_human_speech_with_sources(
+        tenant_human_speech
+    )
     return {
         "botId": s.bot_id,
         "voiceId": s.voice_id,
@@ -457,7 +463,7 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
-        "ttsSettings": _strip_legacy_speed(s.tts_settings),
+        "ttsSettings": strip_speed_params(s.tts_settings),
         "llmProvider": s.llm_provider,
         "llmModel": s.llm_model,
         "llmSettings": s.llm_settings or {},
@@ -467,6 +473,10 @@ def _serialize_voice_settings(s: VoiceBotSetting) -> dict:
         "audioSettings": s.audio_settings or {},
         "goalPolicy": s.goal_policy or {},
         "humanSpeech": s.human_speech or {},
+        "humanSpeechEffective": effective,
+        "humanSpeechSources": sources,
+        "humanSpeechInherited": inherited,
+        "humanSpeechInheritedSources": inherited_sources,
     }
 
 
@@ -483,7 +493,12 @@ def get_voice_settings(
         )
         db.add(s)
         db.commit()
-    return ok(_serialize_voice_settings(s))
+    tenant_human_speech = db.scalar(
+        select(TenantSetting.human_speech).where(
+            TenantSetting.tenant_id == bot.tenant_id
+        )
+    )
+    return ok(_serialize_voice_settings(s, tenant_human_speech))
 
 
 @router.put("/bots/{bot_id}/voice-settings")
@@ -501,7 +516,12 @@ def update_voice_settings(
             id=new_id("vbs"), bot_id=bot.id, tenant_id=bot.tenant_id, created_by=user.id
         )
         db.add(s)
-    before = _serialize_voice_settings(s)
+    tenant_human_speech = db.scalar(
+        select(TenantSetting.human_speech).where(
+            TenantSetting.tenant_id == bot.tenant_id
+        )
+    )
+    before = _serialize_voice_settings(s, tenant_human_speech)
     if body.voice_id is not None:
         if body.voice_id:
             profile = db.get(VoiceProfile, body.voice_id)
@@ -548,7 +568,7 @@ def update_voice_settings(
     # Sanitize legacy per-provider speed duplicates before validation and
     # persistence — Delivery tuning's speed is the only speed control.
     if body.tts_settings is not None:
-        body.tts_settings = _strip_legacy_speed(body.tts_settings)
+        body.tts_settings = strip_speed_params(body.tts_settings)
     if body.language_voice_map is not None:
         body.language_voice_map = _sanitize_language_voice_map(body.language_voice_map)
 
@@ -586,13 +606,17 @@ def update_voice_settings(
     record_audit(
         db, user=user, action="Updated voice settings", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
-        previous_value=before, new_value=_serialize_voice_settings(s), request=request,
+        previous_value=before,
+        new_value=_serialize_voice_settings(s, tenant_human_speech), request=request,
     )
     db.commit()
     from shared.bot_config import invalidate_bot_config_sync
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
-    return ok(_serialize_voice_settings(s), meta={"warnings": warnings} if warnings else None)
+    return ok(
+        _serialize_voice_settings(s, tenant_human_speech),
+        meta={"warnings": warnings} if warnings else None,
+    )
 
 
 # ── Bot-level guardrail profile ───────────────────────────────────────────────

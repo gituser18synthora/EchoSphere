@@ -65,6 +65,11 @@ class SessionRecorder:
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
         self.end_reason: str | None = None
+        # True once a telephony transfer control actually reached the wire.
+        # Teardown branches on it: a transferred caller now belongs to the
+        # human agent, so the channel is never killed and the end reason is
+        # "transferred" rather than a generic shutdown.
+        self.transferred: bool = False
         # Call outcome captured by the conversation policy (promise_to_pay,
         # payment_claimed, wrong_number, account_disputed, callback_requested,
         # complaint_recorded, escalated, …) — updated live by the brain.

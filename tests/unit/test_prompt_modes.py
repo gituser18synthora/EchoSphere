@@ -32,6 +32,10 @@ Thank the customer and end politely.
 
 
 class TestFullPromptValidation:
+    def test_limit_is_35_000_characters(self):
+        assert MAX_FULL_PROMPT_CHARS == 35_000
+        assert validate_full_prompt("x" * 35_000) == []
+
     def test_valid_full_prompt(self):
         assert validate_full_prompt(FULL_PROMPT) == []
 

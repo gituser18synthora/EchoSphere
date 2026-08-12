@@ -121,6 +121,29 @@ class VoiceProfile(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     provider_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class PronunciationDictionary(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Tenant-scoped metadata for provider pronunciation dictionaries.
+
+    The provider account (Sarvam) stores the actual pronunciations and issues
+    provider_dict_id; its list API returns bare ids with no names, so this
+    table owns the tenant-facing name plus a cached per-language word-count
+    summary. TTS (preview and live calls) passes provider_dict_id as dict_id.
+    """
+
+    __tablename__ = "pronunciation_dictionaries"
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(40), default="sarvam", nullable=False)
+    provider_dict_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # {"hi-IN": 12, "en-IN": 3} — display summary only, provider is authoritative.
+    language_word_counts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class VoiceCloneAudio(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     """Source audio a cloned voice was built from — retained after cloning so
     tenants can replay exactly what was sent to the provider. One row per
