@@ -222,6 +222,11 @@ class Settings(BaseSettings):
     # lifetime for calls whose hangup event never arrives.
     freeswitch_transfer_ring_seconds: float = 120.0
     freeswitch_transfer_monitor_max_seconds: float = 7200.0
+    # Hangup lifecycle monitoring over the FreeSWITCH event socket (one
+    # monitor per FreeSWITCH call, started at call start). Bounds the
+    # monitor's lifetime for channels whose hangup events never arrive —
+    # generous because it must outlast the longest allowed call.
+    freeswitch_hangup_monitor_max_seconds: float = 14400.0
     telephony_webhook_secret_reference: str = "env:TELEPHONY_WEBHOOK_SECRET"
     # Public base URL (ws:// or wss://) telephony providers use to reach the
     # VOICE WORKER's media WebSocket. Set it whenever the worker is not

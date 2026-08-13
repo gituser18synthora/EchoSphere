@@ -587,6 +587,33 @@ async def _run_call(
 
         serializer.on_telephony_control = _on_freeswitch_control
 
+    if telephony_provider == "freeswitch":
+        # Authoritative call-end detection, independent of the media socket:
+        # a per-call ESL monitor follows the channel's CHANNEL_HANGUP /
+        # CHANNEL_HANGUP_COMPLETE / CHANNEL_DESTROY events, records the raw
+        # Hangup-Cause plus the normalized disconnect reason on this call's
+        # event stream, and invokes the hook below on the first real hangup.
+        # Fail-open like the transfer monitor: without ESL the disconnect
+        # path below (on_client_disconnected) still ends the call.
+        from voice_runtime.freeswitch import start_hangup_monitor
+
+        async def _end_call_on_hangup(info: dict) -> None:
+            # The channel is gone: no further STT/LLM/TTS or queued bot
+            # audio may run for this call. Cancelling the worker tears the
+            # pipeline down exactly like a media-socket disconnect; the
+            # end_reason guard keeps a late or duplicate hangup signal from
+            # re-running teardown on an already-finalized call.
+            if recorder.end_reason is not None:
+                return
+            await worker.cancel()
+
+        start_hangup_monitor(
+            session_id=session_id,
+            call_uuid=call_uuid,
+            recorder=recorder,
+            on_hangup=_end_call_on_hangup,
+        )
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         await recorder.flush_event(
@@ -623,6 +650,19 @@ async def _run_call(
         await recorder.flush_event("session_timeout")
         await worker.cancel()
 
+    def _final_end_reason(default: str) -> str:
+        # Precedence: an on-the-wire transfer, then FreeSWITCH's own account
+        # of why the channel died (caller_hangup/app_hangup/provider_failure/
+        # media_failure), then the pipeline-shape default. A hangup event
+        # that lands after finalize still reaches the transcript through the
+        # monitor's direct writes — this only decides end_reason.
+        if recorder.transferred:
+            return "transferred"
+        hangup_reason = (recorder.hangup or {}).get("reason")
+        if hangup_reason and hangup_reason != "unknown":
+            return hangup_reason
+        return default
+
     runner = PipelineRunner(handle_sigint=False)
     # The session was already claimed in _active_sessions at connection time.
     max_duration_handle = asyncio.get_running_loop().call_later(
@@ -630,13 +670,9 @@ async def _run_call(
     )
     try:
         await runner.run(worker)
-        await recorder.finalize(
-            reason="transferred" if recorder.transferred else "completed"
-        )
+        await recorder.finalize(reason=_final_end_reason("completed"))
     except asyncio.CancelledError:
-        await recorder.finalize(
-            reason="transferred" if recorder.transferred else "worker_shutdown"
-        )
+        await recorder.finalize(reason=_final_end_reason("worker_shutdown"))
         raise
     except Exception:  # noqa: BLE001 - one call must not take down the worker
         logger.exception("voice session %s crashed", session_id)

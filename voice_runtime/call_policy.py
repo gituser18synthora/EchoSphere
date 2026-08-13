@@ -68,11 +68,12 @@ the per-turn instruction with the scripted text as the safety net.
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 
 from shared.customer_context import CustomerContextSnapshot
 from shared.orchestration.decision_schema import SCOPE_IN, ConversationDecision
 from shared.orchestration.phrases import resolve_phrase
+from shared.orchestration.spoken_numbers import verbalized_digits
 
 # ── phases ───────────────────────────────────────────────────────────────────
 GREETING = "greeting"
@@ -268,8 +269,9 @@ _NAME_MISMATCH = re.compile(
 # A concrete time offered for a payment/callback ("शाम को", "kal subah",
 # "after 6", "6 baje") — enough to CONFIRM a callback instead of re-asking.
 _TIME_HINT = re.compile(
-    r"शाम|सुबह|दोपहर|कल|परसों|बजे|subah|shaam|sham|dopahar|kal|parso|baje"
-    r"|\bevening\b|\bmorning\b|\bafternoon\b|\btomorrow\b|\btonight\b"
+    r"शाम|सुबह|दोपहर|कल|परसों|आज|बजे|subah|shaam|sham|dopahar|kal|parso"
+    r"|\baaj\b|baje"
+    r"|\bevening\b|\bmorning\b|\bafternoon\b|\btomorrow\b|\btonight\b|\btoday\b"
     r"|\b\d{1,2}\s*(?:am|pm|baje|बजे)\b|\bafter\s+\d",
     re.I,
 )
@@ -319,6 +321,66 @@ _IDENTITY_QUESTION = re.compile(
     r"|(?:aap|आप)[^।?!]{0,20}(?:hi|ही)\s*(?:bol|बोल)",
     re.I,
 )
+# How-much question about the account (total/overdue/minimum/penalty) —
+# domain-owned, independent of the platform signal bank: "कितना payment
+# करना है?" is an ASK for a figure, never a commitment and never a refusal.
+_AMOUNT_QUERY = re.compile(
+    r"(?:kitn\w*|कितन\S*)\W+(?:\w+\W+){0,3}?"
+    r"(?:amount|payment|paisa|paise|पैसा|पैसे|rupay\w*|रुपये|रुपए|"
+    r"den[ae]|देना|देने|bharn[ae]|भरना|भरने|baki|baaki|बाक़ी|बाकी|"
+    r"bakaya|बकाया|due|balance)"
+    r"|(?:amount|balance|outstanding|overdue|bakaya|बकाया|राशि|रकम)\W+"
+    r"(?:\w+\W+){0,2}?(?:kitn\w*|कितन\S*|kya|क्या|batao|bataiye|बताओ|बताइए|बता)"
+    r"|\bhow much\b"
+    r"|(?:total|kul|कुल)\W+(?:\w+\W+){0,2}?"
+    r"(?:amount|outstanding|baki|baaki|bakaya|बकाया|kitn\w*|कितन\S*)"
+    r"|(?:minimum|(?:kam|कम)\s*se\s*(?:kam|कम))\W+(?:\w+\W+){0,2}?"
+    r"(?:amount|payment|payable|kitn\w*|कितन\S*)",
+    re.I,
+)
+# Which figure the caller asked for; drives the answer-first amount reply.
+_AMOUNT_TYPE_PATTERNS = (
+    ("total", re.compile(
+        r"\btotal\b|kul|कुल|poora|पूरा|\bfull\b|sab (?:kitna|कितना)", re.I)),
+    ("minimum", re.compile(
+        r"minimum|(?:kam|कम)\s*se\s*(?:kam|कम)|\bpart(?:ial)?\b|थोड़ा", re.I)),
+    ("penalty", re.compile(
+        r"penalty|late fee|penal|जुर्माना|extra charge|चार्ज", re.I)),
+    ("overdue", re.compile(r"overdue|due amount|बकाया|bakaya", re.I)),
+)
+
+
+def detect_amount_query(text: str) -> bool:
+    """Whether the utterance asks for an account figure."""
+    stripped = (text or "").strip()
+    return bool(stripped) and bool(_AMOUNT_QUERY.search(stripped))
+
+
+# A genuine medical / family emergency inside a hardship statement. This is
+# NOT an ordinary "no funds" objection: the recovery ladder pauses for the
+# turn and no consequence/offer/borrowing pitch may run.
+_MEDICAL_EMERGENCY = re.compile(
+    r"hospital|अस्पताल|admit|एडमिट|icu|\bilaa?j\b|इलाज|operation|ऑपरेशन"
+    r"|surgery|सर्जरी|bima?ar|beemar|बीमार|बिमार|tabiy?at|तबीयत|तबियत"
+    r"|medical|मेडिकल|emergency|इमरजेंसी|accident|एक्सीडेंट|दुर्घटना"
+    r"|(?:guzar|गुज़र|गुजर)\s*(?:ga|गए|गया|गयी)|देहांत|निधन|death|expire",
+    re.I,
+)
+
+
+def detect_medical_emergency(text: str) -> bool:
+    """Medical/family-emergency language inside the caller's statement."""
+    stripped = (text or "").strip()
+    return bool(stripped) and bool(_MEDICAL_EMERGENCY.search(stripped))
+
+
+def amount_query_type(text: str) -> str:
+    """Which figure was asked for: total/minimum/penalty/overdue/ambiguous."""
+    stripped = (text or "").strip()
+    for label, pattern in _AMOUNT_TYPE_PATTERNS:
+        if pattern.search(stripped):
+            return label
+    return "ambiguous"
 _RECORDING_MENTION = re.compile(r"record|रिकॉर्ड", re.I)
 # Identity confirmation is deliberately STRICT. The old permissive matcher
 # ("बोल रहा" anywhere counted as yes) confirmed identity from ambiguous or
@@ -405,19 +467,6 @@ def classify_identity_answer(text: str, signal: str | None) -> str:
 
 
 # ── transaction-reference capture ────────────────────────────────────────────
-_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-_SPOKEN_DIGITS = {
-    "zero": "0", "shunya": "0", "शून्य": "0", "जीरो": "0",
-    "one": "1", "ek": "1", "एक": "1",
-    "two": "2", "do": "2", "दो": "2",
-    "three": "3", "teen": "3", "तीन": "3",
-    "four": "4", "char": "4", "chaar": "4", "चार": "4",
-    "five": "5", "paanch": "5", "panch": "5", "पाँच": "5", "पांच": "5",
-    "six": "6", "chhe": "6", "che": "6", "छह": "6", "छे": "6",
-    "seven": "7", "saat": "7", "सात": "7",
-    "eight": "8", "aath": "8", "आठ": "8",
-    "nine": "9", "nau": "9", "नौ": "9",
-}
 # 6–22 digits (UTR is typically 12), optionally with a short alpha prefix or
 # suffix (bank reference formats). Digit groups the caller read out with
 # pauses arrive as space/hyphen-separated groups and are joined first.
@@ -425,13 +474,15 @@ _REFERENCE_TOKEN = re.compile(r"[A-Za-z]{0,6}\d{6,22}[A-Za-z0-9]{0,6}")
 
 
 def normalize_reference_text(text: str) -> str:
-    """Digit-normalize an utterance for reference extraction."""
-    normalized = (text or "").translate(_DEVANAGARI_DIGITS)
-    words = [
-        _SPOKEN_DIGITS.get(word.strip("।,.!?").lower(), word)
-        for word in normalized.split()
-    ]
-    normalized = " ".join(words)
+    """Digit-normalize an utterance for reference extraction.
+
+    The shared spoken-number layer handles English/Hindi/Hinglish digit
+    words, "double"/"triple" repetitions, Devanagari digits, and compound
+    Hindi values ("नौ सौ छत्तीस" → 936); joined digit groups then form one
+    candidate token. The RAW transcript is never rewritten — this derived
+    form exists only for extraction.
+    """
+    normalized = verbalized_digits(text or "")
     # "1234 5678 9012" / "1234-5678-9012" → "123456789012"
     return re.sub(r"(?<=\d)[\s\-.](?=\d)", "", normalized)
 
@@ -463,6 +514,19 @@ def is_valid_transaction_reference(reference: str | None) -> bool:
 def spoken_reference(reference: str) -> str:
     """Reference for read-back: digit by digit, so the TTS never garbles it."""
     return " ".join(reference)
+
+
+# A concrete rupee amount inside a commitment ("₹2000", "do hazaar rupaye").
+_AMOUNT_TOKEN = re.compile(
+    r"₹?\s*(\d{2,7})(?:\s*(?:rupees|rupay\w*|रुपये|रुपए|rs))?", re.I
+)
+
+
+def _proposed_amount(text: str) -> str | None:
+    """The amount the caller proposed (a claim, never a verified figure)."""
+    normalized = verbalized_digits(text or "").replace(",", "")
+    match = _AMOUNT_TOKEN.search(normalized)
+    return match.group(1) if match else None
 
 
 # Dispositions, most-significant-first (index = priority).
@@ -507,6 +571,10 @@ class TurnPlan:
     # configured payment tool BEFORE replying. The policy is re-planned after
     # record_payment_verification folds the result in.
     verify_reference: str | None = None
+    # The caller asked for an account figure and an account-status tool is
+    # configured: the brain must run the REAL lookup before replying (with a
+    # natural pre-speech acknowledgment), then re-plan on the fresh values.
+    refresh_account: bool = False
 
 
 @dataclass
@@ -560,6 +628,30 @@ class CollectionCallPolicy:
     payment_initiated: bool = False
     escalated: bool = False
     interruption_detected: bool = False
+    # ── recovery-ladder state (owned HERE, not by prompt history-scanning:
+    # two independent trackers of the same rungs is how repeated pitches
+    # happened). A rung is marked used when its instruction is issued.
+    consequence_used: bool = False
+    offer_used: bool = False
+    partial_used: bool = False
+    self_resolution_used: bool = False
+    final_options_offered: bool = False
+    # Payment-commitment slots observed so far (claims, never verified facts):
+    # what amount the caller proposed and whether a concrete date was given.
+    proposed_amount: str | None = None
+    promise_date_known: bool = False
+    # THIS turn's amount question ("total"/"overdue"/"minimum"/"penalty"/
+    # "ambiguous"); None when the latest turn asked no amount question.
+    pending_amount_type: str | None = None
+    # Serious-hardship handling: medical/family emergency pauses the ladder
+    # for the turn; the acknowledgment is made once, not per mention.
+    hardship_acknowledged: bool = False
+    # Whether an account-status/amount tool is configured for this bot,
+    # whether it already ran this call, and whether it actually SUCCEEDED
+    # (only a successful refresh may be described as fresh figures).
+    account_tool_available: bool = False
+    account_refreshed: bool = False
+    account_refresh_succeeded: bool = False
     # How the LAST observed turn was interpreted: "decision" (validated Goal
     # Engine output) or "regex" (deterministic fallback). Observability only.
     last_interpretation_source: str = "regex"
@@ -575,6 +667,12 @@ class CollectionCallPolicy:
     # THIS turn's identity answer was unclear (set by observe_user, consumed
     # by plan_turn to script the re-ask instead of freeing the LLM).
     _identity_unclear_turn: bool = False
+    # THIS turn raised hardship / a medical emergency (turn-scoped: drives
+    # the empathy-first handling exactly once, on the turn it was said).
+    _hardship_turn: bool = False
+    _medical_turn: bool = False
+    # The ladder rung selected for THIS turn's reply (turn-scoped).
+    _ladder_rung_turn: str | None = None
     # THIS turn captured the transaction reference (drives read-back).
     _reference_captured_turn: bool = False
     _closed: bool = False
@@ -625,6 +723,10 @@ class CollectionCallPolicy:
         stripped = (text or "").strip()
         self._identity_unclear_turn = False
         self._reference_captured_turn = False
+        self._hardship_turn = False
+        self._medical_turn = False
+        self._ladder_rung_turn = None
+        self.pending_amount_type = None
         self.last_interpretation_source = "regex" if decision is None else "decision"
         if not stripped:
             return
@@ -749,19 +851,43 @@ class CollectionCallPolicy:
 
         if signal == "hardship":
             self.hardship_raised = True
+            self._hardship_turn = True
+            self._medical_turn = detect_medical_emergency(stripped)
             claim = stripped
+        elif detect_medical_emergency(stripped) and signal in (None, "refusal",
+                                                               "callback"):
+            # Medical/family-emergency language without the hardship signal
+            # (e.g. "मम्मी hospital में हैं, बाद में call करना") still gets
+            # the humane handling, never a plain refusal/callback script.
+            self.hardship_raised = True
+            self._hardship_turn = True
+            self._medical_turn = True
+            claim = claim or stripped
         if signal == "refusal":
             self.refusals += 1
         if signal == "agent_request":
             self.escalated = True
             self.phase = ESCALATION
-        if signal == "payment_intent" and not self.blockers():
+        # An amount question is detected on the utterance itself (domain
+        # rule): "कितना payment करना है?" routes as an ASK regardless of what
+        # the generic signal bank labelled it.
+        if detect_amount_query(stripped):
+            self.pending_amount_type = amount_query_type(stripped)
+        if signal == "payment_intent" and self.pending_amount_type is None \
+                and not self.blockers():
             self.promise_to_pay = True
             if self.phase in (ACCOUNT_EXPLANATION, PAYMENT_DISCUSSION, GREETING,
                               IDENTITY_VERIFICATION):
                 self.phase = PAYMENT_DISCUSSION
             if _TIME_HINT.search(stripped):
                 self.callback_time_known = True
+                self.promise_date_known = True
+            amount = _proposed_amount(stripped)
+            if amount:
+                self.proposed_amount = amount
+            # The commitment turn may already name the method ("UPI se kar
+            # dunga") — recorded as a claim, exactly like the claim flow.
+            self._note_payment_details(stripped)
 
         if claim:
             snippet = claim[:160]
@@ -792,6 +918,10 @@ class CollectionCallPolicy:
             "complaint", "agent_request", "hardship", "callback",
             "wrong_person", "question",
         ):
+            return False
+        if detect_amount_query(stripped):
+            # "कितना बाक़ी है?" while the reference is awaited is an amount
+            # question, never an attempt at saying the number.
             return False
         self._note_payment_details(stripped)
         # Semantic-first: what did the decision layer observe for this slot?
@@ -885,12 +1015,13 @@ class CollectionCallPolicy:
 
         Called by the brain after a real check ran (the account-level
         payment-status tool on the claim turn, or the reference verification
-        once the transaction number was captured). Only a positive
-        confirmation resolves the claim from the account-level check; once a
-        reference is in hand every answer — including "no tool available"
-        (``status=None`` with ``for_reference=True``) — produces an honest
-        outcome: verified / pending / failed / unverified. A None/failed
-        check before any reference exists changes nothing.
+        once the transaction number was captured). A positive confirmation —
+        or an honest "still processing" — resolves the claim from the
+        account-level check; once a reference is in hand every answer —
+        including "no tool available" (``status=None`` with
+        ``for_reference=True``) — produces an honest outcome: verified /
+        pending / failed / unverified. A None/failed check before any
+        reference exists changes nothing (the UTR ask is the fallback).
         """
         if source:
             self.verification_source = source
@@ -905,6 +1036,10 @@ class CollectionCallPolicy:
             self.payment_claim_stage = 2
             return
         if not (for_reference or self.transaction_reference):
+            # Account-level check without a reference: only a positive
+            # confirmation resolves. A pending/failed status is surfaced
+            # honestly via the Backend-verification prompt block while the
+            # UTR is still collected as evidence for the follow-up team.
             return
         if normalized in self._PENDING_STATUSES:
             self.verification_outcome = "pending"
@@ -918,6 +1053,69 @@ class CollectionCallPolicy:
             self.verification_outcome = "pending"
         self.awaiting_reference = False
         self.payment_claim_stage = 2
+
+    # Canonical account-figure fields an account-status tool may refresh,
+    # with the wire-name aliases tenants commonly use.
+    _ACCOUNT_FIELD_ALIASES = {
+        "overdue_amount": ("overdue_amount", "overdueamount", "overdue"),
+        "total_outstanding": (
+            "total_outstanding", "totaloutstanding", "total", "outstanding",
+            "outstanding_amount",
+        ),
+        "minimum_payable": (
+            "minimum_payable", "minimumpayable", "minimum", "min_due",
+            "minimum_due", "min_amount",
+        ),
+        "penal_charges": (
+            "penal_charges", "penalcharges", "penalty", "late_fee",
+            "latefee", "penalty_amount",
+        ),
+        "due_date": ("due_date", "duedate"),
+        "days_overdue": ("days_overdue", "daysoverdue", "dpd"),
+    }
+
+    def record_account_refresh(self, payload: dict | None, source: str | None = None) -> None:
+        """Fold a REAL account-status tool result into the live facts.
+
+        Only recognized figure fields update; everything else in the payload
+        is ignored here (the brain separately surfaces the raw tool result to
+        the LLM). A failed/empty lookup marks the refresh attempted so the
+        turn does not retry in a loop — the reply then uses the loaded facts
+        and never claims a fresh check succeeded.
+        """
+        self.account_refreshed = True
+        if not payload or self.context is None:
+            return
+        lowered = {
+            str(key).strip().lower().replace(" ", "_"): value
+            for key, value in payload.items()
+        }
+        updates: dict = {}
+        for field_name, aliases in self._ACCOUNT_FIELD_ALIASES.items():
+            for alias in aliases:
+                if alias not in lowered or lowered[alias] is None:
+                    continue
+                value = lowered[alias]
+                try:
+                    if field_name == "due_date":
+                        updates[field_name] = str(value)
+                    elif field_name == "days_overdue":
+                        updates[field_name] = int(float(value))
+                    else:
+                        updates[field_name] = float(value)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    break
+        if updates:
+            # A successful HTTP/tool result is not automatically a successful
+            # FIGURE refresh.  If it returned only unrelated fields (for
+            # example {"status": "ok"}), keep the loaded snapshot and never
+            # tell the caller that the amount was freshly verified.
+            self.account_refresh_succeeded = True
+            # The snapshot is frozen (verified facts are never mutated in
+            # place) — refreshed figures produce a NEW snapshot.
+            self.context = dataclass_replace(self.context, **updates)
 
     # ── decisions ────────────────────────────────────────────────────────
 
@@ -1059,6 +1257,42 @@ class CollectionCallPolicy:
                 return "payment_commitment"
         return None
 
+    def _advance_ladder(self) -> str:
+        """The next unused recovery rung; marks it used.
+
+        consequence → offer (only when a verified offer exists) → partial
+        (only when partial payment is allowed) → self-resolution → final
+        options (callback/agent) → closed. Unavailable rungs are skipped, a
+        used rung never repeats, and this state is the ONLY ladder tracker —
+        the prompt no longer scans history for what was already pitched.
+        """
+        ctx = self.context
+        if not self.consequence_used:
+            self.consequence_used = True
+            self._ladder_rung_turn = "consequence"
+            return "consequence"
+        if not self.offer_used and ctx is not None and (
+            ctx.active_offers or ctx.offer_terms
+        ):
+            self.offer_used = True
+            self._ladder_rung_turn = "offer"
+            return "offer"
+        if not self.partial_used and ctx is not None \
+                and ctx.partial_payment_allowed:
+            self.partial_used = True
+            self._ladder_rung_turn = "partial"
+            return "partial"
+        if not self.self_resolution_used:
+            self.self_resolution_used = True
+            self._ladder_rung_turn = "self_resolution"
+            return "self_resolution"
+        if not self.final_options_offered:
+            self.final_options_offered = True
+            self._ladder_rung_turn = "final_options"
+            return "final_options"
+        self._ladder_rung_turn = "closed"
+        return "closed"
+
     def blockers(self) -> list[str]:
         open_blockers: list[str] = []
         if self.wrong_party:
@@ -1071,8 +1305,16 @@ class CollectionCallPolicy:
             open_blockers.append("complaint raised")
         return open_blockers
 
-    def plan_turn(self, text: str, signal: str | None) -> TurnPlan:
-        """Decide how the brain must handle this turn. Call AFTER observe_user."""
+    def plan_turn(
+        self, text: str, signal: str | None, *, workflow_active: bool = False,
+    ) -> TurnPlan:
+        """Decide how the brain must handle this turn. Call AFTER observe_user.
+
+        ``workflow_active`` — a tenant-authored workflow currently owns the
+        conversation flow: the policy then never claims amount/commitment/
+        ladder turns for itself (the workflow's own nodes and its off-script
+        LLM fallback receive this policy's per-turn instruction instead).
+        """
         plan = TurnPlan()
         just_verified = self._just_verified
 
@@ -1131,18 +1373,55 @@ class CollectionCallPolicy:
                     self.phase in (ACCOUNT_DISPUTE, CLOSING):
                 plan.close_after_reply = signal != "affirm" or not self._bot_offered_agent
                 self.phase = CLOSING
+        elif self.pending_amount_type is not None and self.verified \
+                and not workflow_active:
+            # Answer-first: the caller asked HOW MUCH. This outranks every
+            # script step (including a pending reference ask and the recovery
+            # ladder) — the reply states the requested labelled figure, from
+            # a REAL lookup when an account tool is configured.
+            plan.action = "answer_amount_question"
+            plan.force_llm = True
+            if self.account_tool_available and not self.account_refreshed:
+                plan.refresh_account = True
         elif self.payment_claimed:
             self._plan_payment_claim(plan)
         elif self.complaint_raised:
             plan.force_llm = True
-        elif self.callback_requested:
+        elif self.callback_requested and not self._medical_turn:
             plan.force_llm = True
             if self.callback_time_known:
+                plan.close_after_reply = True
+                self.phase = CLOSING
+        elif self._medical_turn and not workflow_active:
+            # A genuine medical/family emergency is NOT an ordinary refusal:
+            # the ladder pauses for this turn — no consequence, offer,
+            # partial pitch or borrowing suggestion may run.
+            plan.action = "acknowledge_hardship"
+            plan.force_llm = True
+        elif self.promise_to_pay and signal in ("payment_intent", "affirm") \
+                and not workflow_active:
+            # The caller has AGREED to pay (now or on this turn): recovery
+            # pitches are over. Move to the next missing commitment element
+            # (date → method → confirm), never a discount/CIBIL/partial line.
+            plan.action = "confirm_commitment"
+            plan.force_llm = True
+            if self.promise_date_known and self.payment_method_claimed:
                 plan.close_after_reply = True
                 self.phase = CLOSING
         elif signal in ("question", "clarify", "complaint"):
             # Answer what the customer actually asked before any script step.
             plan.force_llm = True
+        elif signal in ("refusal", "hardship") and self.verified \
+                and not self.wrong_party and not workflow_active:
+            # The recovery ladder runs ONLY here: a genuine payment refusal /
+            # inability with nothing higher-priority open and no workflow
+            # owning the flow. Each rung is used exactly once per call,
+            # tracked in code — never re-derived from scanning history.
+            plan.action = f"recovery_{self._advance_ladder()}"
+            plan.force_llm = True
+            if plan.action == "recovery_closed":
+                plan.close_after_reply = True
+                self.phase = CLOSING
         elif just_verified:
             # The turn that ANSWERED the identity question must not feed the
             # scripted ladder as if it answered a payment pitch — the LLM
@@ -1632,6 +1911,31 @@ class CollectionCallPolicy:
             parts.append(
                 "- Required fields still missing: " + ", ".join(missing)
             )
+        used_rungs = [
+            name for name, used in (
+                ("consequence", self.consequence_used),
+                ("offer", self.offer_used),
+                ("partial payment", self.partial_used),
+                ("self-resolution", self.self_resolution_used),
+                ("callback/agent options", self.final_options_offered),
+            ) if used
+        ]
+        if used_rungs:
+            parts.append(
+                "- Recovery pitches already made THIS call (NEVER repeat "
+                "any of them): " + ", ".join(used_rungs)
+            )
+        if self.promise_to_pay:
+            parts.append(
+                "- Payment commitment so far: amount "
+                + (f"{self.proposed_amount} rupees (customer-proposed)"
+                   if self.proposed_amount else "not yet agreed")
+                + "; date " + ("agreed" if self.promise_date_known else "not set")
+                + "; method "
+                + (self.payment_method_claimed or "not chosen")
+                + ". The customer agreed to pay — no further consequence/"
+                "offer/partial pitch is permitted."
+            )
         parts.append(
             "- Allowed next actions: " + ", ".join(self.allowed_actions())
         )
@@ -1926,6 +2230,23 @@ class CollectionCallPolicy:
                 f"Politely confirm you are speaking with {name} before any "
                 "account discussion. Ask that ONE question only."
             )
+        if self.pending_amount_type is not None:
+            return self._amount_answer_step()
+        if self._medical_turn:
+            return (
+                "The customer mentioned a medical/family emergency. This is "
+                "NOT an ordinary refusal: acknowledge it briefly and "
+                "genuinely in one short sentence (vary the wording; never "
+                "reuse an earlier acknowledgment), do NOT mention CIBIL, "
+                "penalties, offers, partial payment or borrowing this turn, "
+                "and do NOT ask for private medical details. Then offer ONE "
+                "gentle next step: a callback at a better time or a human "
+                "agent. One question only."
+            )
+        if self._ladder_rung_turn is not None:
+            return self._ladder_step(self._ladder_rung_turn)
+        if self.promise_to_pay:
+            return self._commitment_step()
         if self.hardship_raised:
             return (
                 "Respond with genuine empathy, no pressure. Offer a callback "
@@ -1943,6 +2264,126 @@ class CollectionCallPolicy:
             "their question, agree the amount (full or partial where allowed) "
             "and the method, and guide them to pay in their own app. One "
             "question at a time; never repeat a declined pitch."
+        )
+
+    def _amount_answer_step(self) -> str:
+        """Answer-first guidance for an amount question (typed)."""
+        mapping = {
+            "total": "Total outstanding",
+            "overdue": "Overdue amount",
+            "minimum": "Minimum payable",
+            "penalty": "Penal charges so far",
+        }
+        refreshed = (
+            " The figures above were refreshed from the system THIS turn — "
+            "use them, never an older number from the conversation."
+            if self.account_refresh_succeeded else ""
+        )
+        asked = self.pending_amount_type or "ambiguous"
+        if asked == "ambiguous":
+            return (
+                "The customer asked how much to pay (no specific figure "
+                "named). Begin the reply DIRECTLY with the amount: state the "
+                "verified Total outstanding, then the Minimum payable when "
+                "both exist (clearly labelled, amounts in words); with only "
+                "one available state just that one. Never guess a missing "
+                "figure — say it is not available on this call. Then ask ONE "
+                "question: can they make the payment today." + refreshed
+            )
+        label = mapping[asked]
+        return (
+            f"The customer asked specifically for the {label}. Begin the "
+            f"reply DIRECTLY with that one labelled figure from the verified "
+            "facts (amount in words) — do not add other amounts they did not "
+            "ask about. If that exact figure is not in the verified facts, "
+            "say it is not available on this call and offer the app or an "
+            "agent callback — never guess. Then ask ONE question: can they "
+            "make the payment today." + refreshed
+        )
+
+    def _commitment_step(self) -> str:
+        """The next missing payment-commitment element (date → method)."""
+        if not self.promise_date_known:
+            return (
+                "The customer has AGREED to pay — recovery pitches are over: "
+                "never mention CIBIL, penalties, discounts, offers or partial "
+                "options now. Briefly confirm the payable amount from the "
+                "verified facts"
+                + (
+                    f" (they proposed {self.proposed_amount} rupees — do not "
+                    "call it high or low)"
+                    if self.proposed_amount else ""
+                )
+                + " and ask ONE question: the exact date (or today) they "
+                "will make the payment."
+            )
+        if not self.payment_method_claimed:
+            return (
+                "Amount and date are agreed. Ask ONE question: which of the "
+                "available payment methods (from the verified facts) they "
+                "will use. Never promise instant account updates."
+            )
+        return (
+            "Amount, date and method are all agreed: repeat the amount and "
+            "date back in one short sentence, thank them, and close the call "
+            "politely. Do not restart any pitch."
+        )
+
+    def _ladder_step(self, rung: str) -> str:
+        """Guidance for exactly ONE recovery rung (state-tracked, no repeats)."""
+        empathy = (
+            "Lead with ONE short, genuine acknowledgment of what they just "
+            "said (vary the wording — never reuse an earlier acknowledgment "
+            "sentence from this call). "
+            if self._hardship_turn else ""
+        )
+        if rung == "consequence":
+            return empathy + (
+                "Recovery step (use ONCE): state exactly one consequence "
+                "supported by the verified facts — credit-bureau/Sibil "
+                "reporting impact on future loan eligibility, or a verified "
+                "penalty — factually and preventively, never as a threat, "
+                "and never claim their score already fell. Then ask ONE "
+                "question: can they make the full payment today. Do not "
+                "mention offers, partial payment, savings, callbacks or "
+                "agents in this reply."
+            )
+        if rung == "offer":
+            return empathy + (
+                "Recovery step (use ONCE): present exactly one active offer "
+                "from the verified facts, conditionally ('agar aap eligible "
+                "hue', 'up to', 'subject to terms') — never guarantee it, "
+                "never invent one. Ask whether they can arrange the payment. "
+                "Do not repeat the consequence."
+            )
+        if rung == "partial":
+            return empathy + (
+                "Recovery step (use ONCE): offer the verified Minimum "
+                "payable as a practical part payment (partial payment is "
+                "allowed on this account). Ask ONE question: can they pay "
+                "that amount today. Do not repeat the consequence or the "
+                "offer, and do not ask the payment method yet."
+            )
+        if rung == "self_resolution":
+            return empathy + (
+                "Final recovery step (use ONCE): gently ask what exact "
+                "amount they could realistically arrange. You may mention "
+                "safe options like savings or family help ONLY as an "
+                "optional possibility ('agar aapke liye convenient ho') — "
+                "never pressure them to borrow, never cite their job or "
+                "studies as proof they can pay. One question."
+            )
+        if rung == "final_options":
+            return empathy + (
+                "Every recovery step has been used — do not repeat any of "
+                "them. Offer ONE choice: a callback at a better time or a "
+                "human agent. If they decline both, thank them and close "
+                "politely."
+            )
+        return (
+            "The customer declined every option including a callback/agent. "
+            "Acknowledge their decision, thank them for their time, and "
+            "close the call politely — no further pitch of any kind."
         )
 
 

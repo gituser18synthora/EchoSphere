@@ -18,6 +18,18 @@ onto the call's existing event stream (SessionRecorder → ``voice_events`` /
 transcript). FreeSWITCH has no ``CHANNEL_TRANSFER``/``CHANNEL_REDIRECT``
 event types; a ``uuid_transfer`` keeps the caller's channel uuid, so every
 event stays keyed to the uuid the webhook minted the session with.
+
+Hangup lifecycle: :class:`FreeSwitchHangupMonitor` (one per FreeSWITCH call,
+started at call start) follows the caller channel's teardown —
+``CHANNEL_HANGUP`` → ``CHANNEL_HANGUP_COMPLETE`` → ``CHANNEL_DESTROY`` — so
+the platform knows when AND why a call ended straight from FreeSWITCH,
+independent of the media WebSocket closing. The raw ``Hangup-Cause`` (plus
+the SIP hangup disposition, which says which side sent the BYE) is
+normalized into the platform's disconnect vocabulary by
+:func:`normalize_disconnect`. ``CHANNEL_UNBRIDGE`` is deliberately not part
+of this subscription: the bot leg is a media fork, not a bridged channel, so
+unbridge only occurs inside the transfer flow — where the transfer monitor
+already interprets it with the context it needs.
 """
 
 import asyncio
@@ -199,6 +211,36 @@ class ESLClient:
             self._writer.close()
             self._writer = None
             self._reader = None
+
+
+async def _write_session_event(session_id: str, recorder, kind: str, data: dict) -> None:
+    """One lifecycle event onto the call's existing event stream.
+
+    Written through the SessionRecorder while the session is live, and
+    directly to the same Mongo stores after finalize — transfer and hangup
+    confirmations regularly land after the bot session is gone.
+    """
+    try:
+        if recorder is not None and recorder.end_reason is None:
+            await recorder.flush_event(kind, **data)
+            return
+        from shared.db.mongo import Mongo
+
+        now = datetime.now(timezone.utc)
+        await Mongo.voice_events().insert_one({
+            "session_id": session_id,
+            "tenant_id": recorder.config.tenant_id if recorder else None,
+            "bot_id": recorder.config.bot_id if recorder else None,
+            "kind": kind,
+            "at": now,
+            "data": data,
+        })
+        await Mongo.transcripts().update_one(
+            {"session_id": session_id},
+            {"$push": {"events": {"kind": kind, "at": now.isoformat(), **data}}},
+        )
+    except Exception:  # noqa: BLE001 — recording must never kill a monitor
+        logger.warning("freeswitch lifecycle event write failed (%s)", kind)
 
 
 # ── transfer lifecycle ────────────────────────────────────────────────────
@@ -436,29 +478,7 @@ class FreeSwitchTransferMonitor:
 
     async def _record(self, kind: str, **data) -> None:
         """One transfer event onto the call's existing event stream."""
-        recorder = self._recorder
-        try:
-            if recorder is not None and recorder.end_reason is None:
-                await recorder.flush_event(kind, **data)
-                return
-            # Session already finalized: write to the same stores directly.
-            from shared.db.mongo import Mongo
-
-            now = datetime.now(timezone.utc)
-            await Mongo.voice_events().insert_one({
-                "session_id": self.session_id,
-                "tenant_id": recorder.config.tenant_id if recorder else None,
-                "bot_id": recorder.config.bot_id if recorder else None,
-                "kind": kind,
-                "at": now,
-                "data": data,
-            })
-            await Mongo.transcripts().update_one(
-                {"session_id": self.session_id},
-                {"$push": {"events": {"kind": kind, "at": now.isoformat(), **data}}},
-            )
-        except Exception:  # noqa: BLE001 — recording must never kill the monitor
-            logger.warning("transfer event write failed (%s)", kind)
+        await _write_session_event(self.session_id, self._recorder, kind, data)
 
     async def _store_summary(self) -> None:
         """Current transfer state as a queryable field on the transcript."""
@@ -512,6 +532,375 @@ def start_transfer_monitor(
     monitor.task = asyncio.create_task(monitor.run())
     monitor.task.add_done_callback(
         lambda _task: _active_monitors.pop(session_id, None)
+    )
+    return monitor
+
+
+# ── hangup lifecycle ──────────────────────────────────────────────────────
+
+# uuid_transfer/pickup teardown causes: the leg ended because the call moved,
+# not because anyone failed or hung up.
+_TRANSFER_HANGUP_CAUSES = {"BLIND_TRANSFER", "ATTENDED_TRANSFER", "PICKED_OFF"}
+# The media path died or never matched, with signaling still up.
+_MEDIA_FAILURE_CAUSES = {
+    "MEDIA_TIMEOUT", "INCOMPATIBLE_DESTINATION",
+    "BEARERCAPABILITY_NOTIMPL", "BEARERCAPABILITY_NOTAVAIL",
+}
+# Orderly clearing — which SIDE cleared is decided by the SIP disposition.
+_NORMAL_HANGUP_CAUSES = {"NORMAL_CLEARING", "ORIGINATOR_CANCEL"}
+# Platform/operator call control (uuid_kill with an admin cause, shutdown).
+_APP_HANGUP_CAUSES = {"MANAGER_REQUEST", "SYSTEM_SHUTDOWN"}
+
+
+def normalize_disconnect(
+    cause: str | None,
+    *,
+    sip_disposition: str | None = "",
+    transferred: bool = False,
+    bot_ended: bool = False,
+) -> str:
+    """Map a FreeSWITCH hangup onto the platform's disconnect vocabulary.
+
+    Returns ``caller_hangup`` / ``app_hangup`` / ``provider_failure`` /
+    ``media_failure`` / ``transferred`` / ``unknown``. ``sip_disposition``
+    is FreeSWITCH's ``sip_hangup_disposition`` variable (``recv_bye`` = the
+    far end hung up, ``send_bye`` = this side did); ``bot_ended`` is the
+    fallback signal when SIP did not say (the session had already finalized,
+    so the platform's own ``uuid_kill`` is what cleared the channel).
+    """
+    cause = (cause or "").strip().upper()
+    disposition = (sip_disposition or "").strip().lower()
+    if transferred or cause in _TRANSFER_HANGUP_CAUSES:
+        return "transferred"
+    if cause in _MEDIA_FAILURE_CAUSES:
+        return "media_failure"
+    if cause in _APP_HANGUP_CAUSES:
+        return "app_hangup"
+    if cause in _NORMAL_HANGUP_CAUSES:
+        if disposition.startswith("recv"):
+            return "caller_hangup"
+        if disposition.startswith("send"):
+            return "app_hangup"
+        return "app_hangup" if bot_ended else "caller_hangup"
+    if not cause:
+        return "unknown"
+    # Everything else in the Q.850 space is a teardown nobody chose: SIP/
+    # provider/FreeSWITCH failures (congestion, timer expiry, rejects, …).
+    # NORMAL_TEMPORARY_FAILURE lands here on purpose — it is exactly what
+    # voicebot.lua sends when the webhook/media/transfer path broke.
+    return "provider_failure"
+
+
+class HangupStateMachine:
+    """Pure hangup-lifecycle tracker: FreeSWITCH events in, records out.
+
+    FreeSWITCH tears a channel down as ``CHANNEL_HANGUP`` (hangup started,
+    cause decided) → ``CHANNEL_HANGUP_COMPLETE`` (final variables) →
+    ``CHANNEL_DESTROY`` (channel object gone). States only move forward, so
+    a replayed or duplicated delivery of an already-seen stage is a no-op —
+    that is what makes downstream finalization single-shot; exact duplicate
+    deliveries are additionally dropped by ``Event-Sequence``. Any of the
+    three events is accepted as the first sign of the hangup, so a monitor
+    that missed an earlier stage still terminates correctly. Events for any
+    other uuid belong to other calls and are ignored.
+    """
+
+    _ORDER = {"up": 0, "hung_up": 1, "hangup_complete": 2, "destroyed": 3}
+    _EVENT_STATES = {
+        "CHANNEL_HANGUP": ("hung_up", "channel_hangup"),
+        "CHANNEL_HANGUP_COMPLETE": ("hangup_complete", "channel_hangup_complete"),
+        "CHANNEL_DESTROY": ("destroyed", "channel_destroyed"),
+    }
+
+    def __init__(self, call_uuid: str) -> None:
+        self.call_uuid = (call_uuid or "").lower()
+        self.state = "up"
+        # First-seen values win: CHANNEL_HANGUP carries the authoritative
+        # cause; later stages only fill gaps, never rewrite the verdict.
+        self.cause: str | None = None
+        self.sip_disposition: str | None = None
+        self.other_leg_uuid: str | None = None
+        self._seen_sequences: set[str] = set()
+
+    @property
+    def ended(self) -> bool:
+        """A real hangup has been seen for the caller's channel."""
+        return self.state != "up"
+
+    @property
+    def destroyed(self) -> bool:
+        return self.state == "destroyed"
+
+    def handle(self, event: dict) -> list[dict]:
+        """Fold one FreeSWITCH event in; return the records it produced."""
+        sequence = event.get("Event-Sequence") or ""
+        if sequence:
+            if sequence in self._seen_sequences:
+                return []  # exact duplicate delivery of the same event
+            self._seen_sequences.add(sequence)
+        mapping = self._EVENT_STATES.get(event.get("Event-Name", ""))
+        if mapping is None:
+            return []
+        uuid = (event.get("Unique-ID") or "").lower()
+        if uuid != self.call_uuid:
+            return []
+        target, kind = mapping
+        if self._ORDER[target] <= self._ORDER[self.state]:
+            return []  # replayed/out-of-order delivery of a seen stage
+        self.state = target
+        cause = (
+            event.get("Hangup-Cause")
+            or event.get("variable_hangup_cause")
+            or ""
+        ).upper()
+        disposition = (event.get("variable_sip_hangup_disposition") or "").lower()
+        other_leg = (
+            event.get("Other-Leg-Unique-ID")
+            or event.get("variable_bridge_uuid")
+            or event.get("variable_last_bridge_to")
+            or ""
+        ).lower()
+        if cause and not self.cause:
+            self.cause = cause
+        if disposition and not self.sip_disposition:
+            self.sip_disposition = disposition
+        if other_leg and not self.other_leg_uuid:
+            self.other_leg_uuid = other_leg
+        record = {"kind": kind, "cause": cause or self.cause or ""}
+        if disposition:
+            record["sip_disposition"] = disposition
+        if other_leg:
+            record["other_leg_uuid"] = other_leg
+        if event.get("Event-Date-Timestamp"):
+            record["fs_timestamp_us"] = event["Event-Date-Timestamp"]
+        return [record]
+
+
+class FreeSwitchHangupMonitor:
+    """Tracks one call's channel teardown over a dedicated ESL connection.
+
+    Started at call start for every FreeSWITCH call. On the first real
+    hangup event it records the raw cause plus the normalized disconnect
+    reason (once — duplicates cannot re-trigger it), and invokes the
+    ``on_hangup`` hook so the session host can stop STT/LLM/TTS and queued
+    audio immediately instead of waiting for the media socket to die. Stands
+    down as soon as the call transfers: the transfer monitor owns that
+    lifecycle, and an expected original-leg hangup during a transfer must
+    never read as a call failure.
+    """
+
+    EVENTS = "CHANNEL_HANGUP CHANNEL_HANGUP_COMPLETE CHANNEL_DESTROY"
+    # After the final hangup is recorded, how long to keep the connection
+    # open for the complete/destroy confirmations before closing quietly.
+    FINAL_EVENTS_GRACE_S = 15.0
+    # After the SESSION finalized with no hangup seen (bot-ended call), how
+    # long to keep waiting for the uuid_kill teardown events.
+    POST_SESSION_LINGER_S = 60.0
+
+    def __init__(
+        self, *, session_id: str, call_uuid: str, recorder, on_hangup=None
+    ) -> None:
+        settings = get_settings()
+        self.session_id = session_id
+        self.machine = HangupStateMachine(call_uuid)
+        self._recorder = recorder
+        self._on_hangup = on_hangup
+        self._max_seconds = float(settings.freeswitch_hangup_monitor_max_seconds)
+        self._final_signaled = False
+        self.task: asyncio.Task | None = None
+
+    async def run(self) -> None:
+        client = ESLClient()
+        try:
+            try:
+                await client.connect()
+                # Only the caller's leg: it keeps its uuid for the whole
+                # call (uuid_transfer included). Agent-leg hangups are the
+                # transfer monitor's business.
+                await client.command(f"filter Unique-ID {self.machine.call_uuid}")
+                await client.command(f"event plain {self.EVENTS}")
+            except ProviderError as exc:
+                logger.warning(
+                    "hangup monitor unavailable for %s: %s", self.session_id, exc
+                )
+                await self._record("hangup_monitor_unavailable", reason=str(exc))
+                return
+            await self._record(
+                "hangup_monitor_started", call_uuid=self.machine.call_uuid
+            )
+            await self._watch(client)
+        except Exception:  # noqa: BLE001 — the monitor must never crash the worker
+            logger.exception("hangup monitor crashed for %s", self.session_id)
+        finally:
+            await client.close()
+
+    async def _watch(self, client: ESLClient) -> None:
+        started = time.monotonic()
+        ended_at: float | None = None
+        finalized_at: float | None = None
+        while True:
+            now = time.monotonic()
+            if self.machine.destroyed:
+                return
+            if ended_at is not None and now - ended_at >= self.FINAL_EVENTS_GRACE_S:
+                return  # hangup recorded; complete/destroy never showed up
+            if now - started >= self._max_seconds:
+                await self._record("hangup_monitor_timeout", state=self.machine.state)
+                return
+            recorder = self._recorder
+            if not self.machine.ended and recorder is not None:
+                if recorder.transferred:
+                    # The caller now belongs to the transfer lifecycle; its
+                    # monitor interprets every later hangup with the context
+                    # this one lacks (bridge state, agent leg).
+                    await self._record(
+                        "hangup_monitor_stood_down", reason="transferred"
+                    )
+                    return
+                if recorder.end_reason is not None:
+                    if finalized_at is None:
+                        finalized_at = now
+                    elif now - finalized_at >= self.POST_SESSION_LINGER_S:
+                        # Bot-ended session but FreeSWITCH never reported the
+                        # channel down (already gone before we subscribed, or
+                        # uuid_kill unavailable). Nothing left to learn.
+                        await self._record(
+                            "hangup_monitor_timeout", state=self.machine.state
+                        )
+                        return
+            timeout = min(5.0, self._max_seconds - (now - started))
+            if ended_at is not None:
+                timeout = min(timeout, self.FINAL_EVENTS_GRACE_S - (now - ended_at))
+            if finalized_at is not None and not self.machine.ended:
+                timeout = min(
+                    timeout, self.POST_SESSION_LINGER_S - (now - finalized_at)
+                )
+            try:
+                event = await client.next_event(timeout=max(0.05, timeout))
+            except ProviderError as exc:
+                await self._record(
+                    "hangup_monitor_disconnected",
+                    state=self.machine.state, detail=str(exc),
+                )
+                return
+            if event is None:
+                continue
+            was_ended = self.machine.ended
+            records = self.machine.handle(event)
+            for record in records:
+                data = dict(record)
+                kind = data.pop("kind")
+                await self._record(kind, **data)
+            if records and not was_ended and self.machine.ended:
+                ended_at = time.monotonic()
+                await self._finalize_hangup()
+
+    async def _finalize_hangup(self) -> None:
+        """The one-shot verdict for this call's disconnect.
+
+        Guarded so replayed FreeSWITCH deliveries can never re-run it: the
+        end-call hook, the recorder's hangup record and the transcript
+        summary all happen at most once per call.
+        """
+        if self._final_signaled:
+            return
+        self._final_signaled = True
+        machine = self.machine
+        recorder = self._recorder
+        transferred = bool(getattr(recorder, "transferred", False))
+        bot_ended = recorder is not None and recorder.end_reason is not None
+        reason = normalize_disconnect(
+            machine.cause,
+            sip_disposition=machine.sip_disposition,
+            transferred=transferred,
+            bot_ended=bot_ended,
+        )
+        info = {
+            "cause": machine.cause or "",
+            "reason": reason,
+            "sip_disposition": machine.sip_disposition or "",
+            "call_uuid": machine.call_uuid,
+            "other_leg_uuid": machine.other_leg_uuid,
+            "transfer_related": transferred,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info(
+            "freeswitch hangup: session=%s uuid=%s cause=%s sip_disposition=%s "
+            "normalized=%s transfer_related=%s other_leg=%s",
+            self.session_id, machine.call_uuid, machine.cause or "",
+            machine.sip_disposition or "", reason, transferred,
+            machine.other_leg_uuid or "",
+        )
+        if recorder is not None:
+            recorder.set_hangup(info)
+        # End the pipeline BEFORE the bookkeeping writes: no STT/LLM/TTS or
+        # queued audio may outlive a dead channel. Not on transfers — there
+        # the fork stop already tears the media path down, and this hangup
+        # is the transfer ending, not the bot call failing.
+        if self._on_hangup is not None and not transferred:
+            try:
+                await self._on_hangup(info)
+            except Exception:  # noqa: BLE001 — teardown hook must not kill the monitor
+                logger.exception("hangup end-call hook failed for %s", self.session_id)
+        await self._record("freeswitch_hangup", **info)
+        await self._store_hangup_summary(info)
+
+    async def _record(self, kind: str, **data) -> None:
+        """One hangup event onto the call's existing event stream."""
+        await _write_session_event(self.session_id, self._recorder, kind, data)
+
+    async def _store_hangup_summary(self, info: dict) -> None:
+        """The disconnect verdict as a queryable field on the transcript.
+
+        No upsert: pre-finalize the document may not exist yet, and then the
+        recorder's own finalize persists the same info from ``recorder.hangup``.
+        """
+        try:
+            from shared.db.mongo import Mongo
+
+            await Mongo.transcripts().update_one(
+                {"session_id": self.session_id},
+                {"$set": {"hangup": info}},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("hangup summary write failed for %s", self.session_id)
+
+
+_active_hangup_monitors: dict[str, FreeSwitchHangupMonitor] = {}
+
+
+def start_hangup_monitor(
+    *, session_id: str, call_uuid: str | None, recorder, on_hangup=None
+) -> FreeSwitchHangupMonitor | None:
+    """Start (once per session) the ESL hangup monitor. Fail-open: a missing
+    uuid or unconfigured event socket records why and returns None — the call
+    still ends through the media-socket disconnect path, just without the
+    FreeSWITCH-side cause."""
+    existing = _active_hangup_monitors.get(session_id)
+    if existing is not None:
+        return existing  # one channel, one hangup lifecycle
+    if not valid_call_uuid(call_uuid):
+        logger.warning(
+            "hangup monitor skipped for %s: no usable FreeSWITCH call uuid",
+            session_id,
+        )
+        recorder.flush_event_soon(
+            "hangup_monitor_unavailable", reason="missing or invalid call uuid"
+        )
+        return None
+    if not esl_configured():
+        recorder.flush_event_soon(
+            "hangup_monitor_unavailable", reason="event socket not configured"
+        )
+        return None
+    monitor = FreeSwitchHangupMonitor(
+        session_id=session_id, call_uuid=call_uuid,
+        recorder=recorder, on_hangup=on_hangup,
+    )
+    _active_hangup_monitors[session_id] = monitor
+    monitor.task = asyncio.create_task(monitor.run())
+    monitor.task.add_done_callback(
+        lambda _task: _active_hangup_monitors.pop(session_id, None)
     )
     return monitor
 

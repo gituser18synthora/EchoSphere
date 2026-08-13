@@ -126,6 +126,7 @@ from shared.orchestration.router import (
     detect_do_not_call,
     detect_hangup,
 )
+from shared.orchestration.spoken_numbers import meaningful_language_words
 from shared.orchestration.tool_executor import get_tool_executor
 from shared.orchestration.voice_identity import (
     adapt_authored_speaker_grammar,
@@ -492,15 +493,30 @@ class ConversationBrain(FrameProcessor):
         # tenant's intent configuration (route "tool:x" or a bound
         # connection) — nothing hardcoded per domain.
         self._payment_tool: str | None = None
+        # The account-status/amount tool, likewise bound purely from tenant
+        # intent configuration — an amount question then answers from a REAL
+        # lookup instead of pretending to verify a loaded value.
+        self._account_tool: str | None = None
         for intent in config.intents or []:
-            if intent.get("name") == "already_paid":
+            name = intent.get("name")
+            if name == "already_paid":
                 route = intent.get("route") or ""
                 if route.startswith("tool:"):
                     self._payment_tool = route.split(":", 1)[1]
                 elif intent.get("api_connection_id"):
                     self._payment_tool = str(intent["api_connection_id"])
+            elif name in (
+                "amount_query", "account_status", "amount_check",
+                "balance_inquiry",
+            ):
+                route = intent.get("route") or ""
+                if route.startswith("tool:"):
+                    self._account_tool = route.split(":", 1)[1]
+                elif intent.get("api_connection_id"):
+                    self._account_tool = str(intent["api_connection_id"])
         if self._policy is not None:
             self._policy.tools_available = self._payment_tool is not None
+            self._policy.account_tool_available = self._account_tool is not None
         self._history: list[dict] = []
         # Delivery tuning (empathy/energy) as a fixed system-prompt suffix:
         # the published prompt stays the base persona; this section is the
@@ -642,6 +658,10 @@ class ConversationBrain(FrameProcessor):
         self._last_dispatched_turn: tuple[str, float] | None = None
         # Hang-up in progress: nothing may produce speech after this is set.
         self._closing = False
+        # A transfer control has been queued/sent for this call: the normal
+        # bot-close path must NOT run (FreeSWITCH owns the call's fate from
+        # here — bridge or hangup), and a second transfer is never queued.
+        self._transfer_requested = False
         # Consent revoked this call: the do_not_call disposition/state is
         # authoritative and must survive the policy's own finalization.
         self._dnc = False
@@ -1532,16 +1552,33 @@ class ConversationBrain(FrameProcessor):
             return
         self._last_turn_detected_language = detected
         text = (text or "").strip()
-        if len(text.split()) < _MIN_SWITCH_WORDS:
+        # Number-language and conversation-language are separate concepts: a
+        # caller reading out a UTR/OTP/amount in English digit words ("nine
+        # nine zero one two three"), or naming code-switched business terms
+        # ("UTR", "payment"), has NOT switched languages. Only the residual
+        # meaningful words may vote; a turn that is (almost) all numeric/
+        # technical payload keeps the established conversation language.
+        meaningful = meaningful_language_words(text)
+        if len(meaningful) < _MIN_SWITCH_WORDS:
+            detected_base = detected.split("-")[0].lower()
+            current_base = self._conversation_language.split("-")[0].lower()
+            if detected_base != current_base:
+                self._recorder.add_event(
+                    "language_switch_blocked",
+                    detected=detected,
+                    reason="numeric_or_technical_payload",
+                    current=self._conversation_language,
+                )
             self._reset_language_candidate()
             return
-        if not script_supports_language(text, detected):
+        residual = " ".join(meaningful)
+        if not script_supports_language(residual, detected):
             self._reset_language_candidate()
             return
         # Romanized text carries no script evidence, so the label needs the
         # lexicon on its side: a leaning that contradicts it blocks the
         # switch (one borrowed word must never oscillate the language).
-        leaning = romanized_language_leaning(text)
+        leaning = romanized_language_leaning(residual)
         detected_base = detected.split("-")[0].lower()
         if (
             leaning is not None
@@ -1726,6 +1763,15 @@ class ConversationBrain(FrameProcessor):
         teardown.
         """
         if self._closing:
+            return
+        if self._transfer_requested:
+            # A transfer is pending: the bot must NOT run its normal end-call
+            # path — FreeSWITCH decides the call's fate (bridge to the agent
+            # or hangup). Ending the worker here closed the media socket
+            # while the dialplan was still executing the transfer.
+            self._recorder.add_event(
+                "close_skipped_transfer_pending", completion_reason=reason,
+            )
             return
         self._closing = True
         disposition = self._policy.disposition() if self._policy else None
@@ -2209,23 +2255,43 @@ class ConversationBrain(FrameProcessor):
         # complaint is addressed instead of the next ladder rung playing.
         plan = None
         previous_stage = self._conversation_stage()
+        # A tenant-authored workflow that owns the flow (active, or routed
+        # for this turn) keeps its turns: the policy's amount/commitment/
+        # ladder handling then defers to the workflow's own nodes, which
+        # still receive the policy's per-turn instruction off-script.
+        workflow_owns_turn = self._workflows is not None and (
+            self._active_workflow is not None
+            or decision.kind == RouteKind.WORKFLOW
+        )
         if self._policy is not None:
             self._policy.observe_user(text, signal, decision=orchestrated)
-            plan = self._policy.plan_turn(text, signal)
+            plan = self._policy.plan_turn(
+                text, signal, workflow_active=workflow_owns_turn
+            )
             self._recorder.disposition = self._policy.disposition()
         elif self._goal_session is not None and orchestrated is not None:
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
             self._goal_session.apply(orchestrated)
+        # An amount question with a configured account tool runs the REAL
+        # lookup this turn (policy-planned; independent of the classifier).
+        will_refresh_account = bool(
+            plan is not None
+            and getattr(plan, "refresh_account", False)
+            and self._account_tool
+            and not self._closing
+        )
         # Naturalness is planned only after route, validated caller signal,
         # policy action and tool intent are known. This prevents a streamed
         # preface from escaping before a high-risk response category is known.
         naturalness_started = time.perf_counter()
         critical_reason = self._naturalness_critical_reason(
-            decision, classification, plan, signal, will_run_tool
+            decision, classification, plan, signal,
+            will_run_tool or will_refresh_account,
         )
         route_kind = (
-            "tool" if will_run_tool or bool(getattr(plan, "verify_reference", None))
+            "tool" if will_run_tool or will_refresh_account
+            or bool(getattr(plan, "verify_reference", None))
             else "kb" if decision.kind == RouteKind.KNOWLEDGE
             else "direct" if bool(getattr(plan, "scripted_reply", ""))
             else "llm"
@@ -2259,7 +2325,9 @@ class ConversationBrain(FrameProcessor):
                 # already-paid claim confirmed): re-plan so THIS reply follows
                 # the verified reality — next step, close decision and the
                 # live-state instruction all reflect the tool's answer.
-                plan = self._policy.plan_turn(text, signal)
+                plan = self._policy.plan_turn(
+                text, signal, workflow_active=workflow_owns_turn
+            )
         if plan is not None and plan.verify_reference and not self._closing:
             # A transaction reference was captured THIS turn: verify it with
             # the configured payment tool (or record honestly that no check
@@ -2268,7 +2336,19 @@ class ConversationBrain(FrameProcessor):
             tool_instruction += await self._verify_payment_reference(
                 plan.verify_reference
             )
-            plan = self._policy.plan_turn(text, signal)
+            plan = self._policy.plan_turn(
+                text, signal, workflow_active=workflow_owns_turn
+            )
+        if will_refresh_account and plan is not None:
+            # The caller asked for an amount and an account tool exists: run
+            # the REAL lookup (behind the natural "ek second, main check kar
+            # raha hoon" preface), fold fresh figures into the live facts,
+            # and re-plan so the reply states the returned values.
+            await self._speak_preface()
+            tool_instruction += await self._refresh_account_amounts()
+            plan = self._policy.plan_turn(
+                text, signal, workflow_active=workflow_owns_turn
+            )
         logger.info(
             "turn[%s] caller turn accepted (route=%s signal=%s intent=%s chars=%d)",
             self._recorder.session_id, decision.kind.value, signal,
@@ -2986,6 +3066,58 @@ class ConversationBrain(FrameProcessor):
             "plainly and never contradict them."
         )
 
+    async def _refresh_account_amounts(self) -> str:
+        """Run the configured account-status tool for an amount question.
+
+        The verified figures replace the loaded snapshot values (the policy
+        rebuilds its facts block from them), and the raw result is surfaced
+        to the LLM. A failed lookup is reported honestly — the reply then
+        uses the already-loaded facts and never claims a fresh check ran.
+        """
+        policy = self._policy
+        context_values = (
+            self._runtime_context.prompt_values()
+            if self._runtime_context is not None else dict(self._call_context)
+        )
+        self._latency.mark_tool_start()
+        result = await self._tools.execute(
+            tenant_id=self._config.tenant_id,
+            bot_id=self._config.bot_id,
+            tool=self._account_tool,
+            args={},
+            intent="amount_query",
+            session_id=self._recorder.session_id,
+            customer_verified=bool(policy and policy.verified),
+            context_values=context_values,
+            guardrails=self._guardrails,
+        )
+        self._latency.mark_tool_done()
+        self._recorder.add_event("tool_executed", **result.as_event())
+        payload = result.mapped or (
+            result.data if isinstance(result.data, dict) else {}
+        )
+        if not result.ok:
+            if policy is not None:
+                policy.record_account_refresh(None, self._account_tool)
+            return (
+                "\n\n# Tool result (THIS turn)\n"
+                f"- The account lookup `{self._account_tool}` FAILED "
+                f"({result.error or result.status}). Answer from the "
+                "verified facts already listed above and never claim a "
+                "fresh check succeeded."
+            )
+        if policy is not None:
+            policy.record_account_refresh(payload, self._account_tool)
+        facts = "\n".join(
+            f"- {key}: {value}" for key, value in list(payload.items())[:12]
+        ) or "- (the tool returned no fields)"
+        return (
+            "\n\n# Tool result (verified by the system THIS turn)\n"
+            f"`{self._account_tool}` returned:\n{facts}\n"
+            "These figures are authoritative for this reply — never use an "
+            "older number from the conversation instead."
+        )
+
     async def _verify_payment_reference(self, reference: str) -> str:
         """Verify a captured transaction reference with the configured tool.
 
@@ -3090,6 +3222,15 @@ class ConversationBrain(FrameProcessor):
             await self._say(canned("ack", self._conversation_language))
 
     async def _handle_handoff(self, decision: RouteDecision) -> None:
+        if self._transfer_requested:
+            # The transfer is already requested: reassure, never re-queue a
+            # second control and never restart the recovery conversation.
+            self._recorder.add_event(
+                "handoff_duplicate_suppressed", reason=decision.reason
+            )
+            await self._say(canned("handoff", self._conversation_language))
+            return
+        self._transfer_requested = True
         self._recorder.flush_event_soon("handoff", reason=decision.reason)
         await self._say(canned("handoff", self._conversation_language))
         self._queue_control({
@@ -3171,6 +3312,12 @@ class ConversationBrain(FrameProcessor):
             await self._recorder.flush_event(
                 "handoff", reason="workflow_handover", workflow=workflow_name,
             )
+            if self._transfer_requested:
+                self._recorder.add_event(
+                    "handoff_duplicate_suppressed", reason="workflow_handover"
+                )
+                return
+            self._transfer_requested = True
             control = {
                 "type": "telephony_control",
                 "event": "transfer",

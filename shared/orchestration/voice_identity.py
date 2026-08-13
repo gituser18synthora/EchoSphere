@@ -164,7 +164,12 @@ def voice_identity_instruction(identity: VoiceIdentity) -> str:
     return "\n".join(lines)
 
 
-_FIRST_PERSON = re.compile(r"(?<!\w)(?:मैं|मै|main|mai)(?!\w)", re.IGNORECASE)
+# Hindi routinely drops the subject pronoun ("कल call कर रही हूँ") — the
+# first-person auxiliary हूँ/hoon is equally definitive evidence, so gender
+# agreement is applied to those sentences too.
+_FIRST_PERSON = re.compile(
+    r"(?<!\w)(?:मैं|मै|main|mai|hoon|hun)(?!\w)|हूँ|हूं", re.IGNORECASE
+)
 _SENTENCE_PARTS = re.compile(r"(?<=[.!?।])|\n")
 
 # These are grammatical forms, not speaker names.  Voice → gender remains
@@ -182,6 +187,18 @@ _DEVANAGARI_FORMS = {
         (r"(?<!\w)बैठी(?!\w)", "बैठा"),
         (r"(?<!\w)खड़ी(?!\w)", "खड़ा"),
         (r"(?<!\w)वाली(?!\w)", "वाला"),
+        (r"(?<!\w)देती(?!\w)", "देता"),
+        (r"(?<!\w)लेती(?!\w)", "लेता"),
+        (r"(?<!\w)जाती(?!\w)", "जाता"),
+        (r"(?<!\w)पाती(?!\w)", "पाता"),
+        (r"(?<!\w)जानती(?!\w)", "जानता"),
+        (r"(?<!\w)लगती(?!\w)", "लगता"),
+        (r"(?<!\w)बोलती(?!\w)", "बोलता"),
+        (r"(?<!\w)बताती(?!\w)", "बताता"),
+        (r"(?<!\w)चाहती(?!\w)", "चाहता"),
+        (r"(?<!\w)समझती(?!\w)", "समझता"),
+        (r"(?<!\w)रखती(?!\w)", "रखता"),
+        (r"(?<!\w)थी(?!\w)", "था"),
         (r"([\u0900-\u097f]+)ूँगी(?!\w)", r"\1ूँगा"),
     ),
     "female": (
@@ -193,6 +210,18 @@ _DEVANAGARI_FORMS = {
         (r"(?<!\w)बैठा(?!\w)", "बैठी"),
         (r"(?<!\w)खड़ा(?!\w)", "खड़ी"),
         (r"(?<!\w)वाला(?!\w)", "वाली"),
+        (r"(?<!\w)देता(?!\w)", "देती"),
+        (r"(?<!\w)लेता(?!\w)", "लेती"),
+        (r"(?<!\w)जाता(?!\w)", "जाती"),
+        (r"(?<!\w)पाता(?!\w)", "पाती"),
+        (r"(?<!\w)जानता(?!\w)", "जानती"),
+        (r"(?<!\w)लगता(?!\w)", "लगती"),
+        (r"(?<!\w)बोलता(?!\w)", "बोलती"),
+        (r"(?<!\w)बताता(?!\w)", "बताती"),
+        (r"(?<!\w)चाहता(?!\w)", "चाहती"),
+        (r"(?<!\w)समझता(?!\w)", "समझती"),
+        (r"(?<!\w)रखता(?!\w)", "रखती"),
+        (r"(?<!\w)था(?!\w)", "थी"),
         (r"([\u0900-\u097f]+)ूँगा(?!\w)", r"\1ूँगी"),
     ),
 }
