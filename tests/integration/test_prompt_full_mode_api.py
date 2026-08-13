@@ -250,6 +250,31 @@ class TestLifecycle:
         assert config.prompt_version == 2
         assert config.system_prompt.startswith("# Role and identity")
 
+    async def test_new_draft_does_not_hide_published_runtime_version(
+        self, client, tenant_admin, test_bot, full_prompt,
+    ):
+        """A draft may be tested while the published pointer stays live."""
+        draft = _data(client.post(
+            f"{API}/prompts/{full_prompt['id']}/versions", headers=tenant_admin,
+            json={
+                "promptMode": "full",
+                "fullPrompt": FULL_PROMPT + "\n# Draft-only marker\nDo not publish yet.",
+                "note": "draft alongside published version",
+                "submitForApproval": False,
+            },
+        ), expect=201)
+        assert draft["state"] == "draft"
+        assert draft["activeVersion"] == 3
+        assert draft["publishedVersion"] == 2
+
+        from shared.bot_config import resolve_bot_config
+
+        config = await resolve_bot_config(
+            test_bot["id"], require_published=False, use_cache=False,
+        )
+        assert config.prompt_version == 2
+        assert "Draft-only marker" not in config.system_prompt
+
 
 class TestIsolation:
     def test_other_tenant_cannot_see_or_edit(self, client, other_tenant_admin,

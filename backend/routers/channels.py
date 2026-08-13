@@ -279,7 +279,7 @@ def _binding(db: Session, bot: VoiceBot) -> dict:
     prompt_published = db.scalar(
         select(func.count()).select_from(Prompt).where(
             Prompt.bot_id == bot.id, Prompt.type == "system",
-            Prompt.state == "published", Prompt.is_deleted.is_(False),
+            Prompt.published_version.isnot(None), Prompt.is_deleted.is_(False),
         )
     )
     kb_count = db.scalar(

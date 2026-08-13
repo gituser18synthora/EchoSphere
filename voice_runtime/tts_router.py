@@ -44,6 +44,7 @@ from pipecat.services.tts_service import TTSService
 
 from shared.audio.pcm import resample_pcm, silence_pcm
 from shared.audio.text import has_speakable_text, sanitize_for_tts
+from shared.orchestration.placeholders import sanitize_spoken_text
 from shared.config import get_settings
 from shared.providers.base import ProviderError
 from shared.providers.tts.delivery import (
@@ -447,6 +448,22 @@ class StreamingTTSRouter(TTSService):
             self._recorder.session_id if self._recorder else "?",
             len(text), self._current_language, str(context_id)[:8],
         )
+        guarded = sanitize_spoken_text(text)
+        if guarded != text:
+            # Last line of defense: an unresolved template placeholder
+            # ({customer_name}, [aapka naam]) survived every upstream layer.
+            # It is stripped here — raw placeholder text is NEVER spoken.
+            logger.warning(
+                "tts[%s] stripped unresolved placeholder text before "
+                "synthesis (context=%s)",
+                self._recorder.session_id if self._recorder else "?",
+                str(context_id)[:8],
+            )
+            if self._recorder is not None:
+                self._recorder.add_event(
+                    "tts_placeholder_stripped", chars=len(text) - len(guarded),
+                )
+            text = guarded
         if not has_speakable_text(text):
             # An orphan punctuation/emoji-only fragment (e.g. a held "." the
             # aggregator released at end of turn). Sarvam rejects these with a

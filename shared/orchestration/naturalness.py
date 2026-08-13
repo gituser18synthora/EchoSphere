@@ -287,7 +287,8 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         # "checking" pool where a lookup actually follows.
         "thinking": ("Hmm...", "Achha...", "Dekhiye...", "Haan..."),
         "acknowledgement": ("Achha...", "Ji...", "Theek hai...", "Haan ji...",
-                            "Ji, main samajh raha hoon..."),
+                            "Ji, main samajh raha hoon...", "Samajh gaya...",
+                            "Theek hai, samajh gaya.", "Koi baat nahi..."),
         "checking": (
             "Ek minute, main check karta hoon...",
             "Achha... ek minute, main check karta hoon.",
@@ -302,6 +303,8 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
             "Ji, main samajh sakta hoon.",
             "Hmm... ji, main samajh raha hoon.",
             "Ji...",
+            "Main aapki baat samajh raha hoon.",
+            "Ji, aapki situation samajh sakta hoon.",
         ),
         "backchannel": ("hmm...", "ji...", "achha...", "haan..."),
         "correction_token": ("sorry", "maaf kijiye"),
@@ -318,7 +321,8 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
             "One moment, let me verify that.",
             "I will check that now.",
         ),
-        "empathy": ("I understand.", "I hear you...", "Okay, I understand..."),
+        "empathy": ("I understand.", "I hear you...", "Okay, I understand...",
+                    "I do understand your situation."),
         "backchannel": ("hmm...", "right...", "okay..."),
         "correction_token": ("sorry",),
     },
@@ -483,12 +487,13 @@ class SpeechNaturalnessPlanner:
                  config_sources: dict[str, str] | None = None) -> None:
         self._config = resolve_human_speech(config)
         self._rng = rng or random.Random()
-        # Per-pool recent picks: never repeat the last two variants.
+        # Per-pool recent picks: never repeat the last three variants.
         self._recent: dict[str, deque[str]] = {}
         # One shared delivery-state window across thinking, acknowledgement,
         # checking and backchannel pools. Values are normalized so "Achha..."
-        # and " achha … " are the same spoken variant.
-        self._recent_spoken: deque[str] = deque(maxlen=2)
+        # and " achha … " are the same spoken variant. Three deep: repeated
+        # calls in one campaign must not sound like the same recorded script.
+        self._recent_spoken: deque[str] = deque(maxlen=3)
         self._last_preface_turn: int | None = None
         self._last_backchannel_monotonic: float | None = None
         self._backchannels_played = 0
@@ -563,7 +568,7 @@ class SpeechNaturalnessPlanner:
         ]
         if not candidates:
             return ""
-        recent = self._recent.setdefault(f"{language}:{pool_key}", deque(maxlen=2))
+        recent = self._recent.setdefault(f"{language}:{pool_key}", deque(maxlen=3))
         adapted = [(entry, self._adapted(entry, identity)) for entry in candidates]
         # Prefer avoiding both pool-local and global recent spoken variants.
         fresh = [

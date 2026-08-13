@@ -65,6 +65,13 @@ class SessionRecorder:
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
         self.end_reason: str | None = None
+        # finalize() must run exactly once per call — a duplicate teardown
+        # path (or a replayed hangup signal) must never re-bill, re-summarize
+        # or re-enqueue post-call work.
+        self._finalized = False
+        # FreeSWITCH's account of the disconnect (raw Hangup-Cause plus the
+        # normalized reason), set exactly once by the hangup monitor.
+        self.hangup: dict | None = None
         # True once a telephony transfer control actually reached the wire.
         # Teardown branches on it: a transferred caller now belongs to the
         # human agent, so the channel is never killed and the end reason is
@@ -163,6 +170,15 @@ class SessionRecorder:
         entry["characters"] += characters
         entry["requests"] += 1
 
+    def set_hangup(self, info: dict) -> bool:
+        """Record how FreeSWITCH says the call ended. First writer wins —
+        duplicate event deliveries can never rewrite the disconnect verdict.
+        Returns True when this call stored it."""
+        if self.hangup is not None:
+            return False
+        self.hangup = dict(info)
+        return True
+
     def add_event(self, kind: str, **data) -> None:
         self.events.append({
             "kind": kind,
@@ -209,7 +225,12 @@ class SessionRecorder:
             logger.warning("voice event write failed (%s)", kind)
 
     async def finalize(self, reason: str = "completed") -> None:
-        """Persist transcript + session summary. Called once at call end."""
+        """Persist transcript + session summary. Runs exactly once: a second
+        call (another teardown path, a duplicate hangup signal) is a no-op —
+        the first reason stands and nothing is re-billed or re-enqueued."""
+        if self._finalized:
+            return
+        self._finalized = True
         self.end_reason = reason
         duration = int(time.time() - self.started_at)
         if self._background_flushes:
@@ -260,6 +281,8 @@ class SessionRecorder:
             }
             if self.recording_info:
                 payload["recording"] = self.recording_info
+            if self.hangup:
+                payload["hangup"] = self.hangup
             await Mongo.transcripts().update_one(
                 {"session_id": self.session_id},
                 {"$set": payload},

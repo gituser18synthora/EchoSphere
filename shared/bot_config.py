@@ -537,16 +537,18 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             )
         ).scalars().all()
 
-        # Published system prompt wins (structured or full mode — both store
-        # their runtime form in compiled_prompt); the generic fallback below
-        # covers bots that have not authored one yet.
+        # The published VERSION wins even while a newer active version is a
+        # draft/pending approval. Prompt.state describes the latest authoring
+        # lifecycle, so filtering on state="published" would make a saved
+        # draft hide the still-live published_version and silently fall back
+        # to the generic prompt.
         system_prompt = ""
         prompt_id, prompt_version, prompt_mode = "", None, ""
         system_row = session.execute(
             select(Prompt).where(
                 Prompt.bot_id == bot_id,
                 Prompt.type == "system",
-                Prompt.state == "published",
+                Prompt.published_version.isnot(None),
                 Prompt.is_deleted.is_(False),
             ).limit(1)
         ).scalar_one_or_none()

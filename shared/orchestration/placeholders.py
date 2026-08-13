@@ -24,8 +24,11 @@ A "placeholder" is a short bracketed run without sentence punctuation —
 import re
 
 # Inner text that reads as a variable name, not prose: short, single-line,
-# no sentence punctuation and no nested brackets.
-_PLACEHOLDER_INNER = re.compile(r"[^\[\]{}<>.!?;\n]{1,40}")
+# no sentence punctuation and no nested brackets. Dots are allowed —
+# `{customer.name}` / `{{user.first_name}}` are dotted-path variable
+# spellings tenants actually author (the key normalizer folds `.` to `_`),
+# and treating them as prose spoke the raw braces to the customer.
+_PLACEHOLDER_INNER = re.compile(r"[^\[\]{}<>!?;\n]{1,40}")
 
 _PLACEHOLDER = re.compile(
     r"\{\{\s*(?P<double>[^{}\n]{1,40}?)\s*\}\}"
@@ -61,7 +64,14 @@ def _normalized_values(values: dict | None) -> dict[str, str]:
 
 def _looks_like_placeholder(inner: str) -> bool:
     inner = inner.strip()
-    return bool(inner) and _PLACEHOLDER_INNER.fullmatch(inner) is not None
+    if not inner:
+        return False
+    if "." in inner and " " in inner:
+        # A period in SPACED bracket text marks real prose ("[wahan UPI
+        # dikhega. usko chunein]"); a compact dotted path ({customer.name},
+        # {{user.first_name}}) is a variable spelling and must resolve/strip.
+        return False
+    return _PLACEHOLDER_INNER.fullmatch(inner) is not None
 
 
 def _substitute(match: re.Match, values: dict[str, str], *, strip: bool) -> str:

@@ -19,6 +19,7 @@ from shared.providers.base import ProviderError, STTProvider, TTSProvider
 from shared.providers.tts.delivery import delivery_capabilities, provider_speed
 from shared.audio.pcm import resample_pcm, silence_pcm, wav_to_pcm
 from shared.audio.text import has_speakable_text
+from shared.orchestration.placeholders import sanitize_spoken_text
 from voice_runtime.frames import SwitchVoiceLanguageFrame
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,11 @@ class EchoTTSService(TTSService):
         await super().process_frame(frame, direction)
 
     async def run_tts(self, text: str, context_id: str):
+        guarded = sanitize_spoken_text(text)
+        if guarded != text:
+            # Last line of defense: never speak raw {placeholder} text.
+            logger.warning("tts: stripped unresolved placeholder text")
+            text = guarded
         if not has_speakable_text(text):
             # Punctuation/emoji-only fragments have nothing to voice and some
             # providers reject them outright (Sarvam: 422) — skip, never send.
