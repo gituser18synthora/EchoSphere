@@ -259,6 +259,80 @@ class TestSarvamProvider:
             await provider.close()
         assert any(m.get("type") == "ping" for m in server.received)
 
+    async def test_error_then_close_emits_one_error_and_reconnects(self, monkeypatch):
+        """Live api.sarvam.ai sends an in-band 422 error and then CLOSES the
+        socket (observed 2026-08-13). The client must surface exactly one
+        error for the generation — not a second 'connection closed
+        mid-generation' — clear the generation, and rebuild the socket in
+        the background so the next reply pays no cold handshake."""
+        async with MockSarvamTTSServer(behavior="error_then_close") as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings())
+            await provider.synthesize_stream("...", generation_id="g1")
+            await provider.flush("g1")
+            errors = []
+            async with asyncio.timeout(3):
+                while True:
+                    event = await provider.events.get()
+                    if event.kind == "error":
+                        errors.append(event.error)
+                    if event.kind == "disconnected":
+                        break
+            assert len(errors) == 1
+            assert errors[0].category == "invalid_input"
+            assert provider._current_generation is None
+            assert not provider.generation_alive("g1")
+            # Background reconnect after the server-side close.
+            async with asyncio.timeout(3):
+                while server.connections < 2:
+                    await asyncio.sleep(0.02)
+            await provider.close()
+        assert server.connections == 2
+
+    async def test_new_dispatch_waits_for_inflight_generation(self, monkeypatch):
+        """Sarvam has no server-side contexts: a new dispatch while the
+        previous generation is still rendering waits for its final so its
+        remaining audio/final are never misattributed."""
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings())
+            await provider.synthesize_stream("First.", generation_id="g1")
+            await provider.flush("g1")
+
+            async def finish_g1():
+                await collect_until_final(provider, generation="g1")
+
+            waiter = asyncio.create_task(finish_g1())
+            # Dispatch g2 while g1 is still live; must not raise, must end up
+            # as the current generation only after g1 completed.
+            await provider.synthesize_stream("Second.", generation_id="g2")
+            await waiter
+            assert provider._current_generation == "g2"
+            assert not provider.generation_alive("g1")
+            await provider.close()
+
+    async def test_new_dispatch_supersedes_stalled_generation(self, monkeypatch):
+        """A previous generation that never finishes (stalled server) is
+        superseded after the handoff timeout — with a synthetic final so the
+        consumer's serialization can move on — instead of blocking forever."""
+        monkeypatch.setattr(sarvam_ws, "_GENERATION_HANDOFF_TIMEOUT_S", 0.15)
+        async with MockSarvamTTSServer(behavior="silent") as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings())
+            await provider.synthesize_stream("First.", generation_id="g1")
+            await provider.flush("g1")  # server stays silent: no final ever
+            await provider.synthesize_stream("Second.", generation_id="g2")
+            assert provider._current_generation == "g2"
+            assert not provider.generation_alive("g1")
+            # The superseded generation got a synthetic final event.
+            finals = []
+            while not provider.events.empty():
+                event = provider.events.get_nowait()
+                if event.kind == "final":
+                    finals.append(event.generation_id)
+            assert "g1" in finals
+            await provider.close()
+
 
 class TestElevenLabsProvider:
     async def test_happy_path_contexts_and_final(self, monkeypatch):

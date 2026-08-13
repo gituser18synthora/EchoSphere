@@ -818,7 +818,7 @@ class ConversationBrain(FrameProcessor):
             # debounce only has work to do when one landed just now; otherwise
             # the utterance has settled and waiting again is pure dead time.
             was_active, self._turn_active = self._turn_active, False
-            self._stop_backchannel_monitor()
+            await self._stop_backchannel_monitor()
             await self.push_frame(frame, direction)
             if (
                 self._pending_segments
@@ -1452,7 +1452,7 @@ class ConversationBrain(FrameProcessor):
     async def _consume_pending_turn(self) -> None:
         await self._cancel_finalize()
         # The caller's turn is closing — no backchannel may start now.
-        self._stop_backchannel_monitor()
+        await self._stop_backchannel_monitor()
         if not self._pending_segments:
             return
         generation = self._generation
@@ -1663,6 +1663,8 @@ class ConversationBrain(FrameProcessor):
         self._discard_decision_prefetch("hangup")
         await self._cancel_finalize()
         await self._cancel_generation("hangup")
+        await self._stop_backchannel_monitor()
+        self._end_backchannel_window()
         # Kill any reply still rendering/playing (TTS contexts are cancelled,
         # telephony serializers emit their `clear` event).
         await self.push_frame(InterruptionFrame())
@@ -1697,6 +1699,8 @@ class ConversationBrain(FrameProcessor):
         self._discard_decision_prefetch("do_not_call")
         await self._cancel_finalize()
         await self._cancel_generation("do_not_call")
+        await self._stop_backchannel_monitor()
+        self._end_backchannel_window()
         await self.push_frame(InterruptionFrame())
         if text is not None:
             self._recorder.add_turn(TurnRecord(role="user", text=text,
@@ -1786,10 +1790,14 @@ class ConversationBrain(FrameProcessor):
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             logger.debug("backchannel monitor could not start", exc_info=True)
 
-    def _stop_backchannel_monitor(self) -> None:
+    async def _stop_backchannel_monitor(self) -> None:
         task, self._backchannel_task = self._backchannel_task, None
         if task is not None:
-            task.cancel()
+            # Await the cancellation (like every other cancel path): a bare
+            # .cancel() could leave the monitor suspended inside
+            # _speak_transient with an unterminated LLM response block while
+            # the next turn's frames already flow.
+            await self.cancel_task(task)
 
     async def _backchannel_monitor(self) -> None:
         """Watch one caller utterance; maybe murmur once it runs long.
@@ -1850,6 +1858,11 @@ class ConversationBrain(FrameProcessor):
         Barge-in machinery still owns the audio (an InterruptionFrame kills
         it like any bot audio).
         """
+        if self._closing:
+            # _speak_transient below would no-op; flipping the flags first
+            # would latch _backchannel_active (and the gate's echo shield)
+            # open with no BotStoppedSpeaking ever coming to clear them.
+            return
         self._backchannel_active = True
         if self._audio_gate is not None:
             self._audio_gate.begin_backchannel_window()
@@ -1890,7 +1903,8 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(LLMFullResponseEndFrame())
 
     async def cleanup(self):
-        self._stop_backchannel_monitor()
+        await self._stop_backchannel_monitor()
+        self._end_backchannel_window()
         await self._cancel_finalize()
         prefetch, self._decision_prefetch = self._decision_prefetch, None
         if prefetch is not None:

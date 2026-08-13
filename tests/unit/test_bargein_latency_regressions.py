@@ -194,7 +194,13 @@ class TestSarvamBargeInFlush:
         await asyncio.sleep(0.03)
         assert len(flushes) == settled
 
-    async def test_missing_socket_ends_the_loop_quietly(self, monkeypatch):
+    async def test_missing_socket_keeps_the_loop_alive_for_reconnect(
+        self, monkeypatch
+    ):
+        """A socket gap (mid-reconnect) must not end the loop: it resumes
+        flushing the moment a live client is back, so transcript-confirmed
+        barge-in survives an STT reconnect. Stop/turn-close still cancels it
+        (covered above)."""
         import voice_runtime.sarvam_stt as sarvam_stt_module
 
         monkeypatch.setattr(
@@ -204,4 +210,42 @@ class TestSarvamBargeInFlush:
         svc._socket_client = None
         svc._start_barge_in_flush()
         await asyncio.sleep(0.03)
-        assert svc._barge_in_flush_task.done()
+        assert not svc._barge_in_flush_task.done()
+
+        flushes = []
+
+        class _Socket:
+            async def flush(self):
+                flushes.append(True)
+
+        svc._socket_client = _Socket()
+        await asyncio.sleep(0.03)
+        await svc._stop_barge_in_flush()
+        assert flushes
+
+    async def test_flush_failure_does_not_kill_the_loop(self, monkeypatch):
+        """One failed flush (socket died between ticks) must not disable
+        barge-in for the rest of the call."""
+        import voice_runtime.sarvam_stt as sarvam_stt_module
+
+        monkeypatch.setattr(
+            sarvam_stt_module, "_BARGE_IN_FLUSH_INTERVAL_S", 0.01
+        )
+        svc = self._service()
+        flushes = []
+
+        class _FlakySocket:
+            def __init__(self):
+                self.calls = 0
+
+            async def flush(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("socket died")
+                flushes.append(True)
+
+        svc._socket_client = _FlakySocket()
+        svc._start_barge_in_flush()
+        await asyncio.sleep(0.05)
+        await svc._stop_barge_in_flush()
+        assert flushes

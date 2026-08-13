@@ -112,6 +112,18 @@ class MockSarvamTTSServer(_BaseMockServer):
                          "code": 422},
             }))
             return
+        if self.behavior == "error_then_close":
+            # Live api.sarvam.ai behavior for an unspeakable payload
+            # (observed 2026-08-13): a 422 error event, then a clean close.
+            await websocket.send(json.dumps({
+                "type": "error",
+                "data": {"request_id": "req-unspeakable",
+                         "message": "400: Text must contain at least one "
+                                    "character from the allowed languages.",
+                         "code": 422},
+            }))
+            await websocket.close(code=1000)
+            return
         if self.behavior == "silent":
             return
         for index in range(self.chunks):

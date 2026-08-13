@@ -55,28 +55,95 @@ logger = logging.getLogger(__name__)
 # next flush rather than at the end of the caller's sentence.
 _BARGE_IN_FLUSH_INTERVAL_S = 0.7
 
+# The upstream service has no reconnect at all: when the Sarvam socket dies
+# (server idle-out, provider restart), its receive task ends silently, audio
+# keeps flowing into a dead client and the bot never hears the caller again.
+# A bounded number of mid-call reconnects covers that; repeated failures give
+# up loudly instead of looping.
+_MAX_STT_RECONNECTS = 3
+
 
 class EndpointedSarvamSTTService(SarvamSTTService):
     """Sarvam streaming STT that marks its segment finals as finalized.
 
     Behaviour is otherwise identical to the upstream service, plus the
-    barge-in flushing described in the module docstring — both only supply
-    signals the turn controller needs; transcription itself is unchanged.
+    barge-in flushing described in the module docstring and a bounded
+    mid-call reconnect — all only supply signals/continuity the turn
+    controller needs; transcription itself is unchanged.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, recorder=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._bot_speaking = False
         self._barge_in_flush_task: asyncio.Task | None = None
+        self._recorder = recorder
+        self._stt_stopping = False
+        self._reconnect_attempts = 0
+
+    async def stop(self, frame):
+        self._stt_stopping = True
+        await super().stop(frame)
+
+    async def cancel(self, frame):
+        self._stt_stopping = True
+        await super().cancel(frame)
 
     async def push_frame(
         self, frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
     ):
-        if isinstance(frame, TranscriptionFrame) and not frame.finalized:
-            # Every Sarvam `data` message is a complete segment transcript, so
-            # there is nothing further to wait for on this segment.
-            frame.finalized = True
+        if isinstance(frame, TranscriptionFrame):
+            # A delivered transcript proves the connection is healthy again.
+            self._reconnect_attempts = 0
+            if not frame.finalized:
+                # Every Sarvam `data` message is a complete segment
+                # transcript, so there is nothing further to wait for.
+                frame.finalized = True
         await super().push_frame(frame, direction)
+
+    async def _receive_task_handler(self):
+        await super()._receive_task_handler()
+        # Reaching here means start_listening() ended: the socket is dead.
+        # (A worker-initiated disconnect cancels this task instead, so the
+        # code below never runs on normal teardown.)
+        if self._stt_stopping or self._socket_client is None:
+            return
+        self._reconnect_attempts += 1
+        if self._reconnect_attempts > _MAX_STT_RECONNECTS:
+            await self.push_error(
+                error_msg="Sarvam STT socket closed repeatedly; transcription stopped"
+            )
+            if self._recorder is not None:
+                self._recorder.add_event(
+                    "stt_reconnect_gave_up", attempts=self._reconnect_attempts
+                )
+            return
+        logger.warning(
+            "sarvam-stt: streaming socket ended mid-call — reconnecting "
+            "(attempt %d/%d)", self._reconnect_attempts, _MAX_STT_RECONNECTS,
+        )
+        if self._recorder is not None:
+            self._recorder.add_event(
+                "stt_reconnecting", attempt=self._reconnect_attempts
+            )
+        # Drop the dead client first so run_stt stops writing into it.
+        socket_client = self._socket_client
+        websocket_context = self._websocket_context
+        self._socket_client = None
+        self._websocket_context = None
+        if websocket_context is not None and socket_client is not None:
+            try:
+                await websocket_context.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001 — the socket is already dead
+                logger.debug("sarvam-stt: dead socket close failed", exc_info=True)
+        await self._cancel_keepalive_task()
+        await asyncio.sleep(min(0.5 * self._reconnect_attempts, 2.0))
+        if self._stt_stopping:
+            return
+        # _connect() spawns a fresh receive task only when no live one is
+        # registered — deregister ourselves before calling it.
+        if self._receive_task is asyncio.current_task():
+            self._receive_task = None
+        await self._connect()
 
     async def process_frame(self, frame, direction: FrameDirection):
         if isinstance(frame, BotStartedSpeakingFrame):
@@ -109,9 +176,12 @@ class EndpointedSarvamSTTService(SarvamSTTService):
             await asyncio.sleep(_BARGE_IN_FLUSH_INTERVAL_S)
             client = getattr(self, "_socket_client", None)
             if client is None:
-                return
+                # Mid-reconnect: the next tick may find a live client again.
+                # The loop is cancelled at bot-stop/turn-stop either way.
+                continue
             try:
                 await client.flush()
             except Exception:  # noqa: BLE001 — a failed flush must never kill STT
+                # One failed flush (socket died between ticks) must not
+                # disable transcript-confirmed barge-in for the whole call.
                 logger.debug("barge-in flush failed", exc_info=True)
-                return

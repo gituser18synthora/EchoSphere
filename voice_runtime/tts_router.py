@@ -43,7 +43,7 @@ from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
 from shared.audio.pcm import resample_pcm, silence_pcm
-from shared.audio.text import sanitize_for_tts
+from shared.audio.text import has_speakable_text, sanitize_for_tts
 from shared.config import get_settings
 from shared.providers.base import ProviderError
 from shared.providers.tts.delivery import (
@@ -88,6 +88,14 @@ _FIRST_AUDIO_TIMEOUT_S = 4.0
 # (observed live 2026-07-29: corrupted Sarvam key → 403 on every sentence →
 # 12.7 s of silence → dialer closed the socket). The call is ended cleanly
 # instead.
+#
+# ``invalid_input`` is fatal ONLY while the call has produced no audio at all
+# (a genuine configuration error fails from the first sentence). Once the
+# engine has demonstrably spoken, the same category means the provider
+# rejected ONE payload (observed live 2026-08-12: Sarvam 422 "Text must
+# contain at least one character from the allowed languages" on an orphan
+# punctuation fragment) — ending the call for that dropped healthy calls
+# after one or two turns. The failed sentence is skipped instead.
 _FATAL_ERROR_CATEGORIES = frozenset({"auth", "invalid_input"})
 
 
@@ -234,6 +242,15 @@ class StreamingTTSRouter(TTSService):
         # True while a flush-hint fragment is being pushed (see _Sentence).
         self._mid_turn_flush = False
         self._fatal_call_ended = False
+        # Whether ANY engine has delivered audio this call — the discriminator
+        # between a configuration-level invalid_input (nothing can ever
+        # render: end the call) and a per-payload rejection (skip and go on).
+        self._call_audio_delivered = False
+        # Consecutive invalid_input failures with no audio in between: one is
+        # a payload rejection; a second in a row means the engine broke
+        # mid-call (e.g. a language switch onto a bad config) — every further
+        # reply would fail too, so the dead-air protection applies again.
+        self._invalid_input_streak = 0
 
     async def start(self, frame: StartFrame):
         """Open the provider connection before the first word needs speaking.
@@ -430,6 +447,22 @@ class StreamingTTSRouter(TTSService):
             self._recorder.session_id if self._recorder else "?",
             len(text), self._current_language, str(context_id)[:8],
         )
+        if not has_speakable_text(text):
+            # An orphan punctuation/emoji-only fragment (e.g. a held "." the
+            # aggregator released at end of turn). Sarvam rejects these with a
+            # 422 error AND closes the socket — never dispatch them.
+            logger.info(
+                "tts[%s] skipping unspeakable segment (context=%s, %d chars)",
+                self._recorder.session_id if self._recorder else "?",
+                str(context_id)[:8], len(text),
+            )
+            if self._recorder is not None:
+                self._recorder.add_event(
+                    "tts_segment_skipped", reason="no_speakable_text",
+                    chars=len(text),
+                )
+            yield None
+            return
         state = self._generations.get(context_id)
         engine: dict | None = state.engine if state else None
         try:
@@ -689,6 +722,8 @@ class StreamingTTSRouter(TTSService):
             audio = event.audio
             provider_rate = state.provider.settings.sample_rate
             state.active_got_audio = True
+            self._call_audio_delivered = True
+            self._invalid_input_streak = 0
             if not state.got_audio:
                 state.got_audio = True
                 # Stamped before the resample/queue below so tts_ttfb is the
@@ -771,6 +806,12 @@ class StreamingTTSRouter(TTSService):
         state.dispatched_chars += len(sentence.text)
         await state.provider.flush(sub_id)
         await state.provider.finish(sub_id)
+        if not state.got_audio and state.watchdog is None:
+            # Pause mode flushes per sentence, so the turn-level flush that
+            # normally arms the watchdog never runs — without this, a stalled
+            # FIRST sentence had no first-audio timeout (no fallback, dead
+            # air until the dialer gave up).
+            state.watchdog = self.create_task(self._first_audio_watchdog(context_id))
 
     async def _apply_sentence_speed(self, state: _Generation, sentence: _Sentence):
         """Apply a planned per-sentence rate before dispatching it.
@@ -870,9 +911,30 @@ class StreamingTTSRouter(TTSService):
         the call — every further reply would fail the same way and the caller
         would only ever hear dead air. Ending the worker closes the media
         stream cleanly (telephony serializers emit their protocol `stop`).
+
+        ``invalid_input`` is treated as configuration-level ONLY while no
+        audio has ever been delivered this call. Once the engine has spoken,
+        the same category is a per-payload rejection (e.g. Sarvam's 422 on an
+        unspeakable fragment): the sentence is lost, the call must live on.
         """
         if category not in _FATAL_ERROR_CATEGORIES or self._fatal_call_ended:
             return
+        if category == "invalid_input" and self._call_audio_delivered:
+            self._invalid_input_streak += 1
+            if self._invalid_input_streak < 2:
+                logger.warning(
+                    "tts[%s] provider rejected one payload (invalid_input) "
+                    "after audio was already delivered — skipping the "
+                    "segment, keeping the call alive",
+                    self._recorder.session_id if self._recorder else "?",
+                )
+                if self._recorder is not None:
+                    self._flush_event_background(
+                        "tts_segment_rejected_by_provider", category=category,
+                    )
+                return
+            # Second invalid_input in a row with no audio in between: the
+            # engine itself broke mid-call — fall through to the fatal end.
         self._fatal_call_ended = True
         logger.error(
             "tts[%s] unrecoverable TTS failure (%s) — ending the call instead "

@@ -49,6 +49,18 @@ _ABBREV_ENDINGS = (
 _SIMPLE_SPLIT_RE = re.compile(r"(?<=[.?!])\s+")
 
 
+# Any Unicode letter or digit, any script (\w minus underscore). A segment
+# without one — an orphan ".", "…", "-", an emoji tail — has nothing a TTS
+# engine can voice. Sarvam's streaming API rejects such payloads with a 422
+# error event AND closes the socket, so they must never reach a provider.
+_SPEAKABLE_RE = re.compile(r"[^\W_]")
+
+
+def has_speakable_text(text: str) -> bool:
+    """True when the text contains at least one letter or digit (any script)."""
+    return bool(_SPEAKABLE_RE.search(text or ""))
+
+
 def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
     """Normalize LLM output for speech synthesis without altering spoken content."""
     if not text:
