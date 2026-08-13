@@ -33,6 +33,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from shared.orchestration.async_tools import to_thread_abandonable
+
 logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_TTL_SECONDS = 24 * 3600
@@ -224,7 +226,7 @@ class ToolExecutor:
                 return ToolResult(tool=tool, ok=False, status="denied",
                                   error=gate.reason)
 
-        connection = await asyncio.to_thread(
+        connection = await to_thread_abandonable(
             _load_connection_sync, tenant_id, bot_id, tool
         )
         if connection is None:
@@ -381,7 +383,7 @@ class ToolExecutor:
         attempts = connection["retries"] + 1
         last_error: str | None = None
         for attempt in range(attempts):
-            response = await asyncio.to_thread(
+            response = await to_thread_abandonable(
                 fetch_json,
                 method=connection["method"], url=url, headers=headers,
                 params=params, json_body=body,

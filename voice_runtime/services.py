@@ -18,6 +18,7 @@ from pipecat.utils.time import time_now_iso8601
 from shared.providers.base import ProviderError, STTProvider, TTSProvider
 from shared.providers.tts.delivery import delivery_capabilities, provider_speed
 from shared.audio.pcm import resample_pcm, silence_pcm, wav_to_pcm
+from shared.audio.text import has_speakable_text
 from voice_runtime.frames import SwitchVoiceLanguageFrame
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,12 @@ class EchoTTSService(TTSService):
         await super().process_frame(frame, direction)
 
     async def run_tts(self, text: str, context_id: str):
+        if not has_speakable_text(text):
+            # Punctuation/emoji-only fragments have nothing to voice and some
+            # providers reject them outright (Sarvam: 422) — skip, never send.
+            logger.info("tts: skipping unspeakable segment (%d chars)", len(text))
+            yield None
+            return
         if context_id != self._pause_context_id:
             self._pause_context_id = context_id
             self._spoken_in_context = 0

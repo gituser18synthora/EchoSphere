@@ -52,6 +52,9 @@ _KEEPALIVE_SECONDS = 20
 # caller waits in silence.
 _MAX_CONNECT_ATTEMPTS = 2
 _CONNECT_TIMEOUT_S = 3.0
+# How long a new dispatch waits for a still-rendering previous generation
+# before superseding it (Sarvam has no server-side generation contexts).
+_GENERATION_HANDOFF_TIMEOUT_S = 1.5
 
 # Parameters the two bulbul generations accept on the config message.
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
@@ -131,6 +134,31 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         if not text:
             return
         await self.connect()
+        previous = self._current_generation
+        if (
+            previous is not None
+            and previous != generation_id
+            and self.generation_alive(previous)
+        ):
+            # Sarvam has no server-side generation contexts: dispatching new
+            # text while the previous generation is still rendering would
+            # misattribute its remaining audio and its final. Wait briefly
+            # for the in-flight generation to complete; supersede if it
+            # doesn't (its tail audio is then attributed to this generation,
+            # which is at least in playback order).
+            deadline = asyncio.get_running_loop().time() + _GENERATION_HANDOFF_TIMEOUT_S
+            while (
+                self.generation_alive(previous)
+                and self._current_generation == previous
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            if self.generation_alive(previous) and self._current_generation == previous:
+                logger.info(
+                    "sarvam-tts: superseding still-open generation before a new dispatch"
+                )
+                self._end_generation(previous)
+                await self._emit(TTSStreamEvent(kind="final", generation_id=previous))
         self._begin_generation(generation_id)
         self._current_generation = generation_id
         await self._send({"type": "text", "data": {"text": text}})
@@ -282,8 +310,17 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         except Exception:
             logger.exception("sarvam-tts: receive loop failed")
         finally:
+            if self._receive_task is asyncio.current_task():
+                # connect() only spawns a new receive loop when the old one is
+                # gone; clearing here (not just on teardown) closes the race
+                # where a reconnect lands while this task is still finishing.
+                self._receive_task = None
             if not self._closed:
                 await self._emit(TTSStreamEvent(kind="disconnected"))
+                # Whatever ended this socket (server idle-out, post-error
+                # close), rebuild it in the background so the next reply does
+                # not pay the cold handshake. Deduplicated inside.
+                self._schedule_reconnect()
 
     async def _handle_message(self, message: dict) -> None:
         kind = message.get("type")
@@ -314,6 +351,12 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
                 code if isinstance(code, int) else None, message_text
             )
             await self._emit_error(category, message_text[:200], generation_id=generation)
+            # Sarvam closes the socket right after an in-band error (observed
+            # live: 422 → close 1000). Drop the failed generation now so the
+            # close is not reported as a SECOND mid-generation failure; the
+            # receive loop's exit schedules the reconnect.
+            self._end_generation(generation)
+            self._current_generation = None
 
     async def _keepalive_loop(self) -> None:
         try:

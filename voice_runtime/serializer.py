@@ -9,6 +9,7 @@ can render live transcripts and call events without decoding audio:
 """
 
 import json
+import time
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -35,6 +36,10 @@ class RawPCMSerializer(FrameSerializer):
     def __init__(self, *, input_sample_rate: int = 16000, **kwargs) -> None:
         super().__init__(**kwargs)
         self._input_sample_rate = input_sample_rate
+        # Monotonic time of the last inbound audio message; the session host
+        # uses it to distinguish a live call from an abandoned socket when
+        # the absolute session timer fires.
+        self.last_media_at = 0.0
 
     async def setup(self, frame: StartFrame):
         pass
@@ -73,6 +78,7 @@ class RawPCMSerializer(FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)):
+            self.last_media_at = time.monotonic()
             return InputAudioRawFrame(
                 audio=bytes(data), sample_rate=self._input_sample_rate, num_channels=1
             )

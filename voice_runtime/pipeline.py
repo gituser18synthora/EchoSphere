@@ -333,6 +333,7 @@ def build_stt_service(
             input_audio_codec=codec,
             settings=service_settings,
             keepalive_timeout=8.0,
+            recorder=recorder,
         )
 
     stt_provider = get_stt_provider(

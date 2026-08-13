@@ -69,6 +69,14 @@ class _RampedAudioMixin:
     def _init_ramp(self) -> None:
         self._ramp_step = 0
         self._last_audio_at = 0.0
+        # Monotonic time of the last INBOUND caller-media message. The session
+        # host reads this to tell an abandoned socket from a live call when
+        # the transport-level session timer fires (pipecat's session_timeout
+        # is absolute call age, not inactivity).
+        self.last_media_at = 0.0
+
+    def _note_inbound_media(self) -> None:
+        self.last_media_at = time.monotonic()
 
     def _note_audio(self) -> None:
         """Record inbound-from-TTS audio, restarting the ramp after a gap."""
@@ -256,6 +264,7 @@ class FreeSwitchAudioStreamSerializer(
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
+            self._note_inbound_media()
             wire_audio = bytes(data)
             # One stereo frame is two signed 16-bit samples (first=caller/read,
             # second=bot/write on the installed QA module). Drop an
@@ -419,6 +428,7 @@ class FreeSwitchAudioForkSerializer(
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
+            self._note_inbound_media()
             audio = bytes(data)
             # L16 samples are two bytes. Ignore an incomplete trailing byte
             # rather than passing malformed PCM into VAD/STT.
@@ -548,6 +558,7 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)):
+            self._note_inbound_media()
             return InputAudioRawFrame(audio=bytes(data), sample_rate=8000, num_channels=1)
         try:
             message = json.loads(data)
@@ -590,6 +601,7 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
                 return None
             if not audio:
                 return None
+            self._note_inbound_media()
             return InputAudioRawFrame(audio=audio, sample_rate=8000, num_channels=1)
         if event == "stop":
             # EndWorkerFrame (not EndFrame): a bare EndFrame injected from the

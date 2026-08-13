@@ -21,6 +21,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from shared.config import get_settings
+from shared.orchestration.async_tools import to_thread_abandonable
 from shared.orchestration.phrases import canned
 from shared.orchestration.router import classify_user_signal
 
@@ -1173,7 +1174,7 @@ class WorkflowEngine:
         """
         definition: dict | None = None
         try:
-            definition = await asyncio.to_thread(
+            definition = await to_thread_abandonable(
                 load_workflow_definition, tenant_id, bot_id, workflow_name
             )
         except Exception:  # noqa: BLE001 — control-plane DB down ≠ dead call

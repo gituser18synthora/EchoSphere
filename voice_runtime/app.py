@@ -13,6 +13,7 @@ contained to that call's pipeline task.
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket
@@ -469,13 +470,14 @@ async def _run_call(
             memory_status=previous_memory.status,
         )
 
+    media_serializer = serializer or RawPCMSerializer()
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
-            serializer=serializer or RawPCMSerializer(),
+            serializer=media_serializer,
             session_timeout=settings.voice_session_timeout,
         ),
     )
@@ -596,10 +598,28 @@ async def _run_call(
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        # The media peer (FreeSWITCH/dialer/browser) closed the socket first:
+        # caller hangup or provider-side teardown. Recorded so an unexpected
+        # end can be attributed without guessing.
+        recorder.flush_event_soon("client_disconnected")
         await worker.cancel()
 
     @transport.event_handler("on_session_timeout")
     async def on_session_timeout(transport, client):
+        # Pipecat's session_timeout is ABSOLUTE call age, not inactivity: it
+        # fires once, voice_session_timeout seconds after connect, even while
+        # audio is streaming both ways. Cutting a live conversation at that
+        # mark presented as "the call just disconnected"; max_call_duration
+        # already bounds runaway calls, so only an abandoned socket (no
+        # caller media for 60s) is ended here.
+        last_media = getattr(media_serializer, "last_media_at", 0.0) or 0.0
+        if last_media and time.monotonic() - last_media < 60.0:
+            await recorder.flush_event("session_timeout_ignored_active_media")
+            logger.info(
+                "voice session %s passed the session timer with live media — "
+                "keeping the call (bounded by max_call_duration)", session_id,
+            )
+            return
         await recorder.flush_event("session_timeout")
         await worker.cancel()
 
