@@ -72,12 +72,18 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
         recorder=None,
         latency=None,
         chunk_ms: int = _DEFAULT_CHUNK_MS,
+        extra_query_params: dict[str, str] | None = None,
         **kwargs,
     ):
         # ``should_interrupt=False``: interruption policy is owned here (word
         # confirmed), never by the upstream service's start-of-turn handler.
         kwargs.pop("should_interrupt", None)
         super().__init__(should_interrupt=False, **kwargs)
+        # Flux /v2/listen options pipecat's settings model does not cover yet
+        # (e.g. ``numerals=true`` — spoken numbers arrive as digits). Appended
+        # verbatim to the connection query string; keys pipecat later learns
+        # about should move to DeepgramFluxSTTSettings.
+        self._extra_query_params = dict(extra_query_params or {})
         self._barge_in_min_words = max(0, int(barge_in_min_words))
         self._recorder = recorder
         self._latency = latency
@@ -91,6 +97,16 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
         self._bytes_sent_total = 0
         self._send_buffer = bytearray()
         self._turn_counter = 0
+
+    # ── connection ────────────────────────────────────────────────────────
+
+    def _build_query_string(self) -> str:
+        query = super()._build_query_string()
+        if self._extra_query_params:
+            from urllib.parse import urlencode
+
+            query = f"{query}&{urlencode(self._extra_query_params)}"
+        return query
 
     # ── pipeline plumbing ─────────────────────────────────────────────────
 

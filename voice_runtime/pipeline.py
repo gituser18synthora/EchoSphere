@@ -251,6 +251,14 @@ def build_stt_service(
             hints = _flux_language_hints(stt_conf, config)
             if hints:
                 service_settings.language_hints = hints
+        extra_params: dict[str, str] = {}
+        # numerals: spoken numbers arrive as digits ("six zero one" → "6 0 1"),
+        # which identifier extraction fuses into one run. Supported by Flux on
+        # /v2/listen (English-family languages on flux-general-multi; other
+        # languages pass through unchanged). stt_settings.numerals=false
+        # opts a bot out.
+        if settings_kwargs.get("numerals", True):
+            extra_params["numerals"] = "true"
         return EchoDeepgramFluxSTTService(
             api_key=api_key,
             sample_rate=sample_rate,
@@ -258,6 +266,7 @@ def build_stt_service(
             recorder=recorder,
             latency=latency,
             barge_in_min_words=barge_in_min_words,
+            extra_query_params=extra_params,
         )
 
     if provider == "sarvam":
