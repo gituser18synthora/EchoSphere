@@ -1,0 +1,15 @@
+{
+  "verification_reports": [],
+  "dispositions": [],
+  "vouchers": [],
+  "shifts": [],
+  "ivr_transfers": [
+    {
+      "transfer_id": "TR-BD9F5377",
+      "queue": "customer_support",
+      "booking_id": "123456",
+      "requested_at": "2026-08-17T09:10:46+00:00"
+    }
+  ],
+  "complimentary": []
+}

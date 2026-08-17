@@ -1,0 +1,8 @@
+{
+  "_comment": "Scripted outcome of the outbound Stock-Team validation call (spec Flow 7), keyed by booking_id. Used by POST /api/v1/calls/stock-team when no live stock verification report exists. stock_status: confirmed (booking will be honoured) | unavailable (stock team could not confirm / unreachable).",
+  "601003": {"call_status": "completed", "stock_status": "confirmed", "notes": "Stock team validated inventory; booking will be honoured at check-in."},
+  "601011": {"call_status": "no_answer", "stock_status": "unavailable", "notes": "Stock team unreachable; no confirmation available."},
+  "601004": {"call_status": "completed", "stock_status": "unavailable", "notes": "Stock team confirmed genuine overbooking; recommend shift."},
+  "601007": {"call_status": "completed", "stock_status": "unavailable", "notes": "Property blocked for maintenance; recommend shift."},
+  "601010": {"call_status": "completed", "stock_status": "unavailable", "notes": "No resolution with property on pricing; recommend shift."}
+}
