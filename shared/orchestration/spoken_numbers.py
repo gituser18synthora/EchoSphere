@@ -54,6 +54,55 @@ _HI_DEVANAGARI_DIGITS = {
     "सात": 7, "आठ": 8, "नौ": 9,
 }
 
+# Single-digit words for the other platform-enabled Indian languages, keyed
+# by language for auditability — one place to extend when a language is
+# enabled. Native-script words are inherently unambiguous (a Tamil-script
+# token IS Tamil); romanizations are curated so no entry collides with an
+# English word, a common Hinglish token, or an Indian given name (excluded:
+# "be"/"don"/"tran" [English], "anju"/"sunna" [name / "सुन ना"], "oru"
+# [Tamil "a/an"]).
+_INDIC_DIGITS_BY_LANGUAGE: dict[str, dict[str, int]] = {
+    "mr": {  # Marathi (Devanagari; shares शून्य/एक/तीन/चार/सात/आठ with Hindi)
+        "दोन": 2, "पाच": 5, "सहा": 6, "नऊ": 9,
+        "shoonya": 0, "dona": 2, "saha": 6, "sahaa": 6,
+    },
+    "gu": {  # Gujarati
+        "શૂન્ય": 0, "મીંડું": 0, "એક": 1, "બે": 2, "ત્રણ": 3, "ચાર": 4,
+        "પાંચ": 5, "છ": 6, "સાત": 7, "આઠ": 8, "નવ": 9,
+        "panch": 5, "nav": 9,
+    },
+    "pa": {  # Punjabi (Gurmukhi)
+        "ਸਿਫ਼ਰ": 0, "ਸਿਫਰ": 0, "ਜ਼ੀਰੋ": 0, "ਇੱਕ": 1, "ਦੋ": 2, "ਤਿੰਨ": 3,
+        "ਚਾਰ": 4, "ਪੰਜ": 5, "ਛੇ": 6, "ਸੱਤ": 7, "ਅੱਠ": 8, "ਨੌਂ": 9, "ਨੌ": 9,
+        "ik": 1, "tinn": 3, "panj": 5, "satt": 7, "naun": 9,
+    },
+    "ta": {  # Tamil
+        "பூஜ்யம்": 0, "சுழியம்": 0, "ஜீரோ": 0, "ஒன்று": 1, "இரண்டு": 2,
+        "மூன்று": 3, "நான்கு": 4, "ஐந்து": 5, "ஆறு": 6, "ஏழு": 7,
+        "எட்டு": 8, "ஒன்பது": 9,
+        "onru": 1, "onnu": 1, "irandu": 2, "rendu": 2, "moonru": 3,
+        "moonu": 3, "naangu": 4, "ainthu": 5, "aaru": 6, "ezhu": 7,
+        "ettu": 8, "onbathu": 9, "onpathu": 9,
+    },
+    "te": {  # Telugu
+        "సున్నా": 0, "ఒకటి": 1, "రెండు": 2, "మూడు": 3, "నాలుగు": 4,
+        "ఐదు": 5, "ఆరు": 6, "ఏడు": 7, "ఎనిమిది": 8, "తొమ్మిది": 9,
+        "okati": 1, "moodu": 3, "nalugu": 4, "aidu": 5, "enimidi": 8,
+        "tommidi": 9,
+    },
+    "ml": {  # Malayalam
+        "പൂജ്യം": 0, "ഒന്ന്": 1, "രണ്ട്": 2, "മൂന്ന്": 3, "നാല്": 4,
+        "അഞ്ച്": 5, "ആറ്": 6, "ഏഴ്": 7, "എട്ട്": 8, "ഒമ്പത്": 9,
+        "ഒൻപത്": 9,
+        "poojyam": 0, "randu": 2, "moonnu": 3, "naalu": 4, "anchu": 5,
+        "ombathu": 9,
+    },
+    "ur": {  # Urdu (Arabic script; romanized forms match the Hindi set)
+        "صفر": 0, "ایک": 1, "دو": 2, "تین": 3, "چار": 4, "پانچ": 5,
+        "چھ": 6, "چھے": 6, "سات": 7, "آٹھ": 8, "نو": 9, "نौ": 9,
+    },
+}
+
 # "double nine" / "triple two" / "डबल नौ" — repetition prefixes.
 _REPEAT_WORDS = {
     "double": 2, "dabal": 2, "डबल": 2,
@@ -114,6 +163,8 @@ _SINGLE_DIGITS: dict[str, int] = {}
 _SINGLE_DIGITS.update(_EN_DIGITS)
 _SINGLE_DIGITS.update(_HI_ROMAN_DIGITS)
 _SINGLE_DIGITS.update(_HI_DEVANAGARI_DIGITS)
+for _lang_words in _INDIC_DIGITS_BY_LANGUAGE.values():
+    _SINGLE_DIGITS.update(_lang_words)
 
 _MULTI_DIGIT: dict[str, int] = {}
 _MULTI_DIGIT.update(_EN_TEENS_TENS)
@@ -123,6 +174,33 @@ _MULTI_DIGIT.update({w: v for w, v in _HI_COMPOUND.items() if v >= 10})
 _DEVANAGARI_DIGIT_CHARS = str.maketrans("०१२३४५६७८९", "0123456789")
 
 _STRIP_PUNCT = "।,.!?;:'\"()[]{}"
+
+# ── generic script-digit normalization ──────────────────────────────────────
+# Any Unicode decimal digit (Devanagari ०, Gurmukhi ੬, Tamil ௬, Telugu ౬,
+# Malayalam ൬, Gujarati ૬, Arabic-Indic ٦/۶, …) maps to its ASCII form via
+# the Unicode character database — no per-script tables to maintain. The
+# translation cache grows only with characters actually seen.
+
+_script_digit_cache: dict[str, str] = {}
+
+
+def normalize_script_digits(text: str) -> str:
+    """Rewrite every non-ASCII decimal-digit character to ASCII 0-9."""
+    import unicodedata
+
+    out: list[str] = []
+    for ch in text or "":
+        if ch in _script_digit_cache:
+            out.append(_script_digit_cache[ch])
+            continue
+        mapped = ch
+        if not ch.isascii():
+            value = unicodedata.decimal(ch, None)
+            if value is not None:
+                mapped = str(value)
+        _script_digit_cache[ch] = mapped
+        out.append(mapped)
+    return "".join(out)
 
 
 def _clean(token: str) -> str:
@@ -134,7 +212,7 @@ def is_number_word(token: str) -> bool:
     word = _clean(token)
     if not word:
         return False
-    if word.translate(_DEVANAGARI_DIGIT_CHARS).replace(",", "").isdigit():
+    if normalize_script_digits(word).replace(",", "").isdigit():
         return True
     return (
         word in _SINGLE_DIGITS
@@ -160,7 +238,7 @@ def verbalized_digits(text: str) -> str:
     "50000"). Non-number words pass through untouched, so this is safe to run
     on a whole utterance before reference extraction.
     """
-    normalized = (text or "").translate(_DEVANAGARI_DIGIT_CHARS)
+    normalized = normalize_script_digits(text or "")
     out: list[str] = []
     group: int | None = None  # value being composed by magnitudes (नौ सौ …)
     pending_repeat = 0
@@ -255,3 +333,85 @@ def meaningful_language_words(text: str) -> list[str]:
 def strip_numeric_payload(text: str) -> str:
     """The utterance minus numeric/technical payload, for script analysis."""
     return " ".join(meaningful_language_words(text))
+
+
+# ── numeric-identifier capture (booking IDs, OTPs, references) ───────────────
+# Callers dictate identifiers digit-by-digit, chunked by pauses, in any of the
+# platform languages, often with "double"/"triple" constructs. STT writes that
+# as digit WORDS or as SPACED digit groups ("6 0 1 0 1 1", "60 10 11") — both
+# invisible to `[0-9]{4,10}`-style entity patterns. These helpers rewrite an
+# utterance so identifier regexes see one contiguous digit run, and classify
+# whether an utterance IS a dictated number (the guard that keeps this
+# normalization away from ordinary conversation).
+
+# Digit groups separated by spaces / common dictation separators fuse into one
+# run: "6 0 1-0 1 1" → "601011". Words between groups break the run.
+_DIGIT_RUN = re.compile(r"\d(?:[\s,.\-]*\d)*")
+
+# Tokens that carry no content in a dictated number ("uh, six zero... umm").
+_DICTATION_FILLERS = frozenset({
+    "uh", "um", "umm", "hmm", "hm", "ah", "aa", "haan", "han", "ji", "yes",
+    "ok", "okay", "so", "it's", "its", "is", "the", "अच्छा", "हाँ", "हां",
+    "जी", "तो",
+})
+
+
+def fuse_digit_runs(text: str) -> str:
+    """Join adjacent digit groups into contiguous runs, keep other words.
+
+    "id is 6 0 1 0 1 1 ok" → "id is 601011 ok"; "60 10 11" → "601011".
+    Run on ALREADY-verbalized text (see :func:`spoken_digit_text`).
+    """
+    normalized = normalize_script_digits(text or "")
+    return _DIGIT_RUN.sub(
+        lambda m: re.sub(r"[\s,.\-]", "", m.group(0)), normalized
+    )
+
+
+def spoken_digit_text(text: str) -> str:
+    """Full identifier normalization: words → digits, then runs fused.
+
+    "Six zero one zero double one." → "601011."
+    "छह शून्य एक शून्य एक एक"        → "601011"
+    "6 0 1 0 1 1"                    → "601011"
+    Non-number words pass through untouched, so an identifier regex can still
+    anchor on surrounding text ("booking BK 601011").
+    """
+    return fuse_digit_runs(verbalized_digits(text or ""))
+
+
+def digits_dominant(text: str) -> bool:
+    """Whether the utterance is essentially a dictated number.
+
+    True when it contains at least one number word/digit group and everything
+    else is dictation filler ("yes", "umm", "ji") — at most two such tokens.
+    This is the gate for multi-turn identifier accumulation: "six zero" and
+    "one zero double one" qualify; "my room is on floor 2" does not.
+    """
+    number_tokens = 0
+    other_tokens = 0
+    for token in (text or "").split():
+        word = _clean(token)
+        if not word:
+            continue
+        if is_number_word(word):
+            number_tokens += 1
+        elif word in _DICTATION_FILLERS:
+            continue
+        else:
+            other_tokens += 1
+    return number_tokens >= 1 and other_tokens == 0 or (
+        number_tokens >= 2 and other_tokens <= 1
+    )
+
+
+def spoken_digit_sequence(text: str) -> str:
+    """The digits of a dictated number, as one string ("six zero" → "60").
+
+    Longest fused digit run in the normalized utterance; empty string when
+    the utterance carries no digits.
+    """
+    runs = _DIGIT_RUN.findall(fuse_digit_runs(verbalized_digits(text or "")))
+    if not runs:
+        return ""
+    return max(runs, key=len)

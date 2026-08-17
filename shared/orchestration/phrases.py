@@ -93,6 +93,12 @@ _PHRASES: dict[str, dict[str, str]] = {
         "en": "Could you tell me a bit more?",
         "hi": "थोड़ा और बताइए?",
     },
+    # A caller dictating a numeric identifier paused partway through; the
+    # digits heard so far are held and the ask stays open for the rest.
+    "wf_digits_partial": {
+        "en": "Okay, I have noted the digits so far — please continue.",
+        "hi": "जी, अब तक के अंक नोट कर लिए — कृपया आगे बताइए।",
+    },
     "wf_repeat": {
         "en": "Could you repeat that?",
         "hi": "कृपया दोबारा बोलिए?",

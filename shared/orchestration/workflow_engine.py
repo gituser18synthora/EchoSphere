@@ -61,6 +61,10 @@ class WorkflowState(TypedDict, total=False):
     signal_override: str | None
     # Testing Studio: {tool_name: payload} replaces live HTTP in api nodes.
     mock_tool_results: dict | None
+    # Digits heard so far at an ask node whose entity expects a numeric
+    # identifier, keyed by node id — a caller dictating "six zero … <pause>
+    # one zero double one" accumulates across turns instead of failing.
+    pending_digits: dict[str, str]
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -712,6 +716,18 @@ def _ask_is_free_text(node: dict, variable: str) -> bool:
     return str(entity.get("dataType") or "text") == "text" and not has_matcher
 
 
+def _ask_expects_digits(node: dict, variable: str) -> bool:
+    """Whether this ask collects a numeric identifier (booking ID, OTP, …)."""
+    from shared.orchestration.entity_extractor import _expects_digits
+
+    return _expects_digits(_ask_entity(node, variable))
+
+
+# A dictated identifier can be held across turns while the caller pauses;
+# anything longer than this is no longer an identifier being dictated.
+_MAX_PENDING_DIGITS = 32
+
+
 def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
     from shared.orchestration.entity_extractor import extract_entity
 
@@ -777,6 +793,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         lang = state.get("language") or ""
         slots = dict(state.get("slots") or {})
         node_retries = dict(state.get("node_retries") or {})
+        pending_digits = dict(state.get("pending_digits") or {})
         audit = list(state.get("audit") or [])
         trace: list[str] = []
         replies: list[str] = []
@@ -815,14 +832,47 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 config = _node_config(node)
                 variable = str(config.get("variable") or node.get("id"))
                 guarded = signal in _OFF_SCRIPT_SIGNALS or signal == "agent_request"
-                value = None if (guarded and _ask_is_free_text(node, variable)) \
-                    else _extract_ask_value(node, variable, text)
+                # Numeric-identifier dictation: digits held from earlier turns
+                # of THIS ask continue the same identifier, so "six zero …
+                # <pause> one zero double one" resolves as one value. The
+                # buffer is tried FIRST — a short continuation chunk ("1011")
+                # can look like a complete answer on its own.
+                from shared.orchestration.spoken_numbers import (
+                    digits_dominant,
+                    spoken_digit_sequence,
+                )
+
+                expects_digits = _ask_expects_digits(node, variable)
+                dictated = expects_digits and digits_dominant(text)
+                buffered = pending_digits.get(awaiting, "") if expects_digits else ""
+                fresh = spoken_digit_sequence(text) if dictated else ""
+                combined = (buffered + fresh)[:_MAX_PENDING_DIGITS]
+                value = None
+                accumulated = False
+                if buffered and fresh:
+                    value = _extract_ask_value(node, variable, combined)
+                    accumulated = value is not None
+                if value is None and not (guarded and _ask_is_free_text(node, variable)):
+                    value = _extract_ask_value(node, variable, text)
                 if value is not None:
                     slots[variable] = value
+                    pending_digits.pop(awaiting, None)
                     node_retries.pop(awaiting, None)
-                    audit.append({"action": "slot_filled", "node": awaiting,
-                                  "variable": variable})
+                    entry = {"action": "slot_filled", "node": awaiting,
+                             "variable": variable}
+                    if accumulated:
+                        entry["accumulated_digits"] = len(combined)
+                    audit.append(entry)
                     current, awaiting = _next_of(awaiting), None
+                elif dictated and fresh and combined != buffered:
+                    # A partial identifier: hold what was heard, keep the ask
+                    # open, and do not burn a retry — the caller is making
+                    # progress, not failing to answer.
+                    pending_digits[awaiting] = combined
+                    audit.append({"action": "digits_partial", "node": awaiting,
+                                  "held_digits": len(combined)})
+                    replies.append(canned("wf_digits_partial", lang))
+                    current = None  # stay awaiting
                 elif signal is not None:
                     # The caller said something meaningful that the ask's
                     # matcher did not extract (hardship, complaint, a
@@ -1057,6 +1107,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             **state,
             "slots": slots,
             "node_retries": node_retries,
+            "pending_digits": pending_digits,
             "audit": audit,
             "trace": trace,
             "current_node": awaiting or current,

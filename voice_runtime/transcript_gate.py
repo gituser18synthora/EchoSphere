@@ -534,14 +534,23 @@ def assess_transcript(
         ):
             return GateVerdict(False, "unsupported_language", language)
 
-    # 5. Duration-based noise rules (never applied to known short replies).
+    # 5. Duration-based noise rules (never applied to known short replies or
+    # to dictated numbers — "six zero" answering an ID prompt is real speech).
     if quality.audio_seconds is not None and quality.audio_seconds > 0:
         words = len(stripped.split())
-        if quality.audio_seconds < MIN_UTTERANCE_SECONDS and not short_reply:
+        if (
+            quality.audio_seconds < MIN_UTTERANCE_SECONDS
+            and not short_reply
+            and not _is_dictated_number(stripped)
+        ):
             return GateVerdict(False, "noise_duration", language)
         if (
             words >= _RATE_CHECK_MIN_WORDS
             and words / quality.audio_seconds > MAX_WORDS_PER_SECOND
+            # Digit tokens are not words: "6 0 1 0 1 1" counts six "words"
+            # in barely a second of real dictation. The rate rule hunts
+            # hallucinated text bursts, which digit sequences are not.
+            and not _is_dictated_number(stripped)
         ):
             return GateVerdict(False, "impossible_rate", language)
 
@@ -554,7 +563,11 @@ def assess_transcript(
     # every meaningful-looking hallucination and leave this rule inert. What
     # must be protected is the genuinely self-contained reply — "haan", "nahi",
     # "ji", "yes", "no", "ok" — which trips several of these signals by nature.
-    if not is_short_complete_reply(stripped) and not _is_data_token(stripped):
+    if (
+        not is_short_complete_reply(stripped)
+        and not _is_data_token(stripped)
+        and not _is_dictated_number(stripped)
+    ):
         weak = weak_noise_signals(stripped, quality)
         if (
             "single_token" in weak
@@ -576,6 +589,20 @@ def assess_transcript(
 def _is_data_token(text: str) -> bool:
     """Whether the utterance is a bare numeric/reference token ("5000")."""
     return bool(_DATA_TOKEN_RE.fullmatch(text))
+
+
+def _is_dictated_number(text: str) -> bool:
+    """Whether the utterance is a spoken number/identifier being dictated.
+
+    "six zero", "double one", "छह शून्य एक", "6 0 1 0 1 1" — a caller reading
+    a booking ID/OTP/amount digit-by-digit in any supported language. Such
+    answers are short and often overlap the tail of the bot's own question,
+    so they need the same protection from the duration/weak-evidence noise
+    rules as lexicon short replies and bare data tokens.
+    """
+    from shared.orchestration.spoken_numbers import digits_dominant
+
+    return digits_dominant(text)
 
 
 def weak_noise_signals(text: str, quality: SegmentQuality) -> list[str]:
