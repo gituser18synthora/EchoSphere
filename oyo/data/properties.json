@@ -1,0 +1,102 @@
+{
+  "_comment": "Property backend state used during PM verification: occupancy (overbooked check), operational status (maintenance/hold reasons), pricing (7-day ARR vs booking rate, complimentary amount budget) and nearby alternates for the shift flow.",
+  "P101": {
+    "property_id": "P101",
+    "name": "OYO Townhouse 121 Sector 29 Gurugram",
+    "city": "Gurugram",
+    "occupancy": {"total_rooms": 40, "occupied_rooms": 31, "occupancy_pct": 78, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 2100, "complimentary_amount": 300},
+    "alternates": ["P105", "P108"]
+  },
+  "P102": {
+    "property_id": "P102",
+    "name": "OYO Flagship 502 Koramangala Bengaluru",
+    "city": "Bengaluru",
+    "occupancy": {"total_rooms": 30, "occupied_rooms": 22, "occupancy_pct": 73, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 1900, "complimentary_amount": 250},
+    "alternates": ["P109"]
+  },
+  "P103": {
+    "property_id": "P103",
+    "name": "OYO 318 Marine Drive Mumbai",
+    "city": "Mumbai",
+    "occupancy": {"total_rooms": 25, "occupied_rooms": 20, "occupancy_pct": 80, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 3600, "complimentary_amount": 400},
+    "alternates": []
+  },
+  "P104": {
+    "property_id": "P104",
+    "name": "OYO Premium 77 MG Road Pune",
+    "city": "Pune",
+    "occupancy": {"total_rooms": 20, "occupied_rooms": 20, "occupancy_pct": 100, "has_availability": false},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 1700, "complimentary_amount": 250},
+    "alternates": ["P105"]
+  },
+  "P105": {
+    "property_id": "P105",
+    "name": "OYO 209 Civil Lines Jaipur",
+    "city": "Jaipur",
+    "occupancy": {"total_rooms": 35, "occupied_rooms": 24, "occupancy_pct": 69, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 2400, "complimentary_amount": 300},
+    "alternates": ["P101"]
+  },
+  "P106": {
+    "property_id": "P106",
+    "name": "OYO Townhouse 44 Salt Lake Kolkata",
+    "city": "Kolkata",
+    "occupancy": {"total_rooms": 28, "occupied_rooms": 12, "occupancy_pct": 43, "has_availability": true},
+    "status": {"operational_status": "maintenance", "hold_reasons": ["Water-supply repair on floors 2-3 until 2026-08-23"]},
+    "pricing": {"arr_7day": 3000, "complimentary_amount": 350},
+    "alternates": ["P102", "P109"]
+  },
+  "P107": {
+    "property_id": "P107",
+    "name": "OYO 555 Banjara Hills Hyderabad",
+    "city": "Hyderabad",
+    "occupancy": {"total_rooms": 22, "occupied_rooms": 9, "occupancy_pct": 41, "has_availability": true},
+    "status": {"operational_status": "maintenance", "hold_reasons": ["Full-building electrical audit; all rooms blocked until 2026-08-26"]},
+    "pricing": {"arr_7day": 2500, "complimentary_amount": 300},
+    "alternates": ["P109"]
+  },
+  "P108": {
+    "property_id": "P108",
+    "name": "OYO 88 Fort Kochi",
+    "city": "Kochi",
+    "occupancy": {"total_rooms": 18, "occupied_rooms": 11, "occupancy_pct": 61, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 1800, "complimentary_amount": 250},
+    "alternates": ["P103"]
+  },
+  "P109": {
+    "property_id": "P109",
+    "name": "OYO 301 Indiranagar Bengaluru",
+    "city": "Bengaluru",
+    "occupancy": {"total_rooms": 26, "occupied_rooms": 17, "occupancy_pct": 65, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 1750, "complimentary_amount": 350},
+    "alternates": ["P102"]
+  },
+  "P110": {
+    "property_id": "P110",
+    "name": "OYO 415 Sector 17 Chandigarh",
+    "city": "Chandigarh",
+    "occupancy": {"total_rooms": 24, "occupied_rooms": 15, "occupancy_pct": 63, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 2000, "complimentary_amount": 200},
+    "alternates": ["P101", "P105"]
+  },
+  "P111": {
+    "property_id": "P111",
+    "name": "OYO 260 Hazratganj Lucknow",
+    "city": "Lucknow",
+    "occupancy": {"total_rooms": 20, "occupied_rooms": 16, "occupancy_pct": 80, "has_availability": true},
+    "status": {"operational_status": "active", "hold_reasons": []},
+    "pricing": {"arr_7day": 2300, "complimentary_amount": 300},
+    "alternates": ["P101"]
+  }
+}

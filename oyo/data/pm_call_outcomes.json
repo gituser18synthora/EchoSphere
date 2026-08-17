@@ -1,0 +1,14 @@
+{
+  "_comment": "Scripted outcome of the outbound Property-Manager verification call, keyed by booking_id. Used by POST /api/v1/calls/property-manager when no live verification report (posted by the OYO Property Verification bot) exists for the booking. Fields: call_status completed|no_answer; booking_honored true|false (only meaningful when completed); deny_reason none|overbooked|maintenance|price_low; resolution confirmed|penalty_warning_accepted|alternate_room|arr_pitch_accepted|compensation_added|not_honored.",
+  "601001": {"call_status": "completed", "booking_honored": true, "deny_reason": "none", "resolution": "confirmed", "notes": "PM confirmed the booking on first ask."},
+  "601003": {"call_status": "no_answer", "booking_honored": false, "deny_reason": "none", "resolution": "not_honored", "notes": "No response after configured retry attempts."},
+  "601004": {"call_status": "completed", "booking_honored": false, "deny_reason": "overbooked", "resolution": "not_honored", "notes": "PM declared overbooking; backend occupancy check confirmed 100% occupancy."},
+  "601005": {"call_status": "completed", "booking_honored": true, "deny_reason": "overbooked", "resolution": "penalty_warning_accepted", "notes": "PM claimed overbooking but backend showed availability; PM accepted after penalty advisory."},
+  "601006": {"call_status": "completed", "booking_honored": true, "deny_reason": "maintenance", "resolution": "alternate_room", "notes": "Property under maintenance; PM arranged an alternate room for the stay."},
+  "601007": {"call_status": "completed", "booking_honored": false, "deny_reason": "maintenance", "resolution": "not_honored", "notes": "Full-building maintenance; no alternate room available."},
+  "601008": {"call_status": "completed", "booking_honored": true, "deny_reason": "price_low", "resolution": "arr_pitch_accepted", "notes": "Booking rate meets 7-day ARR; PM agreed to honor after ARR comparison."},
+  "601009": {"call_status": "completed", "booking_honored": true, "deny_reason": "price_low", "resolution": "compensation_added", "notes": "Booking rate below 7-day ARR; PM accepted after complimentary amount was added."},
+  "601010": {"call_status": "completed", "booking_honored": false, "deny_reason": "price_low", "resolution": "not_honored", "notes": "PM refused even after the complimentary amount offer."},
+  "601011": {"call_status": "no_answer", "booking_honored": false, "deny_reason": "none", "resolution": "not_honored", "notes": "PM unreachable across retries."},
+  "601012": {"call_status": "completed", "booking_honored": true, "deny_reason": "none", "resolution": "confirmed", "notes": "PM confirmed the booking."}
+}
