@@ -24,10 +24,12 @@ vi.mock("@/services/api", () => ({
   listProviderModels: vi.fn(),
   listProviderVoices: vi.fn(),
   getModelLanguages: vi.fn(),
+  getRuntimeContext: vi.fn(),
   saveVoiceSettings: vi.fn(),
   validateVoiceConfig: vi.fn(),
   testProviderConnection: vi.fn(),
   generateTtsPreview: vi.fn(),
+  listPrompts: vi.fn(),
   listPronunciationDictionaries: vi.fn(),
   getPronunciationDictionary: vi.fn(),
   createPronunciationDictionary: vi.fn(),
@@ -133,6 +135,31 @@ function installMocks(settings: Record<string, unknown> = baseSettings()) {
     { id: "l1", code: "en-IN", name: "English (India)", enabled: true },
     { id: "l2", code: "hi-IN", name: "Hindi", enabled: true },
   ] as never);
+  vi.mocked(api.listPrompts).mockResolvedValue([
+    {
+      id: "prompt_greeting", botId: "bot_1", type: "greeting", name: "Greeting",
+      variables: [], state: "draft", activeVersion: 2,
+      versions: [
+        {
+          version: 1, editedBy: "user", editedAt: "", note: "",
+          promptMode: "full", variants: [{ language: "en-IN", content: "Old greeting" }],
+        },
+        {
+          version: 2, editedBy: "user", editedAt: "", note: "",
+          promptMode: "full", variants: [
+            { language: "en-IN", content: "Hello {customer_name} from {lender_name}. I am {voice_speaker_name}." },
+            { language: "hi-IN", content: "नमस्कार! मैं {lender_name} की तरफ़ से {voice_speaker_name} बोल रहा हूँ। क्या मेरी बात {customer_name} जी से हो रही है?" },
+          ],
+        },
+      ],
+    },
+  ] as never);
+  vi.mocked(api.getRuntimeContext).mockResolvedValue({
+    id: "ctx_1", botId: "bot_1", name: "User details", sourceMode: "manual",
+    apiConnectionId: null, responsePath: null, fields: [], allowAdditional: true,
+    testPayload: { customer_name: "JP", lender_name: "ईडाएस" },
+    missingValuePolicy: null, domainPolicy: "collections", status: "active", configured: true,
+  } as never);
   vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
     Promise.resolve(provider === "sarvam" ? SARVAM_MODELS
       : provider === "elevenlabs" ? ELEVEN_MODELS : [])) as never);
@@ -585,6 +612,23 @@ describe("Voice preview — reset to defaults", () => {
 });
 
 describe("Voice preview — layout order and delivery tuning drafts", () => {
+  it("prefills Sample text from the active Greeting prompt for the selected language", async () => {
+    const user = userEvent.setup();
+    const dialog = await openPreview(user);
+    const sampleText = within(dialog).getByLabelText("Preview sample text");
+
+    await waitFor(() => expect(sampleText).toHaveValue("Hello JP from ईडाएस. I am Shubh."));
+    await user.selectOptions(within(dialog).getByLabelText("Preview language"), "hi-IN");
+    await waitFor(() => expect(sampleText).toHaveValue(
+      "नमस्कार! मैं ईडाएस की तरफ़ से Shubh बोल रहा हूँ। क्या मेरी बात JP जी से हो रही है?",
+    ));
+
+    await user.clear(sampleText);
+    await user.type(sampleText, "My custom preview line");
+    await user.selectOptions(within(dialog).getByLabelText("Preview language"), "en-IN");
+    expect(sampleText).toHaveValue("My custom preview line");
+  });
+
   it("puts Sample text after every settings section", async () => {
     const user = userEvent.setup();
     const dialog = await openPreview(user);

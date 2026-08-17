@@ -1872,8 +1872,13 @@ export interface HealthMetric {
   name: string;
   status: Severity;
   value: string;
+  /** Host:port actually probed — surfaces a service bound somewhere else. */
   target: string;
   spark: number[];
+  /** Monitoring tab this service belongs to ("platform" | "ai" | "telephony"). */
+  group: string;
+  /** Probe outcome, e.g. "http://127.0.0.1:9002/health → 200". */
+  detail: string;
 }
 
 /* ---------- Analytics series ---------- */

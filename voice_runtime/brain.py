@@ -3660,7 +3660,8 @@ class ConversationBrain(FrameProcessor):
         fails before the first token — a mid-reply retry would repeat audio.
 
         Guardrail hold: when the tenant's effective guardrails contain a
-        BLOCKING output rule (medical-advice / payment-credential requests),
+        BLOCKING output rule (medical advice, payment-credential requests,
+        unverifiable booking commitments),
         text is forwarded to TTS one checked sentence at a time instead of
         per token — a violating sentence is never synthesized. A block raises
         :class:`_GuardrailBlockedReply` carrying what was already spoken.

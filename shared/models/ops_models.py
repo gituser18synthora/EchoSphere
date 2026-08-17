@@ -223,7 +223,13 @@ class UsageRecord(Base, TimestampMixin):
 
 
 class HealthMetric(Base, TimestampMixin):
-    """Latest platform component health snapshot (Monitoring page)."""
+    """Historical platform component health snapshots.
+
+    No longer the source for Platform Health: the admin dashboard and
+    Monitoring page probe the live services instead
+    (``backend/core/service_health.py``), because a stored row can only
+    report how things looked when it was written.
+    """
 
     __tablename__ = "health_metrics"
 

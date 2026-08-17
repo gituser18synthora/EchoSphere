@@ -20,10 +20,12 @@ vi.mock("@/services/api", () => ({
   listProviderModels: vi.fn(),
   listProviderVoices: vi.fn(),
   getModelLanguages: vi.fn(),
+  getRuntimeContext: vi.fn(),
   saveVoiceSettings: vi.fn(),
   validateVoiceConfig: vi.fn(),
   testProviderConnection: vi.fn(),
   generateTtsPreview: vi.fn(),
+  listPrompts: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),
@@ -66,6 +68,13 @@ function installDefaultMocks(settings: Record<string, unknown> = SETTINGS) {
     { id: "l1", code: "en-IN", name: "English (India)", enabled: true },
     { id: "l2", code: "hi-IN", name: "Hindi", enabled: true },
   ] as never);
+  vi.mocked(api.listPrompts).mockResolvedValue([]);
+  vi.mocked(api.getRuntimeContext).mockResolvedValue({
+    id: null, botId: "bot_1", name: "User details", sourceMode: "manual",
+    apiConnectionId: null, responsePath: null, fields: [], allowAdditional: true,
+    testPayload: null, missingValuePolicy: null, domainPolicy: "generic",
+    status: "active", configured: false,
+  } as never);
   vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
     Promise.resolve(
       provider === "sarvam" ? [

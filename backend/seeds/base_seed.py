@@ -25,7 +25,6 @@ from shared.models import (
     Guardrail,
     GuardrailProfile,
     GuardrailProfileRule,
-    HealthMetric,
     Industry,
     Integration,
     Permission,
@@ -328,6 +327,8 @@ GUARDRAILS = [
      "Blocks diagnosis or dosage advice; routes to licensed staff.", "block", True, False),
     ("payment_collection_restriction", "Payment collection restriction", "Compliance",
      "Bots may reference balances but never collect card numbers by voice.", "block", True, False),
+    ("booking_commitment_restriction", "Booking & fare commitment restriction", "Compliance",
+     "Blocks guaranteed bookings, refunds, fee waivers or free upgrades the bot cannot verify; tool-confirmed facts may still be stated.", "block", True, False),
     ("competitor_mention_flag", "Competitor mention flag", "Brand",
      "Flags conversations where competitors are discussed for QA review.", "flag", False, False),
     ("profanity_deescalation", "Profanity / abuse de-escalation", "Safety",
@@ -353,6 +354,10 @@ GUARDRAIL_PROFILES = [
     ("finance", "Finance",
      "Standard plus payment & advice restrictions — balances may be referenced, card numbers never collected.",
      ["profanity_deescalation", "payment_collection_restriction"]),
+    ("travel_hospitality", "Travel and Hospitality",
+     "Standard plus booking & payment restrictions — no guaranteed bookings, refunds or free upgrades by voice, and card numbers are never collected.",
+     ["profanity_deescalation", "payment_collection_restriction",
+      "booking_commitment_restriction"]),
     ("development", "Development / Internal",
      "Internal test bots: no real telephony calls, no state-changing tools. Mandatory platform rules still apply.",
      ["outbound_call_block", "state_changing_tool_block"]),
@@ -365,6 +370,7 @@ INDUSTRY_DEFAULT_PROFILES = {
     "banking": "finance",
     "insurance": "finance",
     "financial_services": "finance",
+    "travel_hospitality": "travel_hospitality",
 }
 
 # Legacy approved-model registry shown on the AI Governance page. Entries must
@@ -387,16 +393,10 @@ INTEGRATIONS = [
     ("Microsoft Teams", "Notifications", "Approval requests and daily digest cards."),
 ]
 
-HEALTH_METRICS = [
-    ("API gateway", "good", "100% uptime", "≥99.95%"),
-    ("Call orchestration", "good", "—", "<250ms"),
-    ("SIP trunks", "neutral", "—", "<0.5%"),
-    ("STT latency", "neutral", "—", "<400ms"),
-    ("LLM latency", "neutral", "—", "<800ms"),
-    ("TTS latency", "neutral", "—", "<300ms"),
-    ("Embedding queue", "neutral", "—", "<5 min"),
-    ("Recording storage", "neutral", "—", "<80%"),
-]
+# Platform Health is probed live from the hosts/ports in .env
+# (backend/core/service_health.py) — there is nothing to seed. Seeded rows
+# here previously reported "API gateway — 100% uptime" whether or not
+# anything was running.
 
 # ISO 4217 display currencies. USD is the platform base currency; exchange
 # rates are configured by Super Admin — never hardcoded here.
@@ -536,7 +536,7 @@ def run_base_seed(db: Session | None = None) -> dict:
         db = get_sessionmaker()()
     created = {"roles": 0, "permissions": 0, "plans": 0, "languages": 0, "voices": 0,
                "guardrails": 0, "guardrail_profiles": 0,
-               "models": 0, "integrations": 0, "health_metrics": 0,
+               "models": 0, "integrations": 0,
                "settings": 0, "templates": 0, "users": 0,
                "industries": 0, "countries": 0, "data_regions": 0,
                "ai_profiles": 0, "providers": 0,
@@ -812,14 +812,6 @@ def run_base_seed(db: Session | None = None) -> dict:
             if db.scalar(select(Integration).where(Integration.name == name)) is None:
                 db.add(Integration(id=new_id("ig"), name=name, category=category, description=desc))
                 created["integrations"] += 1
-
-        for i, (name, status, value, target) in enumerate(HEALTH_METRICS):
-            if db.scalar(select(HealthMetric).where(HealthMetric.name == name)) is None:
-                db.add(HealthMetric(
-                    id=new_id("hm"), name=name, status=status, value=value,
-                    target=target, spark=[], sort_order=i,
-                ))
-                created["health_metrics"] += 1
 
         for key, value, desc in SYSTEM_SETTINGS:
             if db.scalar(select(SystemSetting).where(SystemSetting.key == key)) is None:

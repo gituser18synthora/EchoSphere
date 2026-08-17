@@ -13,12 +13,6 @@ const tabs = [
   { id: "alerts", label: "Alerts" },
 ];
 
-const groups: Record<string, string[]> = {
-  platform: ["API gateway", "Call orchestration", "Recording storage"],
-  ai: ["STT latency", "LLM latency", "TTS latency", "Embedding queue"],
-  telephony: ["SIP trunks", "Call orchestration"],
-};
-
 export default function Monitoring() {
   const [tab, setTab] = useState("platform");
   const health = useAsync(getPlatformHealth, []);
@@ -26,12 +20,18 @@ export default function Monitoring() {
   const { toast } = useApp();
   const [acked, setAcked] = useState<Record<string, boolean>>({});
 
-  const metricCards = (names: string[]) =>
-    (health.data ?? []).filter((m) => names.includes(m.name));
+  // Services carry their own tab id, so adding one to the backend registry
+  // shows up here without touching a name list.
+  const metricCards = (group: string) =>
+    (health.data ?? []).filter((m) => m.group === group);
 
   const renderMetrics = (metrics: HealthMetric[]) => (
     <div className="grid grid-3">
       {health.loading && Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} rows={2} />)}
+      {!health.loading && metrics.length === 0 && (
+        <EmptyState icon="activity" title="No services in this group"
+          body="Nothing is registered for this tab yet." />
+      )}
       {metrics.map((m) => (
         <div key={m.name} className="card card-pad col gap-8">
           <div className="row-between">
@@ -40,10 +40,13 @@ export default function Monitoring() {
           </div>
           <span className="kpi-value t-num" style={{ fontSize: 21 }}>{m.value}</span>
           <div className="row-between">
-            <span className="t-micro">target {m.target}</span>
-            <Sparkline data={m.spark} width={110} height={26}
-              color={m.status === "critical" ? "var(--viz-critical)" : m.status === "warning" ? "var(--viz-warning)" : "var(--series-2)"} />
+            <span className="t-micro">{m.target}</span>
+            {m.spark.length > 1 && (
+              <Sparkline data={m.spark} width={110} height={26}
+                color={m.status === "critical" ? "var(--viz-critical)" : m.status === "warning" ? "var(--viz-warning)" : "var(--series-2)"} />
+            )}
           </div>
+          {m.detail && <span className="t-micro">{m.detail}</span>}
         </div>
       ))}
     </div>
@@ -66,7 +69,7 @@ export default function Monitoring() {
         onChange={setTab}
       />
       <div className="mt-16">
-        {tab !== "alerts" && renderMetrics(metricCards(groups[tab] ?? []))}
+        {tab !== "alerts" && renderMetrics(metricCards(tab))}
         {tab === "alerts" && (
           <div className="card">
             {alertsQ.loading ? <div style={{ padding: 16 }}><CardSkeleton rows={4} /></div>

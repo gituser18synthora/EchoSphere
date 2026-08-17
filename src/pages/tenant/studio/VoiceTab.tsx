@@ -8,13 +8,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type {
   AudioSettings, LanguageVoiceOverride, ModelLanguagesInfo, ProviderInfo,
   HumanSpeechSettings,
-  ParamSpec, ProviderModelInfo, ProviderSettings, ProviderTestResult,
+  ParamSpec, Prompt, ProviderModelInfo, ProviderSettings, ProviderTestResult, RuntimeContextConfig,
   TtsPreviewResult, VoiceBot, VoiceCapability, VoiceOption, VoiceSettings, VoiceTuning,
 } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  generateTtsPreview, getModelLanguages, getProviderCatalog, getVoiceSettings,
-  listLanguages, listProviderModels, listProviderVoices, saveVoiceSettings,
+  generateTtsPreview, getModelLanguages, getProviderCatalog, getRuntimeContext, getVoiceSettings,
+  listLanguages, listPrompts, listProviderModels, listProviderVoices, saveVoiceSettings,
   testProviderConnection, validateVoiceConfig,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
@@ -34,6 +34,80 @@ import { useApp } from "@/state/AppContext";
 /* ---------- helpers ---------- */
 
 const DEFAULT_SAMPLE_TEXT = "Hello! I'm your voice assistant. How can I help you today?";
+
+/** Resolve the current Greeting prompt text for a preview locale.
+
+    Prompt variants normally use the bot's full locale (for example hi-IN).
+    Base-language matching also handles older prompt data that stored only
+    `hi`; the first populated variant is the final greeting fallback. */
+export function activeGreetingSample(prompts: Prompt[] | undefined, language: string): string | null {
+  const greeting = prompts?.find((prompt) => prompt.type === "greeting");
+  const version = greeting?.versions.find((item) => item.version === greeting.activeVersion);
+  const variants = (version?.variants ?? []).filter((variant) => variant.content.trim());
+  if (variants.length === 0) return null;
+
+  const locale = language.trim().toLowerCase();
+  const exact = variants.find((variant) => variant.language.trim().toLowerCase() === locale);
+  if (exact) return exact.content.trim();
+
+  const baseLanguage = locale.split("-")[0];
+  const sameLanguage = baseLanguage
+    ? variants.find((variant) => variant.language.trim().toLowerCase().split("-")[0] === baseLanguage)
+    : undefined;
+  return (sameLanguage ?? variants[0]).content.trim();
+}
+
+/* Keep Voice Preview's variable grammar aligned with the runtime resolver:
+   {{customer_name}}, {customer_name} and [customer_name] all resolve, and
+   equivalent spellings such as customer-name normalize to customer_name. */
+const PREVIEW_PLACEHOLDER_RE = /\{\{\s*([^{}\n]{1,40}?)\s*\}\}|\{\s*([^{}\n]{1,40}?)\s*\}|\[\s*([^\[\]\n]{1,40}?)\s*\]/g;
+
+const normalizePreviewVariable = (key: string) =>
+  key.trim().toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, "_").replace(/^_+|_+$/g, "");
+
+const previewValueText = (value: unknown): string =>
+  value !== null && typeof value === "object" ? JSON.stringify(value) : String(value);
+
+/** Substitute every known runtime value while leaving genuinely missing
+    placeholders visible, matching resolve_placeholders on the backend. */
+export function renderGreetingVariables(text: string, values: Record<string, unknown>): string {
+  const normalized = new Map<string, string>();
+  for (const [key, value] of Object.entries(values)) {
+    const normalizedKey = normalizePreviewVariable(key);
+    if (normalizedKey && value !== null && value !== undefined) {
+      normalized.set(normalizedKey, previewValueText(value));
+    }
+  }
+  return text.replace(PREVIEW_PLACEHOLDER_RE, (match, double, single, square) => {
+    const inner = String(double ?? single ?? square ?? "").trim();
+    /* Bracketed prose containing sentence punctuation is not a variable. */
+    if (!inner || (inner.includes(".") && inner.includes(" ")) || /[<>!?;]/.test(inner)) return match;
+    return normalized.get(normalizePreviewVariable(inner)) ?? match;
+  });
+}
+
+/** Saved test values are the deterministic caller data used by Studio
+    previews. Field examples fill only keys absent from that test payload. */
+export function runtimePreviewVariables(config: RuntimeContextConfig | null | undefined): Record<string, unknown> {
+  const examples = Object.fromEntries(
+    (config?.fields ?? [])
+      .filter((field) => field.key.trim() && field.example !== undefined && field.example !== "")
+      .map((field) => [field.key.trim(), field.example]),
+  );
+  return { ...examples, ...(config?.testPayload ?? {}) };
+}
+
+function withVoiceIdentity(values: Record<string, unknown>, voice: VoiceOption | undefined) {
+  if (!voice) return values;
+  return {
+    ...values,
+    assistant_voice_name: voice.name,
+    voice_speaker_name: voice.name,
+    voice_bot_spiker_name: voice.name,
+    assistant_voice_gender: voice.gender,
+    voice_speaker_gender: voice.gender,
+  };
+}
 
 /* Delivery tuning's Speaking speed is the single canonical speed control for
    a bot. The provider-specific duplicates (Sarvam `pace`, ElevenLabs `speed`)
@@ -170,6 +244,17 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
 
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
   const catalogQ = useAsync(() => getProviderCatalog(), []);
+  /* Voice Preview speaks the bot's current Greeting prompt instead of an
+     unrelated catalog sentence. A prompt-load failure is non-blocking: the
+     selected voice sample/default text remains available as a fallback. */
+  const promptsQ = useAsync(() => listPrompts(bot.id).catch(() => []), [bot.id]);
+  /* Runtime-context test data supplies deterministic values for Greeting
+     placeholders (customer_name, lender_name, amounts, and custom fields). */
+  const runtimeContextQ = useAsync(() => getRuntimeContext(bot.id).catch(() => null), [bot.id]);
+  const previewVariables = useMemo(
+    () => runtimePreviewVariables(runtimeContextQ.data),
+    [runtimeContextQ.data],
+  );
   /* Readable language names for the per-language section — locale codes stay
      the internal values. Disabled languages are included so a bot that still
      references one keeps its readable name (flagged in the row instead).
@@ -1117,6 +1202,8 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         ensureModels={(p) => ensureModels("tts", p)}
         ensureVoices={ensureVoices}
         languages={bot.languages}
+        prompts={promptsQ.data ?? undefined}
+        previewVariables={previewVariables}
       />
     </div>
   );
@@ -1288,7 +1375,7 @@ function Slider({ label, value, min, max, step, fmt, hint, onChange }: {
    Voice preview modal — real synthesis via /providers/tts-preview
    ============================================================ */
 
-function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, ensureModels, ensureVoices, languages }: {
+function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, ensureModels, ensureVoices, languages, prompts, previewVariables }: {
   ctx: PreviewContext | null;
   onClose: () => void;
   ttsProviders: ProviderInfo[];
@@ -1297,6 +1384,8 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   ensureModels: (provider: string) => Promise<ProviderModelInfo[]>;
   ensureVoices: (provider: string) => Promise<VoiceOption[]>;
   languages: string[];
+  prompts: Prompt[] | undefined;
+  previewVariables: Record<string, unknown>;
 }) {
   const [form, setForm] = useState({ provider: "", model: "", voice: "", language: "", text: "" });
   /* Draft provider settings — local to the modal until the user applies them.
@@ -1317,6 +1406,17 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   const [result, setResult] = useState<TtsPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /* Automatic greeting updates stop after the user intentionally edits the
+     textarea, so changing a language/voice cannot destroy their test text. */
+  const sampleTextEditedRef = useRef(false);
+
+  const automaticSampleText = (provider: string, voiceId: string, language: string) => {
+    const voice = findVoice(voicesFor(provider), voiceId);
+    const greeting = activeGreetingSample(prompts, language);
+    return greeting
+      ? renderGreetingVariables(greeting, withVoiceIdentity(previewVariables, voice))
+      : (voice?.sampleText ?? DEFAULT_SAMPLE_TEXT);
+  };
 
   const draftFor = (provider: string, model: string, params: ProviderSettings | undefined) => {
     const schema = stripDeliverySpeedParams(
@@ -1328,13 +1428,14 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   /* Prefill from the launching context each time the modal opens. */
   useEffect(() => {
     if (!ctx) return;
-    const voice = findVoice(voicesFor(ctx.provider), ctx.voice);
+    const language = ctx.language || languages[0] || "";
+    sampleTextEditedRef.current = false;
     setForm({
       provider: ctx.provider,
       model: ctx.model,
       voice: ctx.voice,
-      language: ctx.language || languages[0] || "",
-      text: voice?.sampleText || DEFAULT_SAMPLE_TEXT,
+      language,
+      text: automaticSampleText(ctx.provider, ctx.voice, language),
     });
     /* Start from the saved/staged values for this engine, reconciled against
        the model actually selected — never from another model's leftovers. */
@@ -1359,6 +1460,17 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     setPlaying(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
+
+  /* Prompts may finish loading after the modal opens. Replace the temporary
+     fallback with the greeting unless the user has already typed their own
+     sample text. */
+  useEffect(() => {
+    if (!ctx || sampleTextEditedRef.current) return;
+    setForm((current) => {
+      const nextText = automaticSampleText(current.provider, current.voice, current.language);
+      return nextText !== current.text ? { ...current, text: nextText } : current;
+    });
+  }, [ctx, previewVariables, prompts]);
 
   useEffect(() => () => { audioRef.current?.pause(); }, []);
 
@@ -1404,7 +1516,13 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
      override restores the default engine. A locale with no override leaves
      the user's manual selections alone. */
   const changeLanguage = async (locale: string) => {
-    setForm((f) => ({ ...f, language: locale }));
+    setForm((f) => ({
+      ...f,
+      language: locale,
+      text: sampleTextEditedRef.current
+        ? f.text
+        : automaticSampleText(f.provider, f.voice, locale),
+    }));
     setApplied(false);
     if (!ctx) return;
     const fallback = ctx.defaultEngine
@@ -1417,18 +1535,23 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         setForm((f) => ({
           ...f, language: locale,
           provider: fallback.provider, model: fallback.model, voice: fallback.voice,
+          text: sampleTextEditedRef.current
+            ? f.text
+            : automaticSampleText(fallback.provider, fallback.voice, locale),
         }));
         setDraft(draftFor(fallback.provider, fallback.model, fallback.params));
         setOverrideLocale(null);
       }
       return;
     }
-    void ensureVoices(override.provider);
-    await ensureModels(override.provider);
+    await Promise.all([ensureVoices(override.provider), ensureModels(override.provider)]);
     const sameEngine = override.provider === fallback.provider && override.model === fallback.model;
     setForm((f) => ({
       ...f, language: locale,
       provider: override.provider, model: override.model, voice: override.voice,
+      text: sampleTextEditedRef.current
+        ? f.text
+        : automaticSampleText(override.provider, override.voice, locale),
     }));
     /* Runtime semantics: base tts_settings apply only when the override runs
        the default provider+model; otherwise the override's params stand alone. */
@@ -1612,7 +1735,14 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
                 const voice = findVoice(voices, v);
                 setForm((f) => ({
                   ...f, voice: v,
-                  text: f.text.trim() ? f.text : (voice?.sampleText || DEFAULT_SAMPLE_TEXT),
+                  text: sampleTextEditedRef.current
+                    ? f.text
+                    : (activeGreetingSample(prompts, f.language)
+                      ? renderGreetingVariables(
+                        activeGreetingSample(prompts, f.language)!,
+                        withVoiceIdentity(previewVariables, voice),
+                      )
+                      : (voice?.sampleText ?? DEFAULT_SAMPLE_TEXT)),
                 }));
               }}
               placeholder={voices ? "Select voice…" : "Loading voices…"}
@@ -1760,13 +1890,17 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
           <textarea
             className="textarea" rows={3} value={form.text} maxLength={600}
             aria-label="Preview sample text"
-            onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
+            onChange={(e) => {
+              sampleTextEditedRef.current = true;
+              setForm((f) => ({ ...f, text: e.target.value }));
+            }}
           />
         </Field>
         <p className="t-micro" style={{ margin: 0 }}>
-          Generate synthesizes this text with the draft settings above — the same
-          delivery mapping live calls use. Sample text is never saved; the settings
-          are staged with Apply and persisted only by &ldquo;Save voice settings&rdquo;.
+          Starts with the active Greeting and resolves its variables from saved Runtime
+          context test data plus the selected voice identity. Generate uses the same delivery
+          mapping as live calls. Sample text is never saved; settings are staged with Apply
+          and persisted only by &ldquo;Save voice settings&rdquo;.
         </p>
         {error && <Callout tone="critical" title="Preview failed">{error}</Callout>}
         {result && (

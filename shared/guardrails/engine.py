@@ -83,6 +83,41 @@ _MEDICAL_ADVICE_RES = [
     re.compile(r"\b(?:i|we)\s+(?:would\s+)?prescrib\w+\b", re.IGNORECASE),
 ]
 
+# Assistant output committing to a booking outcome the bot cannot verify
+# (booking_commitment_restriction). Deliberately narrow: stating a
+# tool-verified fact ("your booking is confirmed, reference ABC123") stays
+# allowed — only guarantees, promises and unilateral money/inventory
+# commitments are blocked. English heuristics, layered with the prompt-level
+# boundary for other languages.
+_BOOKING_COMMITMENT_RES = [
+    re.compile(
+        r"\b(?:guarantee\w*|promis\w+|assure\s+you|rest\s+assured|"
+        r"100\s*%\s*(?:sure|certain|confirmed))\b[^.?!\n]{0,80}?"
+        r"\b(?:book(?:ing)?|reservation|refund|upgrade|seat|room|flight|"
+        r"ticket|fare|tariff|itinerary|check-?in)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:book(?:ing)?|reservation|refund|upgrade|seat|room|flight|"
+        r"ticket|fare|tariff|itinerary|check-?in)\b[^.?!\n]{0,80}?"
+        r"\b(?:guarantee\w*|promis\w+)\b",
+        re.IGNORECASE,
+    ),
+    # Unilateral money commitments — a refund or fee waiver needs a verified
+    # booking-system decision, never a spoken promise.
+    re.compile(
+        r"\b(?:i|we)\s*(?:'ll|\s+will|\s+shall)\s+"
+        r"(?:definitely\s+|certainly\s+|personally\s+)?(?:refund|waive)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:full|complete|100\s*%)\s+refund\b"
+        r"|\bno\s+(?:cancellation|change|no-?show)\s+(?:fee|charge)s?\b"
+        r"|\b(?:free|complimentary)\s+(?:upgrade|room|night|stay|cancellation)\b",
+        re.IGNORECASE,
+    ),
+]
+
 # Abuse lexicon for profanity_deescalation — flag-only, deliberately short.
 _PROFANITY_RE = re.compile(
     r"\b(?:fuck\w*|bastard|bitch|asshole|bhosdi\w*|madarchod|behenchod|chutiya|harami|kamina)\b",
@@ -115,6 +150,17 @@ _GUARDRAIL_PHRASES: dict[str, dict[str, str]] = {
             "सकती। इसके लिए आपको हमारे स्टाफ़ से जोड़ सकती हूँ। और क्या मदद करूँ?"
         ),
     },
+    "guardrail_booking": {
+        "en": (
+            "I'm not able to guarantee a booking, refund or upgrade myself. "
+            "Let me connect you with our reservations team who can confirm "
+            "that for you. Is there anything else I can help with?"
+        ),
+        "hi": (
+            "माफ़ कीजिए, मैं खुद बुकिंग, रिफंड या अपग्रेड की गारंटी नहीं दे सकती। "
+            "इसके लिए आपको हमारी रिज़र्वेशन टीम से जोड़ सकती हूँ। और क्या मदद करूँ?"
+        ),
+    },
     "guardrail_waiver": {
         "en": (
             "I'm not able to approve a waiver, discount or settlement myself. "
@@ -126,6 +172,18 @@ _GUARDRAIL_PHRASES: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+
+# Guardrail codes whose patterns BLOCK an assistant reply outright:
+# (code, patterns, safe-reply key, non-sensitive detail).
+_OUTPUT_BLOCK_RULES: tuple[tuple[str, list[re.Pattern], str, str], ...] = (
+    ("medical_advice_boundary", _MEDICAL_ADVICE_RES, "guardrail_medical",
+     "medical advice"),
+    ("payment_collection_restriction", _PAYMENT_REQUEST_RES, "guardrail_payment",
+     "payment credential request"),
+    ("booking_commitment_restriction", _BOOKING_COMMITMENT_RES, "guardrail_booking",
+     "unverifiable booking/refund/upgrade commitment"),
+)
 
 
 def _compile_patterns(raw) -> list[re.Pattern]:
@@ -247,7 +305,7 @@ class GuardrailEngine:
             return True
         return any(
             (r := self.effective.rule(code)) is not None and r.action == "block"
-            for code in ("medical_advice_boundary", "payment_collection_restriction")
+            for code, _, _, _ in _OUTPUT_BLOCK_RULES
         )
 
     # ── compliance-policy state ─────────────────────────────────────────────
@@ -315,18 +373,13 @@ class GuardrailEngine:
         grows)."""
         if self._turn_output_reply is not None:
             return self._turn_output_reply
-        for code, patterns, reply_key in (
-            ("medical_advice_boundary", _MEDICAL_ADVICE_RES, "guardrail_medical"),
-            ("payment_collection_restriction", _PAYMENT_REQUEST_RES, "guardrail_payment"),
-        ):
+        for code, patterns, reply_key, what in _OUTPUT_BLOCK_RULES:
             rule = self.effective.rule(code)
             if rule is not None and rule.action == "block" and any(
                 p.search(text) for p in patterns
             ):
                 self._turn_output_hit = self._record(
-                    code, stage,
-                    "blocked assistant reply "
-                    f"({'medical advice' if code == 'medical_advice_boundary' else 'payment credential request'})",
+                    code, stage, f"blocked assistant reply ({what})",
                 )
                 self._turn_blocked = True
                 self._turn_output_reply = reply_key
