@@ -16,6 +16,7 @@ from backend.core.deps import (
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
+from backend.core.service_health import probe_services
 from shared.db.mysql import get_db
 from shared.models import (
     ApprovedModel,
@@ -24,7 +25,6 @@ from shared.models import (
     GuardrailProfile,
     GuardrailProfileRule,
     GuardrailTrigger,
-    HealthMetric,
     PhoneNumber,
     PlatformAlert,
     PlatformTemplate,
@@ -39,7 +39,6 @@ from backend.serializers import (
     serialize_guardrail,
     serialize_guardrail_profile,
     serialize_guardrail_trigger,
-    serialize_health_metric,
     serialize_model,
     serialize_phone_number,
     serialize_sip_trunk,
@@ -99,9 +98,14 @@ def update_alert(
 
 
 @router.get("/health-metrics")
-def platform_health(user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
-    rows = db.scalars(select(HealthMetric).order_by(HealthMetric.sort_order)).all()
-    return ok([serialize_health_metric(h) for h in rows])
+async def platform_health(user: User = Depends(require_super_admin)):
+    """Live status of the platform's runtime services.
+
+    Probed on every request from the hosts/ports in ``.env`` — never read
+    back from a stored snapshot, which could only ever report how things
+    looked when it was written.
+    """
+    return ok(await probe_services())
 
 
 # ── Approved models ──────────────────────────────────────────────────────────

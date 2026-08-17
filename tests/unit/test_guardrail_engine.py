@@ -39,6 +39,22 @@ def _full_engine() -> GuardrailEngine:
     return GuardrailEngine(EffectiveGuardrails(rules=rules))
 
 
+def _travel_engine() -> GuardrailEngine:
+    """The seeded Travel and Hospitality profile: baseline + payment and
+    booking-commitment restrictions."""
+    rules = MANDATORY_FLOOR + (
+        GuardrailRule("profanity_deescalation", "Profanity de-escalation",
+                      "flag", category="Safety"),
+        GuardrailRule("payment_collection_restriction",
+                      "Payment collection restriction", "block",
+                      category="Compliance"),
+        GuardrailRule("booking_commitment_restriction",
+                      "Booking & fare commitment restriction", "block",
+                      category="Compliance"),
+    )
+    return GuardrailEngine(EffectiveGuardrails(rules=rules))
+
+
 class TestMandatoryFloor:
     def test_floor_contains_the_four_platform_rules(self):
         codes = {r.code for r in MANDATORY_FLOOR}
@@ -141,6 +157,68 @@ class TestBlockingRules:
         result = engine.check_user_input("this is bullshit you bastard")
         assert not result.blocked
         assert any(h.rule.code == "profanity_deescalation" for h in engine.hits)
+
+
+class TestBookingCommitmentRestriction:
+    @pytest.mark.parametrize("reply", [
+        "I guarantee your room will be ready by noon",
+        "I promise the refund will be processed today",
+        "Rest assured, your flight booking is protected",
+        "I will waive the cancellation fee for you",
+        "We'll refund the full amount right away",
+        "You'll get a complimentary upgrade for the inconvenience",
+        "There are no cancellation charges on this fare",
+    ])
+    def test_unverifiable_commitments_are_blocked(self, reply):
+        engine = _travel_engine()
+        engine.begin_turn()
+        result = engine.check_output_text(reply)
+        assert result.blocked and result.reply_key == "guardrail_booking"
+        assert result.text == ""
+        assert engine.turn_blocked
+
+    @pytest.mark.parametrize("reply", [
+        "Your booking is confirmed, the reference is ABC123.",
+        "I can upgrade you to a deluxe room for two thousand rupees.",
+        "The cancellation fee on this fare is one thousand rupees.",
+        "Check-in starts at two in the afternoon.",
+    ])
+    def test_tool_confirmed_facts_still_pass(self, reply):
+        engine = _travel_engine()
+        engine.begin_turn()
+        result = engine.check_output_text(reply)
+        assert not result.blocked
+        assert result.text == reply
+
+    def test_the_rule_only_applies_to_profiles_that_carry_it(self):
+        # A Finance-profile bot may promise a refund — the travel rule is not
+        # part of its effective set.
+        engine = _full_engine()
+        engine.begin_turn()
+        assert not engine.check_output_text("I will refund the charge today").blocked
+
+    def test_blocking_travel_rule_enables_sentence_hold(self):
+        assert _travel_engine().has_output_block_rules is True
+
+    def test_booking_block_denies_tool_calls_for_the_turn(self):
+        engine = _travel_engine()
+        engine.begin_turn()
+        engine.check_output_text("I guarantee your booking will be confirmed")
+        assert engine.check_tool_call(intent="create_booking").allowed is False
+
+    def test_hit_records_the_rule_not_the_blocked_sentence(self):
+        engine = _travel_engine()
+        engine.begin_turn()
+        engine.check_output_text("I promise a full refund on booking ABC123")
+        hit = next(h for h in engine.hits
+                   if h.rule.code == "booking_commitment_restriction")
+        assert hit.stage == "output" and hit.action == "block"
+        assert "commitment" in (hit.detail or "")
+        assert "ABC123" not in (hit.detail or "")
+
+    def test_safe_reply_is_localized(self):
+        assert "reservations team" in guardrail_reply("guardrail_booking", "en")
+        assert "रिज़र्वेशन" in guardrail_reply("guardrail_booking", "hi-IN")
 
 
 class TestHitDetailsAreNonSensitive:

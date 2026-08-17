@@ -25,7 +25,6 @@ from shared.models import (
     EntityDef,
     ExchangeRate,
     Guardrail,
-    HealthMetric,
     Intent,
     Integration,
     Invoice,
@@ -986,14 +985,9 @@ def serialize_sip_trunk(t: SipTrunk) -> dict:
     }
 
 
-def serialize_health_metric(h: HealthMetric) -> dict:
-    return {
-        "name": h.name,
-        "status": h.status,
-        "value": h.value or "",
-        "target": h.target or "",
-        "spark": h.spark or [],
-    }
+# Platform Health rows are built by backend/core/service_health.py from live
+# probes — they never come from a stored row, so there is nothing to
+# serialize here.
 
 
 def serialize_tenant_settings(s: TenantSetting) -> dict:

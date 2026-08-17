@@ -113,12 +113,61 @@ class TestOnboardingSuggestions:
     def test_options_expose_active_profiles_and_industry_defaults(self, client, super_admin):
         options = _data(client.get(f"{API}/onboarding/options", headers=super_admin))
         profiles = {p["code"]: p for p in options["guardrailProfiles"]}
-        assert {"standard", "healthcare", "finance"} <= set(profiles)
+        assert {"standard", "healthcare", "finance", "travel_hospitality"} <= set(profiles)
 
         industries = {i["code"]: i for i in options["industries"]}
         assert industries["healthcare"]["defaultGuardrailProfileId"] == profiles["healthcare"]["id"]
         assert industries["banking"]["defaultGuardrailProfileId"] == profiles["finance"]["id"]
         assert industries["financial_services"]["defaultGuardrailProfileId"] == profiles["finance"]["id"]
+        assert (industries["travel_hospitality"]["defaultGuardrailProfileId"]
+                == profiles["travel_hospitality"]["id"])
+
+
+class TestTravelHospitalityProfile:
+    """The Travel and Hospitality profile ships from the seed/migration like
+    Healthcare and Finance — one profile row on the existing industry, never a
+    duplicate industry and never frontend-hardcoded."""
+
+    def test_profile_is_listed_with_its_travel_rules(self, client, super_admin):
+        profile = _profiles_by_code(client, super_admin)["travel_hospitality"]
+        assert profile["name"] == "Travel and Hospitality"
+        assert profile["status"] == "active"
+        assert {g["code"] for g in profile["guardrails"]} == {
+            "profanity_deescalation", "payment_collection_restriction",
+            "booking_commitment_restriction",
+        }
+
+    def test_booking_rule_is_a_non_mandatory_platform_block(self, client, super_admin):
+        guardrails = {g["code"]: g for g in _data(client.get(
+            f"{API}/guardrails", headers=super_admin))}
+        rule = guardrails["booking_commitment_restriction"]
+        assert rule["enforcement"] == "block"
+        assert rule["enabled"] is True
+        assert rule["isMandatory"] is False  # profile-scoped, not platform-wide
+
+    def test_industry_default_applies_to_new_travel_tenants(self, client, super_admin):
+        profiles = _profiles_by_code(client, super_admin)
+        tenant = _create_tenant(client, super_admin, industry="travel_hospitality")
+        assert tenant["guardrailProfileId"] == profiles["travel_hospitality"]["id"]
+        assert tenant["guardrailProfile"]["code"] == "travel_hospitality"
+
+    def test_effective_rules_stack_on_the_mandatory_floor(self, client, super_admin):
+        tenant = _create_tenant(client, super_admin, industry="travel_hospitality")
+        effective = _data(client.get(
+            f"{API}/tenants/{tenant['id']}/effective-guardrails", headers=super_admin))
+        assert effective["profile"]["code"] == "travel_hospitality"
+        codes = {r["code"] for r in effective["rules"]}
+        assert {"booking_commitment_restriction",
+                "payment_collection_restriction"} <= codes
+        assert {"pii_redaction", "secret_leakage_prevention",
+                "unsafe_tool_call_block", "prompt_injection_protection"} <= codes
+
+    def test_the_existing_industry_row_is_reused(self, client, super_admin):
+        industries = [i for i in _data(client.get(
+            f"{API}/onboarding/options", headers=super_admin))["industries"]
+            if i["code"] == "travel_hospitality"]
+        assert len(industries) == 1
+        assert industries[0]["name"] == "Travel and Hospitality"
 
 
 class TestTenantAssignment:
