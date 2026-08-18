@@ -146,6 +146,36 @@ class TestTTSText:
         out = sanitize_for_tts("**bold** and `code`")
         assert "*" not in out and "`" not in out
 
+    def test_booking_id_is_spoken_digit_by_digit_in_english(self):
+        from shared.audio.text import sanitize_for_tts
+
+        out = sanitize_for_tts(
+            "Can I help you with your existing booking ID 601001?"
+        )
+        assert out == "Can I help you with your existing booking ID 6 0 1 0 0 1?"
+
+    def test_booking_id_is_spoken_digit_by_digit_in_hinglish(self):
+        from shared.audio.text import sanitize_for_tts
+
+        out = sanitize_for_tts(
+            "Kya main aapki booking 601001 ke baare mein madad karun?"
+        )
+        assert out == (
+            "Kya main aapki booking 6 0 1 0 0 1 ke baare mein madad karun?"
+        )
+
+    def test_booking_id_is_spoken_digit_by_digit_in_devanagari(self):
+        from shared.audio.text import sanitize_for_tts
+
+        out = sanitize_for_tts("क्या मैं आपकी बुकिंग 601001 के बारे में मदद करूँ?")
+        assert "बुकिंग 6 0 1 0 0 1" in out
+
+    def test_unlabelled_numbers_keep_their_natural_pronunciation(self):
+        from shared.audio.text import sanitize_for_tts
+
+        text = "The pending amount is 601001 rupees and check-in is on 20 August."
+        assert sanitize_for_tts(text) == text
+
 
 class TestVaaniTelephony:
     def test_supported_provider_catalog_and_connect_payload(self):

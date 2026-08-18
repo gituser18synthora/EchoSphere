@@ -55,14 +55,43 @@ _SIMPLE_SPLIT_RE = re.compile(r"(?<=[.?!])\s+")
 # error event AND closes the socket, so they must never reach a provider.
 _SPEAKABLE_RE = re.compile(r"[^\W_]")
 
+# Booking identifiers are references, not quantities.  TTS providers commonly
+# read a compact value such as ``601001`` as "six hundred one thousand and
+# one", which makes the identifier impossible to verify over a call.  Keep the
+# rewrite deliberately label-scoped so dates, amounts, room counts, and other
+# ordinary numbers retain their natural pronunciation.
+_BOOKING_ID_RE = re.compile(
+    r"(?P<prefix>(?<!\w)(?:booking|reservation|बुकिंग|आरक्षण)"
+    r"(?:\s+(?:id|आईडी|number|नंबर|संख्या|no\.?))?"
+    r"(?:\s+(?:is|hai|है))?\s*[:#-]?\s*)"
+    r"(?P<identifier>\d{4,10})(?!\d)",
+    re.IGNORECASE,
+)
+
 
 def has_speakable_text(text: str) -> bool:
     """True when the text contains at least one letter or digit (any script)."""
     return bool(_SPEAKABLE_RE.search(text or ""))
 
 
+def verbalize_booking_ids(text: str) -> str:
+    """Space booking/reservation IDs so TTS reads them digit by digit.
+
+    The visible assistant response and persisted transcript remain unchanged;
+    this helper is part of TTS-only text preparation.  Applying it more than
+    once is safe because an already spaced identifier no longer matches the
+    compact-number pattern.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        identifier = match.group("identifier")
+        return f"{match.group('prefix')}{' '.join(identifier)}"
+
+    return _BOOKING_ID_RE.sub(_replace, text or "")
+
+
 def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
-    """Normalize LLM output for speech synthesis without altering spoken content."""
+    """Normalize LLM output into provider-safe, unambiguous spoken text."""
     if not text:
         return ""
     cleaned = text.replace("\u00a0", " ")
@@ -71,6 +100,7 @@ def sanitize_for_tts(text: str, *, ensure_terminal_punct: bool = False) -> str:
     cleaned = re.sub(r"[*_`#]+", "", cleaned)
     cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
     cleaned = re.sub(r" +", " ", cleaned).strip()
+    cleaned = verbalize_booking_ids(cleaned)
     if ensure_terminal_punct and cleaned and not _has_terminal_punct(cleaned):
         cleaned = cleaned + _default_terminal_punct(cleaned)
     return cleaned

@@ -46,6 +46,7 @@ from shared.models import (
     VoiceBot,
     VoiceBotSetting,
 )
+from shared.readiness import refresh_readiness
 from shared.telephony import SUPPORTED_PROVIDERS
 
 router = APIRouter(tags=["Channels"])
@@ -378,16 +379,7 @@ def _assign_phone_number(db: Session, bot: VoiceBot, config: dict, user: User) -
 
 
 def _refresh_readiness(db: Session, bot: VoiceBot) -> None:
-    live_count = db.scalar(
-        select(func.count()).select_from(ChannelConfig).where(
-            ChannelConfig.bot_id == bot.id,
-            ChannelConfig.is_deleted.is_(False),
-            ChannelConfig.status.in_(["live", "configured"]),
-        )
-    )
-    for item in bot.readiness_items:
-        if item.item_key == "r6":
-            item.done = bool(live_count)
+    refresh_readiness(db, bot, keys=("r6",))
 
 
 # ── Read endpoints ────────────────────────────────────────────────────────────

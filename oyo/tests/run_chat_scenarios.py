@@ -200,7 +200,17 @@ SCENARIOS = [
         # Answered by the LLM from the bot's runtime-context fact set (Studio →
         # Runtime Context). Assert on the hotel, not the dates: the fact set is
         # tunable demo data and its dates may be edited independently.
-        ("when is my check-in and which hotel is it?", [(RT, "chat"), (R, "gurugram")]),
+        # Routed via the booking_fact_question intent (no route → LLM): the
+        # bot now has an indexed FAQ KB, and without the intent the router's
+        # question heuristics would send personal-fact turns to retrieval.
+        ("when is my check-in and which hotel is it?", [(RT, "intent"), (R, "gurugram")]),
+    ]),
+    # Policy questions (no personal facts involved) SHOULD come from the
+    # indexed guest FAQ — this is what the readiness item "Knowledge sources
+    # indexed" buys the customer bot.
+    ("31 guest FAQ from knowledge (overbooked policy)", BOT1, [
+        ("what happens if the property is overbooked?",
+         [(RT, "knowledge"), (R, "overbooked"), (R, "alternate")]),
     ]),
     ("17 verification failure (601001, wrong name)", BOT1, [
         ("confirm my booking", [(R, "booking id")]),

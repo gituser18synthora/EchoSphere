@@ -301,6 +301,11 @@ class IngestionPipeline:
             else:
                 source.status = "indexed"
                 source.last_sync_at = datetime.now(timezone.utc)
+            # Knowledge readiness (r1) is derived from source status — keep
+            # the affected bots' checklists in sync with the outcome.
+            from shared.readiness import refresh_readiness_for_source
+
+            refresh_readiness_for_source(session, source)
             session.commit()
         finally:
             session.close()
