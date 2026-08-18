@@ -17,6 +17,7 @@ from shared.ids import new_id
 from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import User, VoiceBot, Workflow
+from shared.readiness import refresh_readiness
 from backend.serializers import serialize_workflow
 
 router = APIRouter(tags=["Workflows"])
@@ -214,6 +215,7 @@ def save_bot_workflow(
         w.status = body.status
     w.version += 1
     w.updated_by = user.id
+    refresh_readiness(db, bot, keys=("r5",))
     record_audit(
         db, user=user, action="Saved workflow", entity_type="workflow", entity_id=w.id,
         target_label=f"{w.name} v{w.version}", tenant_id=bot.tenant_id,

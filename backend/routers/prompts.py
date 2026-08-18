@@ -41,6 +41,13 @@ from shared.orchestration.prompt_compiler import (
     validate_config,
 )
 from backend.serializers import serialize_prompt
+from shared.readiness import refresh_readiness
+
+
+def _refresh_prompt_readiness(db: Session, prompt: Prompt) -> None:
+    bot = db.get(VoiceBot, prompt.bot_id)
+    if bot is not None and not bot.is_deleted:
+        refresh_readiness(db, bot, keys=("r3",))
 
 router = APIRouter(tags=["Prompts"])
 
@@ -201,6 +208,7 @@ def create_prompt(
             full_prompt=full, compiled_prompt=compiled,
         )
     )
+    refresh_readiness(db, bot, keys=("r3",))
     record_audit(
         db, user=user, action="Created prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=f"{prompt.name} ({bot.name})", tenant_id=bot.tenant_id,
@@ -273,6 +281,7 @@ def add_prompt_version(
     prompt.active_version = latest + 1
     prompt.state = "pending_approval" if body.submit_for_approval else "draft"
     prompt.updated_by = user.id
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user,
         action="Edited prompt (pending approval)" if body.submit_for_approval else "Saved prompt draft",
@@ -397,6 +406,7 @@ def duplicate_prompt(
             compiled_prompt=active.compiled_prompt if active else None,
         )
     )
+    _refresh_prompt_readiness(db, clone)
     record_audit(
         db, user=user, action="Duplicated prompt", entity_type="prompt",
         entity_id=clone.id, target_label=name, tenant_id=src.tenant_id,
@@ -491,6 +501,7 @@ def update_prompt(
                 previous_value=before, new_value={"state": "rejected"}, request=request,
             )
     prompt.updated_by = user.id
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user, action="Updated prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=prompt.name, tenant_id=prompt.tenant_id, previous_value=before,
@@ -525,6 +536,7 @@ def delete_prompt(
         guard_hard_delete()
     soft_delete(prompt, user)
     prompt.state = "archived"
+    _refresh_prompt_readiness(db, prompt)
     record_audit(
         db, user=user, action="Archived prompt", entity_type="prompt", entity_id=prompt.id,
         target_label=prompt.name, tenant_id=prompt.tenant_id, request=request,

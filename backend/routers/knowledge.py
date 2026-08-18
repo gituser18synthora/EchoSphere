@@ -23,6 +23,7 @@ from backend.core.responses import ok, paginated
 from backend.core.softdelete import guard_hard_delete, soft_delete
 from shared.db.mysql import get_db
 from shared.models import KnowledgeGap, KnowledgeSource, User, VoiceBot
+from shared.readiness import refresh_readiness_for_source
 from backend.serializers import serialize_knowledge, serialize_knowledge_gap
 
 router = APIRouter(tags=["Knowledge"])
@@ -194,6 +195,7 @@ def update_knowledge(
         if body.status == "indexed":
             row.last_sync_at = datetime.now(timezone.utc)
     row.updated_by = user.id
+    refresh_readiness_for_source(db, row)
     record_audit(
         db, user=user, action="Re-synced knowledge source" if body.resync else "Updated knowledge source",
         entity_type="knowledge_source", entity_id=row.id, target_label=row.name,
@@ -216,6 +218,7 @@ def delete_knowledge(
     if hard:
         guard_hard_delete()
     soft_delete(row, user)
+    refresh_readiness_for_source(db, row)
     record_audit(
         db, user=user, action="Archived knowledge source", entity_type="knowledge_source",
         entity_id=row.id, target_label=row.name, tenant_id=row.tenant_id, request=request,

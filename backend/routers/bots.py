@@ -38,6 +38,7 @@ from shared.models import (
     Workflow,
 )
 from backend.serializers import serialize_bot
+from shared.readiness import refresh_readiness
 
 router = APIRouter(tags=["VoiceBots"])
 
@@ -359,6 +360,31 @@ def update_bot(
     return ok(_serialize_many(db, [bot])[0])
 
 
+@router.post("/bots/{bot_id}/readiness/recompute")
+def recompute_bot_readiness(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-derive every readiness item from the bot's real configuration.
+
+    Domain mutations keep the flags current going forward; this endpoint
+    heals bots whose flags predate that wiring (stale checklist rows)."""
+    bot = _get_bot_checked(db, bot_id, user)
+    before = {r.item_key: r.done for r in bot.readiness_items}
+    derived = refresh_readiness(db, bot)
+    if derived != before:
+        record_audit(
+            db, user=user, action="Recomputed readiness", entity_type="voice_bot",
+            entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+            previous_value=before, new_value=derived, request=request,
+        )
+    db.commit()
+    db.refresh(bot)
+    return ok(_serialize_many(db, [bot])[0])
+
+
 @router.delete("/bots/{bot_id}")
 def delete_bot(
     bot_id: str,
@@ -599,10 +625,8 @@ def update_voice_settings(
         if val is not None:
             setattr(s, field, val)
     s.updated_by = user.id
-    # Voice readiness follows having a voice selected.
-    for item in bot.readiness_items:
-        if item.item_key == "r2" and s.voice_id:
-            item.done = True
+    # Voice readiness follows the effective voice configuration.
+    refresh_readiness(db, bot, keys=("r2",))
     record_audit(
         db, user=user, action="Updated voice settings", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,

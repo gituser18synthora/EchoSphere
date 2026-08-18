@@ -24,6 +24,13 @@ from shared.models import ApiConnection, EntityDef, Intent, User, VoiceBot, Work
 from shared.bot_config import invalidate_bot_config_sync
 from shared.orchestration.entity_extractor import extract_entities, extract_entity
 from backend.serializers import serialize_entity, serialize_intent
+from shared.readiness import refresh_readiness
+
+
+def _refresh_intent_readiness(db: Session, intent: Intent) -> None:
+    bot = db.get(VoiceBot, intent.bot_id)
+    if bot is not None and not bot.is_deleted:
+        refresh_readiness(db, bot, keys=("r4",))
 
 router = APIRouter(tags=["Intents & Entities"])
 
@@ -177,6 +184,7 @@ def create_intent(
     )
     db.add(row)
     _sync_entity_usage(db, bot.tenant_id)
+    refresh_readiness(db, bot, keys=("r4",))
     record_audit(
         db, user=user, action="Created intent", entity_type="intent", entity_id=row.id,
         target_label=f"{row.name} ({bot.name})", tenant_id=bot.tenant_id,
@@ -275,6 +283,7 @@ def update_intent(
         row.version += 1
         row.updated_by = user.id
     _sync_entity_usage(db, row.tenant_id)
+    _refresh_intent_readiness(db, row)
     record_audit(
         db, user=user, action="Updated intent", entity_type="intent", entity_id=row.id,
         target_label=row.name, tenant_id=row.tenant_id, previous_value=before,
@@ -311,6 +320,7 @@ def duplicate_intent(
         created_by=user.id,
     )
     db.add(clone)
+    _refresh_intent_readiness(db, clone)
     record_audit(
         db, user=user, action="Duplicated intent", entity_type="intent",
         entity_id=clone.id, target_label=name, tenant_id=src.tenant_id,
@@ -333,6 +343,7 @@ def delete_intent(
         guard_hard_delete()
     soft_delete(row, user)
     _sync_entity_usage(db, row.tenant_id)
+    _refresh_intent_readiness(db, row)
     record_audit(
         db, user=user, action="Archived intent", entity_type="intent", entity_id=row.id,
         target_label=row.name, tenant_id=row.tenant_id, request=request,

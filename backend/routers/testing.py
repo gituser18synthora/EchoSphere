@@ -40,6 +40,7 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_scenario
+from shared.readiness import refresh_readiness
 
 router = APIRouter(tags=["Testing"])
 
@@ -87,6 +88,8 @@ def create_scenario(
         name=body.name, suite=body.suite, steps=body.steps, created_by=user.id,
     )
     db.add(row)
+    # A new, never-run scenario means the suite is no longer fully passing.
+    refresh_readiness(db, bot, keys=("r7",))
     record_audit(
         db, user=user, action="Created test scenario", entity_type="test_scenario",
         entity_id=row.id, target_label=row.name, tenant_id=bot.tenant_id, request=request,
@@ -124,9 +127,7 @@ def run_suite(
         s.last_run = result
         passed += 1 if result["pass"] else 0
     # Regression readiness follows the suite result.
-    for item in bot.readiness_items:
-        if item.item_key == "r7":
-            item.done = passed == len(rows)
+    refresh_readiness(db, bot, keys=("r7",))
     record_audit(
         db, user=user, action="Ran regression suite", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
