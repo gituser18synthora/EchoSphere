@@ -299,6 +299,9 @@ _PLATFORM_LLM_NUMBER_BOUNDS = {
 }
 _PLATFORM_LLM_INTEGER_BOUNDS = {
     "orchestration_max_tokens": (64, 340),
+    # Provider-independent spoken-output cap. Runtime also derives a native
+    # provider token budget from it and enforces the character ceiling.
+    "max_output_characters": (120, 2000),
 }
 PLATFORM_LLM_SETTING_KEYS = frozenset(
     (*_PLATFORM_LLM_BOOLEAN_KEYS, *_PLATFORM_LLM_STRING_KEYS,

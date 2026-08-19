@@ -47,7 +47,7 @@ export default function TenantDashboard() {
 
       <div className="grid grid-6">
         {a.loading
-          ? Array.from({ length: showCosts ? 6 : 4 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
+          ? Array.from({ length: showCosts ? 8 : 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
           : kpis.map((k) => <KpiCard key={k.label} {...k} />)}
       </div>
 

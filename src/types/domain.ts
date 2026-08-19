@@ -1617,6 +1617,15 @@ export interface Conversation {
   /** Post-call AI intelligence (summary / outcome / Next Best Action);
       detail endpoint only, null while nothing has been generated. */
   summary?: ConversationAiSummary | null;
+  /** Actual per-call STT/TTS character counters and ratio over call duration. */
+  characterUsage?: ConversationCharacterUsage | null;
+}
+
+export interface ConversationCharacterUsage {
+  sttInputCharacters: number;
+  ttsOutputCharacters: number;
+  sttInputCharactersPerMin: number | null;
+  ttsOutputCharactersPerMin: number | null;
 }
 
 export interface ConversationCommitment {
@@ -1900,6 +1909,13 @@ export interface AnalyticsBundle {
   knowledgeUsage: { label: string; value: number }[];
   costSeries: SeriesPoint[]; // t, llm, tts, stt, telephony
   recommendations: { id: string; title: string; detail: string; impact: "high" | "medium" | "low"; link: string }[];
+  characterUsage: {
+    sttInputCharactersPerMin: number;
+    ttsOutputCharactersPerMin: number;
+    sttInputCharacters: number;
+    ttsOutputCharacters: number;
+    relevantCallMinutes: number;
+  };
 }
 
 /* ---------- Customer collection context ---------- */

@@ -455,6 +455,7 @@ class ConversationBrain(FrameProcessor):
         self._goal_policy = compile_goal_policy(
             goal_config,
             bot_name=config.bot_name,
+            use_case=getattr(config, "use_case", ""),
             system_prompt=config.system_prompt,
             intents=config.intents,
             domain_policy=(
@@ -462,10 +463,15 @@ class ConversationBrain(FrameProcessor):
                 if runtime_context is not None else "generic"
             ),
         )
+        # A configured guardrail profile is an explicit request for contextual
+        # enforcement. Keep Stage A active even on older bots with no authored
+        # goal policy/intents so off-domain turns cannot bypass scope routing.
+        has_configured_guardrails = bool(self._guardrails.effective.profile_id)
         engine_enabled = bool(
             llm_settings_early.get("goal_engine_enabled", True)
         ) and (
             bool(goal_config) or bool(config.intents) or self._policy is not None
+            or has_configured_guardrails
         )
         self._goal_engine = GoalEngine(
             llm=self._build_orchestration_llm(llm),
@@ -599,7 +605,17 @@ class ConversationBrain(FrameProcessor):
         self._unsupported_streak: dict[str, int] = {}
         llm_settings = (config.llm or {}).get("settings") or {}
         self._llm_temperature: float = float(llm_settings.get("temperature", 0.3))
-        self._llm_max_tokens: int = int(llm_settings.get("max_tokens", 256))
+        # 360 characters is normally one or two concise spoken sentences.
+        # Existing bots inherit it; a bot may explicitly choose 120..2000.
+        self._llm_max_characters = max(
+            120, min(2000, int(llm_settings.get("max_output_characters", 360)))
+        )
+        configured_tokens = int(llm_settings.get("max_tokens", 256))
+        # Provider-independent character control plus the provider's native
+        # completion budget. 3 chars/token is deliberately conservative.
+        self._llm_max_tokens = min(
+            configured_tokens, max(48, (self._llm_max_characters + 2) // 3)
+        )
         self._llm_max_retries: int = int(llm_settings.get("max_retries", 1))
         self._pipeline_started = False
         self._pending_greeting = False
@@ -2380,6 +2396,7 @@ class ConversationBrain(FrameProcessor):
             route=decision.kind.value,
         )
         self._recorder.add_turn(turn)
+        self._recorder.add_stt_characters(text)
         self._recorder.add_event(
             "route_decision",
             route=decision.kind.value,
@@ -3480,6 +3497,7 @@ class ConversationBrain(FrameProcessor):
             + self._verified_runtime_context_block
             + extra_system
             + self._language_instruction()
+            + f"\n\n# Voice response length\nKeep the spoken reply concise: usually one or two short sentences and never more than {self._llm_max_characters} characters. Preserve required confirmations, workflow instructions, and tool results; omit nonessential detail."
         )
         kb_sources: list[dict] = []
         retrieval_ms = 0.0
@@ -3856,6 +3874,36 @@ class ConversationBrain(FrameProcessor):
                         self._latency.mark_llm_first_token()
                     speakable = placeholder_filter.feed(token)
                     if speakable:
+                        used = sum(len(part) for part in reply_parts)
+                        remaining = self._llm_max_characters - used
+                        if remaining <= 0:
+                            close = getattr(stream, "aclose", None)
+                            if close is not None:
+                                await close()
+                            if held:
+                                _guard_check()
+                                await _release_held(force=True)
+                            return first_token_ms
+                        if len(speakable) > remaining:
+                            candidate = speakable[:remaining]
+                            # Prefer a complete sentence, then a word boundary.
+                            sentence_ends = list(_SENTENCE_END_RE.finditer(candidate))
+                            if sentence_ends:
+                                candidate = candidate[:sentence_ends[-1].end()]
+                            else:
+                                word_end = candidate.rfind(" ")
+                                if word_end > 0:
+                                    candidate = candidate[:word_end]
+                            if candidate:
+                                reply_parts.append(candidate)
+                                await _forward(candidate)
+                            close = getattr(stream, "aclose", None)
+                            if close is not None:
+                                await close()
+                            if held:
+                                _guard_check()
+                                await _release_held(force=True)
+                            return first_token_ms
                         reply_parts.append(speakable)
                         await _forward(speakable)
                     pending = asyncio.ensure_future(anext(stream))

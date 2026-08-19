@@ -386,6 +386,11 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
           loading={detailQ.loading}
         />
 
+        <CharacterUsageRow
+          usage={detailQ.data?.characterUsage ?? null}
+          loading={detailQ.loading}
+        />
+
         <AiSummarySection summary={detailQ.data?.summary ?? null} loading={detailQ.loading} />
 
         {showCosts && (
@@ -508,6 +513,29 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
         )}
       </div>
     </Drawer>
+  );
+}
+
+function CharacterUsageRow({ usage, loading }: {
+  usage: Conversation["characterUsage"];
+  loading: boolean;
+}) {
+  if (loading) return <span className="skeleton" style={{ height: 72, borderRadius: 10 }} />;
+  const formatRate = (value: number | null | undefined) =>
+    value == null ? "—" : value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return (
+    <section className="grid grid-2" aria-label="Call character usage">
+      <div className="card-pad-sm col gap-4" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+        <span className="t-micro">Avg STT Input Characters / Min</span>
+        <span className="t-num t-strong" style={{ fontSize: 20 }}>{formatRate(usage?.sttInputCharactersPerMin)}</span>
+        <span className="t-micro">{(usage?.sttInputCharacters ?? 0).toLocaleString()} input characters</span>
+      </div>
+      <div className="card-pad-sm col gap-4" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+        <span className="t-micro">Avg TTS Output Characters / Min</span>
+        <span className="t-num t-strong" style={{ fontSize: 20 }}>{formatRate(usage?.ttsOutputCharactersPerMin)}</span>
+        <span className="t-micro">{(usage?.ttsOutputCharacters ?? 0).toLocaleString()} output characters</span>
+      </div>
+    </section>
   );
 }
 

@@ -38,7 +38,7 @@ from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
-from shared.models import ConversationMemory, ConversationSession, User, VoiceBot
+from shared.models import ConversationMemory, ConversationSession, UsageEvent, User, VoiceBot
 from backend.serializers import (
     serialize_conversation,
     serialize_conversation_memory,
@@ -151,8 +151,39 @@ async def get_conversation(
             _cost_breakdown(db, c, session_id, currency) if include_costs else None
         ),
         summary=_ai_summary(db, c),
+        character_usage=_character_usage(db, c, session_id),
         include_costs=include_costs,
     ))
+
+
+def _character_usage(
+    db: Session, c: ConversationSession, session_id: str | None
+) -> dict:
+    """Actual STT/TTS characters and per-minute rates for one call.
+
+    This is operational usage, not financial data, so it is returned for all
+    tenant users. Only numeric counters are queried; transcripts are not read.
+    """
+    totals = {"stt": 0, "tts": 0}
+    if session_id:
+        rows = db.execute(
+            select(
+                UsageEvent.capability,
+                func.coalesce(func.sum(UsageEvent.characters), 0),
+            ).where(
+                UsageEvent.session_id == session_id,
+                UsageEvent.tenant_id == c.tenant_id,
+                UsageEvent.capability.in_(("stt", "tts")),
+            ).group_by(UsageEvent.capability)
+        ).all()
+        totals.update({capability: int(characters) for capability, characters in rows})
+    minutes = c.duration_sec / 60 if c.duration_sec else 0
+    return {
+        "sttInputCharacters": totals["stt"],
+        "ttsOutputCharacters": totals["tts"],
+        "sttInputCharactersPerMin": round(totals["stt"] / minutes, 1) if minutes else None,
+        "ttsOutputCharactersPerMin": round(totals["tts"] / minutes, 1) if minutes else None,
+    }
 
 
 def _ai_summary(db: Session, c: ConversationSession) -> dict | None:

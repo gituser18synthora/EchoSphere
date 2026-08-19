@@ -675,6 +675,7 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
                            recording: dict | None = None,
                            cost_breakdown: dict | None = None,
                            summary: dict | None = None,
+                           character_usage: dict | None = None,
                            include_costs: bool = True) -> dict:
     """One conversation for the API.
 
@@ -737,6 +738,8 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         # Post-call intelligence (AI summary / outcome / Next Best Action) —
         # detail view only, null while nothing has been generated.
         "summary": summary,
+        # Detail-only operational voice usage. Independent of cost visibility.
+        "characterUsage": character_usage,
     }
 
 

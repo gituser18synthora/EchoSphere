@@ -51,6 +51,7 @@ class SessionRecorder:
             "llm_cached_tokens": 0, "llm_reasoning_tokens": 0,
             "llm_requests": 0, "llm_usage_estimated": 0,
             "tts_characters": 0, "kb_searches": 0,
+            "stt_characters": 0,
         }
         # Billable STT audio, accumulated as Decimal from what the provider
         # actually reported (Sarvam finals carry metrics.audio_duration; the
@@ -119,6 +120,12 @@ class SessionRecorder:
 
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
+
+    def add_stt_characters(self, text: str) -> None:
+        """Count accepted caller transcript characters, without retaining a second copy."""
+        self.usage["stt_characters"] = int(
+            self.usage.get("stt_characters", 0)
+        ) + len(text)
 
     def _redact_for_transcript(self, text: str) -> str:
         """Profile-driven redaction for stored turn text. Falls back to the
@@ -476,6 +483,7 @@ class SessionRecorder:
                 request_id=f"{self.session_id}:stt",
                 requests=int(usage.get("stt_requests") or 1),
                 audio_seconds=stt_seconds.quantize(Decimal("0.001")),
+                characters=int(usage.get("stt_characters") or 0),
                 usage_source=stt_source,
                 usage_metadata={"basis": stt_basis} if stt_basis else None,
             )

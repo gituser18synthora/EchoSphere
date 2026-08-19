@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -446,6 +446,20 @@ class VoiceSettingsRequest(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("llm_settings")
+    @classmethod
+    def validate_llm_output_length(cls, value):
+        if value is None:
+            return value
+        raw = value.get("max_output_characters", 360)
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("max_output_characters must be an integer")
+        if not 120 <= limit <= 2000:
+            raise ValueError("max_output_characters must be between 120 and 2000")
+        return {**value, "max_output_characters": limit}
+
 
 _VOICE_SETTINGS_FIELDS = (
     "speed", "pause_ms", "empathy", "energy", "language_voice_map",
@@ -500,7 +514,7 @@ def _serialize_voice_settings(
         "ttsSettings": strip_speed_params(s.tts_settings),
         "llmProvider": s.llm_provider,
         "llmModel": s.llm_model,
-        "llmSettings": s.llm_settings or {},
+        "llmSettings": {"max_output_characters": 360, **(s.llm_settings or {})},
         "fallbackProvider": s.fallback_provider,
         "fallbackModel": s.fallback_model,
         "fallbackVoice": s.fallback_voice,
