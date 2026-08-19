@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     get_current_user,
+    require_permission,
     require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
@@ -121,7 +123,9 @@ def _bot_extras(db: Session, bots: list[VoiceBot]) -> dict[str, dict]:
     return extras
 
 
-def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
+def _serialize_many(
+    db: Session, bots: list[VoiceBot], *, include_costs: bool = True
+) -> list[dict]:
     extras = _bot_extras(db, bots)
     return [
         serialize_bot(
@@ -131,6 +135,7 @@ def _serialize_many(db: Session, bots: list[VoiceBot]) -> list[dict]:
             calls_today=extras[b.id]["calls_today"],
             calls_month=extras[b.id]["calls_month"],
             avg_cost_per_call=extras[b.id]["avg_cost_per_call"],
+            include_costs=include_costs,
         )
         for b in bots
     ]
@@ -169,13 +174,16 @@ def list_bots(
     rows = db.scalars(
         stmt.order_by(VoiceBot.created_at.asc()).offset(params.offset).limit(params.page_size)
     ).all()
-    return paginated(_serialize_many(db, rows), page=params.page, page_size=params.page_size, total=total)
+    return paginated(
+        _serialize_many(db, rows, include_costs=can_view_costs(user)),
+        page=params.page, page_size=params.page_size, total=total,
+    )
 
 
 @router.get("/bots/{bot_id}")
 def get_bot(bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     bot = _get_bot_checked(db, bot_id, user)
-    return ok(_serialize_many(db, [bot])[0])
+    return ok(_serialize_many(db, [bot], include_costs=can_view_costs(user))[0])
 
 
 class CreateBotRequest(BaseModel):
@@ -532,7 +540,7 @@ def update_voice_settings(
     bot_id: str,
     body: VoiceSettingsRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_voices", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     bot = _get_bot_checked(db, bot_id, user)

@@ -387,7 +387,9 @@ def _refresh_readiness(db: Session, bot: VoiceBot) -> None:
 
 @router.get("/bots/{bot_id}/channels")
 def list_bot_channels(
-    bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    bot_id: str,
+    user: User = Depends(require_permission("manage_channels")),
+    db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
     rows = db.scalars(
@@ -413,7 +415,8 @@ def list_bot_channels(
 @router.get("/bots/{bot_id}/channels/{channel_type}")
 def get_bot_channel(
     bot_id: str, channel_type: str,
-    user: User = Depends(get_current_user), db: Session = Depends(get_db),
+    user: User = Depends(require_permission("manage_channels")),
+    db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
     row = _get_channel(db, bot, channel_type)

@@ -144,6 +144,7 @@ from shared.runtime_context import (
     RuntimeContext,
     collection_snapshot_from_context,
     context_from_collection_snapshot,
+    mentions_context_fact,
 )
 from voice_runtime.call_policy import (
     CollectionCallPolicy,
@@ -554,6 +555,10 @@ class ConversationBrain(FrameProcessor):
             + memory_block
             + context_block
         )
+        # A verification workflow may establish caller facts after this
+        # immutable call-start prompt is built. The refreshed verified block
+        # is appended per generation only after that workflow succeeds.
+        self._verified_runtime_context_block = ""
         self._language_instruction_cache: dict[str, str] = {}
         self._generation: asyncio.Task | None = None
         self._active_workflow: str | None = None
@@ -2125,6 +2130,20 @@ class ConversationBrain(FrameProcessor):
             "at": turn_time_iso(turn_timestamp),
         })
         decision = self._router.decide(text, active_workflow=self._active_workflow)
+        if (
+            decision.kind == RouteKind.KNOWLEDGE
+            and self._runtime_context is not None
+            and mentions_context_fact(text, self._runtime_context.prompt_values())
+        ):
+            # The caller is asking about their OWN facts ("what is my
+            # check-in date?"): the call context answers it. Tenant knowledge
+            # must neither hijack it (a generic check-in-policy article) nor
+            # fail it into the canned KB-miss phrase. prompt_values() already
+            # hides gated facts until the verification workflow succeeds.
+            decision = RouteDecision(
+                kind=RouteKind.CHAT, confidence=1.0,
+                reason="context_fact_question", considered_kb=True,
+            )
         # Deterministic guardrail check on the caller's words, BEFORE any
         # understanding, tools, knowledge or generation. A blocked turn is
         # recorded, answered with the localized safe reply and goes no
@@ -3244,6 +3263,14 @@ class ConversationBrain(FrameProcessor):
         signal: str | None = None,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
+        starting_new_workflow = self._active_workflow is None
+        if (
+            starting_new_workflow
+            and self._runtime_context is not None
+            and self._runtime_context.requires_session_verification()
+        ):
+            self._runtime_context.clear_workflow_values()
+            self._verified_runtime_context_block = ""
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -3253,6 +3280,18 @@ class ConversationBrain(FrameProcessor):
             user_text=text,
             language=self._conversation_language,
         )
+        workflow_slots = result.get("slots") or {}
+        if (
+            self._runtime_context is not None
+            and self._runtime_context.requires_session_verification()
+            and workflow_slots.get("customer_verified") is True
+        ):
+            for key, value in workflow_slots.items():
+                if value is not None:
+                    self._runtime_context.set_workflow_value(str(key), value)
+            self._verified_runtime_context_block = (
+                self._runtime_context.prompt_section()
+            )
         self._active_workflow = None if result["done"] else workflow_name
         if result.get("offScript"):
             # The workflow did NOT consume this turn (hardship, complaint,
@@ -3436,7 +3475,12 @@ class ConversationBrain(FrameProcessor):
         # and script are authored in one language reliably ignored a
         # mid-prompt language line when the caller switched (observed live:
         # Hindi replies to an English caller) — the final instruction wins.
-        system = self._static_system + extra_system + self._language_instruction()
+        system = (
+            self._static_system
+            + self._verified_runtime_context_block
+            + extra_system
+            + self._language_instruction()
+        )
         kb_sources: list[dict] = []
         retrieval_ms = 0.0
 
@@ -3492,6 +3536,23 @@ class ConversationBrain(FrameProcessor):
                     }
                     for s in result.sources
                 ]
+            elif (
+                self._runtime_context is not None
+                and self._runtime_context.prompt_values()
+            ):
+                # Retrieval found nothing, but this call carries caller
+                # facts: generation (grounded in the context block and the
+                # prompt's own fallback rules) answers or honestly declines.
+                # The canned KB-miss phrase remains only for calls with
+                # nothing else to ground a reply on.
+                system = (
+                    system
+                    + "\n\nThe knowledge base has no entry for this message. "
+                    "Answer only from the caller context and the conversation "
+                    "so far; if the needed fact is not available there, say "
+                    "so and follow your fallback instructions — never invent "
+                    "it."
+                )
             else:
                 await self._say(canned("kb_miss", self._conversation_language))
                 return

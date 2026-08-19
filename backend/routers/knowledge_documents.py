@@ -13,7 +13,6 @@ from backend.core.deps import (
     get_current_user,
     is_super_admin,
     require_permission,
-    require_tenant_admin,
     require_tenant_member,
 )
 from shared.errors import ApiError, NotFoundError
@@ -160,7 +159,7 @@ async def retry_document(
 async def cancel_document(
     document_id: str,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     status = await get_knowledge_service().cancel_ingestion(
@@ -179,7 +178,7 @@ async def cancel_document(
 async def reindex_document(
     document_id: str,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     status = await get_knowledge_service().reindex_document(
@@ -198,7 +197,7 @@ async def reindex_document(
 async def delete_document(
     document_id: str,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     await get_knowledge_service().delete_document(

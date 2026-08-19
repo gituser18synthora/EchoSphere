@@ -423,7 +423,8 @@ export interface VoiceBot {
   containment: number; // % resolved without human
   callsToday: number;
   callsMonth: number;
-  avgCostPerCall: number;
+  /** Null when the viewer's role lacks the costs.view permission. */
+  avgCostPerCall: number | null;
   csat: number;
   channels: ChannelType[];
   voiceId?: string;
@@ -1595,8 +1596,9 @@ export interface Conversation {
   csat?: number;
   /** Authoritative metered total in the base currency (USD), computed by the
       backend from this call's usage events. The same value backs the list row,
-      the recording row and the breakdown — clients never recompute it. */
-  costUsd: number;
+      the recording row and the breakdown — clients never recompute it.
+      Null when the viewer's role lacks the costs.view permission. */
+  costUsd: number | null;
   /** costUsd as a per-minute rate over the call's stored duration, derived by
       the backend. Null when the call has no duration (never connected). */
   costPerMinuteUsd?: number | null;

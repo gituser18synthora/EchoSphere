@@ -49,16 +49,21 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
   const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
   const navigate = useNavigate();
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
   const greetingPrompt = promptsQ.data?.find((p) => p.type === "greeting");
+  const greetingVersion = greetingPrompt
+    ? (greetingPrompt.publishedVersion ?? greetingPrompt.activeVersion)
+    : undefined;
   const greetingVariant =
-    greetingPrompt?.versions.find((v) => v.version === greetingPrompt.activeVersion)?.variants[0];
+    greetingPrompt?.versions.find((v) => v.version === greetingVersion)?.variants[0];
   const greetingText =
     greetingVariant?.content
     ?? `Test session for ${bot.name} — type a caller message; it runs through the real routing and workflow engine.`;
   const [steps, setSteps] = useState<TraceStep[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  const [chatEnded, setChatEnded] = useState(false);
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null);
   const [runningSuite, setRunningSuite] = useState(false);
   const [greetingAt, setGreetingAt] = useState(nowWithMicroseconds);
@@ -166,7 +171,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || thinking) return;
+    if (!text || thinking || chatEnded) return;
     const userStep: TraceStep = {
       turn: steps.length + 2, speaker: "user", text, at: nowWithMicroseconds(),
     };
@@ -189,6 +194,9 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       );
       chatSessionRef.current = result.sessionId;
       chatLanguageRef.current = result.language;
+      if (result.route === "handoff" || result.workflow?.status === "handoff") {
+        setChatEnded(true);
+      }
       const latency = result.latencyMs ?? Math.round(performance.now() - started);
       setSteps((s) => {
         const reply: TraceStep = {
@@ -225,7 +233,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     turn: 1,
     speaker: "bot",
     text: greetingText,
-    promptVersion: greetingPrompt ? `greeting v${greetingPrompt.activeVersion}` : undefined,
+    promptVersion: greetingPrompt && greetingVersion ? `greeting v${greetingVersion}` : undefined,
     latencyMs: 400,
     costUsd: 0.004,
     at: greetingAt,
@@ -271,6 +279,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                 setGreetingAt(nowWithMicroseconds());
                 chatSessionRef.current = undefined;
                 chatLanguageRef.current = greetingVariant?.language;
+                setChatEnded(false);
               }}>Reset</Button>
               {voiceActive ? (
                 <Button size="sm" variant="danger-ghost" icon="x" onClick={stopVoice}>Stop voice session</Button>
@@ -331,13 +340,16 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           <div className="row gap-8" style={{ padding: "12px 16px", borderTop: "1px solid var(--hairline)" }}>
             <input
               className="input"
-              placeholder='Try: "I need to see a doctor Thursday" or "do you take Aetna?"'
+              placeholder={chatEnded
+                ? "Call transferred — select Reset to start a new test call."
+                : 'Try: "I need to see a doctor Thursday" or "do you take Aetna?"'}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
+              disabled={chatEnded}
               aria-label="Simulator input"
             />
-            <Button variant="primary" icon="send" onClick={send} disabled={thinking || !input.trim()}>Send</Button>
+            <Button variant="primary" icon="send" onClick={send} disabled={thinking || chatEnded || !input.trim()}>Send</Button>
           </div>
         </div>
 
@@ -422,7 +434,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
                 <TraceRow icon="clock" label="Latency">
                   <span className="t-num t-strong">{selected.latencyMs != null ? `${selected.latencyMs}ms` : "—"}</span>
                 </TraceRow>
-                {flags.tenantCostVisibility && (
+                {showCosts && (
                   <TraceRow icon="dollar" label="Turn cost">
                     <span className="t-num t-strong">{selected.costUsd != null ? `$${selected.costUsd.toFixed(4)}` : "—"}</span>
                   </TraceRow>

@@ -19,7 +19,9 @@ INTENTS = {
         {"name": "booking_confirmation", "category": "booking",
          "description": "Caller wants to know whether their booking is confirmed.",
          "samples": ["is my booking confirmed", "booking confirmation",
-                     "confirm my booking", "booking status",
+                     "confirm my booking", "confirm my upcoming booking",
+                     "confirm upcoming booking", "upcoming booking confirmation",
+                     "check my upcoming booking", "booking status",
                      "is my reservation confirmed", "check my booking"],
          "confidenceThreshold": 0.05, "route": WF1,
          "entities": [], "optionalEntities": ["booking_id"]},
@@ -33,7 +35,8 @@ INTENTS = {
         {"name": "booking_voucher", "category": "booking",
          "description": "Caller wants the booking voucher emailed (spec Flow 4).",
          "samples": ["booking voucher", "send my voucher", "email me the voucher",
-                     "need the voucher", "voucher for my booking"],
+                     "need the voucher", "voucher for my booking",
+                     "send me the voucher", "share the voucher"],
          "confidenceThreshold": 0.05, "route": WF1,
          "optionalEntities": ["booking_id", "email_address"]},
         {"name": "booking_details", "category": "booking",
@@ -108,15 +111,16 @@ INTENTS = {
     ],
 }
 
-# Verified demo caller for LLM-answered booking-detail questions in the
-# Testing Studio (booking 601001 — matches oyo/data/bookings.json).
+# Demo booking facts for post-verification LLM questions in Testing Studio.
+# This flag deliberately starts false: only the verification workflow may
+# establish identity for the current session; Manual Test JSON never can.
 RUNTIME_CONTEXT = {
     "name": "Verified booking facts",
     "sourceMode": "manual",
     "fields": [],
     "allowAdditional": True,
     "testPayload": {
-        "identity_verified": True,
+        "identity_verified": False,
         "booking_id": "601001",
         "guest_name": "Rahul Sharma",
         "hotel_name": "OYO Townhouse 121 Sector 29 Gurugram",

@@ -331,8 +331,8 @@ def test_unauthorized_user_cannot_manage(client, tenant_user, test_bot):
     assert client.post(f"{API}/bots/{bot_id}/channels/web/test", headers=tenant_user).status_code == 403
     assert client.post(f"{API}/bots/{bot_id}/channels/web/deactivate", headers=tenant_user).status_code == 403
     assert client.delete(f"{API}/bots/{bot_id}/channels/web", headers=tenant_user).status_code == 403
-    # ...but a tenant member may still read.
-    assert client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_user).status_code == 200
+    # The Channels section is entirely off-limits to tenant users — reads too.
+    assert client.get(f"{API}/bots/{bot_id}/channels", headers=tenant_user).status_code == 403
 
 
 def test_cross_tenant_access_denied(client, test_bot):

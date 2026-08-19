@@ -18,6 +18,9 @@ const tabIcons: Record<string, "play" | "edit" | "refresh" | "mic" | "target" | 
 
 export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdated?: () => void }) {
   const navigate = useNavigate();
+  const { hasPermission } = useApp();
+  // Server-enforced: avgCostPerCall is null without costs.view.
+  const showCosts = hasPermission("costs.view") && bot.avgCostPerCall != null;
   const [editLangs, setEditLangs] = useState(false);
   const done = bot.readiness.filter((r) => r.done).length;
   const pct = (done / bot.readiness.length) * 100;
@@ -43,11 +46,13 @@ export default function OverviewTab({ bot, onUpdated }: { bot: VoiceBot; onUpdat
         </div>
 
         {bot.status === "published" && (
-          <div className="grid grid-4" style={{ gap: 12 }}>
+          <div className={showCosts ? "grid grid-4" : "grid grid-3"} style={{ gap: 12 }}>
             <KpiCard label="Calls today" value={fmtNum(bot.callsToday)} icon="phone" />
             <KpiCard label="Containment" value={`${bot.containment}%`} icon="check-circle" />
             <KpiCard label="CSAT" value={`${bot.csat.toFixed(1)} / 5`} icon="star" />
-            <KpiCard label="Cost / call" value={`$${bot.avgCostPerCall.toFixed(2)}`} icon="dollar" />
+            {showCosts && (
+              <KpiCard label="Cost / call" value={`$${bot.avgCostPerCall!.toFixed(2)}`} icon="dollar" />
+            )}
           </div>
         )}
 

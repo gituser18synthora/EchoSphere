@@ -108,7 +108,8 @@ def _validate_associations(db: Session, tenant_id: str, *,
 def list_api_connections(
     bot_id: str | None = Query(None, alias="botId"),
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission(
+        "manage_api_connections", "test_api_connections", "integrations.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)

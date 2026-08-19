@@ -19,6 +19,7 @@ vi.mock("@/state/AppContext", () => ({
   useApp: () => ({
     user: { tenantName: "Meridian Health", tenantId: "tn-001" },
     toast: vi.fn(),
+    hasPermission: () => true, // tenant admin view — costs visible
   }),
 }));
 

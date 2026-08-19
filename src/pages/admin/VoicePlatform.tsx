@@ -61,7 +61,7 @@ function AllBots() {
           { key: "version", header: "Live", render: (b) => <code>{b.liveVersion ?? "—"}</code> },
           { key: "langs", header: "Languages", render: (b) => <span className="t-sub">{b.languages.join(", ")}</span> },
           { key: "calls", header: "Calls / mo", align: "right", sortValue: (b) => b.callsMonth, render: (b) => <span className="t-num">{fmtNum(b.callsMonth)}</span> },
-          { key: "cost", header: "Cost / call", align: "right", sortValue: (b) => b.avgCostPerCall, render: (b) => <span className="t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(3)}` : "—"}</span> },
+          { key: "cost", header: "Cost / call", align: "right", sortValue: (b) => b.avgCostPerCall ?? 0, render: (b) => <span className="t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(3)}` : "—"}</span> },
         ]}
       />
     </div>

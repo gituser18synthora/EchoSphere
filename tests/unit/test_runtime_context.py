@@ -12,6 +12,7 @@ from shared.runtime_context import (
     build_runtime_context,
     collection_snapshot_from_context,
     context_from_collection_snapshot,
+    mentions_context_fact,
     resolve_response_path,
     validate_field_definitions,
     validate_payload,
@@ -177,6 +178,54 @@ class TestBuildContext:
         section = ctx.prompt_section()
         assert "No caller-specific values" in section
         assert "Never" in section
+
+    def test_manual_identity_flag_cannot_expose_customer_facts(self):
+        ctx = build_runtime_context(
+            tenant_id="t", bot_id="b",
+            payload={
+                "identity_verified": True,
+                "booking_id": "601001",
+                "guest_name": "Rahul Sharma",
+                "amount_pending_inr": 2400,
+            },
+            payload_source="test",
+        )
+
+        assert ctx.prompt_values() == {}
+        section = ctx.prompt_section()
+        assert "Identity is NOT verified" in section
+        assert "601001" not in section
+        assert "Rahul Sharma" not in section
+        assert "2400" not in section
+
+    def test_workflow_verification_replaces_stale_manual_facts(self):
+        ctx = build_runtime_context(
+            tenant_id="t", bot_id="b",
+            payload={
+                "customer_verified": False,
+                "booking_id": "stale-booking",
+                "guest_name": "Wrong Name",
+            },
+            payload_source="test",
+        )
+        ctx.set_workflow_value("customer_verified", True)
+        ctx.set_workflow_value("booking_id", "601001")
+        ctx.set_workflow_value("guest_name", "Rahul Sharma")
+
+        assert ctx.requires_session_verification()
+        assert ctx.is_session_verified()
+        assert ctx.prompt_values() == {
+            "booking_id": "601001",
+            "guest_name": "Rahul Sharma",
+        }
+        section = ctx.prompt_section()
+        assert "workflow-verified" in section
+        assert "stale-booking" not in section
+        assert "Wrong Name" not in section
+
+        ctx.clear_workflow_values()
+        assert not ctx.is_session_verified()
+        assert ctx.prompt_values() == {}
 
 
 class TestDomainConfigurations:
@@ -396,3 +445,38 @@ class TestResponsePath:
         assert resolve_response_path(body, "data.items.0") == {"id": 1}
         assert resolve_response_path(body, "") is body
         assert resolve_response_path(body, "data.missing") is None
+
+
+class TestMentionsContextFact:
+    """Routing helper: a question naming one of the call's OWN facts is a
+    context question, not a tenant-knowledge query — transcript-tolerant."""
+
+    KEYS = ("booking_id", "hotel_name", "checkin_date", "checkout_date",
+            "payment_status", "amount_pending", "occupancy_details")
+
+    def test_direct_and_stt_variant_matches(self):
+        for text in (
+            "what is my check-in date",
+            "No no. What is my checking date?",   # STT: checking → check-in
+            "when is my checkout date",
+            "okay okay, tell me the hotel name",
+            "how much amount is pending",
+            "what is my payment status",
+            "what is the occupancy on my booking",
+        ):
+            assert mentions_context_fact(text, self.KEYS), text
+
+    def test_generic_words_alone_do_not_match(self):
+        # "date"/"status"/"booking" are too common to tie an utterance to a
+        # fact by themselves — policy questions must keep reaching the KB.
+        for text in (
+            "what is the standard cancellation policy",
+            "what documents do I need to carry",
+            "how do I cancel a booking",
+        ):
+            assert not mentions_context_fact(text, self.KEYS), text
+
+    def test_empty_inputs(self):
+        assert not mentions_context_fact("", self.KEYS)
+        assert not mentions_context_fact("what is my check-in date", ())
+        assert not mentions_context_fact("what is my check-in date", None)

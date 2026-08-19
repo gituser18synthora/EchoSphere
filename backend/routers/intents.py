@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
-    get_current_user,
     require_permission,
     resolve_tenant_id,
 )
@@ -112,7 +111,7 @@ def _validate_intent_refs(db: Session, tenant_id: str, bot_id: str, *,
 
 @router.get("/bots/{bot_id}/intents")
 def list_intents(
-    bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    bot_id: str, user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")), db: Session = Depends(get_db)
 ):
     bot = _bot_checked(db, bot_id, user)
     rows = db.scalars(
@@ -362,7 +361,7 @@ class IntentTestRequest(BaseModel):
 def test_intents(
     bot_id: str,
     body: IntentTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     """Run one utterance through the real runtime router: matched intent,
@@ -427,7 +426,7 @@ def test_intents(
 @router.get("/entities")
 def list_entities(
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
@@ -662,7 +661,7 @@ class EntityTestRequest(BaseModel):
 def test_entity(
     entity_id: str,
     body: EntityTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("manage_intents", "manage_entities", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     row = _entity_checked(db, entity_id, user)

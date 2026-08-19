@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.core.audit import record_audit
 from backend.core.deps import (
     SUPER_ADMIN,
+    TENANT_USER,
     assert_tenant_access,
     get_current_user,
     is_super_admin,
@@ -49,7 +50,9 @@ def list_users(
     scope: str = Query("tenant", pattern="^(tenant|platform)$"),
     tenant_id: str | None = Query(None, alias="tenantId"),
     params: PageParams = Depends(page_params),
-    user: User = Depends(get_current_user),
+    # Team data is for team managers only — a tenant_user must not be able to
+    # enumerate their organization's members (names, emails, activity).
+    user: User = Depends(require_permission("team.manage", "security.manage")),
     db: Session = Depends(get_db),
 ):
     stmt = select(User).where(User.is_deleted.is_(False))
@@ -100,6 +103,11 @@ def create_user(
             raise ApiError("Only platform administrators can create platform users.", 403)
         tenant_id = None
     else:
+        # Tenant admins add members only as Tenant User — never another admin
+        # or any internal role. Platform admins keep full role assignment
+        # (tenant onboarding creates the first tenant admin).
+        if not is_super_admin(user) and role.code != TENANT_USER:
+            raise ApiError("Team members can only be added as Tenant User.", 403)
         tenant_id = resolve_tenant_id(user, body.tenant_id)
 
     email = body.email.lower()
@@ -359,6 +367,10 @@ def update_user(
             raise ApiError("Only platform administrators can grant platform roles.", 403)
         if role.scope == "platform" and row.tenant_id is not None:
             raise ApiError("Tenant members cannot hold platform roles.", 422)
+        # Same rule as creation: a tenant admin cannot promote a member to
+        # any role beyond Tenant User (no create-then-promote bypass).
+        if role.scope != "platform" and not is_super_admin(user) and role.code != TENANT_USER:
+            raise ApiError("Team members can only hold the Tenant User role.", 403)
         row.role_id = role.id
         record_audit(
             db, user=user, action="Changed user role", entity_type="user",
@@ -407,20 +419,31 @@ def delete_user(
 
 
 @router.get("/roles")
-def list_roles(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    roles = db.scalars(select(Role).order_by(Role.created_at.asc())).all()
-    counts = dict(
-        db.execute(
-            select(User.role_id, func.count())
-            .where(User.is_deleted.is_(False))
-            .group_by(User.role_id)
-        ).all()
-    )
+def list_roles(
+    user: User = Depends(require_permission("team.manage", "security.manage")),
+    db: Session = Depends(get_db),
+):
+    """Role catalog with member counts.
+
+    Tenant callers see only tenant-scope roles, and the member counts cover
+    ONLY their own tenant — a platform-wide count is cross-tenant data
+    (it reveals how many admins/users exist across other organizations).
+    Platform admins keep the full catalog with global counts."""
+    role_stmt = select(Role).order_by(Role.created_at.asc())
+    count_stmt = select(User.role_id, func.count()).where(User.is_deleted.is_(False))
+    if not is_super_admin(user):
+        role_stmt = role_stmt.where(Role.scope == "tenant")
+        count_stmt = count_stmt.where(User.tenant_id == user.tenant_id)
+    roles = db.scalars(role_stmt).all()
+    counts = dict(db.execute(count_stmt.group_by(User.role_id)).all())
     return ok([serialize_role(r, members=counts.get(r.id, 0)) for r in roles])
 
 
 @router.get("/permissions")
-def list_permissions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_permissions(
+    user: User = Depends(require_permission("team.manage", "security.manage")),
+    db: Session = Depends(get_db),
+):
     perms = db.scalars(select(Permission).order_by(Permission.category, Permission.code)).all()
     return ok([
         {"id": p.id, "code": p.code, "name": p.name, "category": p.category,

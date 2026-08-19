@@ -337,7 +337,7 @@ def serialize_plan(p: Plan, *, usage: int = 0, names: dict | None = None) -> dic
 
 def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
                   calls_today: int, calls_month: int,
-                  avg_cost_per_call: float) -> dict:
+                  avg_cost_per_call: float, include_costs: bool = True) -> dict:
     return {
         "id": b.id,
         "tenantId": b.tenant_id,
@@ -355,7 +355,9 @@ def serialize_bot(b: VoiceBot, *, owner_name: str, channels: list[str],
         "callsMonth": calls_month,
         # Month-to-date metered AI cost / calls (usage_records rollup) — the
         # static voice_bots.avg_cost_per_call column is demo-seed-only.
-        "avgCostPerCall": round(float(avg_cost_per_call), 4),
+        # Null (not 0) for viewers without costs.view: financial fields are
+        # never sent to roles that may not see them.
+        "avgCostPerCall": round(float(avg_cost_per_call), 4) if include_costs else None,
         "csat": b.csat,
         "channels": channels,
         "voiceId": b.voice_id,
@@ -672,7 +674,8 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
                            transcript: list | None = None,
                            recording: dict | None = None,
                            cost_breakdown: dict | None = None,
-                           summary: dict | None = None) -> dict:
+                           summary: dict | None = None,
+                           include_costs: bool = True) -> dict:
     """One conversation for the API.
 
     ``costUsd`` is the single authoritative total for BOTH the list and the
@@ -684,7 +687,19 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
 
     ``cost`` carries the auditable per-component breakdown and is present on
     the detail view only — the list would otherwise run one query per row.
+
+    ``include_costs=False`` (viewers without the costs.view permission) nulls
+    every financial field and strips per-turn costs from the transcript — the
+    server is the boundary, not hidden UI columns.
     """
+    if not include_costs:
+        cost_breakdown = None
+        if transcript:
+            transcript = [
+                {k: v for k, v in turn.items() if k != "costUsd"}
+                if isinstance(turn, dict) else turn
+                for turn in transcript
+            ]
     return {
         "id": c.id,
         "botId": c.bot_id,
@@ -698,13 +713,14 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
         "contained": c.contained,
         "escalationReason": c.escalation_reason,
         "csat": c.csat,
-        "costUsd": float(c.cost_usd),
+        "costUsd": float(c.cost_usd) if include_costs else None,
         # Rate view of the same stored total over the call's real length —
         # derived HERE so the client renders it rather than computing it.
         # Null (not 0) when the call never connected: a rate over zero
         # minutes is meaningless, and 0 would read as "free".
         "costPerMinuteUsd": (
-            float(c.cost_usd) * 60.0 / c.duration_sec if c.duration_sec else None
+            float(c.cost_usd) * 60.0 / c.duration_sec
+            if include_costs and c.duration_sec else None
         ),
         "cost": cost_breakdown,
         "language": c.language or "en-US",

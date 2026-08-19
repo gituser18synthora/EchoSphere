@@ -27,8 +27,14 @@ export interface DisplayCurrencyState {
   display: (amountUsd: number, opts?: { precise?: boolean }) => string;
 }
 
-export function useDisplayCurrency(): DisplayCurrencyState {
-  const { data } = useAsync<CurrencyRates>(() => getCurrencyRates());
+/** @param enabled pass false for viewers without costs.view — the rates
+ *  endpoint requires that permission and every money-rendering surface is
+ *  hidden for them anyway; the hook then formats in base USD only. */
+export function useDisplayCurrency(enabled = true): DisplayCurrencyState {
+  const { data } = useAsync<CurrencyRates | null>(
+    () => (enabled ? getCurrencyRates() : Promise.resolve(null)),
+    [enabled],
+  );
   const [currency, setCurrencyState] = useState<string>(getStoredDisplayCurrency());
 
   const setCurrency = (code: string) => {

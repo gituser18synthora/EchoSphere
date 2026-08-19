@@ -20,7 +20,7 @@ vi.mock("@/services/api", () => ({
   createVoiceSession: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
-  useApp: () => ({ toast: vi.fn(), user: { tenantId: "tn_x" } }),
+  useApp: () => ({ toast: vi.fn(), user: { tenantId: "tn_x" }, hasPermission: () => true }),
 }));
 
 const BOT = { id: "bot_x", name: "Collections Bot", version: "v0.3.0" } as VoiceBot;
@@ -52,6 +52,17 @@ const TURN_2 = {
   workflow: {
     ...TURN_1.workflow, status: "done", nodeTrace: ["n3", "n4", "n5"],
     slots: { amount: "2500" }, done: true,
+  },
+};
+
+const HANDOFF_TURN = {
+  ...TURN_1,
+  reply: "I could not verify the details. Please stay on the line while I transfer you.",
+  done: true,
+  activeWorkflow: null,
+  workflow: {
+    ...TURN_1.workflow, status: "handoff", nodeTrace: ["n_verify", "n_transfer"],
+    slots: { customer_verified: false }, done: true,
   },
 };
 
@@ -124,6 +135,37 @@ describe("TestingTab — real runtime chat testing", () => {
 
     await sendMessage(user, "hello");
     await screen.findByText(/test turn failed/i);
+  });
+
+  it("ends the text test after handoff until the user resets it", async () => {
+    vi.mocked(api.testBotChat).mockReset().mockResolvedValue(HANDOFF_TURN as never);
+    const user = userEvent.setup();
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    await sendMessage(user, "wrong verification detail");
+    await screen.findByText(/stay on the line while I transfer/i);
+
+    const input = screen.getByLabelText("Simulator input");
+    expect(input).toBeDisabled();
+    expect(input).toHaveAttribute("placeholder", expect.stringMatching(/select Reset/i));
+
+    await user.click(screen.getAllByRole("button", { name: "Reset" })[0]);
+    expect(input).not.toBeDisabled();
+  });
+
+  it("renders the published greeting instead of a newer draft", async () => {
+    vi.mocked(api.listPrompts).mockResolvedValue([{
+      id: "pr_greeting", type: "greeting", activeVersion: 2, publishedVersion: 1,
+      versions: [
+        { version: 2, variants: [{ language: "en-IN", content: "Draft hello" }] },
+        { version: 1, variants: [{ language: "en-IN", content: "Published hello" }] },
+      ],
+    }] as never);
+
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    expect(await screen.findByText("Published hello")).toBeInTheDocument();
+    expect(screen.queryByText("Draft hello")).not.toBeInTheDocument();
   });
 
   it("shows an MM:SS.xx timestamp on every simulator message", async () => {

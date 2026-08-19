@@ -8,7 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
-from backend.core.deps import assert_tenant_access, get_current_user, require_tenant_admin
+from backend.core.deps import (
+    assert_tenant_access,
+    require_permission,
+    require_tenant_admin,
+)
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
@@ -62,7 +66,9 @@ def _build_checklist(db: Session, bot: VoiceBot) -> list[dict]:
 
 @router.get("/bots/{bot_id}/releases")
 def list_releases(
-    bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    bot_id: str,
+    user: User = Depends(require_permission("bots.publish", "bots.manage")),
+    db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
     rows = db.scalars(

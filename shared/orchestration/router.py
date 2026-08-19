@@ -139,14 +139,18 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"|\?\s*$",
         re.I,
     )),
-    # Refusal — negated commitment or a bare "no".
+    # Refusal — negated commitment or a bare "no". Callers naturally repeat
+    # the negation ("no no", "nahi nahi nahi") and may close politely ("no,
+    # no thanks") — that is still one refusal, never an unknown utterance.
     ("refusal", re.compile(
         r"(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|"
         r"करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)"
         r"|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)"
         r"|^\W*(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*"
         r"(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)"
-        r"(?:\s*(?:nahi|nahin|नहीं|नही|ji|जी))?\W*$",
+        r"(?:\W+(?:nahi|nahin|no|nope|नहीं|नही|ji|जी))*"
+        r"(?:\W+(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
+        r"shukriya|धन्यवाद|शुक्रिया))?\W*$",
         re.I,
     )),
     # Positive commitment to pay (verbs, not the bare noun "payment").
@@ -161,11 +165,15 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         re.I,
     )),
     # A bare confirmation ("haan", "theek hai") — meaningful only in context.
+    # Natural speech repeats it ("yes yes", "haan haan", "okay okay") and may
+    # add a courtesy tail ("yes, yes please") — still one confirmation.
     ("affirm", re.compile(
-        r"^\W*(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
+        r"^\W*(?:(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
         r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
         r"हाँ|हां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
-        r"ओके(?: जी)?|अच्छा)\W*$",
+        r"ओके(?: जी)?|अच्छा)\W*){1,4}"
+        r"(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
+        r"shukriya|धन्यवाद|शुक्रिया)?\W*$",
         re.I,
     )),
 ]
@@ -475,12 +483,33 @@ class TurnRouter:
 
     def _match_intent(self, text: str) -> tuple[str, str | None, float] | None:
         lowered = text.lower()
+        utterance_tokens = re.findall(r"\w+", lowered, re.UNICODE)
+
+        def sample_matches(sample: str) -> bool:
+            if sample in lowered:
+                return True
+            # Natural callers often insert a modifier into a configured
+            # phrase ("confirm my *upcoming* booking").  For samples of at
+            # least three words, preserve the authored word order while
+            # allowing those intervening words; this stays much narrower
+            # than unordered keyword matching.
+            sample_tokens = re.findall(r"\w+", sample, re.UNICODE)
+            if len(sample_tokens) < 3:
+                return False
+            position = 0
+            for token in utterance_tokens:
+                if token == sample_tokens[position]:
+                    position += 1
+                    if position == len(sample_tokens):
+                        return True
+            return False
+
         best: tuple[str, str | None, float] | None = None
         for intent in self._intents:
             samples = [s.lower() for s in (intent.get("samples") or [])]
             if not samples:
                 continue
-            hits = sum(1 for s in samples if s and s in lowered)
+            hits = sum(1 for s in samples if s and sample_matches(s))
             score = hits / len(samples) if samples else 0.0
             threshold = float(intent.get("confidence_threshold") or 0.5)
             # A single exact sample phrase match is a strong signal.

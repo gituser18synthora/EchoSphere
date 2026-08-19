@@ -16,7 +16,11 @@ const langSummary = (codes: string[], max = 3) =>
 
 export default function Bots() {
   const navigate = useNavigate();
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  // Server-enforced (the API nulls avgCostPerCall / rejects bot creation for
+  // roles without these permissions); this only removes the affordances.
+  const showCosts = hasPermission("costs.view");
+  const canManageBots = hasPermission("bots.manage");
   const q = useAsync(listBots, []);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
@@ -70,7 +74,9 @@ export default function Bots() {
             <button aria-pressed={view === "cards"} onClick={() => setView("cards")}>Cards</button>
             <button aria-pressed={view === "table"} onClick={() => setView("table")}>Table</button>
           </div>
-          <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>
+          {canManageBots && (
+            <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>
+          )}
         </div>
       </div>
 
@@ -95,7 +101,9 @@ export default function Bots() {
             icon="bot"
             title={query || status !== "all" ? "No bots match these filters" : "Create your first VoiceBot"}
             body={query || status !== "all" ? "Adjust the search or status filter." : "A guided setup takes about 10 minutes: name it, add knowledge, pick a voice, then test and publish."}
-            action={<Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>}
+            action={canManageBots
+              ? <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>
+              : undefined}
           />
         </div>
       )}
@@ -122,7 +130,7 @@ export default function Bots() {
                 <Stat label="Calls /mo" value={b.callsMonth ? fmtNum(b.callsMonth) : "—"} />
                 <Stat label="Contained" value={b.containment ? `${b.containment}%` : "—"} />
                 <Stat label="CSAT" value={b.csat ? b.csat.toFixed(1) : "—"} />
-                <Stat label="$/call" value={b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"} />
+                {showCosts && <Stat label="$/call" value={b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"} />}
               </div>
               <div className="row-between t-micro">
                 <span className="row gap-4"><Icon name="user" size={12} />{b.owner}</span>
@@ -140,7 +148,7 @@ export default function Bots() {
               <thead>
                 <tr>
                   <th>Bot</th><th>Status</th><th>Health</th><th>Version</th><th>Owner</th>
-                  <th>Languages</th><th className="num">Calls /mo</th><th className="num">Contained</th><th className="num">$/call</th><th></th>
+                  <th>Languages</th><th className="num">Calls /mo</th><th className="num">Contained</th>{showCosts && <th className="num">$/call</th>}<th></th>
                 </tr>
               </thead>
               <tbody>
@@ -154,7 +162,7 @@ export default function Bots() {
                     <td className="t-sub" title={b.languages.join(", ")}>{langSummary(b.languages)}</td>
                     <td className="num t-num">{b.callsMonth ? fmtNum(b.callsMonth) : "—"}</td>
                     <td className="num t-num">{b.containment ? `${b.containment}%` : "—"}</td>
-                    <td className="num t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"}</td>
+                    {showCosts && <td className="num t-num">{b.avgCostPerCall ? `$${b.avgCostPerCall.toFixed(2)}` : "—"}</td>}
                     <td onClick={(e) => e.stopPropagation()}><MenuButton actions={botMenu(b)} /></td>
                   </tr>
                 ))}

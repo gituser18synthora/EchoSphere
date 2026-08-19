@@ -45,7 +45,7 @@ logger = logging.getLogger("backend.seed")
 ROLES = [
     ("super_admin", "Super Admin", "platform", "Full platform governance: tenants, subscriptions, AI governance, telephony, security."),
     ("tenant_admin", "Tenant Admin", "tenant", "Build, test and publish the organization's VoiceBots; manage team and settings."),
-    ("tenant_user", "Tenant User", "tenant", "Work within the organization's workspace: view bots, conversations and analytics."),
+    ("tenant_user", "Tenant User", "tenant", "Work on the organization's shared VoiceBots: edit knowledge, prompts, voice, workflows and testing — no channels, integrations, settings or cost visibility."),
 ]
 
 PERMISSIONS = [
@@ -97,6 +97,15 @@ PERMISSIONS = [
     ("test_api_connections", "Test API connections", "tenant"),
     # Channels
     ("manage_channels", "Manage deployment channels", "tenant"),
+    # Workflows / testing
+    ("manage_workflows", "Edit bot workflows", "tenant"),
+    ("manage_testing", "Create & run test scenarios", "tenant"),
+    # Voice cloning (distinct from manage_voices so a role may configure bot
+    # voices without being able to create or manage cloned voices)
+    ("manage_voice_clones", "Create & manage cloned voices", "tenant"),
+    # Financial visibility: cost/pricing/spend fields in tenant analytics,
+    # conversations, dashboards and exports
+    ("costs.view", "View costs, pricing & spend", "tenant"),
     # Billing configuration (platform)
     ("manage_currencies", "Manage currencies", "platform"),
     ("manage_exchange_rates", "Manage exchange rates", "platform"),
@@ -116,10 +125,19 @@ ROLE_PERMISSIONS = {
         "manage_voices", "manage_intents", "manage_entities",
         "manage_api_connections", "test_api_connections",
         "manage_channels",
+        "manage_workflows", "manage_testing", "manage_voice_clones", "costs.view",
     ],
+    # Tenant User works on the tenant's shared resources: full edit access to
+    # knowledge, prompts, voice configuration, workflows and testing, but no
+    # channels/integrations/settings/team/voice-cloning management and no
+    # financial visibility (costs.view is deliberately withheld).
     "tenant_user": [
         "bots.view", "knowledge.view", "conversations.view", "analytics.view",
         "view_tenant_profile", "change_own_password",
+        "manage_knowledge", "upload_knowledge_documents", "retry_knowledge_ingestion",
+        "manage_prompts",
+        "manage_voices",
+        "manage_workflows", "manage_testing",
     ],
 }
 

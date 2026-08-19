@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,129 @@ def _norm_booking_id(value: object) -> str:
     return digits
 
 
+_DEVANAGARI_INHERENT = "\ue000"
+_DEVANAGARI_CONSONANTS = {
+    "क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "ng",
+    "च": "ch", "छ": "chh", "ज": "j", "झ": "jh", "ञ": "ny",
+    "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh", "ण": "n",
+    "त": "t", "थ": "th", "द": "d", "ध": "dh", "न": "n",
+    "प": "p", "फ": "ph", "ब": "b", "भ": "bh", "म": "m",
+    "य": "y", "र": "r", "ल": "l", "व": "v", "ळ": "l",
+    "श": "sh", "ष": "sh", "स": "s", "ह": "h",
+    "क़": "q", "ख़": "kh", "ग़": "gh", "ज़": "z", "ड़": "r",
+    "ढ़": "rh", "फ़": "f", "य़": "y",
+}
+_DEVANAGARI_VOWELS = {
+    "अ": "a", "आ": "aa", "इ": "i", "ई": "ii", "उ": "u",
+    "ऊ": "uu", "ऋ": "ri", "ॠ": "rii", "ऌ": "li", "ए": "e",
+    "ऐ": "ai", "ओ": "o", "औ": "au", "ऑ": "o", "ऍ": "e",
+}
+_DEVANAGARI_MATRAS = {
+    "ा": "aa", "ि": "i", "ी": "ii", "ु": "u", "ू": "uu",
+    "ृ": "ri", "ॄ": "rii", "ॢ": "li", "े": "e", "ै": "ai",
+    "ो": "o", "ौ": "au", "ॉ": "o", "ॅ": "e",
+}
+_DEVANAGARI_MARKS = {"ं": "n", "ँ": "n", "ः": "h", "ऽ": ""}
+_DEVANAGARI_RANGE = re.compile(r"[\u0900-\u097f]")
+
+
+def _romanize_devanagari(value: object) -> str:
+    """Conservatively romanize Devanagari for cross-script name matching.
+
+    The marker distinguishes an implicit schwa from an explicit ``ा`` so a
+    word-final consonant in ``राहुल`` becomes ``l``, while the explicit final
+    vowel in ``प्रिया`` remains ``a``. This is matching normalization only;
+    the caller's original spelling is retained everywhere else.
+    """
+    out: list[str] = []
+    for char in unicodedata.normalize("NFC", str(value or "")):
+        consonant = _DEVANAGARI_CONSONANTS.get(char)
+        if consonant is not None:
+            out.extend((consonant, _DEVANAGARI_INHERENT))
+            continue
+        vowel = _DEVANAGARI_VOWELS.get(char)
+        if vowel is not None:
+            out.append(vowel)
+            continue
+        matra = _DEVANAGARI_MATRAS.get(char)
+        if matra is not None:
+            if out and out[-1] == _DEVANAGARI_INHERENT:
+                out.pop()
+            out.append(matra)
+            continue
+        if char == "्":
+            if out and out[-1] == _DEVANAGARI_INHERENT:
+                out.pop()
+            continue
+        if char == "़":
+            continue
+        mark = _DEVANAGARI_MARKS.get(char)
+        if mark is not None:
+            out.append(mark)
+            continue
+        if not char.isalnum() and out and out[-1] == _DEVANAGARI_INHERENT:
+            out.pop()
+        out.append(char)
+    if out and out[-1] == _DEVANAGARI_INHERENT:
+        out.pop()
+    return "".join(out).replace(_DEVANAGARI_INHERENT, "a")
+
+
+def _match_tokens(value: object, *, romanize: bool = False) -> list[str]:
+    text = str(value or "")
+    if romanize:
+        text = _romanize_devanagari(text)
+    normalized: list[str] = []
+    for char in unicodedata.normalize("NFKC", text).casefold():
+        if char.isdecimal():
+            try:
+                normalized.append(str(unicodedata.digit(char)))
+            except (TypeError, ValueError):
+                normalized.append(char)
+        elif char.isalnum():
+            normalized.append(char)
+        else:
+            normalized.append(" ")
+    tokens = "".join(normalized).split()
+    if romanize:
+        # Hindi long-vowel spelling (aa/ii/uu) commonly maps to a single
+        # vowel in English names: राहुल शर्मा → raahul sharmaa → rahul sharma.
+        tokens = [re.sub(r"([aeiou])\1+", r"\1", token) for token in tokens]
+    return tokens
+
+
+def _contains(provided: object, expected: object) -> bool:
+    """Match the complete expected token phrase inside a spoken utterance.
+
+    Whole-token matching accepts ``guest name is Rahul Sharma`` without the
+    unsafe substring behavior that let a one-letter value match a full name.
+    Cross-script phonetic matching is attempted only when Devanagari is
+    actually present, keeping ordinary Latin verification strict.
+    """
+    def phrase_matches(provided_tokens: list[str], expected_tokens: list[str]) -> bool:
+        if not provided_tokens or not expected_tokens:
+            return False
+        width = len(expected_tokens)
+        return any(
+            provided_tokens[index:index + width] == expected_tokens
+            for index in range(len(provided_tokens) - width + 1)
+        )
+
+    plain_provided = _match_tokens(provided)
+    plain_expected = _match_tokens(expected)
+    if phrase_matches(plain_provided, plain_expected):
+        return True
+    if not (
+        _DEVANAGARI_RANGE.search(str(provided or ""))
+        or _DEVANAGARI_RANGE.search(str(expected or ""))
+    ):
+        return False
+    return phrase_matches(
+        _match_tokens(provided, romanize=True),
+        _match_tokens(expected, romanize=True),
+    )
+
+
 def _err(status: int, message: str, **extra) -> JSONResponse:
     return JSONResponse(status_code=status,
                         content={"error": message, **extra})
@@ -103,13 +227,6 @@ async def verify_customer(request: Request):
     if record is None:
         return _err(404, "No booking found for this booking ID.",
                     verified=False)
-
-    def _contains(provided: object, expected: str) -> bool:
-        p = str(provided or "").strip().lower()
-        e = (expected or "").strip().lower()
-        if not p or not e:
-            return False
-        return e in p or p in e or all(tok in p for tok in e.split())
 
     phone_ok = _norm_booking_id(body.get("caller_phone")) and (
         _norm_booking_id(body.get("caller_phone"))[-10:]

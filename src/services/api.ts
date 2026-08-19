@@ -510,7 +510,10 @@ export const listTeam = async (tenantId?: string): Promise<TeamMember[]> =>
   (await http.getPaged<TeamMember>(`/users?scope=tenant&pageSize=200${tenantId ? `&tenantId=${tenantId}` : ""}`)).items;
 export const listPlatformUsers = async (): Promise<TeamMember[]> =>
   (await http.getPaged<TeamMember>("/users?scope=platform&pageSize=200")).items;
-export const inviteUser = (body: { name: string; email: string; roleCode: string }) =>
+/** Add a team member. Without `password` the backend issues a one-time
+ *  temporary password (invite flow); with `password` the account is created
+ *  active and can sign in immediately (direct-create flow). */
+export const inviteUser = (body: { name: string; email: string; roleCode: string; password?: string }) =>
   http.post<TeamMember & { temporaryPassword?: string }>("/users", body);
 export const updateUser = (id: string, body: { name?: string; roleCode?: string; status?: string }) =>
   http.patch<TeamMember>(`/users/${id}`, body);
