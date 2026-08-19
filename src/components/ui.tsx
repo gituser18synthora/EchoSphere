@@ -82,9 +82,10 @@ export function Health({ level, label }: { level: Severity; label?: string }) {
 /* ---------- KPI card ---------- */
 export function KpiCard({ label, value, delta, deltaLabel, spark, intent = "up-good", icon }: {
   label: string; value: string; delta?: number; deltaLabel?: string;
-  spark?: number[]; intent?: "up-good" | "down-good"; icon?: IconName;
+  /** "neutral": the metric has no good direction — a delta renders uncolored. */
+  spark?: number[]; intent?: "up-good" | "down-good" | "neutral"; icon?: IconName;
 }) {
-  const dir = delta === undefined || delta === 0 ? "flat" : delta > 0 ? "up" : "down";
+  const dir = delta === undefined || delta === 0 || intent === "neutral" ? "flat" : delta > 0 ? "up" : "down";
   const good = delta !== undefined && ((delta > 0 && intent === "up-good") || (delta < 0 && intent === "down-good"));
   return (
     <div className="kpi">

@@ -120,6 +120,21 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
         }
         appendVoiceStep("bot", text, at);
       },
+      onTurnRewound: (userText, botText) => {
+        // The runtime merged a straggler final (or clarified fragment) into
+        // one turn and popped these entries from its own transcript; mirror
+        // that here or the merged turn repeats the fragment's words.
+        setSteps((s) => {
+          const next = [...s];
+          const dropTrailing = (speaker: "user" | "bot", text?: string) => {
+            const last = next[next.length - 1];
+            if (text && last?.speaker === speaker && last.text === text) next.pop();
+          };
+          dropTrailing("bot", botText);
+          dropTrailing("user", userText);
+          return next;
+        });
+      },
       onLanguage: (locale) => setLiveLanguage(locale),
       onEvent: (name, detail) => {
         if (name === "bot_speaking_started") setVoiceStatus("bot_speaking");

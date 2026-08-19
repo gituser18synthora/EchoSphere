@@ -148,13 +148,23 @@ def tenant_analytics(
         func.date(ConversationSession.started_at) >= start,
         func.date(ConversationSession.started_at) <= end,
     )
+    # The character totals join back to the sessions with the SAME filters as
+    # the minute denominator (channel, deletion, session start date) so both
+    # sides of the ratio cover exactly the same calls. usage_events.session_id
+    # holds the voice-runtime id (conversation_sessions.session_id, vs_…), not
+    # the control-plane row id.
     chars_stmt = select(
         UsageEvent.capability, func.coalesce(func.sum(UsageEvent.characters), 0)
+    ).join(
+        ConversationSession,
+        ConversationSession.session_id == UsageEvent.session_id,
     ).where(
         UsageEvent.tenant_id == tid,
         UsageEvent.capability.in_(("stt", "tts")),
-        func.date(UsageEvent.occurred_at) >= start,
-        func.date(UsageEvent.occurred_at) <= end,
+        ConversationSession.channel.in_(("voice", "web")),
+        ConversationSession.is_deleted.is_(False),
+        func.date(ConversationSession.started_at) >= start,
+        func.date(ConversationSession.started_at) <= end,
     ).group_by(UsageEvent.capability)
     if bot_id:
         duration_stmt = duration_stmt.where(ConversationSession.bot_id == bot_id)

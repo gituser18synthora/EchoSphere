@@ -163,6 +163,10 @@ class TestFragmentAggregation:
         assert user_history(brain) == [merged]
         assert [t.text for t in brain._recorder.turns if t.role == "user"] == [merged]
         assert "turn_merged_late_final" in brain._recorder.event_kinds()
+        # The client's live transcript already showed the fragment: the merge
+        # must retract it, or the merged turn repeats the same words on screen.
+        rewinds = [n for n in brain._notified if n.get("type") == "turn_rewound"]
+        assert [r["user_text"] for r in rewinds] == ["मुझे समझ नहीं आ रहा पेमेंट कैसे"]
 
     async def test_clarify_fragment_is_rewound_when_utterance_completes(self):
         # A too-short SIGNAL-LESS fragment gets the canned clarification;
@@ -192,6 +196,14 @@ class TestFragmentAggregation:
         assert user_history(brain) == [merged]
         assert all(m["content"] != clarify_texts[0] for m in brain._history)
         assert "clarify_fragment_merged" in brain._recorder.event_kinds()
+        # The rewound clarify exchange is retracted from the client's live
+        # transcript too — both the fragment and the spoken clarification.
+        rewinds = [n for n in brain._notified if n.get("type") == "turn_rewound"]
+        assert rewinds == [{
+            "type": "turn_rewound",
+            "user_text": "मेरा मतलब,",
+            "bot_text": clarify_texts[0],
+        }]
 
     async def test_resumed_speech_cancels_pending_finalize(self):
         # The caller starts speaking again during the grace window: nothing

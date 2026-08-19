@@ -121,11 +121,16 @@ class SessionRecorder:
     def add_turn(self, turn: TurnRecord) -> None:
         self.turns.append(turn)
 
-    def add_stt_characters(self, text: str) -> None:
-        """Count accepted caller transcript characters, without retaining a second copy."""
-        self.usage["stt_characters"] = int(
-            self.usage.get("stt_characters", 0)
-        ) + len(text)
+    def stt_transcript_characters(self) -> int:
+        """Characters of accepted caller speech, from the final turn list.
+
+        Computed at billing time instead of accumulated per turn: barge-in
+        rewinds and fragment merges pop a user turn and re-run its text as
+        part of a merged turn, and a running counter double-counts exactly
+        those paths. The turn list holds the pre-redaction text, so this is
+        the actual STT output.
+        """
+        return sum(len(t.text or "") for t in self.turns if t.role == "user")
 
     def _redact_for_transcript(self, text: str) -> str:
         """Profile-driven redaction for stored turn text. Falls back to the
@@ -476,6 +481,9 @@ class SessionRecorder:
                 self.session_id, duration,
             )
         if stt_seconds > 0:
+            # Mirrored into the usage dict so the transcript document carries
+            # the same figure the usage event bills.
+            self.usage["stt_characters"] = self.stt_transcript_characters()
             event = _record(
                 capability="stt",
                 provider_code=stt_conf.get("provider") or "sarvam",
@@ -483,7 +491,7 @@ class SessionRecorder:
                 request_id=f"{self.session_id}:stt",
                 requests=int(usage.get("stt_requests") or 1),
                 audio_seconds=stt_seconds.quantize(Decimal("0.001")),
-                characters=int(usage.get("stt_characters") or 0),
+                characters=self.stt_transcript_characters(),
                 usage_source=stt_source,
                 usage_metadata={"basis": stt_basis} if stt_basis else None,
             )

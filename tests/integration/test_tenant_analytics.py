@@ -127,3 +127,74 @@ def test_avg_csat_ignores_unrated_conversations(analytics_tenant):
     csat = _kpi(response.json(), "Avg CSAT")
     assert csat["value"] == "—"
     assert csat["spark"] == [0] * 14
+
+
+def test_character_rates_use_ratio_of_sums_over_call_minutes(analytics_tenant):
+    """STT/TTS characters ÷ total call minutes (never an average of per-call
+    ratios). Deleted sessions and events with no matching session must be
+    excluded from BOTH sides of the ratio, and the KPIs must be present for
+    every tenant user (usage, not cost visibility)."""
+    from shared.models import UsageEvent
+
+    session = get_sessionmaker()()
+    tenant_id = analytics_tenant["tenant_id"]
+    bot_id = analytics_tenant["bot_id"]
+    suffix = uuid.uuid4().hex[:8]
+    now = datetime.combine(date.today(), time(hour=12))
+    try:
+        def voice_session(*, vs: str, duration: int, channel: str = "voice",
+                          deleted: bool = False) -> ConversationSession:
+            return ConversationSession(
+                id=new_id("cv"), session_id=vs, tenant_id=tenant_id,
+                bot_id=bot_id, started_at=now, duration_sec=duration,
+                channel=channel, sentiment="neutral", intents=[],
+                contained=True, status="completed", is_deleted=deleted,
+            )
+
+        def event(*, vs: str, capability: str, characters: int) -> UsageEvent:
+            return UsageEvent(
+                id=new_id("ue"), tenant_id=tenant_id, bot_id=bot_id,
+                session_id=vs, capability=capability, provider_code="sarvam",
+                occurred_at=now, characters=characters,
+            )
+
+        session.add_all([
+            voice_session(vs=f"vs_{suffix}_a", duration=60),
+            voice_session(vs=f"vs_{suffix}_b", duration=120, channel="web"),
+            voice_session(vs=f"vs_{suffix}_del", duration=600, deleted=True),
+        ])
+        session.add_all([
+            event(vs=f"vs_{suffix}_a", capability="stt", characters=300),
+            event(vs=f"vs_{suffix}_b", capability="stt", characters=150),
+            event(vs=f"vs_{suffix}_a", capability="tts", characters=600),
+            event(vs=f"vs_{suffix}_b", capability="tts", characters=300),
+            # Excluded: the deleted session's events, and an event whose
+            # session row does not exist (e.g. a preview outside any call).
+            event(vs=f"vs_{suffix}_del", capability="stt", characters=9999),
+            event(vs=f"vs_{suffix}_orphan", capability="tts", characters=5000),
+        ])
+        session.commit()
+
+        with TestClient(app) as client:
+            response = client.get(
+                f"{API}/analytics/tenant?days=30&botId={bot_id}",
+                headers=analytics_tenant["headers"],
+            )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        # 450 STT chars / 3 min; 900 TTS chars / 3 min.
+        assert _kpi(payload, "Avg STT Input Characters / Min")["value"] == "150.0"
+        assert _kpi(payload, "Avg TTS Output Characters / Min")["value"] == "300.0"
+        assert payload["data"]["characterUsage"] == {
+            "sttInputCharactersPerMin": 150.0,
+            "ttsOutputCharactersPerMin": 300.0,
+            "sttInputCharacters": 450,
+            "ttsOutputCharacters": 900,
+            "relevantCallMinutes": 3.0,
+        }
+    finally:
+        session.rollback()
+        session.execute(delete(UsageEvent).where(UsageEvent.tenant_id == tenant_id))
+        session.commit()
+        session.close()

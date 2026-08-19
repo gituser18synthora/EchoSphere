@@ -234,6 +234,34 @@ _LLM_PAUSE_FLUSH_SECONDS = 0.6
 # this deadline the attempt is abandoned exactly like a pre-first-token
 # stream failure: one bounded retry, then the fallback/canned reply.
 _LLM_FIRST_TOKEN_DEADLINE_S = 3.0
+# How long a character-capped reply may keep silently draining its LLM stream
+# to reach the final chunk. Provider-reported token usage arrives ONLY in that
+# last chunk (stream_options.include_usage); closing mid-stream discards it
+# and downgrades the request to estimated billing. The completion budget is
+# already token-capped, so the remainder is small — a stalled provider is
+# abandoned after this bound and the estimate fallback applies as before.
+_LLM_TRUNCATION_DRAIN_S = 2.0
+
+
+async def _drain_llm_stream(stream) -> None:
+    """Consume the tail of a character-capped LLM stream without speaking it,
+    so the final usage chunk is observed, then close the stream."""
+    try:
+
+        async def _consume() -> None:
+            async for _ in stream:
+                pass
+
+        await asyncio.wait_for(_consume(), timeout=_LLM_TRUNCATION_DRAIN_S)
+    except Exception:  # noqa: BLE001 — usage capture is best effort
+        pass
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:  # noqa: BLE001
+                pass
 # End-of-turn stabilization: once the turn controller closes the user's turn
 # (or an orphan final arrives with no open turn), wait this long for straggler
 # STT finals before running the LLM — Sarvam finalizes per VAD flush, so one
@@ -467,6 +495,15 @@ class ConversationBrain(FrameProcessor):
         # enforcement. Keep Stage A active even on older bots with no authored
         # goal policy/intents so off-domain turns cannot bypass scope routing.
         has_configured_guardrails = bool(self._guardrails.effective.profile_id)
+        # Defense in depth for the same request: Stage A redirects off-goal
+        # turns only when its decision arrives — a timed-out or disabled
+        # engine falls back to plain generation with scope defaulting to
+        # in-scope. A guardrailed bot therefore states its scope in the
+        # immutable prompt too, so the fallback path still declines clearly
+        # unrelated requests instead of answering them.
+        self._scope_instruction = (
+            self._scope_adherence_block() if has_configured_guardrails else ""
+        )
         engine_enabled = bool(
             llm_settings_early.get("goal_engine_enabled", True)
         ) and (
@@ -560,6 +597,7 @@ class ConversationBrain(FrameProcessor):
             + _VOICE_STYLE_INSTRUCTION
             + memory_block
             + context_block
+            + self._scope_instruction
         )
         # A verification workflow may establish caller facts after this
         # immutable call-start prompt is built. The refreshed verified block
@@ -842,7 +880,7 @@ class ConversationBrain(FrameProcessor):
                 "late_transcript_merge" if resumed_before_reply else "barge_in"
             )
             if resumed_before_reply:
-                self._rollback_open_turn()
+                await self._rollback_open_turn()
             await self.push_frame(frame, direction)
             # A barge-in during a transfer/stop announcement must not lose the
             # control event — the caller already asked for it.
@@ -1442,12 +1480,14 @@ class ConversationBrain(FrameProcessor):
             return
         await self._consume_pending_turn()
 
-    def _rollback_open_turn(self) -> None:
+    async def _rollback_open_turn(self) -> None:
         """Rewind the user turn whose generation was just cancelled.
 
         Its text returns to the FRONT of the pending buffer and its history/
         transcript entries are removed, so the merged turn records exactly one
-        complete user message.
+        complete user message. The client is told about the retraction: its
+        live transcript already rendered this fragment, and without the event
+        the merged turn re-displays the same words as a second bubble.
         """
         text, record = self._open_turn_text, self._open_turn_record
         self._open_turn_text = self._open_turn_record = None
@@ -1460,8 +1500,9 @@ class ConversationBrain(FrameProcessor):
             turns.pop()
         self._pending_segments.insert(0, text)
         self._recorder.add_event("turn_merged_late_final", text=text)
+        await self._notify_client({"type": "turn_rewound", "user_text": text})
 
-    def _merge_clarified_fragment(self, text: str) -> str:
+    async def _merge_clarified_fragment(self, text: str) -> str:
         """Fold a just-clarified fragment into the utterance that completes it.
 
         A too-short fragment ("नहीं,") gets a canned clarification; when the
@@ -1488,6 +1529,13 @@ class ConversationBrain(FrameProcessor):
         if turns and turns[-1] is user_record:
             turns.pop()
         self._recorder.add_event("clarify_fragment_merged", fragment=fragment)
+        # Retract the rewound exchange from the client's live transcript too —
+        # the merged turn is about to re-display the fragment's words.
+        await self._notify_client({
+            "type": "turn_rewound",
+            "user_text": fragment,
+            "bot_text": bot_record.text,
+        })
         return f"{fragment} {text}".strip()
 
     async def _consume_pending_turn(self) -> None:
@@ -1503,12 +1551,12 @@ class ConversationBrain(FrameProcessor):
             # generating): cancel it, rewind the partial user turn and run the
             # combined utterance as one turn.
             await self._cancel_generation("late_transcript_merge")
-            self._rollback_open_turn()
+            await self._rollback_open_turn()
         text = " ".join(self._pending_segments).strip()
         self._pending_segments.clear()
         if not text:
             return
-        text = self._merge_clarified_fragment(text)
+        text = await self._merge_clarified_fragment(text)
         pending_language, self._pending_language = self._pending_language, None
         await self._cancel_generation("new_turn")
         await self._maybe_switch_language(text, pending_language)
@@ -2396,7 +2444,6 @@ class ConversationBrain(FrameProcessor):
             route=decision.kind.value,
         )
         self._recorder.add_turn(turn)
-        self._recorder.add_stt_characters(text)
         self._recorder.add_event(
             "route_decision",
             route=decision.kind.value,
@@ -3385,6 +3432,36 @@ class ConversationBrain(FrameProcessor):
 
     # ── generation ────────────────────────────────────────────────────────
 
+    def _scope_adherence_block(self) -> str:
+        """Immutable scope statement for bots with guardrails configured.
+
+        Derived entirely from the compiled goal policy (use case, goals,
+        configured intents) — never from any specific request pattern — so it
+        is the same platform behavior for every guardrailed bot. Legitimate
+        requests within the bot's purpose are explicitly allowed; the point
+        is only that clearly unrelated asks are declined even when the Goal
+        Engine's per-turn scope decision never arrives.
+        """
+        policy = self._goal_policy
+        goal = (policy.primary_goal() or "").strip()
+        if not goal:
+            return ""
+        lines = [
+            "\n\n# Scope (guardrails)",
+            f"This call exists only to: {goal}.",
+        ]
+        topics = ", ".join(t for t in policy.allowed_topics[:12] if t)
+        if topics:
+            lines.append(f"Topics the caller may raise within it: {topics}.")
+        lines.append(
+            "Answer requests that belong to this purpose normally. Never "
+            "comply with a request clearly unrelated to it (entertainment, "
+            "general knowledge, opinions, services this call does not "
+            "cover): briefly say what you can help with and ask one question "
+            "that returns to the goal, in the caller's language."
+        )
+        return "\n".join(lines)
+
     def _language_instruction(self) -> str:
         """Per-turn system-prompt suffix binding the reply to the caller's
         CURRENT language. Only the reply language changes — the role, business
@@ -3496,8 +3573,8 @@ class ConversationBrain(FrameProcessor):
             self._static_system
             + self._verified_runtime_context_block
             + extra_system
-            + self._language_instruction()
             + f"\n\n# Voice response length\nKeep the spoken reply concise: usually one or two short sentences and never more than {self._llm_max_characters} characters. Preserve required confirmations, workflow instructions, and tool results; omit nonessential detail."
+            + self._language_instruction()
         )
         kb_sources: list[dict] = []
         retrieval_ms = 0.0
@@ -3877,9 +3954,7 @@ class ConversationBrain(FrameProcessor):
                         used = sum(len(part) for part in reply_parts)
                         remaining = self._llm_max_characters - used
                         if remaining <= 0:
-                            close = getattr(stream, "aclose", None)
-                            if close is not None:
-                                await close()
+                            await _drain_llm_stream(stream)
                             if held:
                                 _guard_check()
                                 await _release_held(force=True)
@@ -3897,9 +3972,7 @@ class ConversationBrain(FrameProcessor):
                             if candidate:
                                 reply_parts.append(candidate)
                                 await _forward(candidate)
-                            close = getattr(stream, "aclose", None)
-                            if close is not None:
-                                await close()
+                            await _drain_llm_stream(stream)
                             if held:
                                 _guard_check()
                                 await _release_held(force=True)

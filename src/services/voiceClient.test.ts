@@ -165,6 +165,19 @@ describe("VoiceClient message handling", () => {
     expect(onBotText).toHaveBeenCalledWith("जी", "2026-08-05T07:57:39.728901Z");
   });
 
+  it("turn_rewound surfaces the retracted user (and optional bot) text", () => {
+    const onTurnRewound = vi.fn();
+    const client = new VoiceClient({ onTurnRewound });
+
+    client.handleMessage(JSON.stringify({ type: "turn_rewound", user_text: "हाँ।" }));
+    client.handleMessage(JSON.stringify({
+      type: "turn_rewound", user_text: "मेरा मतलब,", bot_text: "कृपया पूरा बताइए।",
+    }));
+
+    expect(onTurnRewound).toHaveBeenNthCalledWith(1, "हाँ।", undefined);
+    expect(onTurnRewound).toHaveBeenNthCalledWith(2, "मेरा मतलब,", "कृपया पूरा बताइए।");
+  });
+
   it("session_config is stored and surfaced with the announced sample rate", () => {
     const { client, events } = clientWithQueue();
     client.handleMessage(

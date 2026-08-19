@@ -38,6 +38,10 @@ export interface VoiceClientCallbacks {
   onTranscript?: (text: string, at?: string) => void;
   /** Bot reply text (what the TTS is speaking). */
   onBotText?: (text: string, at?: string) => void;
+  /** The runtime retracted the newest turn(s): a straggler STT final (or a
+      clarified fragment) merged into one turn, and the merged turn is about
+      to re-announce these words. Remove the matching trailing bubbles. */
+  onTurnRewound?: (userText: string, botText?: string) => void;
   /** The conversation switched to following this language. */
   onLanguage?: (locale: string) => void;
   /** Runtime lifecycle events. */
@@ -227,7 +231,8 @@ export class VoiceClient {
   handleMessage(data: unknown): void {
     if (typeof data === "string") {
       let msg: { type?: string; text?: string; name?: string; message?: string;
-                 language?: string; sampleRate?: number; at?: string } & VoiceSessionConfig;
+                 language?: string; sampleRate?: number; at?: string;
+                 user_text?: string; bot_text?: string } & VoiceSessionConfig;
       try {
         msg = JSON.parse(data) as typeof msg;
       } catch {
@@ -240,6 +245,8 @@ export class VoiceClient {
       } else if (msg.type === "bot_text" && msg.text) {
         this.suppressAudio = false; // a new reply is definitely underway
         this.callbacks.onBotText?.(msg.text, msg.at);
+      } else if (msg.type === "turn_rewound" && msg.user_text) {
+        this.callbacks.onTurnRewound?.(msg.user_text, msg.bot_text);
       } else if (msg.type === "language" && msg.language) {
         this.callbacks.onLanguage?.(msg.language);
       } else if (msg.type === "error" && msg.message) {
