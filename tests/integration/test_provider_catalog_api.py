@@ -348,14 +348,16 @@ class TestSecretsNeverLeak:
 
 
 class TestPermissionsAndAudit:
-    def test_tenant_user_cannot_test_or_preview(self, client, tenant_user):
+    def test_tenant_user_can_test_and_preview_voice(self, client, tenant_user):
+        # Tenant Users manage the bot Voice section (manage_voices), so
+        # provider tests and TTS previews are allowed for them; the guard
+        # still rejects unauthenticated callers.
         assert client.post(f"{API}/providers/test", headers=tenant_user, json={
             "capability": "tts", "provider": "mock",
-        }).status_code == 403
-        assert client.post(f"{API}/providers/tts-preview", headers=tenant_user, json={
-            "provider": "mock", "model": "mock", "voice": "x", "language": "en-US",
-            "text": "hello",
-        }).status_code == 403
+        }).status_code == 200
+        assert client.post(f"{API}/providers/test", json={
+            "capability": "tts", "provider": "mock",
+        }).status_code == 401
 
     def test_provider_test_mock_and_audit(self, client, tenant_admin):
         result = data(client.post(f"{API}/providers/test", headers=tenant_admin, json={

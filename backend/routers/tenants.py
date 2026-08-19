@@ -604,7 +604,7 @@ def _get_or_create_settings(db: Session, tenant_id: str, user: User) -> TenantSe
 @router.get("/tenant/settings")
 def get_tenant_settings(
     tenant_id: str | None = Query(None, alias="tenantId"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("settings.manage", "tenants.manage")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)

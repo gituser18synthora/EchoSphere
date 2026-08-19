@@ -71,7 +71,11 @@ function todayLocal() {
 const HIGH_COST_USD = 0.5;
 
 export default function Conversations() {
-  const money = useDisplayCurrency();
+  const { hasPermission } = useApp();
+  // Server-enforced: without costs.view the API nulls every cost field, so
+  // this only removes the empty affordances.
+  const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
+  const money = useDisplayCurrency(showCosts);
   const [open, setOpen] = useState<Conversation | null>(null);
   const [filter, setFilter] = useState("all");
   const [botFilter, setBotFilter] = useState("all");
@@ -116,7 +120,7 @@ export default function Conversations() {
           <p className="page-sub">QA every call: transcript, trace, sentiment and scorecards — turn findings into fixes</p>
         </div>
         <div className="page-actions">
-          {flags.tenantCostVisibility && (
+          {showCosts && (
             <label className="row gap-6">
               <span className="t-micro">Currency</span>
               <CurrencySelect state={money} />
@@ -239,14 +243,14 @@ export default function Conversations() {
             // Total on top, backend-derived per-minute rate under it (the
             // client only renders the rate, per the no-client-side-cost-math
             // rule above) — one column keeps the table compact.
-            ...(flags.tenantCostVisibility ? [{
+            ...(showCosts ? [{
               key: "cost", header: `Cost (${money.currency})`, align: "right" as const,
-              sortValue: (c: Conversation) => c.costUsd,
+              sortValue: (c: Conversation) => c.costUsd ?? 0,
               render: (c: Conversation) => (
                 <div className="col gap-2" style={{ alignItems: "flex-end" }}>
-                  <span className={`t-num nowrap ${c.costUsd > HIGH_COST_USD ? "t-bad t-strong" : ""}`}
-                        title={c.costUsd > HIGH_COST_USD ? "Unusually high for one call — open the cost breakdown" : undefined}>
-                    Total: <span className="t-strong">{money.display(c.costUsd, { precise: true })}</span>
+                  <span className={`t-num nowrap ${(c.costUsd ?? 0) > HIGH_COST_USD ? "t-bad t-strong" : ""}`}
+                        title={(c.costUsd ?? 0) > HIGH_COST_USD ? "Unusually high for one call — open the cost breakdown" : undefined}>
+                    Total: <span className="t-strong">{money.display(c.costUsd ?? 0, { precise: true })}</span>
                   </span>
                   <span className="t-micro nowrap">
                     Per min: {c.costPerMinuteUsd != null
@@ -269,7 +273,8 @@ export default function Conversations() {
 }
 
 function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversation | null; money: DisplayCurrencyState; onClose: () => void; onUpdate: (c: Conversation) => void }) {
-  const { toast } = useApp();
+  const { toast, hasPermission } = useApp();
+  const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
   const navigate = useNavigate();
   const [tab, setTab] = useState("transcript");
   const [transcriptBusy, setTranscriptBusy] = useState(false);
@@ -375,7 +380,7 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
       <div className="col gap-16">
         <RecordingRow
           conversationId={conv.id}
-          costUsd={conv.costUsd}
+          costUsd={showCosts ? conv.costUsd : null}
           money={money}
           recording={recording}
           loading={detailQ.loading}
@@ -383,8 +388,8 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
 
         <AiSummarySection summary={detailQ.data?.summary ?? null} loading={detailQ.loading} />
 
-        {flags.tenantCostVisibility && (
-          <CostBreakdown cost={cost} costUsd={conv.costUsd} money={money} loading={detailQ.loading} />
+        {showCosts && (
+          <CostBreakdown cost={cost} costUsd={conv.costUsd ?? 0} money={money} loading={detailQ.loading} />
         )}
 
         {!conv.contained && conv.escalationReason && (
@@ -466,7 +471,7 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
                     {s.apiCalls?.length ? s.apiCalls.map((a) => `${a.name} (${a.ok ? `${a.ms}ms` : "failed"})`).join("; ") : "no API calls"}
                   </span>
                   <span className="row gap-4"><Icon name="clock" size={12} style={{ color: "var(--ink-3)" }} />{s.latencyMs}ms</span>
-                  {flags.tenantCostVisibility && s.costUsd ? <span className="row gap-4 t-num"><Icon name="dollar" size={12} style={{ color: "var(--ink-3)" }} />{money.display(s.costUsd, { precise: true })}</span> : null}
+                  {showCosts && s.costUsd ? <span className="row gap-4 t-num"><Icon name="dollar" size={12} style={{ color: "var(--ink-3)" }} />{money.display(s.costUsd, { precise: true })}</span> : null}
                 </div>
                 {s.apiCalls?.some((a) => !a.ok) && (
                   <div className="callout callout-critical" style={{ padding: "8px 10px", fontSize: 12 }}>
@@ -699,7 +704,8 @@ function CostBreakdown({ cost, costUsd, money, loading }: {
 
 function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
   conversationId: string;
-  costUsd: number;
+  /** Null when the viewer may not see costs — the tag is simply not shown. */
+  costUsd: number | null;
   money: DisplayCurrencyState;
   recording: ConversationRecording | null;
   loading: boolean;
@@ -805,7 +811,9 @@ function RecordingRow({ conversationId, costUsd, money, recording, loading }: {
       )}
       {/* Same backend total as the list row and the breakdown, rendered in the
           selected display currency instead of a hardcoded dollar amount. */}
-      <span className="tag t-num" style={{ flexShrink: 0 }}>{money.display(costUsd, { precise: true })}</span>
+      {costUsd != null && (
+        <span className="tag t-num" style={{ flexShrink: 0 }}>{money.display(costUsd, { precise: true })}</span>
+      )}
     </div>
   );
 }

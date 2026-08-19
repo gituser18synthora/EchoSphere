@@ -92,6 +92,29 @@ class TestWorkflowPriority:
         assert decision.kind == RouteKind.WORKFLOW
         assert decision.action == "appointment_booking"
 
+    def test_modifier_inside_sample_still_routes_to_workflow(self):
+        router = make_router(
+            intents=[{
+                "name": "booking_confirmation",
+                "samples": [
+                    "is my booking confirmed",
+                    "booking confirmation",
+                    "confirm my booking",
+                    "booking status",
+                    "is my reservation confirmed",
+                    "check my booking",
+                ],
+                "route": "workflow:oyo_booking_support_journey",
+                "confidence_threshold": 0.05,
+            }]
+        )
+
+        decision = router.decide("I want to confirm my upcoming booking.")
+
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.intent == "booking_confirmation"
+        assert decision.action == "oyo_booking_support_journey"
+
     def test_configured_yes_beats_generic_smalltalk(self):
         router = make_router(
             intents=[{
@@ -285,6 +308,30 @@ class TestUserSignalClassifier:
     def test_neutral_text_has_no_signal(self):
         assert self._signal("mausam accha hai aaj") is None
         assert self._signal("पता नहीं") is None  # "don't know" ≠ refusal
+
+    def test_repeated_affirmation_is_one_affirm(self):
+        # Natural speech repeats confirmations; they must never become
+        # "unknown" utterances that earn a canned clarification.
+        for text in ("yes yes", "Yes yes.", "yeah yeah", "okay okay",
+                     "haan haan", "हाँ हाँ", "theek hai theek hai",
+                     "yes, yes please", "ok thanks"):
+            assert self._signal(text) == "affirm", text
+
+    def test_repeated_negation_is_one_refusal(self):
+        for text in ("no no", "No no.", "No. No.", "no no no",
+                     "nahi nahi", "नहीं नहीं", "no, no thanks"):
+            assert self._signal(text) == "refusal", text
+
+    def test_repetition_does_not_overmatch(self):
+        assert self._signal("yes yesterday") is None
+        assert self._signal("no news is good news") is None
+
+    def test_repeated_short_confirmations_route_to_chat(self):
+        router = make_router()
+        for text in ("Yes yes.", "No no."):
+            decision = router.decide(text)
+            assert decision.kind == RouteKind.CHAT, text
+            assert decision.reason == "short_signal", text
 
     def test_workflow_decision_carries_signal(self):
         router = make_router()

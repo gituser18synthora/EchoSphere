@@ -13,7 +13,6 @@ from backend.core.deps import (
     get_current_user,
     is_super_admin,
     require_permission,
-    require_tenant_admin,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
@@ -178,7 +177,7 @@ def update_knowledge(
     source_id: str,
     body: UpdateKnowledgeRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     row = _get_source_checked(db, source_id, user)
@@ -211,7 +210,7 @@ def delete_knowledge(
     source_id: str,
     request: Request,
     hard: bool = Query(False),
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_knowledge", "knowledge.manage")),
     db: Session = Depends(get_db),
 ):
     row = _get_source_checked(db, source_id, user)

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.deps import (
     assert_tenant_access,
-    get_current_user,
+    require_permission,
     require_super_admin,
     resolve_tenant_id,
 )
@@ -81,7 +81,9 @@ def usage_summary(
     days: int = Query(30, ge=1, le=365),
     tenant_id: str | None = Query(None, alias="tenantId"),
     bot_id: str | None = Query(None, alias="botId"),
-    user: User = Depends(get_current_user),
+    # Every field here is financial (costUsd/chargeUsd per capability and
+    # provider/model) — costs.view is required, not just membership.
+    user: User = Depends(require_permission("costs.view")),
     db: Session = Depends(get_db),
 ):
     tid = resolve_tenant_id(user, tenant_id)
@@ -210,7 +212,7 @@ def platform_usage(
 @router.get("/usage/sessions/{session_id}")
 def session_usage(
     session_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("costs.view")),
     db: Session = Depends(get_db),
 ):
     """Per-call cost breakdown: every usage event of one voice session.
@@ -281,13 +283,15 @@ def session_usage(
 
 @router.get("/currency/rates")
 def currency_rates(
-    user: User = Depends(get_current_user),
+    # The selector this powers only exists on cost-bearing views, and exchange
+    # rates are pricing-adjacent data — costs.view gates it like the rest.
+    user: User = Depends(require_permission("costs.view")),
     db: Session = Depends(get_db),
 ):
     """Active display currencies + the USD rates currently in force.
 
-    Read-only and safe for every authenticated role: it powers the display
-    currency selector. Managing rates stays super-admin-only via /master.
+    Powers the display-currency selector on cost views. Managing rates stays
+    super-admin-only via /master.
     """
     currencies = active_display_currencies(db)
     rates = effective_rates_from_usd(db)

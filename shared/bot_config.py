@@ -492,7 +492,18 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             ).limit(1)
         ).scalar_one_or_none()
         if greeting_prompt is not None and greeting_prompt.versions:
-            variants = greeting_prompt.versions[0].variants or []
+            # Keep an already-published greeting live while a newer version is
+            # being drafted or reviewed.  ``versions`` is ordered newest-first,
+            # so blindly taking index zero bypasses the prompt approval flow.
+            target = (
+                greeting_prompt.published_version
+                or greeting_prompt.active_version
+            )
+            version = next(
+                (v for v in greeting_prompt.versions if v.version == target),
+                None,
+            )
+            variants = (version.variants if version is not None else None) or []
             for variant in variants:
                 if variant.get("content"):
                     greeting = variant["content"]

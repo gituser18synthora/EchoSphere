@@ -20,6 +20,7 @@ from backend.core.audit import record_audit
 from backend.core.date_filters import parse_date_range
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     get_current_user,
     require_tenant_admin,
     resolve_tenant_id,
@@ -112,8 +113,10 @@ def list_conversations(
         .limit(params.page_size)
     ).all()
     names = _bot_names(db, [c.bot_id for c in rows])
+    include_costs = can_view_costs(user)
     return paginated(
-        [serialize_conversation(c, bot_name=names.get(c.bot_id, "—")) for c in rows],
+        [serialize_conversation(c, bot_name=names.get(c.bot_id, "—"),
+                                include_costs=include_costs) for c in rows],
         page=params.page, page_size=params.page_size, total=total,
     )
 
@@ -139,11 +142,16 @@ async def get_conversation(
     if session_id and not c.session_id:
         c.session_id = session_id
         db.commit()
+    include_costs = can_view_costs(user)
     return ok(serialize_conversation(
         c, bot_name=names.get(c.bot_id, "—"), transcript=transcript,
         recording=recording_descriptor(c, doc),
-        cost_breakdown=_cost_breakdown(db, c, session_id, currency),
+        # The breakdown is not even computed for viewers without costs.view.
+        cost_breakdown=(
+            _cost_breakdown(db, c, session_id, currency) if include_costs else None
+        ),
         summary=_ai_summary(db, c),
+        include_costs=include_costs,
     ))
 
 
@@ -303,6 +311,7 @@ async def create_conversation(
         serialize_conversation(
             c, bot_name=names.get(c.bot_id, "—"),
             transcript=[t.model_dump(exclude_none=True) for t in body.transcript],
+            include_costs=can_view_costs(user),
         )
     )
 

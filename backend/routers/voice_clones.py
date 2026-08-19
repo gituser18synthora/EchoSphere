@@ -35,7 +35,6 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     is_super_admin,
     require_permission,
-    require_tenant_member,
     resolve_tenant_id,
 )
 from backend.core.provider_catalog import (
@@ -400,7 +399,7 @@ def _invalidate_configs() -> None:
 
 @router.get("/voice-clones/config")
 def voice_clone_config(
-    user: User = Depends(require_tenant_member),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     """Cloning capability per TTS provider + upload constraints (single source
@@ -440,7 +439,7 @@ def voice_clone_config(
 def list_voice_clones(
     request_tenant_id: str | None = Query(None, alias="tenantId"),
     include_inactive: bool = Query(True, alias="includeInactive"),
-    user: User = Depends(require_tenant_member),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     tenant_id = resolve_tenant_id(user, request_tenant_id)
@@ -458,7 +457,7 @@ def list_voice_clones(
 @router.get("/voice-clones/{voice_id}")
 def get_voice_clone(
     voice_id: str,
-    user: User = Depends(require_tenant_member),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     row = _get_clone_checked(db, voice_id, user)
@@ -470,7 +469,7 @@ def get_voice_clone_audio(
     voice_id: str,
     audio_id: str,
     download: bool = Query(False),
-    user: User = Depends(require_tenant_member),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     """Stream a stored source-audio sample. Same visibility rules as the clone
@@ -507,7 +506,7 @@ async def create_voice_clone(
     request_tenant_id: str | None = Form(None, alias="tenantId"),
     samples_meta: str | None = Form(None, alias="samplesMeta"),
     files: list[UploadFile] = File(...),
-    user: User = Depends(require_permission("manage_voices")),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     tenant_id = resolve_tenant_id(user, request_tenant_id)
@@ -746,7 +745,7 @@ def update_voice_clone(
     voice_id: str,
     body: CloneUpdateRequest,
     request: Request,
-    user: User = Depends(require_permission("manage_voices")),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     """Local metadata only — the provider voice itself is never renamed here."""
@@ -805,7 +804,7 @@ def set_voice_clone_status(
     voice_id: str,
     body: CloneStatusRequest,
     request: Request,
-    user: User = Depends(require_permission("manage_voices")),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     row = _get_clone_checked(db, voice_id, user)
@@ -830,7 +829,7 @@ def set_voice_clone_status(
 async def delete_voice_clone(
     voice_id: str,
     request: Request,
-    user: User = Depends(require_permission("manage_voices")),
+    user: User = Depends(require_permission("manage_voice_clones")),
     db: Session = Depends(get_db),
 ):
     """Delete the provider voice FIRST, then soft-delete the local record —

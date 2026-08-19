@@ -211,11 +211,17 @@ B1_EDGES = [
     E("n_msg_cancel_dispute", "n_api_ivr_esc"),
     E("n_api_ivr_esc", "n_handover_esc"),
 
-    # hub
-    E("n_hub", "n_msg_hold",
-      "property/with the property/hotel/confirm with property/property confirmation/check-in confirmation/checkin confirmation/honor/honour/property?/hotel?"),
+    # hub — the details edge comes FIRST: a question the hub has no literal
+    # token for ("what is my checking date?", "cancellation policy?") must
+    # exit to LLM Q&A over the verified facts, never start the property call
+    # (equal-score question-signal edges resolve in authored order).
     E("n_hub", "n_msg_details_exit",
-      "details/booking details/check-in date/checkout date/check-out/payment/amount pending/hotel name/dates/details?/date?/dates?"),
+      "details/booking details/check-in date/check in date/checking date/"
+      "checkout date/check-out/payment/amount pending/hotel name/dates/"
+      "occupancy/चेक-इन डेट/चेक इन डेट/डेट क्या/होटल का नाम/पेमेंट/कितना/"
+      "details?/date?/dates?"),
+    E("n_hub", "n_msg_hold",
+      "property/with the property/hotel/confirm with property/property confirmation/check-in confirmation/checkin confirmation/honor/honour/प्रॉपर्टी/होटल से/property?/hotel?"),
     E("n_hub", "n_cond_email",
       "voucher/booking voucher/send voucher/email the voucher/confirmation email/voucher?/email?"),
     E("n_hub", "n_msg_sysconfirm",
@@ -239,11 +245,13 @@ B1_EDGES = [
     E("n_msg_voucher_ok", "n_hub_more"),
     E("n_msg_voucher_fail", "n_hub_more"),
 
-    # anything-else hub
-    E("n_hub_more", "n_msg_hold",
-      "property/hotel/confirm with property/check-in confirmation/property?/hotel?"),
+    # anything-else hub — details first, same rationale as n_hub above.
     E("n_hub_more", "n_msg_details_exit",
-      "details/booking details/dates/payment/hotel name/details?/date?"),
+      "details/booking details/dates/payment/hotel name/check-in date/"
+      "check in date/checking date/checkout date/चेक-इन डेट/डेट क्या/"
+      "होटल का नाम/पेमेंट/details?/date?"),
+    E("n_hub_more", "n_msg_hold",
+      "property/hotel/confirm with property/check-in confirmation/प्रॉपर्टी/होटल से/property?/hotel?"),
     E("n_hub_more", "n_cond_email", "voucher/email/voucher?"),
     E("n_hub_more", "n_api_dispo",
       "no/nothing/nothing else/that's all/thanks/thank you/bye/nahi/नहीं/bas/बस"),

@@ -9,7 +9,7 @@ from backend.core.audit import record_audit
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
-    require_tenant_admin,
+    require_permission,
     resolve_tenant_id,
 )
 from shared.errors import ApiError, NotFoundError
@@ -181,7 +181,7 @@ def save_bot_workflow(
     bot_id: str,
     body: SaveWorkflowRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_workflows", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)

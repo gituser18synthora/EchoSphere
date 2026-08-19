@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.core.deps import get_current_user, require_super_admin, resolve_tenant_id
+from backend.core.deps import (
+    can_view_costs,
+    get_current_user,
+    require_super_admin,
+    resolve_tenant_id,
+)
 from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import (
@@ -194,22 +199,30 @@ def tenant_analytics(
 
     recommendations = _tenant_recommendations(db, tid)
 
-    return ok({
-        "kpis": [
-            _kpi("Total calls", f"{total_calls:,}", _delta(total_calls, prev_calls),
-                 calls_series[-14:], "up-good"),
-            _kpi("Containment rate", f"{containment}%",
-                 _delta(containment, prev_containment), rate_series[-14:], "up-good"),
-            _kpi("Escalations", f"{total_escalations:,}",
-                 _delta(total_escalations, prev_escalations),
-                 [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
-            _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
-                 [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
+    # Financial KPIs and the cost series are only served to roles holding
+    # costs.view — the API response is the boundary, not hidden UI cards.
+    include_costs = can_view_costs(user)
+    kpis = [
+        _kpi("Total calls", f"{total_calls:,}", _delta(total_calls, prev_calls),
+             calls_series[-14:], "up-good"),
+        _kpi("Containment rate", f"{containment}%",
+             _delta(containment, prev_containment), rate_series[-14:], "up-good"),
+        _kpi("Escalations", f"{total_escalations:,}",
+             _delta(total_escalations, prev_escalations),
+             [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
+        _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
+             [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
+    ]
+    if include_costs:
+        kpis += [
             _kpi("AI cost", f"${ai_cost:,.0f}", _delta(ai_cost, prev_ai_cost),
                  [round(daily.get(d, {}).get("llm", 0)) for d in dates][-14:], "down-good"),
             _kpi("Avg cost / call", f"${cost_per_call:.3f}", None,
                  calls_series[-14:], "down-good"),
-        ],
+        ]
+
+    return ok({
+        "kpis": kpis,
         "callsSeries": [
             {"t": _label(d), "calls": calls_series[i], "contained": contained_series[i]}
             for i, d in enumerate(dates)
@@ -242,7 +255,7 @@ def tenant_analytics(
                 "telephony": round(daily.get(d, {}).get("telephony", 0), 2),
             }
             for d in dates
-        ],
+        ] if include_costs else [],
         "recommendations": recommendations,
     })
 

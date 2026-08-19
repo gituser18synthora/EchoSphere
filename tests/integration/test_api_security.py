@@ -97,13 +97,17 @@ class TestTenantIsolationOverREST:
         )
         assert response.status_code == 404
 
-    def test_tenant_user_cannot_upload(self, client, tenant_user, control_plane):
+    def test_tenant_user_can_upload_to_own_tenant_kb(self, client, tenant_user, control_plane):
+        # Tenant Users manage the tenant's shared knowledge (they hold
+        # upload_knowledge_documents) — the guard must not 403 them. Tenant
+        # isolation is covered by the cross-tenant tests above.
+        kb_id = control_plane.knowledge_source("tn-001")
         response = client.post(
-            "/api/v1/knowledge/ks-01/documents",
+            f"/api/v1/knowledge/{kb_id}/documents",
             headers=tenant_user,
             files={"file": ("a.txt", b"hello", "text/plain")},
         )
-        assert response.status_code == 403
+        assert response.status_code not in (401, 403), response.text
 
     def test_voice_session_for_foreign_bot_404(self, client, tenant_admin, control_plane):
         response = client.post(

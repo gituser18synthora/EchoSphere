@@ -8,6 +8,7 @@ import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { ReportExportControls } from "@/components/ReportExportControls";
 import { CurrencySelect, useDisplayCurrency } from "@/components/CurrencyDisplay";
+import { isCostLabel } from "@/services/money";
 import type { ReportType } from "@/services/reportDownload";
 
 const CAPABILITY_LABELS: [key: string, label: string][] = [
@@ -28,11 +29,17 @@ function usageQuantity(summary: UsageSummary, key: string): string {
 export default function Analytics() {
   const [range, setRange] = useState(30);
   const [reportType, setReportType] = useState<ReportType>("usage");
-  const a = useAsync(() => getTenantAnalytics(range), [range]);
-  const usage = useAsync(() => getUsageSummary(range), [range]);
-  const money = useDisplayCurrency();
   const navigate = useNavigate();
-  const { user } = useApp();
+  const { user, hasPermission } = useApp();
+  // Server-enforced: without costs.view the analytics response carries no
+  // cost KPIs/series and /usage/summary is 403 — so it is never requested.
+  const showCosts = hasPermission("costs.view");
+  const a = useAsync(() => getTenantAnalytics(range), [range]);
+  const usage = useAsync(
+    () => (showCosts ? getUsageSummary(range) : Promise.resolve(null)),
+    [range, showCosts],
+  );
+  const money = useDisplayCurrency(showCosts);
 
   if (a.error) return <ErrorState message={a.error} onRetry={a.reload} />;
 
@@ -57,7 +64,7 @@ export default function Analytics() {
               style={{ minWidth: 112 }}
             >
               <option value="usage">Usage</option>
-              <option value="ai_cost">AI Cost</option>
+              {showCosts && <option value="ai_cost">AI Cost</option>}
             </select>
           </label>
           <ReportExportControls reportType={reportType} filters={{ days: range }} />
@@ -66,11 +73,15 @@ export default function Analytics() {
 
       <div className="grid grid-6">
         {a.loading || !a.data
-          ? Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
-          : a.data.kpis.map((k) => <KpiCard key={k.label} {...k} />)}
+          ? Array.from({ length: showCosts ? 6 : 4 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
+          : a.data.kpis
+              // Backend already omits these without costs.view — never render
+              // a financial card even from a stale payload.
+              .filter((k) => showCosts || !isCostLabel(k.label))
+              .map((k) => <KpiCard key={k.label} {...k} />)}
       </div>
 
-      {usage.data && (
+      {showCosts && usage.data && (
         <div className="card mt-16">
           <div className="card-header">
             <div className="col gap-2">
@@ -157,24 +168,26 @@ export default function Analytics() {
             </ChartCard>
           </div>
 
-          <div className="grid grid-2 mt-16">
+          <div className={showCosts ? "grid grid-2 mt-16" : "grid mt-16"}>
             <ChartCard title="Top intents" sub="With period-over-period trend">
               <HBarList data={a.data.topIntents.map((t) => ({ label: t.label, value: t.value }))} trend={a.data.topIntents.map((t) => t.trend)} />
             </ChartCard>
-            <ChartCard
-              title="Cost breakdown"
-              sub="Daily USD by component"
-              legend={<Legend items={[
-                { label: "LLM", color: "var(--series-1)" }, { label: "TTS", color: "var(--series-2)" },
-                { label: "STT", color: "var(--series-3)" }, { label: "Telephony", color: "var(--series-4)" },
-              ]} />}
-            >
-              <LineChart data={a.data.costSeries} x="t" height={230} yFmt={(v) => `$${fmtNum(v)}`}
-                series={[
-                  { key: "llm", label: "LLM" }, { key: "tts", label: "TTS" },
-                  { key: "stt", label: "STT" }, { key: "telephony", label: "Telephony" },
-                ]} />
-            </ChartCard>
+            {showCosts && (
+              <ChartCard
+                title="Cost breakdown"
+                sub="Daily USD by component"
+                legend={<Legend items={[
+                  { label: "LLM", color: "var(--series-1)" }, { label: "TTS", color: "var(--series-2)" },
+                  { label: "STT", color: "var(--series-3)" }, { label: "Telephony", color: "var(--series-4)" },
+                ]} />}
+              >
+                <LineChart data={a.data.costSeries} x="t" height={230} yFmt={(v) => `$${fmtNum(v)}`}
+                  series={[
+                    { key: "llm", label: "LLM" }, { key: "tts", label: "TTS" },
+                    { key: "stt", label: "STT" }, { key: "telephony", label: "Telephony" },
+                  ]} />
+              </ChartCard>
+            )}
           </div>
 
           <div className="card mt-16">

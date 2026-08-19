@@ -46,6 +46,16 @@ function Guard({ roles, children }: { roles: Role[]; children: React.ReactElemen
   return children;
 }
 
+/** Permission-gated route (UI affordance — the API enforces the same
+ *  permission server-side). Redirects like Guard does for a role mismatch. */
+function Require({ perm, children }: { perm: string; children: React.ReactElement }) {
+  const { user, hasPermission } = useApp();
+  if (!user) return <Navigate to="/login" replace />;
+  if (!hasPermission(perm))
+    return <Navigate to={user.role === "super_admin" ? "/admin" : "/t"} replace />;
+  return children;
+}
+
 export default function App() {
   const { user } = useApp();
   return (
@@ -80,14 +90,14 @@ export default function App() {
         <Route path="bots/:botId" element={<Studio />} />
         <Route path="bots/:botId/:tab" element={<Studio />} />
         <Route path="knowledge" element={<KnowledgeHub />} />
-        <Route path="voices" element={<TenantVoices />} />
+        <Route path="voices" element={<Require perm="manage_voice_clones"><TenantVoices /></Require>} />
         <Route path="workflows" element={<TenantWorkflows />} />
-        <Route path="channels" element={<Channels />} />
+        <Route path="channels" element={<Require perm="manage_channels"><Channels /></Require>} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="conversations" element={<Conversations />} />
-        <Route path="team" element={<Team />} />
-        <Route path="integrations" element={<Integrations />} />
-        <Route path="settings" element={<Settings />} />
+        <Route path="team" element={<Require perm="team.manage"><Team /></Require>} />
+        <Route path="integrations" element={<Require perm="integrations.manage"><Integrations /></Require>} />
+        <Route path="settings" element={<Require perm="settings.manage"><Settings /></Require>} />
         <Route path="profile" element={<Profile />} />
       </Route>
 

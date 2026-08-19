@@ -12,7 +12,7 @@ vi.mock("@/services/api", () => ({
   simulateAction: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
-  useApp: () => ({ toast: vi.fn() }),
+  useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),
 }));
 
 describe("Bots — create language defaults", () => {

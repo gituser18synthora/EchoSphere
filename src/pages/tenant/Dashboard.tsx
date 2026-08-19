@@ -5,11 +5,16 @@ import { Button, CardSkeleton, ErrorState, Health, KpiCard, StatusChip } from "@
 import { ChartCard, Donut, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
+import { isCostLabel } from "@/services/money";
 
 export default function TenantDashboard() {
   const navigate = useNavigate();
-  const { user } = useApp();
+  const { user, hasPermission } = useApp();
+  // The backend already omits financial KPIs for roles without costs.view;
+  // this filter guarantees a cost card can never render from a stale payload.
+  const showCosts = hasPermission("costs.view");
   const a = useAsync(() => getTenantAnalytics(30), []);
+  const kpis = (a.data?.kpis ?? []).filter((k) => showCosts || !isCostLabel(k.label));
   const botsQ = useAsync(listBots, []);
   const convQ = useAsync(listConversations, []);
 
@@ -42,8 +47,8 @@ export default function TenantDashboard() {
 
       <div className="grid grid-6">
         {a.loading
-          ? Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
-          : a.data!.kpis.map((k) => <KpiCard key={k.label} {...k} />)}
+          ? Array.from({ length: showCosts ? 6 : 4 }).map((_, i) => <CardSkeleton key={i} rows={1} />)
+          : kpis.map((k) => <KpiCard key={k.label} {...k} />)}
       </div>
 
       <div className="grid grid-2 mt-16" style={{ gridTemplateColumns: "1.6fr 1fr" }}>

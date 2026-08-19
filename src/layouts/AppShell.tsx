@@ -4,7 +4,7 @@ import { Icon, type IconName } from "@/components/Icon";
 import { StatusChip, ToastRegion } from "@/components/ui";
 import { useApp } from "@/state/AppContext";
 import { useAsync } from "@/hooks/useAsync";
-import { listAlerts, listBots, listTenants } from "@/services/api";
+import { listAlerts, listBots, listTenants, me } from "@/services/api";
 import type { Role } from "@/types/domain";
 import aurexionLogo from "@/assets/brand/Aurexion-logo.svg";
 import aurexionLogoWhite from "@/assets/brand/Aurexion-logo-white.svg";
@@ -14,13 +14,20 @@ interface NavEntry {
   label: string;
   icon: IconName;
   badge?: number;
+  /** Entry is shown only when the session holds this permission code.
+   *  UI affordance only — the route and API enforce the same permission. */
+  perm?: string;
 }
 interface NavSection {
   title?: string;
   items: NavEntry[];
 }
 
-export function navFor(role: Role, criticalAlerts: number): NavSection[] {
+export function navFor(
+  role: Role,
+  criticalAlerts: number,
+  hasPermission: (code: string) => boolean = () => true,
+): NavSection[] {
   if (role === "super_admin") {
     return [
       { items: [{ to: "/admin", label: "Dashboard", icon: "dashboard" }] },
@@ -56,16 +63,16 @@ export function navFor(role: Role, criticalAlerts: number): NavSection[] {
       },
     ];
   }
-  return [
+  const sections: NavSection[] = [
     { items: [{ to: "/t", label: "Dashboard", icon: "dashboard" }] },
     {
       title: "Build",
       items: [
         { to: "/t/bots", label: "My VoiceBots", icon: "bot" },
-        { to: "/t/voices", label: "Cloned Voices", icon: "mic" },
+        { to: "/t/voices", label: "Cloned Voices", icon: "mic", perm: "manage_voice_clones" },
         { to: "/t/knowledge", label: "Knowledge Hub", icon: "book" },
         { to: "/t/workflows", label: "Workflows", icon: "workflow" },
-        { to: "/t/channels", label: "Channels", icon: "plug" },
+        { to: "/t/channels", label: "Channels", icon: "plug", perm: "manage_channels" },
       ],
     },
     {
@@ -78,12 +85,15 @@ export function navFor(role: Role, criticalAlerts: number): NavSection[] {
     {
       title: "Manage",
       items: [
-        { to: "/t/team", label: "Team", icon: "users" },
-        { to: "/t/integrations", label: "Integrations", icon: "zap" },
-        { to: "/t/settings", label: "Settings", icon: "settings" },
+        { to: "/t/team", label: "Team", icon: "users", perm: "team.manage" },
+        { to: "/t/integrations", label: "Integrations", icon: "zap", perm: "integrations.manage" },
+        { to: "/t/settings", label: "Settings", icon: "settings", perm: "settings.manage" },
       ],
     },
   ];
+  return sections
+    .map((s) => ({ ...s, items: s.items.filter((i) => !i.perm || hasPermission(i.perm)) }))
+    .filter((s) => s.items.length > 0);
 }
 
 const crumbNames: Record<string, string> = {
@@ -106,7 +116,27 @@ const roleLabel = (role: Role) =>
   role === "super_admin" ? "Super Admin" : role === "tenant_admin" ? "Tenant Admin" : "Tenant User";
 
 export default function AppShell() {
-  const { user, signOut, theme, toggleTheme } = useApp();
+  const { user, signOut, theme, toggleTheme, hasPermission, updateSessionUser } = useApp();
+
+  // The stored session caches role/permissions from login time. RBAC changes
+  // on the server (new grants, role reassignment) must reach already-open
+  // sessions, otherwise permission-gated UI drifts out of sync with what the
+  // API actually serves. Refresh from /auth/me on every shell mount; a 401 is
+  // handled by the http layer (sign-out + redirect).
+  useEffect(() => {
+    let cancelled = false;
+    me()
+      .then((u) => {
+        if (cancelled) return;
+        updateSessionUser({
+          id: u.id, name: u.name, email: u.email, role: u.role,
+          tenantId: u.tenantId, tenantName: u.tenantName ?? null,
+          permissions: u.permissions,
+        });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [updateSessionUser]);
   const location = useLocation();
   const navigate = useNavigate();
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -125,7 +155,10 @@ export default function AppShell() {
   const tenantsQ = useAsync(() => (isSuper ? listTenants() : Promise.resolve([])), [isSuper]);
 
   const critical = (alertsQ.data ?? []).filter((a) => a.status === "open" && (a.severity === "critical" || a.severity === "serious")).length;
-  const sections = useMemo(() => navFor(user!.role, critical), [user, critical]);
+  const sections = useMemo(
+    () => navFor(user!.role, critical, hasPermission),
+    [user, critical, hasPermission],
+  );
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -174,7 +207,7 @@ export default function AppShell() {
     if (search.trim().length < 2) return [];
     const q = search.toLowerCase();
     const results: { label: string; sub: string; to: string; icon: IconName }[] = [];
-    if (user!.role === "tenant_admin") {
+    if (user!.role !== "super_admin") {
       botsQ.data?.forEach((b) => {
         if (b.name.toLowerCase().includes(q) || b.useCase.toLowerCase().includes(q))
           results.push({ label: b.name, sub: `VoiceBot · ${b.status.replace("_", " ")}`, to: `/t/bots/${b.id}/overview`, icon: "bot" });

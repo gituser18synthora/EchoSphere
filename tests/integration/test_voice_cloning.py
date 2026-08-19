@@ -66,7 +66,7 @@ def tenant_b_admin():
 
 @pytest.fixture(scope="module")
 def tenant_user():
-    return _bearer("sam.ellery@meridianhealth.com")  # tenant_user — no manage_voices
+    return _bearer("sam.ellery@meridianhealth.com")  # tenant_user — no manage_voice_clones
 
 
 @pytest.fixture(scope="module")
@@ -175,7 +175,7 @@ class TestCloneConfig:
 
 
 class TestCreateClone:
-    def test_requires_manage_voices_permission(self, client, tenant_user):
+    def test_requires_manage_voice_clones_permission(self, client, tenant_user):
         response = client.post(
             f"{API}/voice-clones", headers=tenant_user,
             data={"provider": "elevenlabs", "name": "Nope"},
@@ -748,8 +748,9 @@ class TestSourceAudioRetention:
             assert played.headers["content-type"].startswith("audio/wav")
             assert played.content == wav
 
-            # Any member of the owning tenant may listen (view permission).
-            assert client.get(url, headers=tenant_user).status_code == 200
+            # Voice cloning is a managed capability: roles without
+            # manage_voice_clones (tenant_user) get 403 even for playback.
+            assert client.get(url, headers=tenant_user).status_code == 403
             # Super admins may inspect; other tenants get a 404, never a 403.
             assert client.get(url, headers=super_admin).status_code == 200
             assert client.get(url, headers=tenant_b_admin).status_code == 404

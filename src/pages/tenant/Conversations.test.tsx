@@ -24,7 +24,7 @@ vi.mock("@/services/exportDownload", async (importOriginal) => {
   };
 });
 vi.mock("@/state/AppContext", () => ({
-  useApp: () => ({ toast: vi.fn() }),
+  useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),
 }));
 
 const CONVERSATION = {

@@ -692,10 +692,18 @@ class TestKnowledgeCreation:
         assert duplicate.status_code == 409
         assert "already exists" in duplicate.json()["message"]
 
-    def test_tenant_user_cannot_create_kb(self, client, tenant_user):
+    def test_tenant_user_manages_shared_tenant_kb(self, client, tenant_user):
+        # Tenant Users hold manage_knowledge: they create/edit the tenant's
+        # SHARED knowledge bases (same records the Tenant Admin sees).
+        import uuid as _uuid
+
+        name = f"tu-kb-{_uuid.uuid4().hex[:8]}"
         response = client.post(f"{API}/knowledge", headers=tenant_user,
-                               json={"name": "nope", "type": "document", "scope": "tenant"})
-        assert response.status_code == 403
+                               json={"name": name, "type": "document", "scope": "tenant"})
+        assert response.status_code == 201, response.text
+        kb_id = response.json()["data"]["id"]
+        deleted = client.delete(f"{API}/knowledge/{kb_id}", headers=tenant_user)
+        assert deleted.status_code == 200, deleted.text
 
 
 # ── Prompts: structured builder + lifecycle + test ────────────────────────────

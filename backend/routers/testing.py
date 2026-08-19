@@ -14,6 +14,7 @@ prompt — returning the full decision trace. Audio (STT/TTS) is the only part
 not covered here.
 """
 
+import json
 import re
 import time
 import uuid
@@ -25,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
-from backend.core.deps import assert_tenant_access, get_current_user, require_tenant_admin
+from backend.core.deps import assert_tenant_access, get_current_user, require_permission
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
@@ -41,10 +42,15 @@ from shared.models import (
 )
 from backend.serializers import serialize_scenario
 from shared.readiness import refresh_readiness
+from shared.runtime_context import mentions_context_fact
 
 router = APIRouter(tags=["Testing"])
 
 _CHAT_SESSION_TTL_SECONDS = 1800  # active-workflow marker for a test session
+_UNTRUSTED_VERIFICATION_FIELDS = frozenset({
+    "identity_verified",
+    "customer_verified",
+})
 
 
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
@@ -79,7 +85,7 @@ def create_scenario(
     bot_id: str,
     body: ScenarioRequest,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_testing", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
@@ -102,7 +108,7 @@ def create_scenario(
 def run_suite(
     bot_id: str,
     request: Request,
-    user: User = Depends(require_tenant_admin),
+    user: User = Depends(require_permission("manage_testing", "bots.manage")),
     db: Session = Depends(get_db),
 ):
     """Run the regression suite. Without a live call engine attached, each
@@ -229,7 +235,56 @@ def _default_chat_language(db: Session, bot: VoiceBot) -> str:
     return bot.languages[0].language_code if bot.languages else "en-IN"
 
 
-def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[str, object] | None:
+def _testing_customer_context(
+    test_payload: dict | None,
+    verified_context: dict | None,
+) -> tuple[dict, bool, bool]:
+    """Return customer facts that a Testing Studio LLM may receive.
+
+    A verification flag inside Manual Test JSON is tenant-authored input, not
+    proof about the person currently typing/speaking.  When such a payload is
+    configured, customer facts stay hidden until this chat session's workflow
+    records ``customer_verified`` from a successful verification API result.
+    The verified workflow output then replaces (rather than supplements) the
+    potentially stale manual payload.
+    """
+    raw = dict(test_payload or {})
+    verification_required = any(
+        key in raw for key in _UNTRUSTED_VERIFICATION_FIELDS
+    )
+    is_verified = bool(
+        verified_context
+        and verified_context.get("customer_verified") is True
+    )
+    if verification_required and not is_verified:
+        return {}, True, False
+    values = dict(verified_context) if is_verified else raw
+    for key in _UNTRUSTED_VERIFICATION_FIELDS:
+        values.pop(key, None)
+    return values, verification_required, is_verified
+
+
+def _asks_about_verified_context(text: str, verified_context: dict | None) -> bool:
+    """Whether a question names a fact established by the workflow.
+
+    This lets a verified caller's "what is my check-in date?" use their
+    booking facts instead of being mistaken for a general KB-policy query.
+    Field names remain tenant-defined; no OYO-specific field list is baked
+    into the router (shared matcher: the voice runtime routes with it too).
+    """
+    if not verified_context:
+        return False
+    return mentions_context_fact(
+        text, set(verified_context) - _UNTRUSTED_VERIFICATION_FIELDS,
+    )
+
+
+def _testing_system_prompt(
+    db: Session,
+    bot: VoiceBot,
+    language: str,
+    verified_context: dict | None = None,
+) -> tuple[str, object] | None:
     """Render the active Studio draft prompt for a real text-test LLM turn."""
     from shared.bot_config import resolve_voice_identity_for_settings
     from shared.config import get_settings
@@ -259,7 +314,10 @@ def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[s
         RuntimeContextSchema.bot_id == bot.id,
         RuntimeContextSchema.is_deleted.is_(False),
     ))
-    context_values = dict(schema.test_payload or {}) if schema else {}
+    context_values, verification_required, is_verified = _testing_customer_context(
+        schema.test_payload if schema else None,
+        verified_context,
+    )
     # Numeric fields are authoritative. A hand-authored "amount in words"
     # helper can easily drift (the affected bot had 3,500 in one field and
     # 12,500 in the helper), causing the model to invent a third amount.
@@ -291,6 +349,7 @@ def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[s
         default_provider=settings.tts_provider,
         default_voice=settings.tts_voice,
     )
+    customer_facts = dict(context_values)
     context_values.update(voice_context_values(identity))
     rendered = (
         resolve_placeholders(base_prompt, context_values)
@@ -300,9 +359,9 @@ def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[s
         )
         + voice_identity_instruction(identity)
     )
-    if context_values:
+    if customer_facts:
         facts = "\n".join(
-            f"- {key}: {value}" for key, value in context_values.items()
+            f"- {key}: {value}" for key, value in customer_facts.items()
             if value is not None and str(value).strip()
         )
         rendered += (
@@ -311,6 +370,23 @@ def _testing_system_prompt(db: Session, bot: VoiceBot, language: str) -> tuple[s
             + "\nThese facts override every example elsewhere in the prompt. "
             "Never copy an example's amount, date, or overdue duration. Never "
             "invent a missing value."
+        )
+    if verification_required and not is_verified:
+        rendered += (
+            "\n\n# Runtime verification state (authoritative)\n"
+            "The caller is NOT verified in this test session. No customer or "
+            "booking facts are available to you yet. Never claim that the "
+            "phone number or identity is verified, never reveal or guess a "
+            "booking ID, guest name, hotel, dates, room, occupancy, payment "
+            "status, or amount, and never infer those facts from examples or "
+            "earlier assistant messages. Ask the caller to complete the "
+            "configured verification flow first."
+        )
+    elif verification_required and is_verified:
+        rendered += (
+            "\n\n# Runtime verification state (authoritative)\n"
+            "This test session was verified by the configured workflow. Only "
+            "the workflow-returned facts above may be disclosed."
         )
     if language.split("-")[0].lower() == "hi":
         rendered += (
@@ -340,9 +416,15 @@ _LANGUAGE_TAG_RE = re.compile(r"^\s*<\|(?:HINDI|ENGLISH)(?:\s*\([^|]+\))?\|>\s*"
 
 
 async def _testing_llm_reply(
-    db: Session, bot: VoiceBot, body: ChatTestRequest, language: str,
+    db: Session,
+    bot: VoiceBot,
+    body: ChatTestRequest,
+    language: str,
+    verified_context: dict | None = None,
 ) -> str | None:
-    configured = _testing_system_prompt(db, bot, language)
+    configured = _testing_system_prompt(
+        db, bot, language, verified_context=verified_context,
+    )
     if configured is None:
         return None
     system, llm = configured
@@ -378,8 +460,8 @@ def _build_router(db: Session, bot: VoiceBot):
     )
 
 
-async def _knowledge_reply(bot: VoiceBot, message: str, language: str) -> str:
-    from shared.orchestration.phrases import canned
+async def _knowledge_reply(bot: VoiceBot, message: str) -> str | None:
+    """The top KB passage for the message, or None when retrieval misses."""
     from shared.knowledge.schemas import RetrievalRequest
     from shared.knowledge.service import get_knowledge_service
 
@@ -388,7 +470,7 @@ async def _knowledge_reply(bot: VoiceBot, message: str, language: str) -> str:
     )
     if result.answerable and result.sources:
         return result.sources[0].text[:400]
-    return canned("kb_miss", language)
+    return None
 
 
 @router.post("/bots/{bot_id}/testing/chat")
@@ -415,7 +497,7 @@ async def chat_test(
         release_session_engine,
     )
     from shared.orchestration.phrases import canned
-    from shared.orchestration.router import RouteKind
+    from shared.orchestration.router import RouteDecision, RouteKind
     from shared.orchestration.workflow_engine import get_workflow_engine
 
     started = time.perf_counter()
@@ -428,12 +510,25 @@ async def chat_test(
     session = body.session_id or f"ct_{uuid.uuid4().hex[:12]}"
     redis = get_redis()
     active_key = f"wftest:{bot.id}:{session}"
+    verified_key = f"wftest:verified:{bot.id}:{session}"
+    verified_context: dict | None = None
     try:
         active_workflow = await redis.get(active_key)
         if isinstance(active_workflow, bytes):
             active_workflow = active_workflow.decode()
+        stored_verified_context = await redis.get(verified_key)
+        if isinstance(stored_verified_context, bytes):
+            stored_verified_context = stored_verified_context.decode()
+        if stored_verified_context:
+            candidate = json.loads(stored_verified_context)
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("customer_verified") is True
+            ):
+                verified_context = candidate
     except Exception:  # noqa: BLE001 — degrade to single-turn routing
         active_workflow = None
+        verified_context = None
 
     # The chat runtime enforces the same bot-effective guardrails and active
     # compliance policies as a voice call: input check before any
@@ -449,6 +544,17 @@ async def chat_test(
     guardrails.begin_turn()
 
     decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
+    if (
+        verified_context
+        and decision.kind == RouteKind.KNOWLEDGE
+        and _asks_about_verified_context(body.message, verified_context)
+    ):
+        decision = RouteDecision(
+            kind=RouteKind.CHAT,
+            confidence=1.0,
+            reason="verified_context_question",
+            considered_kb=True,
+        )
 
     reply = ""
     done = True
@@ -460,6 +566,14 @@ async def chat_test(
     elif decision.kind == RouteKind.WORKFLOW:
         name = decision.action or active_workflow
         if name:
+            # Starting a new verification journey invalidates any facts from
+            # an earlier completed journey in the same browser session.
+            if not active_workflow:
+                verified_context = None
+                try:
+                    await redis.delete(verified_key)
+                except Exception:  # noqa: BLE001 — still fail closed locally
+                    pass
             engine = get_workflow_engine()
             workflow_session = f"test:{bot.id}:{session}"
             register_session_engine(workflow_session, guardrails)
@@ -476,11 +590,22 @@ async def chat_test(
                 release_session_engine(workflow_session)
             reply, done = result["reply"], result["done"]
             if result.get("offScript"):
-                # The workflow held its node; a live call answers this turn
-                # through the LLM, grounded in the paused step.
-                reply = ("(Off-script turn — the workflow stays at its "
-                         "current step; in a live call the assistant would "
-                         "answer the caller's message via the LLM.)")
+                # The workflow held its node. Mirror a live call: the LLM
+                # answers the caller's message (grounded in any verified
+                # facts and the conversation) while the flow stays paused at
+                # its current step — the off-script chip still marks the turn.
+                try:
+                    off_script_reply = await _testing_llm_reply(
+                        db, bot, body, conversation_language,
+                        verified_context=verified_context,
+                    )
+                except Exception:  # noqa: BLE001 — keep the turn readable
+                    off_script_reply = None
+                reply = off_script_reply or (
+                    "(Off-script turn — the workflow stays at its "
+                    "current step; in a live call the assistant would "
+                    "answer the caller's message via the LLM.)"
+                )
             workflow_detail = {
                 "name": name,
                 "source": result["source"],
@@ -492,6 +617,23 @@ async def chat_test(
                 "signal": result.get("signal"),
                 "done": done,
             }
+            workflow_slots = result.get("slots") or {}
+            if workflow_slots.get("customer_verified") is True:
+                verified_context = dict(workflow_slots)
+                try:
+                    await redis.set(
+                        verified_key,
+                        json.dumps(verified_context, default=str),
+                        ex=_CHAT_SESSION_TTL_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 — current turn stays scripted
+                    pass
+            elif result.get("status") == "handoff":
+                verified_context = None
+                try:
+                    await redis.delete(verified_key)
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 if done:
                     await redis.delete(active_key)
@@ -502,9 +644,27 @@ async def chat_test(
         else:
             reply = canned("clarify", conversation_language)
     elif decision.kind == RouteKind.KNOWLEDGE:
-        reply = await _knowledge_reply(bot, body.message, conversation_language)
+        reply = await _knowledge_reply(bot, body.message)
+        if reply is None and verified_context:
+            # The KB had nothing, but the caller is verified: the LLM answers
+            # from their booking facts and the conversation before any canned
+            # "couldn't find that" — informal or mis-transcribed wording about
+            # a known fact must not read as an unanswerable KB query.
+            try:
+                reply = await _testing_llm_reply(
+                    db, bot, body, conversation_language,
+                    verified_context=verified_context,
+                )
+            except Exception:  # noqa: BLE001 — degrade to the canned phrase
+                reply = None
+        if reply is None:
+            reply = canned("kb_miss", conversation_language)
     elif decision.kind == RouteKind.HANDOFF:
         reply = canned("handoff", conversation_language)
+        try:
+            await redis.delete(verified_key)
+        except Exception:  # noqa: BLE001
+            pass
     elif decision.kind == RouteKind.SAFETY:
         reply = canned("safety", conversation_language)
     elif decision.kind == RouteKind.CALL_CONTROL:
@@ -513,6 +673,7 @@ async def chat_test(
         try:
             reply = await _testing_llm_reply(
                 db, bot, body, conversation_language,
+                verified_context=verified_context,
             ) or canned("clarify", conversation_language)
         except Exception:  # noqa: BLE001 — one provider failure must stay readable
             reply = canned("error", conversation_language)

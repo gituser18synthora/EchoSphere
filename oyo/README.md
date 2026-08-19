@@ -151,5 +151,9 @@ for this configuration).
 - Intent-node edge tokens: longest-contained-token wins, so denial tokens must
   outlength affirmative substrings ("we cannot" beats "we can"); tokens ending
   in `?` let question-phrased utterances advance.
+- Equal-score question-signal edges resolve in AUTHORED ORDER — at the hubs the
+  details edge is deliberately first, so a question no literal token catches
+  ("what is my checking date?") exits to LLM Q&A over the verified facts
+  instead of starting the property-verification call.
 - `.env` gained `API_CONNECT_ALLOWED_HOSTS=127.0.0.1,localhost` so tenant API
   connections may call this local mock through the SSRF guard.

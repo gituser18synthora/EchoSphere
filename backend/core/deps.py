@@ -98,6 +98,14 @@ def is_super_admin(user: User) -> bool:
     return user.role.code == SUPER_ADMIN
 
 
+def can_view_costs(user: User) -> bool:
+    """Financial visibility gate. Cost, pricing, spend and billing fields are
+    stripped from tenant-facing responses and exports for roles without the
+    costs.view permission (seeded to super_admin and tenant_admin, withheld
+    from tenant_user)."""
+    return has_permission(user, "costs.view")
+
+
 def resolve_tenant_id(user: User, requested_tenant_id: str | None = None) -> str:
     """Effective tenant for a tenant-owned query. Never trusts the client for
     tenant roles; super admins may target any tenant explicitly."""

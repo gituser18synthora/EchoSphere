@@ -92,3 +92,10 @@ export function storeDisplayCurrency(code: string): void {
     /* storage unavailable — the selection just won't persist */
   }
 }
+
+/** Whether a KPI/metric label is financial. Defense-in-depth for viewers
+    without the costs.view permission: the backend already omits these, but
+    the UI must never render one even if a payload or cached session drifts. */
+export function isCostLabel(label: string): boolean {
+  return /cost|price|pricing|spend|billing|revenue|mrr/i.test(label);
+}

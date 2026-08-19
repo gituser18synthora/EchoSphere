@@ -275,6 +275,47 @@ class TestLifecycle:
         assert config.prompt_version == 2
         assert "Draft-only marker" not in config.system_prompt
 
+    async def test_new_draft_does_not_replace_published_greeting(
+        self, test_bot,
+    ):
+        """Greeting resolution obeys the same published pointer as system prompts."""
+        from shared.db.mysql import get_sessionmaker
+        from shared.ids import new_id
+        from shared.models import Prompt, PromptVersion, VoiceBot
+
+        session = get_sessionmaker()()
+        try:
+            bot = session.get(VoiceBot, test_bot["id"])
+            assert bot is not None
+            prompt_id = new_id("pr")
+            session.add(Prompt(
+                id=prompt_id, tenant_id=bot.tenant_id, bot_id=bot.id,
+                type="greeting", name=f"Published greeting {_SUFFIX}",
+                state="draft", active_version=2, published_version=1,
+            ))
+            session.add_all([
+                PromptVersion(
+                    id=new_id("prv"), prompt_id=prompt_id, version=1,
+                    variants=[{"language": "en-IN", "content": "Published hello"}],
+                    prompt_mode="structured",
+                ),
+                PromptVersion(
+                    id=new_id("prv"), prompt_id=prompt_id, version=2,
+                    variants=[{"language": "en-IN", "content": "Draft hello"}],
+                    prompt_mode="structured",
+                ),
+            ])
+            session.commit()
+        finally:
+            session.close()
+
+        from shared.bot_config import resolve_bot_config
+
+        config = await resolve_bot_config(
+            test_bot["id"], require_published=False, use_cache=False,
+        )
+        assert config.greeting == "Published hello"
+
 
 class TestIsolation:
     def test_other_tenant_cannot_see_or_edit(self, client, other_tenant_admin,

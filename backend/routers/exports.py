@@ -1,6 +1,7 @@
 """Authorized operational exports and non-tabular billing downloads."""
 
 import io
+from dataclasses import replace
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -13,6 +14,7 @@ from backend.core.date_filters import parse_date_range
 from backend.core.transcripts import find_transcript_doc, ui_turns
 from backend.core.deps import (
     assert_tenant_access,
+    can_view_costs,
     has_permission,
     is_super_admin,
     require_permission,
@@ -68,6 +70,20 @@ def _validate_choice(
                 }
             ],
         )
+
+
+def _without_cost_columns(report, user: User):
+    """Strip financial columns from a generated export for roles without
+    costs.view. The CSV/XLSX renderers emit only the columns present in the
+    definition, so removing the column removes the data from the file — the
+    export itself is the enforcement point, not the frontend."""
+    if can_view_costs(user):
+        return report
+    definition = replace(
+        report.definition,
+        columns=tuple(c for c in report.definition.columns if c.key != "cost_usd"),
+    )
+    return type(report)(definition=definition, rows=report.rows)
 
 
 def _reject_filter(export_type: str, field: str, value: object) -> None:
@@ -235,16 +251,19 @@ def export_operational_data(
             if bot is None:
                 raise NotFoundError("VoiceBot")
         started_from, started_to = parse_date_range(date_from, date_to)
-        report = build_conversations_export(
-            db,
-            tenant_id=effective_tenant_id,
-            search=canonical_search,
-            bot_id=bot_id,
-            sentiment=sentiment,
-            contained=contained,
-            flagged=flagged,
-            started_from=started_from,
-            started_to=started_to,
+        report = _without_cost_columns(
+            build_conversations_export(
+                db,
+                tenant_id=effective_tenant_id,
+                search=canonical_search,
+                bot_id=bot_id,
+                sentiment=sentiment,
+                contained=contained,
+                flagged=flagged,
+                started_from=started_from,
+                started_to=started_to,
+            ),
+            user,
         )
         audit_filters.update(
             {
@@ -308,7 +327,9 @@ async def export_conversation_transcript(
     bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
     transcript_doc = await find_transcript_doc(conversation)
-    report = build_transcript_export(ui_turns((transcript_doc or {}).get("turns")))
+    report = _without_cost_columns(
+        build_transcript_export(ui_turns((transcript_doc or {}).get("turns"))), user
+    )
     record_audit(
         db,
         user=user,

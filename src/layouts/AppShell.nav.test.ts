@@ -27,3 +27,39 @@ describe("Super Admin navigation", () => {
     }
   });
 });
+
+/* Permission-gated tenant navigation: entries carrying a perm code appear
+   only when the session holds it. The default hasPermission (used above)
+   grants everything, matching the pre-permission behavior for admins. */
+describe("Tenant navigation permission gating", () => {
+  const TENANT_ADMIN_PERMS = [
+    "manage_voice_clones", "manage_channels", "integrations.manage", "settings.manage",
+    "team.manage",
+  ];
+  const TENANT_USER_PERMS = [
+    "bots.view", "knowledge.view", "conversations.view", "analytics.view",
+    "manage_knowledge", "manage_prompts", "manage_voices",
+    "manage_workflows", "manage_testing",
+  ];
+
+  it("keeps every entry for a tenant admin holding the management permissions", () => {
+    const labels = navFor("tenant_admin", 0, (c) => TENANT_ADMIN_PERMS.includes(c))
+      .flatMap((s) => s.items.map((i) => i.label));
+    for (const label of ["Cloned Voices", "Channels", "Integrations", "Settings", "Team"]) {
+      expect(labels).toContain(label);
+    }
+  });
+
+  it("hides Cloned Voices, Channels, Team, Integrations and Settings from a tenant user", () => {
+    const sections = navFor("tenant_user", 0, (c) => TENANT_USER_PERMS.includes(c));
+    const labels = sections.flatMap((s) => s.items.map((i) => i.label));
+    for (const label of ["Cloned Voices", "Channels", "Team", "Integrations", "Settings"]) {
+      expect(labels).not.toContain(label);
+    }
+    // Allowed areas stay reachable.
+    for (const label of ["Dashboard", "My VoiceBots", "Knowledge Hub", "Workflows",
+                         "Analytics", "Conversation Review"]) {
+      expect(labels).toContain(label);
+    }
+  });
+});
