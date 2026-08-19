@@ -531,3 +531,97 @@ describe("VoiceTab — Delivery tuning", () => {
     });
   });
 });
+
+describe("VoiceTab — LLM output length", () => {
+  const LLM_SETTINGS = {
+    ...SETTINGS,
+    llmProvider: "openai", llmModel: "gpt-4o-mini",
+    llmSettings: { temperature: 0.3, max_output_characters: 500 },
+  };
+  const LLM_SCHEMA = {
+    temperature: { type: "number", min: 0, max: 2, step: 0.1, default: 0.3, label: "Temperature" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installDefaultMocks(LLM_SETTINGS);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [],
+      llm: [
+        { code: "openai", name: "OpenAI", capability: "llm", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+      tts: [
+        { code: "sarvam", name: "Sarvam AI", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+    } as never);
+    const ttsModels = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: string, provider: string) =>
+      provider === "openai"
+        ? Promise.resolve([
+            { code: "gpt-4o-mini", displayName: "GPT-4o mini", isDefault: true, capability: "llm", streaming: true, paramsSchema: LLM_SCHEMA },
+            { code: "gpt-4.1-mini", displayName: "GPT-4.1 mini", isDefault: false, capability: "llm", streaming: true, paramsSchema: LLM_SCHEMA },
+          ])
+        : (ttsModels as (c: string, p: string) => Promise<unknown>)(cap, provider)) as never);
+  });
+
+  const llmModelSelect = () => screen.getByLabelText("LLM model") as HTMLSelectElement;
+  const maxChars = () => screen.getByLabelText("Max output characters") as HTMLInputElement;
+
+  it("switching the LLM model keeps the platform output-length setting", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+    expect(maxChars()).toHaveValue(500);
+
+    // max_output_characters is platform-owned (not in the provider schema);
+    // the model-change reconcile must not silently reset it to the default.
+    await user.selectOptions(llmModelSelect(), ["gpt-4.1-mini"]);
+    expect(llmModelSelect()).toHaveValue("gpt-4.1-mini");
+    expect(maxChars()).toHaveValue(500);
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmModel).toBe("gpt-4.1-mini");
+    expect(payload.llmSettings).toMatchObject({ max_output_characters: 500, temperature: 0.3 });
+  });
+
+  it("defaults Goal Engine to enabled and saves the disabled override without losing LLM settings", async () => {
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+
+    await user.click(screen.getByText("Advanced orchestration"));
+    const toggle = screen.getByRole("switch", { name: "Goal Engine" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Goal Engine is disabled")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmSettings).toMatchObject({
+      temperature: 0.3,
+      max_output_characters: 500,
+      goal_engine_enabled: false,
+    });
+  });
+
+  it("shows a persisted disabled Goal Engine state", async () => {
+    installDefaultMocks({
+      ...LLM_SETTINGS,
+      llmSettings: {
+        temperature: 0.3,
+        max_output_characters: 500,
+        goal_engine_enabled: false,
+      },
+    });
+    render(<VoiceTab bot={BOT} />);
+
+    await userEvent.click(await screen.findByText("Advanced orchestration"));
+    expect(screen.getByRole("switch", { name: "Goal Engine" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Goal Engine is disabled")).toBeInTheDocument();
+  });
+});

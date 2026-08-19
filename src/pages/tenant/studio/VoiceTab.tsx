@@ -19,7 +19,7 @@ import {
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import {
-  Button, Callout, CardSkeleton, ErrorState, Field, Modal, NumberInput, SearchableSelect, StatusChip,
+  Button, Callout, CardSkeleton, ErrorState, Field, Modal, NumberInput, SearchableSelect, StatusChip, Toggle,
   type SearchableSelectOption,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
@@ -144,6 +144,26 @@ function preserveTurnDetection(next: ProviderSettings, previous: ProviderSetting
   return value && typeof value === "object" && !Array.isArray(value)
     ? { ...next, turn_detection: value }
     : next;
+}
+
+/* Platform-owned llmSettings keys (backend PLATFORM_LLM_SETTING_KEYS). They
+   configure the EchoSphere runtime, not the LLM provider, so they are never
+   in a provider's params schema — reconcileSettings would silently drop them
+   on every provider/model switch. */
+const PLATFORM_LLM_SETTING_KEYS = [
+  "goal_engine_enabled", "intent_llm_enabled", "memory_greeting_enabled",
+  "orchestration_provider", "orchestration_model",
+  "orchestration_timeout_seconds", "intent_timeout_seconds",
+  "memory_greeting_timeout_seconds", "orchestration_max_tokens",
+  "max_output_characters",
+];
+
+function preservePlatformLlmSettings(next: ProviderSettings, previous: ProviderSettings): ProviderSettings {
+  const out = { ...next };
+  for (const key of PLATFORM_LLM_SETTING_KEYS) {
+    if (previous[key] !== undefined && out[key] === undefined) out[key] = previous[key];
+  }
+  return out;
 }
 
 function stripDeliverySpeedParams<T>(record: Record<string, T> | undefined): Record<string, T> {
@@ -466,16 +486,22 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
   };
 
   const changeLlmProvider = async (provider: string) => {
-    setLlm({ provider, model: "", settings: {} });
+    // Platform runtime settings (output length, orchestration engine, …) are
+    // provider-independent by design — a provider switch keeps them.
+    setLlm((s) => ({ provider, model: "", settings: preservePlatformLlmSettings({}, s.settings) }));
     if (!provider) return;
     const def = await defaultModelOf("llm", provider);
     setLlm((s) => (s.provider === provider && !s.model
-      ? { ...s, model: def?.code ?? "", settings: schemaDefaults(def?.paramsSchema) }
+      ? { ...s, model: def?.code ?? "", settings: preservePlatformLlmSettings(schemaDefaults(def?.paramsSchema), s.settings) }
       : s));
   };
   const changeLlmModel = (model: string) => {
     const schema = modelInfo("llm", llm.provider, model)?.paramsSchema;
-    setLlm((s) => ({ ...s, model, settings: reconcileSettings(schema, s.settings) }));
+    setLlm((s) => ({
+      ...s,
+      model,
+      settings: preservePlatformLlmSettings(reconcileSettings(schema, s.settings), s.settings),
+    }));
   };
 
   const changeTtsProvider = async (provider: string) => {
@@ -807,6 +833,35 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
                 }))}
               />
             </Field>
+            <details>
+              <summary className="t-label" style={{ cursor: "pointer" }}>Advanced orchestration</summary>
+              <div className="col gap-12" style={{ marginTop: 10 }}>
+                <div className="row-between gap-12">
+                  <div className="col gap-6">
+                    <span className="field-label">Goal Engine</span>
+                    <span className="field-hint">
+                      Runs a structured goal decision before reply generation. Disabling it can reduce
+                      latency, but may affect goal tracking, scope routing, and workflow orchestration.
+                    </span>
+                  </div>
+                  <Toggle
+                    label="Goal Engine"
+                    checked={llm.settings.goal_engine_enabled !== false}
+                    disabled={!canManage}
+                    onChange={(enabled) => setLlm((s) => ({
+                      ...s,
+                      settings: { ...s.settings, goal_engine_enabled: enabled },
+                    }))}
+                  />
+                </div>
+                {llm.settings.goal_engine_enabled === false && (
+                  <Callout tone="warning" title="Goal Engine is disabled">
+                    Test intent routing, collections compliance, workflow transitions, and human handoff
+                    before publishing this configuration.
+                  </Callout>
+                )}
+              </div>
+            </details>
           </SectionCard>
 
           {/* 3 — Text-to-Speech */}

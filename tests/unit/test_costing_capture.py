@@ -470,3 +470,26 @@ class TestTtsDispatchBilling:
         assert len(recorder.billed) == 1
         assert recorder.billed[0]["characters"] == len("अलविदा")
         assert router._generations == {}
+
+
+class TestSttCharacterCapture:
+    """STT character usage comes from the FINAL turn list, not a running
+    counter: barge-in rewinds and fragment merges pop a user turn and re-run
+    its text inside a merged turn — a per-turn counter double-counts exactly
+    those paths."""
+
+    def test_counts_final_user_turns_only(self):
+        recorder = make_recorder()
+        recorder.add_turn(TurnRecord(role="user", text="hello there"))
+        recorder.add_turn(TurnRecord(role="bot", text="hi, how can I help?"))
+        recorder.add_turn(TurnRecord(role="user", text="नहीं,"))
+        # A straggler final rewinds the fragment; the merged utterance then
+        # runs as ONE user turn containing the fragment's text again.
+        recorder.turns.pop()
+        recorder.add_turn(TurnRecord(role="user", text="नहीं, कल नहीं"))
+
+        expected = len("hello there") + len("नहीं, कल नहीं")
+        assert recorder.stt_transcript_characters() == expected
+
+    def test_empty_call_counts_zero(self):
+        assert make_recorder().stt_transcript_characters() == 0

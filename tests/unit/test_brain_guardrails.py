@@ -163,3 +163,51 @@ class TestOutputBlocking:
         spoken = "".join(f.text for f in brain._pushed if isinstance(f, TextFrame))
         assert "Your next appointment is on Monday." in spoken
         assert "guardrail_blocked_turn" not in brain._recorder.event_kinds()
+
+
+class TestScopeAdherencePrompt:
+    """A configured guardrail profile states the bot's scope in the immutable
+    prompt. This is the fallback that keeps generation in context on turns
+    where the Goal Engine's scope decision never arrives (timeout, engine
+    disabled) and routing defaults to in-scope — derived purely from the
+    compiled goal policy, never from any specific request pattern."""
+
+    def _brain(self, *, guardrails, use_case: str = ""):
+        config = ResolvedBotConfig(
+            tenant_id="tn-x", bot_id="bot-x", bot_name="Test Bot", version="v1",
+            published=True, language="en-IN", languages=["en-IN", "hi-IN"],
+            stt={"provider": "sarvam"},
+            system_prompt="You are Test Bot.",
+            use_case=use_case,
+            intents=[{"name": "booking_confirmation"}, {"name": "refund_status"}],
+        )
+        return ConversationBrain(
+            config=config, llm=_StreamingLLMStub(), recorder=_RecorderStub(),
+            finalize_grace=GRACE, finalize_settle=GRACE,
+            complete_endpoint=GRACE, short_reply_endpoint=GRACE,
+            guardrails=guardrails,
+        )
+
+    def test_configured_profile_states_scope_in_static_prompt(self):
+        brain = self._brain(
+            guardrails=GuardrailEngine(EffectiveGuardrails(
+                rules=MANDATORY_FLOOR, profile_id="gp_test",
+            )),
+            use_case="Booking confirmation & upcoming-stay support",
+        )
+
+        assert "# Scope (guardrails)" in brain._static_system
+        assert "Booking confirmation & upcoming-stay support" in brain._static_system
+        # Configured intents double as the allowed-topic hints.
+        assert "booking_confirmation" in brain._static_system
+        # And the block flows into every generation via the static prompt —
+        # never only into the per-turn engine instruction.
+        assert brain._scope_instruction in brain._static_system
+
+    def test_without_profile_prompt_is_unchanged(self):
+        brain = self._brain(
+            guardrails=GuardrailEngine(EffectiveGuardrails(rules=MANDATORY_FLOOR)),
+        )
+
+        assert "# Scope (guardrails)" not in brain._static_system
+        assert brain._scope_instruction == ""
