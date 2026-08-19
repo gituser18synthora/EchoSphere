@@ -34,6 +34,37 @@
     }
   ],
   "shifts": [],
-  "ivr_transfers": [],
+  "ivr_transfers": [
+    {
+      "transfer_id": "TR-E415131F",
+      "queue": "customer_support",
+      "booking_id": "601001",
+      "requested_at": "2026-08-19T07:54:24+00:00"
+    },
+    {
+      "transfer_id": "TR-DD5D6ED6",
+      "queue": "customer_support",
+      "booking_id": "601001",
+      "requested_at": "2026-08-19T07:58:20+00:00"
+    },
+    {
+      "transfer_id": "TR-34460604",
+      "queue": "customer_support",
+      "booking_id": "601001",
+      "requested_at": "2026-08-19T08:25:10+00:00"
+    },
+    {
+      "transfer_id": "TR-A2C769AC",
+      "queue": "customer_support",
+      "booking_id": "6010",
+      "requested_at": "2026-08-19T08:46:46+00:00"
+    },
+    {
+      "transfer_id": "TR-53CEE2E0",
+      "queue": "customer_support",
+      "booking_id": null,
+      "requested_at": "2026-08-19T08:54:02+00:00"
+    }
+  ],
   "complimentary": []
 }

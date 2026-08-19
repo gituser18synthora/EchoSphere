@@ -58,6 +58,12 @@ const DETAIL = {
     { turn: 3, speaker: "bot", text: "Let me check that for you.", intent: "billing_dispute", confidence: 0.94, latencyMs: 640 },
   ],
   recording: null,
+  characterUsage: {
+    sttInputCharacters: 148,
+    ttsOutputCharacters: 624,
+    sttInputCharactersPerMin: 118.4,
+    ttsOutputCharactersPerMin: 499.2,
+  },
 };
 
 const RECORDING = {
@@ -146,6 +152,18 @@ describe("Tenant conversation review", () => {
 
     expect(await screen.findByText(/24 Jul 2026/)).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: /QA score/i })).not.toBeInTheDocument();
+  });
+
+  it("shows per-call STT and TTS character rates in details", async () => {
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+
+    expect(await within(dialog).findByText("Avg STT Input Characters / Min")).toBeInTheDocument();
+    expect(within(dialog).getByText("118.4")).toBeInTheDocument();
+    expect(within(dialog).getByText("148 input characters")).toBeInTheDocument();
+    expect(within(dialog).getByText("Avg TTS Output Characters / Min")).toBeInTheDocument();
+    expect(within(dialog).getByText("499.2")).toBeInTheDocument();
+    expect(within(dialog).getByText("624 output characters")).toBeInTheDocument();
   });
 
   it("keeps the combined Date / Time & Duration column immediately before Cost", async () => {

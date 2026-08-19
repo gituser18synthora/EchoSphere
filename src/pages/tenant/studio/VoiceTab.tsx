@@ -19,7 +19,7 @@ import {
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import {
-  Button, Callout, CardSkeleton, ErrorState, Field, Modal, SearchableSelect, StatusChip,
+  Button, Callout, CardSkeleton, ErrorState, Field, Modal, NumberInput, SearchableSelect, StatusChip,
   type SearchableSelectOption,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
@@ -791,6 +791,22 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               schema={llmSchema} values={llm.settings}
               onChange={(next) => setLlm((s) => ({ ...s, settings: next }))}
             />
+            <Field
+              label="Max output characters"
+              hint="Keeps voice replies concise (typically 1–2 sentences) and limits text sent to speech synthesis. Default: 360."
+            >
+              <NumberInput
+                aria-label="Max output characters"
+                min={120}
+                max={2000}
+                step={20}
+                value={Number(llm.settings.max_output_characters ?? 360)}
+                onChange={(value) => setLlm((s) => ({
+                  ...s,
+                  settings: { ...s.settings, max_output_characters: Number(value) || 360 },
+                }))}
+              />
+            </Field>
           </SectionCard>
 
           {/* 3 — Text-to-Speech */}

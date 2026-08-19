@@ -362,6 +362,7 @@ class ResolvedBotConfig:
     bot_name: str
     version: str
     published: bool
+    use_case: str = ""
     language: str = "en"
     greeting: str = "Hello! How can I help you today?"
     system_prompt: str = ""
@@ -758,6 +759,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             tenant_id=bot.tenant_id,
             bot_id=bot.id,
             bot_name=bot.name,
+            use_case=bot.use_case or "",
             version=bot.live_version or bot.version or "draft",
             published=bot.status == "published",
             language=default_language,

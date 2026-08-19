@@ -25,6 +25,7 @@ from shared.models import (
     Subscription,
     Tenant,
     UsageRecord,
+    UsageEvent,
     User,
     VoiceBot,
 )
@@ -135,6 +136,34 @@ def tenant_analytics(
     total_cost = ai_cost + _sum(daily, "telephony")
     cost_per_call = round(total_cost / total_calls, 3) if total_calls else 0.0
 
+    # Character rates use ratio-of-sums (not an average of per-call ratios).
+    # Numeric usage counters are sufficient; transcript text is never read.
+    duration_stmt = select(func.coalesce(func.sum(ConversationSession.duration_sec), 0)).where(
+        ConversationSession.tenant_id == tid,
+        # Browser voice sessions are stored as channel="web" while telephony
+        # calls use channel="voice". Both produce STT/TTS usage events and
+        # therefore belong in the character-rate denominator.
+        ConversationSession.channel.in_(("voice", "web")),
+        ConversationSession.is_deleted.is_(False),
+        func.date(ConversationSession.started_at) >= start,
+        func.date(ConversationSession.started_at) <= end,
+    )
+    chars_stmt = select(
+        UsageEvent.capability, func.coalesce(func.sum(UsageEvent.characters), 0)
+    ).where(
+        UsageEvent.tenant_id == tid,
+        UsageEvent.capability.in_(("stt", "tts")),
+        func.date(UsageEvent.occurred_at) >= start,
+        func.date(UsageEvent.occurred_at) <= end,
+    ).group_by(UsageEvent.capability)
+    if bot_id:
+        duration_stmt = duration_stmt.where(ConversationSession.bot_id == bot_id)
+        chars_stmt = chars_stmt.where(UsageEvent.bot_id == bot_id)
+    relevant_minutes = float(db.scalar(duration_stmt) or 0) / 60
+    character_totals = {capability: int(chars) for capability, chars in db.execute(chars_stmt)}
+    stt_chars_per_min = round(character_totals.get("stt", 0) / relevant_minutes, 1) if relevant_minutes else 0.0
+    tts_chars_per_min = round(character_totals.get("tts", 0) / relevant_minutes, 1) if relevant_minutes else 0.0
+
     prev_calls = int(_sum(prev, "calls"))
     prev_contained = int(_sum(prev, "contained"))
     prev_containment = (prev_contained / prev_calls * 100) if prev_calls else 0
@@ -212,6 +241,10 @@ def tenant_analytics(
              [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
         _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
              [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
+        _kpi("Avg STT Input Characters / Min", f"{stt_chars_per_min:,.1f}", None,
+             [], "neutral"),
+        _kpi("Avg TTS Output Characters / Min", f"{tts_chars_per_min:,.1f}", None,
+             [], "neutral"),
     ]
     if include_costs:
         kpis += [
@@ -257,6 +290,13 @@ def tenant_analytics(
             for d in dates
         ] if include_costs else [],
         "recommendations": recommendations,
+        "characterUsage": {
+            "sttInputCharactersPerMin": stt_chars_per_min,
+            "ttsOutputCharactersPerMin": tts_chars_per_min,
+            "sttInputCharacters": character_totals.get("stt", 0),
+            "ttsOutputCharacters": character_totals.get("tts", 0),
+            "relevantCallMinutes": round(relevant_minutes, 2),
+        },
     })
 
 
