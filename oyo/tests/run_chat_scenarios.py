@@ -6,6 +6,8 @@ substrings of the reply, the route, workflow status, or slots.
 
 import json
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -192,18 +194,23 @@ SCENARIOS = [
         ("farhan.ali@example.com", [(R, "emailed your booking voucher")]),
         ("nothing else", [("done", "true")]),
     ]),
-    ("16 booking details exit -> LLM facts (601001)", BOT1, [
+    ("16 booking details answered immediately (601001)", BOT1, [
         ("share my booking details", [(R, "booking id")]),
         ("601001", [(R, "guest name")]),
         ("Rahul Sharma", [(R, "confirmed in our system")]),
-        ("booking details please", [(R, "ask me anything"), ("done", "true")]),
-        # Answered by the LLM from the bot's runtime-context fact set (Studio →
-        # Runtime Context). Assert on the hotel, not the dates: the fact set is
-        # tunable demo data and its dates may be edited independently.
-        # Routed via the booking_fact_question intent (no route → LLM): the
-        # bot now has an indexed FAQ KB, and without the intent the router's
-        # question heuristics would send personal-fact turns to retrieval.
-        ("when is my check-in and which hotel is it?", [(RT, "intent"), (R, "gurugram")]),
+        # The workflow delegates this exact turn to grounded generation. It
+        # must give the details now, not a generic "ask me anything" menu.
+        ("booking details please", [(R, "gurugram"), ("done", "true")]),
+        # A related action in the same session reuses the verified booking;
+        # booking ID and guest name must not be requested again.
+        ("please email my booking voucher", [(R, "email address from your booking")]),
+    ]),
+    ("32 direct hotel-name answer after verification (601001)", BOT1, [
+        ("confirm my upcoming booking details", [(R, "booking id")]),
+        ("601001", [(R, "guest name")]),
+        ("Rahul Sharma", [(R, "confirmed in our system")]),
+        ("Can you confirm my hotel name?", [(R, "townhouse 121"),
+                                             (RT, "chat")]),
     ]),
     # Policy questions (no personal facts involved) SHOULD come from the
     # indexed guest FAQ — this is what the readiness item "Knowledge sources
@@ -227,6 +234,32 @@ SCENARIOS = [
     ]),
     ("20 out of scope refund -> handoff", BOT1, [
         ("where is my refund", [(RT, "handoff")]),
+    ]),
+    # ── routing robustness (intent thresholds / false positives) ────────────
+    # A stray intent word inside a different request must not transfer the
+    # call or hijack the route — only phrase-level evidence may.
+    ("32 refund word inside a booking question stays in the flow", BOT1, [
+        ("I don't need any refund, please check my booking",
+         [(RT, "workflow"), (R, "booking id")]),
+    ]),
+    ("33 explicit agent request transfers", BOT1, [
+        ("Please connect me to an agent", [(RT, "handoff")]),
+    ]),
+    # llm_settings.time_context_enabled: the bot answers from the runtime's
+    # current date/time context (Asia/Kolkata), never from KB retrieval.
+    # Numbers may be verbalized for TTS ("twenty twenty-six"), so the stable
+    # assertions are the route, the month name and the "today" phrasing.
+    ("34 current date is grounded", BOT1, [
+        ("What is today's date?", [
+            (RT, "chat"),
+            (R, "today"),
+            (R, datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%B").lower()),
+        ]),
+    ]),
+    # A bare affirmation with no active workflow must never (re)start the
+    # booking journey — the LLM answers it in context instead.
+    ("35 bare affirmation does not start a workflow", BOT1, [
+        ("हाँ", [(RT, "chat")]),
     ]),
 
     # ── PM bot ───────────────────────────────────────────────────────────────

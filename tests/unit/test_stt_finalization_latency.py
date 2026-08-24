@@ -16,6 +16,7 @@ flag is what actually moves turn-close latency.
 """
 
 import asyncio
+import base64
 import time
 
 import pytest
@@ -32,8 +33,13 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.utils.asyncio.task_manager import TaskManager
 
+from shared.bot_config import ResolvedBotConfig
 from shared.turn_detection import TURN_DETECTION_DEFAULTS
-from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
+from voice_runtime.pipeline import build_stt_service
+from voice_runtime.sarvam_stt import (
+    EndpointedSarvamSTTService,
+    _CodecAwareStreamingClient,
+)
 
 STOP_SECS = TURN_DETECTION_DEFAULTS["telephony"]["stop_secs"]
 UST = TURN_DETECTION_DEFAULTS["telephony"]["user_speech_timeout"]
@@ -81,6 +87,100 @@ class TestFinalizedFlag:
         frame = VADUserStoppedSpeakingFrame(stop_secs=0.2)
         await service.push_frame(frame)
         assert forwarded == [frame]
+
+
+class TestRawPcmTransport:
+    @staticmethod
+    def _config() -> ResolvedBotConfig:
+        return ResolvedBotConfig(
+            tenant_id="t",
+            bot_id="b",
+            bot_name="Test",
+            version="1",
+            published=True,
+            language="hi-IN",
+            languages=["hi-IN", "en-IN"],
+            stt={
+                "provider": "sarvam",
+                "model": "saaras:v3",
+                "api_key_reference": "env:TEST_SARVAM_API_KEY",
+                "settings": {"input_encoding": "pcm_s16le"},
+            },
+        )
+
+    def test_raw_codec_is_forwarded_during_websocket_connect(self):
+        calls = []
+
+        class _Client:
+            def connect(self, **kwargs):
+                calls.append(kwargs)
+                return "context"
+
+        client = _CodecAwareStreamingClient(_Client(), "pcm_s16le")
+        assert client.connect(language_code="hi-IN") == "context"
+        assert calls == [{
+            "language_code": "hi-IN",
+            "input_audio_codec": "pcm_s16le",
+        }]
+
+    async def test_raw_pcm_uses_sdk_envelope_with_connection_codec(self, monkeypatch):
+        monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+        service = build_stt_service(
+            self._config(),
+            use_provider_vad=False,
+        )
+        sent = []
+
+        class _Socket:
+            async def transcribe(self, **kwargs):
+                sent.append(kwargs)
+
+        service._socket_client = _Socket()
+        # Normally populated by STTService.start(StartFrame) before audio
+        # arrives; avoid opening a real provider socket in this unit test.
+        service._sample_rate = 16000
+        frames = [frame async for frame in service.run_stt(b"\x01\x02\x03\x04")]
+        assert frames == [None]
+        assert sent == [{
+            "audio": base64.b64encode(b"\x01\x02\x03\x04").decode("ascii"),
+            # Sarvam selects raw PCM from the connection query. Its generated
+            # per-message model supports this legacy envelope value only.
+            "encoding": "audio/wav",
+            "sample_rate": 16000,
+        }]
+        service._socket_client = None
+        await service.cleanup()
+
+    async def test_clean_socket_close_does_not_emit_error_per_audio_chunk(
+        self, monkeypatch
+    ):
+        import voice_runtime.sarvam_stt as sarvam_stt_module
+
+        class _CleanClose(Exception):
+            pass
+
+        monkeypatch.setattr(sarvam_stt_module, "ConnectionClosed", _CleanClose)
+        monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+        service = build_stt_service(self._config(), use_provider_vad=False)
+        calls = 0
+
+        class _Socket:
+            async def transcribe(self, **kwargs):
+                nonlocal calls
+                calls += 1
+                raise _CleanClose("received 1000 (OK); then sent 1000 (OK)")
+
+        service._socket_client = _Socket()
+        service._sample_rate = 16000
+        first = [frame async for frame in service.run_stt(b"\x00\x00")]
+        second = [frame async for frame in service.run_stt(b"\x00\x00")]
+
+        assert first == [None]
+        assert second == [None]
+        assert calls == 1
+        assert service._socket_send_failed is True
+        service._socket_client = None
+        await service.cleanup()
 
 
 async def close_turn(*, finalized: bool, stt_lag: float,

@@ -35,6 +35,7 @@ from shared.models import (
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.orchestration.voice_identity import VoiceIdentity
 from shared.providers.tts.delivery import clamp_level, clamp_speed
+from shared.turn_detection import resolve_tenant_turn_detection
 
 logger = logging.getLogger(__name__)
 
@@ -395,8 +396,15 @@ class ResolvedBotConfig:
     human_speech: dict = field(default_factory=dict)
     # Per-key provenance for privacy-safe runtime telemetry/UI inheritance.
     human_speech_sources: dict = field(default_factory=dict)
+    # Fully-resolved tenant turn/noise settings for both transports. Loaded
+    # once with this call snapshot and then reused entirely in memory.
+    turn_detection: dict = field(default_factory=dict)
     silence_timeout: int = 12
     max_call_duration: int = 3600
+    # Tenant-configured IANA timezone (tenant_settings.timezone). Grounds the
+    # optional per-turn current date/time context; cached snapshots written
+    # before this field existed resolve to UTC.
+    timezone: str = "UTC"
     audio_settings: dict = field(default_factory=dict)
     # Languages the bot is configured for (bot_languages), and per-language
     # voice-configuration problems found at resolution time ({locale: message}).
@@ -440,6 +448,22 @@ def invalidate_bot_config_sync(tenant_id: str, bot_id: str) -> None:
         client.close()
     except Exception:  # noqa: BLE001
         logger.warning("bot config cache invalidation failed for %s/%s", tenant_id, bot_id)
+
+
+def invalidate_tenant_bot_configs_sync(tenant_id: str, bot_ids: list[str]) -> None:
+    """Invalidate one tenant's bot snapshots using a single Redis connection."""
+    if not bot_ids:
+        return
+    import redis as redis_sync
+
+    try:
+        client = redis_sync.from_url(get_settings().redis_url)
+        keys = [key for bot_id in bot_ids for key in _all_keys(tenant_id, bot_id)]
+        for index in range(0, len(keys), 500):
+            client.delete(*keys[index : index + 500])
+        client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("tenant bot config cache invalidation failed for %s", tenant_id)
 
 
 def invalidate_all_bot_configs_sync() -> None:
@@ -736,12 +760,25 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
 
         # Human speech naturalness: platform defaults <- tenant override <-
         # bot override, merged and clamped once here so the runtime and every
-        # cached snapshot carry the final effective config.
-        tenant_human_speech = session.execute(
-            select(TenantSetting.human_speech).where(
+        # cached snapshot carry the final effective config. The tenant's
+        # timezone rides along — it grounds the runtime's optional current
+        # date/time context (shared.orchestration.time_context).
+        tenant_settings_row = session.execute(
+            select(
+                TenantSetting.human_speech,
+                TenantSetting.timezone,
+                TenantSetting.turn_detection,
+            ).where(
                 TenantSetting.tenant_id == bot.tenant_id
             )
-        ).scalar_one_or_none()
+        ).first()
+        tenant_human_speech = tenant_settings_row[0] if tenant_settings_row else None
+        tenant_timezone = (
+            tenant_settings_row[1] if tenant_settings_row else None
+        ) or "UTC"
+        tenant_turn_detection = resolve_tenant_turn_detection(
+            tenant_settings_row[2] if tenant_settings_row else None
+        )
         human_speech, human_speech_sources = resolve_human_speech_with_sources(
             tenant_human_speech, vbs.human_speech if vbs else None
         )
@@ -792,8 +829,10 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             goal_policy=(vbs.goal_policy if vbs else None) or {},
             human_speech=human_speech,
             human_speech_sources=human_speech_sources,
+            turn_detection=tenant_turn_detection,
             silence_timeout=settings.default_silence_timeout,
             max_call_duration=settings.max_call_duration,
+            timezone=tenant_timezone,
             audio_settings=audio_settings,
             languages=bot_languages,
             language_warnings=language_warnings,

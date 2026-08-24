@@ -9,10 +9,12 @@ real-estate schema works through configuration alone — no code changes.
 
 from shared.customer_context import CustomerContextSnapshot
 from shared.runtime_context import (
+    asks_about_context_fact,
     build_runtime_context,
     collection_snapshot_from_context,
     context_from_collection_snapshot,
     mentions_context_fact,
+    should_reset_verified_subject,
     resolve_response_path,
     validate_field_definitions,
     validate_payload,
@@ -480,3 +482,45 @@ class TestMentionsContextFact:
         assert not mentions_context_fact("", self.KEYS)
         assert not mentions_context_fact("what is my check-in date", ())
         assert not mentions_context_fact("what is my check-in date", None)
+
+    def test_fact_question_excludes_related_actions(self):
+        assert asks_about_context_fact(
+            "Can you confirm my hotel name?", self.KEYS,
+        )
+        assert asks_about_context_fact("booking details please", self.KEYS)
+        for text in (
+            "please email my booking voucher",
+            "send the voucher to my email",
+            "confirm this booking with the hotel",
+        ):
+            assert not asks_about_context_fact(text, self.KEYS), text
+
+
+class TestVerifiedSubjectReset:
+    VALUES = {
+        "booking_id": "601001",
+        "guest_name": "Rahul Sharma",
+        "hotel_name": "OYO Townhouse 121",
+    }
+
+    def test_related_action_keeps_verified_subject(self):
+        for text in (
+            "please email my voucher",
+            "what is my hotel name",
+            "tell me the pending amount",
+            "confirm this with the property",
+        ):
+            assert not should_reset_verified_subject(text, self.VALUES), text
+
+    def test_explicit_new_subject_resets(self):
+        for text in (
+            "I need help with another booking",
+            "use booking ID 601002",
+            "booking id six zero one zero zero two",
+        ):
+            assert should_reset_verified_subject(text, self.VALUES), text
+
+    def test_repeating_same_identifier_does_not_reset(self):
+        assert not should_reset_verified_subject(
+            "booking ID 601001", self.VALUES,
+        )

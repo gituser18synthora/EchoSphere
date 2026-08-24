@@ -92,7 +92,8 @@ B1_NODES = layout([
 
     # details branch — exits the workflow so detail Q&A runs on the LLM with facts
     N("n_msg_details_exit", "message", "Details handoff to LLM", {
-        "text": "Of course — I have your verified booking right here. Ask me anything about it: the hotel name, check-in and check-out dates, occupancy, payment status or pending amount."}),
+        "respondFromContext": True,
+        "text": "Answer the caller's current booking-detail request directly from the workflow-verified context."}),
     N("n_end_details", "end", "End (details Q&A)"),
 
     # voucher branch

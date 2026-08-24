@@ -78,3 +78,36 @@ async def test_empty_language_keeps_multilingual_auto_detection(monkeypatch):
     )
     assert service._settings.language is None
     await service.cleanup()
+
+
+async def test_telephony_empty_language_uses_bot_primary_language(monkeypatch):
+    monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+    service = build_stt_service(
+        _config({"vad_signals": True}, language=""),
+        use_provider_vad=False,
+        prefer_primary_language=True,
+    )
+    assert service._settings.language == "hi-IN"
+    assert service._input_audio_codec == "pcm_s16le"
+    await service.cleanup()
+
+
+async def test_telephony_can_explicitly_keep_language_auto_detection(monkeypatch):
+    monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+    service = build_stt_service(
+        _config({"auto_detect_language": True}, language=""),
+        use_provider_vad=False,
+        prefer_primary_language=True,
+    )
+    assert service._settings.language is None
+    await service.cleanup()
+
+
+async def test_wav_setting_is_normalized_to_raw_pcm(monkeypatch):
+    monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+    service = build_stt_service(
+        _config({"input_encoding": "wav"}),
+        use_provider_vad=False,
+    )
+    assert service._input_audio_codec == "pcm_s16le"
+    await service.cleanup()

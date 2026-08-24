@@ -143,6 +143,18 @@ class TestFallbacks:
         assert result.tool_name == "check_payment_status"
         assert llm.calls == []
 
+    async def test_weak_partial_hit_falls_through_to_llm(self):
+        """One word from a sample is never enough for the fast path — the
+        LLM (with conversation context) must judge the turn."""
+        llm = _FakeLLM({"intent": None, "signal": "question",
+                        "confidence": 0.8, "entities": {}})
+        pipeline = HybridIntentPipeline(llm=llm, intents=INTENTS)
+        result = await pipeline.classify(
+            "what happens with the payment after I book an appointment later"
+        )
+        assert result.source == "llm"
+        assert llm.calls  # the fast path did not claim the turn
+
     async def test_llm_failure_falls_back_to_regex(self):
         llm = _FakeLLM("", fail=True)
         pipeline = HybridIntentPipeline(llm=llm, intents=INTENTS)

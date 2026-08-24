@@ -86,11 +86,18 @@ _SARVAM_STT_COMMON = {
         "help": "Finalize segments after ~0.5s of silence instead of ~1s (faster endpointing).",
     },
     "input_encoding": {
-        # "wav" is the only encoding the pinned sarvamai SDK (0.1.28) accepts
-        # on the streaming socket — "pcm_s16le" fails per-chunk validation.
-        "type": "enum", "values": ["pcm_s16le", "wav"], "default": "wav",
+        # The runtime sends headerless signed 16-bit Pipecat frames.  Its
+        # Sarvam adapter bypasses the generated SDK's WAV-only message model
+        # and sends the endpoint's documented raw-PCM envelope directly.
+        "type": "enum", "values": ["pcm_s16le"], "default": "pcm_s16le",
         "label": "Input encoding", "advanced": True,
         "help": "Wire encoding for microphone/telephony audio sent to Sarvam.",
+    },
+    "auto_detect_language": {
+        "type": "boolean", "default": False,
+        "label": "Auto-detect language", "advanced": True,
+        "help": "Auto-detect every utterance language. Keep off for phone calls "
+                "with short replies; the bot's primary language is more reliable.",
     },
     "timeout_seconds": {
         "type": "number", "min": 5, "max": 120, "default": 30, "step": 1,

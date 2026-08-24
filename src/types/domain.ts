@@ -289,6 +289,42 @@ export interface TenantSettings {
   humanSpeechInheritedSources: HumanSpeechSources;
 }
 
+export type TurnDetectionMode = "system_default" | "recommended" | "custom";
+export type TurnDetectionTransport = "browser" | "telephony";
+export type TurnDetectionGroup = "turn_detection" | "noise_gate";
+export type TurnDetectionValues = Record<TurnDetectionGroup, Record<string, number>>;
+export type TurnDetectionOverrides = Partial<Record<
+  TurnDetectionTransport,
+  Partial<Record<TurnDetectionGroup, Record<string, number | boolean>>>
+>>;
+
+export interface TurnDetectionField {
+  group: TurnDetectionGroup;
+  key: string;
+  section: string;
+  label: string;
+  description: string;
+  input: "slider" | "number" | "toggle" | "select";
+  valueType: "number" | "integer" | "boolean";
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+  default: Record<TurnDetectionTransport, number>;
+  recommended: Record<TurnDetectionTransport, number>;
+}
+
+export interface TurnDetectionConfig {
+  schemaVersion: number;
+  mode: TurnDetectionMode;
+  overrides: TurnDetectionOverrides;
+  effective: Record<TurnDetectionTransport, TurnDetectionValues>;
+  transports: { id: TurnDetectionTransport; label: string; description: string }[];
+  sections: { id: string; label: string; description: string }[];
+  modes: { id: TurnDetectionMode; label: string; description: string }[];
+  fields: TurnDetectionField[];
+}
+
 export type Severity = "good" | "warning" | "serious" | "critical" | "neutral";
 
 export type BotStatus =

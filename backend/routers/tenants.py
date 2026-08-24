@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import (
+    TENANT_ADMIN,
     get_current_user,
     is_super_admin,
     require_permission,
+    require_roles,
     require_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
@@ -44,6 +46,11 @@ from shared.models import (
 from backend.serializers import serialize_tenant, serialize_tenant_settings
 from shared.guardrails import load_effective_guardrails_sync
 from shared.tenant_languages import validate_language_assignment
+from shared.turn_detection import (
+    normalize_tenant_turn_detection,
+    tenant_turn_detection_payload,
+    validate_tenant_turn_detection,
+)
 
 
 def _validate_master_code(db: Session, model, value: str | None, label: str) -> str | None:
@@ -613,6 +620,79 @@ def get_tenant_settings(
     s = _get_or_create_settings(db, tid, user)
     db.commit()
     return ok(serialize_tenant_settings(s))
+
+
+class TenantTurnDetectionRequest(BaseModel):
+    mode: str = "system_default"
+    overrides: dict = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+@router.get("/tenant/turn-detection")
+def get_tenant_turn_detection(
+    user: User = Depends(require_roles(TENANT_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated tenant's config and authoritative UI schema."""
+    tid = resolve_tenant_id(user, None)
+    if db.get(Tenant, tid) is None:
+        raise NotFoundError("Tenant")
+    settings = _get_or_create_settings(db, tid, user)
+    db.commit()
+    return ok(tenant_turn_detection_payload(settings.turn_detection))
+
+
+@router.put("/tenant/turn-detection")
+def update_tenant_turn_detection(
+    body: TenantTurnDetectionRequest,
+    request: Request,
+    user: User = Depends(require_roles(TENANT_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Replace this tenant's sparse profile; no cross-tenant id is accepted."""
+    tid = resolve_tenant_id(user, None)
+    settings = _get_or_create_settings(db, tid, user)
+    submitted = body.model_dump()
+    problems = validate_tenant_turn_detection(submitted)
+    if problems:
+        raise ApiError(
+            "Turn detection configuration is invalid.",
+            422,
+            errors=[{"field": "turnDetection", "message": problem} for problem in problems],
+        )
+    canonical = normalize_tenant_turn_detection(submitted)
+    before = settings.turn_detection
+    # System Default stores no override document at all. Existing and future
+    # runtime defaults therefore remain authoritative without copied values.
+    settings.turn_detection = None if canonical["mode"] == "system_default" else canonical
+    settings.updated_by = user.id
+    record_audit(
+        db,
+        user=user,
+        action="Updated tenant turn detection",
+        entity_type="tenant_settings",
+        entity_id=settings.id,
+        tenant_id=tid,
+        previous_value=before,
+        new_value=settings.turn_detection,
+        request=request,
+    )
+    db.commit()
+
+    # Tenant settings are resolved into bot snapshots once at session start.
+    # This rare admin write invalidates snapshots; active calls keep their
+    # in-memory copy and new sessions receive the new values.
+    from shared.bot_config import invalidate_tenant_bot_configs_sync
+
+    bot_ids = db.scalars(
+        select(VoiceBot.id).where(
+            VoiceBot.tenant_id == tid,
+            VoiceBot.is_deleted.is_(False),
+        )
+    ).all()
+    invalidate_tenant_bot_configs_sync(tid, list(bot_ids))
+    return ok(tenant_turn_detection_payload(settings.turn_detection))
 
 
 # ── Tenant profile ────────────────────────────────────────────────────────────

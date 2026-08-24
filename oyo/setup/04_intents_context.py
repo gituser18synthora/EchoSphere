@@ -14,6 +14,14 @@ WF1 = "workflow:oyo_booking_support_journey"
 WF2 = "workflow:oyo_property_verification_journey"
 WF3 = "workflow:oyo_stock_validation_journey"
 
+# Confidence thresholds are RISK TIERS against the router's match-strength
+# scoring (exact configured phrase 0.95 > contained phrase 0.55–0.9 by how
+# much of the utterance it covers > in-order words with gaps > lone word
+# ≤0.6). Handoff/destructive intents demand phrase-level evidence (0.65–0.7)
+# so a stray "refund"/"cancellation" in a longer sentence can never transfer
+# the call; workflow entries sit at 0.55–0.6; informational routing at 0.4.
+# Ambiguous phrasings fall through to the LLM classifier on live calls, which
+# is gated by the SAME per-intent thresholds against its own confidence.
 INTENTS = {
     BOT1: [
         {"name": "booking_confirmation", "category": "booking",
@@ -22,60 +30,95 @@ INTENTS = {
                      "confirm my booking", "confirm my upcoming booking",
                      "confirm upcoming booking", "upcoming booking confirmation",
                      "check my upcoming booking", "booking status",
-                     "is my reservation confirmed", "check my booking"],
-         "confidenceThreshold": 0.05, "route": WF1,
+                     "is my reservation confirmed", "check my booking",
+                     "meri booking confirm hai kya", "booking confirm hai kya",
+                     "मेरी बुकिंग कन्फर्म है क्या", "बुकिंग का स्टेटस बताइए"],
+         "confidenceThreshold": 0.55, "route": WF1,
          "entities": [], "optionalEntities": ["booking_id"]},
         {"name": "checkin_confirmation", "category": "booking",
          "description": "Caller wants OYO to confirm the stay directly with the property (spec Flow 6).",
          "samples": ["confirm with the hotel", "confirm with the property",
                      "will the hotel honor my booking", "check-in confirmation",
-                     "confirm my check-in", "verify with the property"],
-         "confidenceThreshold": 0.05, "route": WF1,
+                     "confirm my check-in", "verify with the property",
+                     "please check with the property", "hotel se confirm karo",
+                     "होटल से कन्फर्म कर दीजिए"],
+         "confidenceThreshold": 0.6, "route": WF1,
          "optionalEntities": ["booking_id"]},
         {"name": "booking_voucher", "category": "booking",
          "description": "Caller wants the booking voucher emailed (spec Flow 4).",
          "samples": ["booking voucher", "send my voucher", "email me the voucher",
                      "need the voucher", "voucher for my booking",
-                     "send me the voucher", "share the voucher"],
-         "confidenceThreshold": 0.05, "route": WF1,
+                     "send me the voucher", "share the voucher",
+                     "email the voucher", "voucher bhej do", "वाउचर भेज दीजिए"],
+         "confidenceThreshold": 0.6, "route": WF1,
          "optionalEntities": ["booking_id", "email_address"]},
         {"name": "booking_details", "category": "booking",
          "description": "Caller asks for their booking details (spec Flow 5); enters the verified flow first.",
          "samples": ["booking details", "my booking details",
-                     "share the booking details", "details of my booking"],
-         "confidenceThreshold": 0.05, "route": WF1,
+                     "share the booking details", "details of my booking",
+                     "booking ki details batao", "बुकिंग की डिटेल्स बताइए"],
+         "confidenceThreshold": 0.55, "route": WF1,
          "optionalEntities": ["booking_id"]},
         {"name": "call_opening_response", "category": "flow",
-         "description": "Short acknowledgements after the greeting — start the guided booking flow.",
-         # NOTE: never use short substring-prone samples here ("hi" matches
-         # inside "which", "yes" inside "yesterday") — the router matches
-         # samples as substrings of the utterance.
-         "samples": ["hello", "namaste", "haan ji", "hanji", "हाँ", "help me with my booking"],
-         "confidenceThreshold": 0.05, "route": WF1},
+         "description": ("Caller responds to the greeting and wants help with "
+                         "their booking — start the guided booking flow. Also "
+                         "matches a bare affirmative ('haan', 'yes') given "
+                         "directly in reply to the opening greeting."),
+         # Bare affirmations ("हाँ", "haan ji") are deliberately NOT samples:
+         # a "yes" answered to ANY later question would restart the workflow.
+         # Live calls route them through the LLM classifier, which sees the
+         # greeting context and picks this intent only at the call opening.
+         "samples": ["hello", "namaste", "help me with my booking",
+                     "i am calling about my booking",
+                     "booking ke baare mein baat karni hai",
+                     "मुझे अपनी बुकिंग के बारे में बात करनी है"],
+         "confidenceThreshold": 0.6, "route": WF1},
         {"name": "cancel_booking", "category": "out_of_scope",
          "description": "Cancellations are out of scope — transfer back to the IVR queue.",
          "samples": ["cancel my booking", "cancellation", "want to cancel",
-                     "cancel the reservation", "how do i cancel"],
-         "confidenceThreshold": 0.05, "route": "handoff",
+                     "cancel the reservation", "how do i cancel",
+                     "i want to cancel my booking", "cancel this booking",
+                     "booking cancel karni hai", "बुकिंग कैंसिल करनी है"],
+         "confidenceThreshold": 0.7, "route": "handoff",
          "handoffEnabled": True},
         {"name": "refund_status", "category": "out_of_scope",
          "description": "Refunds are out of scope — transfer back to the IVR queue.",
          "samples": ["refund", "money back", "refund status",
-                     "when will i get my refund"],
-         "confidenceThreshold": 0.05, "route": "handoff",
+                     "when will i get my refund", "where is my refund",
+                     "i want my refund", "i want my money back",
+                     "refund kab milega", "रिफंड कब मिलेगा"],
+         "confidenceThreshold": 0.7, "route": "handoff",
          "handoffEnabled": True},
         {"name": "new_booking", "category": "out_of_scope",
          "description": "New bookings are out of scope — transfer back to the IVR queue.",
          "samples": ["new booking", "book a room", "make a booking",
-                     "book a hotel", "new reservation"],
-         "confidenceThreshold": 0.05, "route": "handoff",
+                     "book a hotel", "new reservation",
+                     "i want to book a room", "naya room book karna hai",
+                     "नई बुकिंग करनी है"],
+         "confidenceThreshold": 0.65, "route": "handoff",
          "handoffEnabled": True},
         {"name": "complaint_escalation", "category": "out_of_scope",
          "description": "Complaints/escalations go to a human agent.",
          "samples": ["complaint", "file a complaint", "very bad experience",
-                     "escalate this"],
-         "confidenceThreshold": 0.05, "route": "handoff",
+                     "escalate this", "i want to file a complaint",
+                     "i want to escalate this", "shikayat karni hai",
+                     "शिकायत दर्ज करनी है"],
+         "confidenceThreshold": 0.7, "route": "handoff",
          "handoffEnabled": True},
+        {"name": "booking_fact_question", "category": "booking",
+         "description": ("Caller asks about a fact of their OWN booking "
+                         "(dates, hotel, amounts) — answered by the LLM from "
+                         "verified context, never by KB retrieval."),
+         "samples": ["when is my check-in", "when is my check-out",
+                     "which hotel", "what is my hotel name",
+                     "can you confirm my hotel name", "tell me my hotel name",
+                     "hotel name please", "what are my booking dates",
+                     "how much did i pay", "what is my pending amount",
+                     "what is my payment status", "what is my occupancy",
+                     "what is my check-in date", "what is my checkout date",
+                     "kab hai mera check-in",
+                     "मेरा चेक-इन कब है"],
+         "confidenceThreshold": 0.4, "route": ""},
     ],
     BOT2: [
         {"name": "pm_call_opening", "category": "flow",
@@ -165,6 +208,15 @@ for bot_id, intents in INTENTS.items():
             check(c.post(f"/bots/{bot_id}/intents", json=intent),
                   f"intent {intent['name']} ({bot_id})")
 
+# A manually edited Testing-Studio payload is deliberate demo data — reruns
+# of this stage must never clobber it. Only the very first run seeds the
+# default payload.
+existing_context = check(c.get(f"/bots/{BOT1}/runtime-context"),
+                         "read runtime context bot 1") or {}
+existing_payload = (existing_context.get("testPayload")
+                    if isinstance(existing_context, dict) else None)
+if isinstance(existing_payload, dict) and existing_payload:
+    RUNTIME_CONTEXT["testPayload"] = existing_payload
 check(c.put(f"/bots/{BOT1}/runtime-context", json=RUNTIME_CONTEXT),
       "runtime context bot 1")
 print("intents + context done")

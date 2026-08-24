@@ -496,6 +496,12 @@ def _serialize_voice_settings(
     inherited, inherited_sources = resolve_human_speech_with_sources(
         tenant_human_speech
     )
+    public_stt_settings = dict(s.stt_settings or {})
+    # Turn detection moved to a Tenant Admin-only tenant endpoint. Never leak
+    # its legacy bot-level representation through the broadly readable Voice
+    # API (Tenant Users can legitimately manage provider/voice selection).
+    public_stt_settings.pop("turn_detection", None)
+    public_stt_settings.pop("noise_gate", None)
     return {
         "botId": s.bot_id,
         "voiceId": s.voice_id,
@@ -507,7 +513,7 @@ def _serialize_voice_settings(
         "sttProvider": s.stt_provider,
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
-        "sttSettings": s.stt_settings or {},
+        "sttSettings": public_stt_settings,
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
@@ -558,6 +564,20 @@ def update_voice_settings(
     db: Session = Depends(get_db),
 ):
     bot = _get_bot_checked(db, bot_id, user)
+    protected_turn_keys = {"turn_detection", "noise_gate"}
+    attempted_turn_update = bool(
+        body.stt_settings is not None
+        and protected_turn_keys.intersection(body.stt_settings)
+    )
+    if attempted_turn_update:
+        # A normal Tenant User must receive a permission failure even when
+        # crafting the request manually; Tenant Admins use the tenant-scoped
+        # endpoint so the values cannot accidentally become per-bot again.
+        status_code = 403 if user.role.code == "tenant_user" else 422
+        raise ApiError(
+            "Turn detection can only be changed by a Tenant Admin from the Turn Detection menu.",
+            status_code,
+        )
     s = db.scalar(select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id))
     if s is None:
         s = VoiceBotSetting(

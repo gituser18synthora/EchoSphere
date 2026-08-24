@@ -13,6 +13,7 @@ the legacy VoiceBot rag_router/intent_engine, simplified and made stateless.
 """
 
 import re
+import string
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -350,6 +351,68 @@ _UNSAFE = re.compile(
 )
 
 
+# ── intent sample matching ───────────────────────────────────────────────────
+# Samples match WHOLE WORDS, never mid-word substrings ("yes" must not fire
+# inside "yesterday", "हाँ" not inside "कहाँ"). Tokenization is deliberately
+# NOT \w+: Python's \w splits Indic words at every matra ("कहाँ" → "कह"), so
+# tokens are whitespace-delimited words with surrounding punctuation stripped
+# and hyphen/slash compounds split ("check-in" ≡ "check in").
+
+_TOKEN_SEPARATORS = re.compile(r"[-–—/_]+")
+_TOKEN_STRIP = string.punctuation + "।॥॰…‘’“”«»؟"
+
+
+def match_tokens(text: str) -> list[str]:
+    """Unicode-safe whole-word tokens for sample/utterance matching."""
+    normalized = _TOKEN_SEPARATORS.sub(" ", (text or "").lower())
+    return [t for t in (tok.strip(_TOKEN_STRIP) for tok in normalized.split()) if t]
+
+
+def sample_match_strength(sample: str, utterance_tokens: list[str]) -> float:
+    """How strongly an utterance expresses one configured sample phrase.
+
+    Returns 0.0 for no match; otherwise a confidence that reflects the
+    QUALITY of the evidence (not, as the old voting did, what fraction of the
+    intent's samples happened to hit — a metric that got weaker every time an
+    author added coverage):
+
+    - the utterance IS the sample                       → 0.95
+    - the sample phrase is contained contiguously       → 0.55 + 0.35 × coverage
+    - all sample words appear in order with gaps
+      ("confirm my *upcoming* booking"; ≥3-word samples) → 0.45 + 0.35 × coverage
+    - a single-word sample appears as a whole word      → 0.25 + 0.35 × coverage
+
+    where coverage = sample words / utterance words: a phrase that dominates
+    the utterance scores near the top of its band, the same phrase buried in
+    a long sentence scores near the bottom. This is what makes per-intent
+    ``confidence_threshold`` values meaningful — a lone common word can never
+    reach a high-threshold (handoff/destructive) intent, while an utterance
+    that is essentially the configured phrase always can.
+    """
+    sample_tokens = match_tokens(sample)
+    if not sample_tokens or not utterance_tokens:
+        return 0.0
+    m, n = len(sample_tokens), len(utterance_tokens)
+    coverage = min(1.0, m / n)
+    contiguous = m <= n and any(
+        utterance_tokens[i:i + m] == sample_tokens for i in range(n - m + 1)
+    )
+    if contiguous:
+        if m == n:
+            return 0.95
+        if m == 1:
+            return 0.25 + 0.35 * coverage
+        return 0.55 + 0.35 * coverage
+    if m >= 3:
+        position = 0
+        for token in utterance_tokens:
+            if token == sample_tokens[position]:
+                position += 1
+                if position == m:
+                    return 0.45 + 0.35 * coverage
+    return 0.0
+
+
 class TurnRouter:
     """Stateless per-bot router; bot configuration is passed per call."""
 
@@ -420,7 +483,8 @@ class TurnRouter:
         if _HANDOFF.search(stripped) and re.search(r"\b(want|need|give|get)\b", stripped, re.I):
             return RouteDecision(kind=RouteKind.HANDOFF, action="transfer", reason="handoff_phrase")
 
-        # 3. Configured intents (sample keyword voting). This must precede the
+        # 3. Configured intents (whole-word sample matching, per-intent
+        # confidence thresholds). This must precede the
         # generic smalltalk shortcut: when a bot explicitly configures "yes"
         # or "haan" as its opening confirmation, that answer must start the
         # workflow instead of being sent to the LLM as casual smalltalk.
@@ -482,39 +546,31 @@ class TurnRouter:
                              considered_kb=self._has_kbs)
 
     def _match_intent(self, text: str) -> tuple[str, str | None, float] | None:
-        lowered = text.lower()
-        utterance_tokens = re.findall(r"\w+", lowered, re.UNICODE)
+        """Best configured intent for the utterance, as (name, route, confidence).
 
-        def sample_matches(sample: str) -> bool:
-            if sample in lowered:
-                return True
-            # Natural callers often insert a modifier into a configured
-            # phrase ("confirm my *upcoming* booking").  For samples of at
-            # least three words, preserve the authored word order while
-            # allowing those intervening words; this stays much narrower
-            # than unordered keyword matching.
-            sample_tokens = re.findall(r"\w+", sample, re.UNICODE)
-            if len(sample_tokens) < 3:
-                return False
-            position = 0
-            for token in utterance_tokens:
-                if token == sample_tokens[position]:
-                    position += 1
-                    if position == len(sample_tokens):
-                        return True
-            return False
-
+        Confidence is the strongest single sample match (see
+        :func:`sample_match_strength`) and is gated by the intent's own
+        ``confidence_threshold`` — an author expresses the intent's RISK
+        there: destructive or handoff intents demand strong phrase-level
+        evidence, informational ones may accept a weaker match. An utterance
+        that IS a configured sample (0.95) always counts: the caller said the
+        exact configured phrase.
+        """
+        utterance_tokens = match_tokens(text)
         best: tuple[str, str | None, float] | None = None
         for intent in self._intents:
-            samples = [s.lower() for s in (intent.get("samples") or [])]
+            samples = [s for s in (intent.get("samples") or []) if s]
             if not samples:
                 continue
-            hits = sum(1 for s in samples if s and sample_matches(s))
-            score = hits / len(samples) if samples else 0.0
+            strength = max(
+                (sample_match_strength(s, utterance_tokens) for s in samples),
+                default=0.0,
+            )
+            if strength <= 0.0:
+                continue
             threshold = float(intent.get("confidence_threshold") or 0.5)
-            # A single exact sample phrase match is a strong signal.
-            if hits and (score >= threshold or any(s == lowered for s in samples)):
-                confidence = max(score, 0.9 if any(s == lowered for s in samples) else score)
-                if best is None or confidence > best[2]:
-                    best = (intent.get("name", "intent"), intent.get("route"), confidence)
+            if strength < threshold and strength < 0.95:
+                continue
+            if best is None or strength > best[2]:
+                best = (intent.get("name", "intent"), intent.get("route"), strength)
         return best

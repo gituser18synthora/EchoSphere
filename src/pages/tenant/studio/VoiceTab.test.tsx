@@ -276,30 +276,6 @@ describe("VoiceTab — Per-language voices", () => {
     await waitFor(() => expect(api.getVoiceSettings).toHaveBeenCalledTimes(2)); // draft reload
   });
 
-  it("edits and saves per-bot turn response timing", async () => {
-    const user = userEvent.setup();
-    installDefaultMocks({
-      ...SETTINGS,
-      sttSettings: {
-        turn_detection: { user_speech_timeout: 0.7, finalize_grace: 0.15 },
-      },
-    });
-    render(<VoiceTab bot={BOT} />);
-    await screen.findByText("Hindi");
-
-    await user.click(screen.getByText("Turn response timing"));
-    expect(screen.getByLabelText("User pause window value")).toHaveValue(0.7);
-    expect(screen.getByLabelText("Transcript finalization grace value")).toHaveValue(0.15);
-
-    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
-    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).toMatchObject({
-      sttSettings: {
-        turn_detection: { user_speech_timeout: 0.7, finalize_grace: 0.15 },
-      },
-    });
-  });
-
   it("keeps a readable name for platform-disabled languages and flags them", async () => {
     vi.mocked(api.listLanguages).mockResolvedValue([
       { id: "l1", code: "en-IN", name: "English (India)", enabled: true },

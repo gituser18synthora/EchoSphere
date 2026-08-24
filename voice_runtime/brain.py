@@ -127,6 +127,11 @@ from shared.orchestration.router import (
     detect_hangup,
 )
 from shared.orchestration.spoken_numbers import meaningful_language_words
+from shared.orchestration.time_context import (
+    TIME_CONTEXT_SETTING,
+    asks_current_datetime,
+    time_context_section,
+)
 from shared.orchestration.tool_executor import get_tool_executor
 from shared.orchestration.voice_identity import (
     adapt_authored_speaker_grammar,
@@ -141,10 +146,11 @@ from shared.providers.languages import to_platform_language
 from shared.bot_config import ResolvedBotConfig
 from shared.customer_context import CustomerContextSnapshot
 from shared.runtime_context import (
+    asks_about_context_fact,
+    CONTEXT_RESPONSE_INSTRUCTION,
     RuntimeContext,
     collection_snapshot_from_context,
     context_from_collection_snapshot,
-    mentions_context_fact,
 )
 from voice_runtime.call_policy import (
     CollectionCallPolicy,
@@ -362,6 +368,41 @@ def turn_time_iso(timestamp: float) -> str:
     )
 
 
+# ── scripted-ask language adaptation (validation) ────────────────────────────
+# A workflow step that WAITS for the caller's answer may be re-delivered in
+# the caller's language only when the adaptation demonstrably preserved the
+# ask. These checks are structural (language script, question shape, literal
+# values) — anything the checks cannot prove falls back to the authored text.
+
+_ADAPTATION_DIGIT_RUNS = re.compile(r"\d+")
+_ADAPTATION_TIMEOUT_SECONDS = 6.0
+_ADAPTATION_MAX_TOKENS = 220
+
+
+def validate_scripted_adaptation(script: str, adapted: str, language: str) -> bool:
+    """Whether an adapted scripted ask may be spoken instead of the original.
+
+    - non-empty and not disproportionately longer than the script;
+    - written in the conversation language's script/lexicon;
+    - still a QUESTION when the script asks one (an ask replaced by progress
+      filler — "please wait, I am checking" — fails here);
+    - every literal number in the script survives verbatim.
+    """
+    adapted = (adapted or "").strip()
+    script = (script or "").strip()
+    if not adapted or not script:
+        return False
+    if len(adapted) > max(240, 3 * len(script)):
+        return False
+    if language and not script_supports_language(adapted, language):
+        return False
+    if "?" in script and "?" not in adapted:
+        return False
+    return all(
+        run in adapted for run in _ADAPTATION_DIGIT_RUNS.findall(script)
+    )
+
+
 class ConversationBrain(FrameProcessor):
     def __init__(
         self,
@@ -463,6 +504,13 @@ class ConversationBrain(FrameProcessor):
         # outcome — a bot with no intents and no domain policy gains nothing
         # from an extra model hop per turn.
         llm_settings_early = (config.llm or {}).get("settings") or {}
+        # Current date/time grounding (config-gated, off by default): when a
+        # tenant enables it, every generation carries a fresh "# Current date
+        # and time" section in the tenant's timezone so relative-date answers
+        # ("is my check-in tomorrow?") stop hallucinating today's date.
+        self._time_context_enabled = bool(
+            llm_settings_early.get(TIME_CONTEXT_SETTING, False)
+        )
         classify_enabled = bool(llm_settings_early.get("intent_llm_enabled", True)) and (
             bool(config.intents) or self._policy is not None
         )
@@ -2197,7 +2245,7 @@ class ConversationBrain(FrameProcessor):
         if (
             decision.kind == RouteKind.KNOWLEDGE
             and self._runtime_context is not None
-            and mentions_context_fact(text, self._runtime_context.prompt_values())
+            and asks_about_context_fact(text, self._runtime_context.prompt_values())
         ):
             # The caller is asking about their OWN facts ("what is my
             # check-in date?"): the call context answers it. Tenant knowledge
@@ -2207,6 +2255,18 @@ class ConversationBrain(FrameProcessor):
             decision = RouteDecision(
                 kind=RouteKind.CHAT, confidence=1.0,
                 reason="context_fact_question", considered_kb=True,
+            )
+        if (
+            decision.kind == RouteKind.KNOWLEDGE
+            and self._time_context_enabled
+            and asks_current_datetime(text)
+        ):
+            # "What is today's date?" is answered by the runtime's current
+            # date/time context — tenant knowledge would miss and dead-end
+            # in the canned KB-miss phrase.
+            decision = RouteDecision(
+                kind=RouteKind.CHAT, confidence=1.0,
+                reason="time_context_question", considered_kb=True,
             )
         # Deterministic guardrail check on the caller's words, BEFORE any
         # understanding, tools, knowledge or generation. A blocked turn is
@@ -2316,6 +2376,23 @@ class ConversationBrain(FrameProcessor):
                 (classification.signal if classification is not None else None)
                 or decision.signal
                 or classify_user_signal(text)
+            )
+        if (
+            self._active_workflow is not None
+            and self._runtime_context is not None
+            and self._runtime_context.is_session_verified()
+            and asks_about_context_fact(text, self._runtime_context.prompt_values())
+        ):
+            # A verified caller asking for one of their own facts must get the
+            # value now. The active workflow is merely paused for this turn;
+            # otherwise its deterministic hub can replace the answer with a
+            # generic menu ("ask me anything about your booking").
+            decision = RouteDecision(
+                kind=RouteKind.CHAT,
+                intent=classification.intent if classification else decision.intent,
+                confidence=1.0,
+                reason="verified_context_question_during_workflow",
+                signal=signal,
             )
         will_run_tool = bool(
             classification is not None
@@ -3327,14 +3404,17 @@ class ConversationBrain(FrameProcessor):
         signal: str | None = None,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
-        starting_new_workflow = self._active_workflow is None
-        if (
-            starting_new_workflow
-            and self._runtime_context is not None
-            and self._runtime_context.requires_session_verification()
-        ):
-            self._runtime_context.clear_workflow_values()
-            self._verified_runtime_context_block = ""
+        reset_state = False
+        initial_slots = None
+        if self._runtime_context is not None:
+            if self._runtime_context.should_reset_verified_subject(text):
+                self._runtime_context.clear_workflow_values()
+                self._verified_runtime_context_block = ""
+                reset_state = True
+            else:
+                verified_slots = self._runtime_context.workflow_values()
+                if verified_slots:
+                    initial_slots = verified_slots
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -3343,6 +3423,8 @@ class ConversationBrain(FrameProcessor):
             workflow_name=workflow_name,
             user_text=text,
             language=self._conversation_language,
+            initial_slots=initial_slots,
+            reset_state=reset_state,
         )
         workflow_slots = result.get("slots") or {}
         if (
@@ -3367,7 +3449,11 @@ class ConversationBrain(FrameProcessor):
                 workflow=workflow_name,
                 signal=result.get("signal") or decision.signal,
             )
-            extra = self._workflow_context_instruction(result)
+            extra = (
+                self._context_response_instruction()
+                if result.get("contextResponse")
+                else self._workflow_context_instruction(result)
+            )
             if self._policy is not None:
                 extra += self._policy.turn_instruction()
             await self._generate_reply(text, decision, started, extra_system=extra)
@@ -3378,17 +3464,49 @@ class ConversationBrain(FrameProcessor):
         # substitutes) — never re-delivered by generation, which could
         # paraphrase legally-exact text.
         contains_exact_wording = bool(reply) and "{{wording:" in reply.replace(" ", "")
-        if (
+        needs_language_adaptation = bool(
             reply
             and not contains_exact_wording
             and self._conversation_language != self._config.language
             and not self._decision_text_matches_language(reply)
-        ):
+        )
+        # The engine reports nodePrompt whenever the flow paused on a node
+        # that is WAITING for the caller's answer (ask / choice). That
+        # question is the turn's semantic payload — it must survive delivery.
+        awaiting_input = bool(result.get("nodePrompt"))
+        if needs_language_adaptation and awaiting_input:
+            # An input-collecting step may never be re-delivered by open
+            # conversational generation: with the full persona, history and
+            # turn instructions in play, the model can replace the pending
+            # question with progress filler ("please wait…"), leaving the
+            # workflow waiting for an answer the caller was never asked for.
+            # Constrained translation (script only, no history) preserves
+            # the ask; if its output fails validation the authored question
+            # is spoken verbatim — a wrong-language question still keeps the
+            # conversation answerable, filler does not.
+            adapted = await self._adapt_scripted_ask(reply)
+            if adapted:
+                self._recorder.add_event(
+                    "workflow_reply_language_adapted",
+                    workflow=workflow_name,
+                    language=self._conversation_language,
+                    mode="constrained_translation",
+                )
+                await self._say(adapted, authored=False)
+            else:
+                self._recorder.add_event(
+                    "workflow_ask_adaptation_fallback",
+                    workflow=workflow_name,
+                    language=self._conversation_language,
+                )
+                await self._say(reply)
+        elif needs_language_adaptation:
             # Tenant-authored workflow steps exist in ONE language; a caller
             # who switched (e.g. to English) must still hear this step in
-            # THEIR language. The step is delivered by generation under a
-            # strict meaning-preservation instruction — the authored text
-            # remains the spoken fallback if generation fails.
+            # THEIR language. An informational step (nothing awaited) is
+            # delivered by generation under a strict meaning-preservation
+            # instruction — the authored text remains the spoken fallback if
+            # generation fails.
             self._recorder.add_event(
                 "workflow_reply_language_adapted",
                 workflow=workflow_name,
@@ -3429,6 +3547,64 @@ class ConversationBrain(FrameProcessor):
             if result.get("handoffQueue"):
                 control["transfer_queue"] = str(result["handoffQueue"])
             self._queue_control(control)
+
+    async def _adapt_scripted_ask(self, script: str) -> str | None:
+        """Constrained translation of an input-collecting workflow step.
+
+        Unlike :meth:`_generate_reply`, this call carries NO conversation
+        history, persona, or goal instructions — only the script and the
+        target language — so the model has nothing to say except the step
+        itself. The output is spoken only when
+        :func:`validate_scripted_adaptation` proves the ask survived;
+        every failure path returns None and the caller speaks the authored
+        text verbatim.
+        """
+        label = language_label(self._conversation_language)
+        if not label or self._llm is None:
+            return None
+        system = (
+            "You adapt one scripted line of a phone call flow into the "
+            f"caller's language. Rewrite the script below in natural spoken "
+            f"{label}, preserving its exact meaning — the same facts, names, "
+            "numbers and options, and the SAME request. The script asks the "
+            "caller a question or requests information: your rewrite MUST "
+            "still ask the caller for exactly the same thing. Never answer "
+            "on the caller's behalf, never add new information, and never "
+            "replace the request with acknowledgements or progress filler "
+            "such as 'please wait'. Output ONLY the rewritten script."
+        )
+        try:
+            result = await asyncio.wait_for(
+                self._llm.generate(
+                    [{"role": "user", "content": script}],
+                    system=system,
+                    temperature=0.0,
+                    max_tokens=_ADAPTATION_MAX_TOKENS,
+                ),
+                timeout=_ADAPTATION_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 — fall back to the authored ask
+            logger.exception(
+                "turn[%s] scripted-ask adaptation failed",
+                self._recorder.session_id,
+            )
+            return None
+        usage = self._recorder.usage
+        usage["llm_requests"] = usage.get("llm_requests", 0) + 1
+        usage["llm_input_tokens"] = (
+            usage.get("llm_input_tokens", 0)
+            + int(getattr(result, "input_tokens", 0) or 0)
+        )
+        usage["llm_output_tokens"] = (
+            usage.get("llm_output_tokens", 0)
+            + int(getattr(result, "output_tokens", 0) or 0)
+        )
+        adapted = (getattr(result, "text", "") or "").strip()
+        if not validate_scripted_adaptation(
+            script, adapted, self._conversation_language
+        ):
+            return None
+        return adapted
 
     # ── generation ────────────────────────────────────────────────────────
 
@@ -3496,6 +3672,16 @@ class ConversationBrain(FrameProcessor):
         self._language_instruction_cache[self._conversation_language] = instruction
         return instruction
 
+    def _time_context_instruction(self) -> str:
+        """Fresh current date/time section for THIS generation (config-gated).
+
+        Never cached: the clock moves during a call. Timezone comes from the
+        tenant's configuration (ResolvedBotConfig.timezone, default UTC).
+        """
+        if not self._time_context_enabled:
+            return ""
+        return time_context_section(getattr(self._config, "timezone", "UTC"))
+
     def _placeholder_values(self) -> dict[str, str]:
         """Customer/runtime values plus system-selected voice placeholders."""
         return {**self._call_context, **self._voice_context}
@@ -3554,6 +3740,11 @@ class ConversationBrain(FrameProcessor):
             "appropriate after their message."
         )
 
+    @staticmethod
+    def _context_response_instruction() -> str:
+        """Instruction for an authored workflow context-response node."""
+        return CONTEXT_RESPONSE_INSTRUCTION
+
     async def _generate_reply(
         self, text: str, decision: RouteDecision, started: float,
         extra_system: str = "", fallback_text: str = "",
@@ -3573,6 +3764,7 @@ class ConversationBrain(FrameProcessor):
             self._static_system
             + self._verified_runtime_context_block
             + extra_system
+            + self._time_context_instruction()
             + f"\n\n# Voice response length\nKeep the spoken reply concise: usually one or two short sentences and never more than {self._llm_max_characters} characters. Preserve required confirmations, workflow instructions, and tool results; omit nonessential detail."
             + self._language_instruction()
         )
@@ -3634,16 +3826,18 @@ class ConversationBrain(FrameProcessor):
             elif (
                 self._runtime_context is not None
                 and self._runtime_context.prompt_values()
-            ):
+            ) or self._time_context_enabled:
                 # Retrieval found nothing, but this call carries caller
-                # facts: generation (grounded in the context block and the
-                # prompt's own fallback rules) answers or honestly declines.
-                # The canned KB-miss phrase remains only for calls with
-                # nothing else to ground a reply on.
+                # facts (or the current date/time context is enabled):
+                # generation — grounded in the context blocks and the
+                # prompt's own fallback rules — answers or honestly
+                # declines. The canned KB-miss phrase remains only for
+                # calls with nothing else to ground a reply on.
                 system = (
                     system
                     + "\n\nThe knowledge base has no entry for this message. "
-                    "Answer only from the caller context and the conversation "
+                    "Answer only from the caller context, the current "
+                    "date/time context if present, and the conversation "
                     "so far; if the needed fact is not available there, say "
                     "so and follow your fallback instructions — never invent "
                     "it."

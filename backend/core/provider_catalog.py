@@ -287,6 +287,9 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
     "goal_engine_enabled",
     "intent_llm_enabled",
     "memory_greeting_enabled",
+    # Injects a "# Current date and time" section (tenant timezone) into
+    # every generation — shared.orchestration.time_context.
+    "time_context_enabled",
 )
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,

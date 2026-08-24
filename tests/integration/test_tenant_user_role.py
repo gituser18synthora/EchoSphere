@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 
 from backend.core.security import create_access_token
 from backend.main import app
+from shared.bot_config import _load_config_sync
 from shared.db.mysql import get_sessionmaker
 from shared.ids import new_id
 from shared.models import (
@@ -29,6 +30,7 @@ from shared.models import (
     VoiceBotSetting,
     Workflow,
 )
+from voice_runtime.pipeline import resolve_turn_detection
 
 pytestmark = pytest.mark.integration
 
@@ -331,6 +333,7 @@ class TestSharedResourceEditing:
 BLOCKED_GETS = [
     "/integrations",
     "/tenant/settings",
+    "/tenant/turn-detection",
     "/voice-clones",
     "/voice-clones/config",
     "/usage/summary",
@@ -354,7 +357,7 @@ class TestBlockedSections:
 
     @pytest.mark.parametrize(
         "path",
-        ["/integrations", "/tenant/settings", "/voice-clones", "/usage/summary",
+        ["/integrations", "/tenant/settings", "/tenant/turn-detection", "/voice-clones", "/usage/summary",
          "/users?scope=tenant", "/roles", "/currency/rates"],
     )
     def test_tenant_admin_still_allowed(self, client, workspace, path):
@@ -395,6 +398,108 @@ class TestBlockedSections:
             f"{API}/tenant/settings", headers=workspace["member"], json={},
         )
         assert response.status_code == 403
+
+    def test_turn_detection_write_and_legacy_voice_path_blocked_for_tenant_user(self, client, workspace):
+        assert client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["member"],
+            json={"mode": "recommended", "overrides": {}},
+        ).status_code == 403
+        assert client.put(
+            f"{API}/bots/{workspace['bot_id']}/voice-settings",
+            headers=workspace["member"],
+            json={"sttSettings": {"turn_detection": {"confidence": 0.5}}},
+        ).status_code == 403
+
+    def test_turn_detection_is_tenant_scoped_and_validated(self, client, workspace):
+        saved = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "custom", "overrides": {
+                "telephony": {"turn_detection": {"confidence": 0.51}},
+            }},
+        )
+        assert saved.status_code == 200, saved.text
+        # Unknown query input cannot select another tenant: the endpoint has no
+        # tenantId parameter and resolves scope only from the authenticated user.
+        seen = client.get(
+            f"{API}/tenant/turn-detection?tenantId={workspace['other_tenant_id']}",
+            headers=workspace["admin"],
+        )
+        assert seen.status_code == 200
+        data = seen.json()["data"]
+        assert data["effective"]["telephony"]["turn_detection"]["confidence"] == 0.51
+        session = get_sessionmaker()()
+        try:
+            own = session.scalar(select(TenantSetting).where(
+                TenantSetting.tenant_id == workspace["tenant_id"]))
+            foreign = session.scalar(select(TenantSetting).where(
+                TenantSetting.tenant_id == workspace["other_tenant_id"]))
+            assert own.turn_detection["overrides"]["telephony"]["turn_detection"]["confidence"] == 0.51
+            assert foreign is None or foreign.turn_detection is None
+        finally:
+            session.close()
+
+        invalid = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "custom", "overrides": {
+                "browser": {"turn_detection": {"confidence": 0.01}},
+            }},
+        )
+        assert invalid.status_code == 422
+
+    def test_recommended_custom_section_reset_and_reset_all_storage(self, client, workspace):
+        recommended = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "recommended", "overrides": {}},
+        )
+        assert recommended.status_code == 200
+        data = recommended.json()["data"]
+        assert data["mode"] == "recommended"
+        assert data["effective"]["browser"]["turn_detection"]["complete_endpoint"] != data["effective"]["telephony"]["turn_detection"]["complete_endpoint"]
+
+        # The UI implements Reset Section as a sparse custom document: only
+        # the other section's override remains in the API payload.
+        custom = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "custom", "overrides": {"browser": {
+                "noise_gate": {"noise_margin_db": 12},
+            }}},
+        )
+        assert custom.status_code == 200
+        custom_data = custom.json()["data"]
+        confidence_field = next(field for field in custom_data["fields"] if field["key"] == "confidence")
+        assert custom_data["effective"]["browser"]["turn_detection"]["confidence"] == confidence_field["default"]["browser"]
+        assert custom_data["effective"]["browser"]["noise_gate"]["noise_margin_db"] == 12
+        assert custom_data["overrides"] == {"browser": {"noise_gate": {"noise_margin_db": 12.0}}}
+
+        reset = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "system_default", "overrides": {}},
+        )
+        assert reset.status_code == 200
+        session = get_sessionmaker()()
+        try:
+            row = session.scalar(select(TenantSetting).where(
+                TenantSetting.tenant_id == workspace["tenant_id"]))
+            assert row.turn_detection is None
+        finally:
+            session.close()
+
+    def test_saved_values_are_resolved_into_live_session_snapshot(self, client, workspace):
+        saved = client.put(
+            f"{API}/tenant/turn-detection", headers=workspace["admin"],
+            json={"mode": "custom", "overrides": {"telephony": {
+                "turn_detection": {"confidence": 0.53, "user_speech_timeout": 1.05},
+                "noise_gate": {"min_threshold_dbfs": -54},
+            }}},
+        )
+        assert saved.status_code == 200, saved.text
+        config = _load_config_sync(workspace["bot_id"], require_published=False)
+        assert config.turn_detection["telephony"]["turn_detection"]["confidence"] == 0.53
+        assert config.turn_detection["telephony"]["noise_gate"]["min_threshold_dbfs"] == -54
+        assert resolve_turn_detection(config, "telephony")["user_speech_timeout"] == 1.05
+        # Browser and telephony maps are independent inside the same immutable
+        # snapshot; no lookup occurs when the runtime resolver is called.
+        assert resolve_turn_detection(config, "browser")["confidence"] == 0.7
 
 
 # ── Financial data is stripped, not just hidden ──────────────────────────────

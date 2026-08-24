@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from shared.bot_config import ResolvedBotConfig
+from shared.runtime_context import RuntimeContext
 from voice_runtime.brain import ConversationBrain
 
 
@@ -80,7 +81,7 @@ class _LLMStub:
 GRACE = 0.05
 
 
-def make_brain(workflow_engine=None, llm=None) -> ConversationBrain:
+def make_brain(workflow_engine=None, llm=None, runtime_context=None) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language="hi-IN", languages=["hi-IN"],
@@ -89,6 +90,7 @@ def make_brain(workflow_engine=None, llm=None) -> ConversationBrain:
     brain = ConversationBrain(
         config=config, llm=llm, recorder=_RecorderStub(),
         workflow_engine=workflow_engine, finalize_grace=GRACE,
+        runtime_context=runtime_context,
     )
     brain._pushed = []
     brain._notified = []
@@ -146,6 +148,57 @@ async def settle():
 
 
 class TestOffScriptTurns:
+    async def test_verified_fact_question_bypasses_active_workflow(self):
+        context = RuntimeContext(
+            tenant_id="tn-x", bot_id="bot-x",
+            session_verification_required=True,
+        )
+        context.set_workflow_value("customer_verified", True)
+        context.set_workflow_value("booking_id", "601001")
+        context.set_workflow_value("hotel_name", "OYO Townhouse 121")
+        engine = _WorkflowStub(consumed_result("generic details menu"))
+        llm = _LLMStub(reply="Your hotel is OYO Townhouse 121.")
+        brain = make_brain(
+            workflow_engine=engine, llm=llm, runtime_context=context,
+        )
+        brain._active_workflow = "oyo_booking_support_journey"
+
+        await brain._handle_turn("Can you confirm my hotel name?")
+
+        assert engine.calls == []
+        assert brain._active_workflow == "oyo_booking_support_journey"
+        assert brain._history[-1]["content"] == "Your hotel is OYO Townhouse 121."
+        route_events = [data for kind, data in brain._recorder.events
+                        if kind == "route_decision"]
+        assert route_events[-1]["route"] == "chat"
+        assert route_events[-1]["reason"] == (
+            "verified_context_question_during_workflow"
+        )
+
+    async def test_related_workflow_reuses_verified_slots(self):
+        context = RuntimeContext(
+            tenant_id="tn-x", bot_id="bot-x",
+            session_verification_required=True,
+        )
+        context.set_workflow_value("customer_verified", True)
+        context.set_workflow_value("booking_id", "601001")
+        context.set_workflow_value("guest_name", "Rahul Sharma")
+        engine = _WorkflowStub(consumed_result("send voucher?"))
+        brain = make_brain(
+            workflow_engine=engine, llm=_LLMStub(), runtime_context=context,
+        )
+
+        await brain._handle_workflow(
+            type("Decision", (), {"action": "oyo_booking_support_journey",
+                                  "signal": None})(),
+            "please email my booking voucher", 0.0,
+        )
+
+        assert engine.calls[0]["initial_slots"]["booking_id"] == "601001"
+        assert engine.calls[0]["initial_slots"]["guest_name"] == "Rahul Sharma"
+        assert engine.calls[0]["reset_state"] is False
+        assert context.is_session_verified()
+
     async def test_complaint_answered_by_llm_and_node_kept(self):
         """The caller says the bot is not listening: the workflow must not
         advance and the LLM must answer, grounded in the paused step."""
