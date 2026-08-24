@@ -41,8 +41,17 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_scenario
+from shared.orchestration.time_context import (
+    TIME_CONTEXT_SETTING,
+    asks_current_datetime,
+    time_context_section,
+)
 from shared.readiness import refresh_readiness
-from shared.runtime_context import mentions_context_fact
+from shared.runtime_context import (
+    asks_about_context_fact,
+    CONTEXT_RESPONSE_INSTRUCTION,
+    should_reset_verified_subject,
+)
 
 router = APIRouter(tags=["Testing"])
 
@@ -264,6 +273,24 @@ def _testing_customer_context(
     return values, verification_required, is_verified
 
 
+def _tenant_timezone(db: Session, tenant_id: str) -> str:
+    from shared.models import TenantSetting
+
+    return db.scalar(
+        select(TenantSetting.timezone).where(TenantSetting.tenant_id == tenant_id)
+    ) or "UTC"
+
+
+def _bot_time_context_enabled(db: Session, bot: VoiceBot) -> bool:
+    """Whether the bot opted into current date/time grounding (llm_settings)."""
+    from shared.models import VoiceBotSetting
+
+    llm_settings = db.scalar(
+        select(VoiceBotSetting.llm_settings).where(VoiceBotSetting.bot_id == bot.id)
+    )
+    return bool((llm_settings or {}).get(TIME_CONTEXT_SETTING))
+
+
 def _asks_about_verified_context(text: str, verified_context: dict | None) -> bool:
     """Whether a question names a fact established by the workflow.
 
@@ -274,7 +301,7 @@ def _asks_about_verified_context(text: str, verified_context: dict | None) -> bo
     """
     if not verified_context:
         return False
-    return mentions_context_fact(
+    return asks_about_context_fact(
         text, set(verified_context) - _UNTRUSTED_VERIFICATION_FIELDS,
     )
 
@@ -349,6 +376,10 @@ def _testing_system_prompt(
         default_provider=settings.tts_provider,
         default_voice=settings.tts_voice,
     )
+    time_context = ""
+    if bool(((vbs.llm_settings if vbs else None) or {}).get(TIME_CONTEXT_SETTING)):
+        # Same current date/time grounding a live call gets (tenant timezone).
+        time_context = time_context_section(_tenant_timezone(db, bot.tenant_id))
     customer_facts = dict(context_values)
     context_values.update(voice_context_values(identity))
     rendered = (
@@ -358,6 +389,7 @@ def _testing_system_prompt(
             vbs.energy if vbs and vbs.energy is not None else 50,
         )
         + voice_identity_instruction(identity)
+        + time_context
     )
     if customer_facts:
         facts = "\n".join(
@@ -421,6 +453,7 @@ async def _testing_llm_reply(
     body: ChatTestRequest,
     language: str,
     verified_context: dict | None = None,
+    extra_system: str = "",
 ) -> str | None:
     configured = _testing_system_prompt(
         db, bot, language, verified_context=verified_context,
@@ -428,6 +461,7 @@ async def _testing_llm_reply(
     if configured is None:
         return None
     system, llm = configured
+    system += extra_system
     history = [message.model_dump() for message in body.messages[-20:]]
     history.append({"role": "user", "content": body.message})
     result = await llm.generate(history, system=system, max_tokens=120, temperature=0.2)
@@ -546,13 +580,27 @@ async def chat_test(
     decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
     if (
         verified_context
-        and decision.kind == RouteKind.KNOWLEDGE
+        and decision.kind in (RouteKind.KNOWLEDGE, RouteKind.WORKFLOW)
         and _asks_about_verified_context(body.message, verified_context)
     ):
         decision = RouteDecision(
             kind=RouteKind.CHAT,
             confidence=1.0,
             reason="verified_context_question",
+            considered_kb=True,
+        )
+    time_context_enabled = _bot_time_context_enabled(db, bot)
+    if (
+        time_context_enabled
+        and decision.kind == RouteKind.KNOWLEDGE
+        and asks_current_datetime(body.message)
+    ):
+        # Mirrors the live brain: "what is today's date?" answers from the
+        # runtime date/time context, never from tenant knowledge retrieval.
+        decision = RouteDecision(
+            kind=RouteKind.CHAT,
+            confidence=1.0,
+            reason="time_context_question",
             considered_kb=True,
         )
 
@@ -566,9 +614,10 @@ async def chat_test(
     elif decision.kind == RouteKind.WORKFLOW:
         name = decision.action or active_workflow
         if name:
-            # Starting a new verification journey invalidates any facts from
-            # an earlier completed journey in the same browser session.
-            if not active_workflow:
+            reset_subject = should_reset_verified_subject(
+                body.message, verified_context,
+            )
+            if reset_subject:
                 verified_context = None
                 try:
                     await redis.delete(verified_key)
@@ -585,6 +634,8 @@ async def chat_test(
                     workflow_name=name,
                     user_text=body.message,
                     language=conversation_language,
+                    initial_slots=verified_context,
+                    reset_state=reset_subject,
                 )
             finally:
                 release_session_engine(workflow_session)
@@ -598,6 +649,10 @@ async def chat_test(
                     off_script_reply = await _testing_llm_reply(
                         db, bot, body, conversation_language,
                         verified_context=verified_context,
+                        extra_system=(
+                            CONTEXT_RESPONSE_INSTRUCTION
+                            if result.get("contextResponse") else ""
+                        ),
                     )
                 except Exception:  # noqa: BLE001 — keep the turn readable
                     off_script_reply = None
@@ -645,11 +700,12 @@ async def chat_test(
             reply = canned("clarify", conversation_language)
     elif decision.kind == RouteKind.KNOWLEDGE:
         reply = await _knowledge_reply(bot, body.message)
-        if reply is None and verified_context:
-            # The KB had nothing, but the caller is verified: the LLM answers
-            # from their booking facts and the conversation before any canned
-            # "couldn't find that" — informal or mis-transcribed wording about
-            # a known fact must not read as an unanswerable KB query.
+        if reply is None and (verified_context or time_context_enabled):
+            # The KB had nothing, but the caller is verified (or the bot
+            # carries the current date/time context): the LLM answers from
+            # those facts and the conversation before any canned "couldn't
+            # find that" — informal or mis-transcribed wording about a known
+            # fact must not read as an unanswerable KB query.
             try:
                 reply = await _testing_llm_reply(
                     db, bot, body, conversation_language,

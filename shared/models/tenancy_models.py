@@ -160,3 +160,6 @@ class TenantSetting(Base, TimestampMixin, AuditByMixin):
     # Tenant-wide human speech naturalness overrides (sparse; see
     # shared.orchestration.naturalness). Bots may override per key on top.
     human_speech: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Tenant-wide turn detection profile and sparse per-transport overrides.
+    # Null means platform defaults; resolved once into each runtime snapshot.
+    turn_detection: Mapped[dict | None] = mapped_column(JSON, nullable=True)

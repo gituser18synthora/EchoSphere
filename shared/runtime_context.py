@@ -39,6 +39,17 @@ from shared.customer_context import (
 
 logger = logging.getLogger(__name__)
 
+CONTEXT_RESPONSE_INSTRUCTION = (
+    "\n\n# Answer the verified request (THIS turn)\n"
+    "The call flow intentionally delegated this reply to you. Answer the "
+    "caller's current request immediately from the workflow-verified caller "
+    "context. State the requested value in the first sentence. For a broad "
+    "details request, give a concise useful summary of the available facts "
+    "in one or two natural spoken sentences. Do not use headings, bullets, "
+    "markdown, or a menu; do not ask them to repeat the question or restart "
+    "verification. Never invent a missing value."
+)
+
 # Provenance tags, in ascending precedence order.
 SOURCE_ORDER = ("system", "session", "api", "test", "record", "workflow")
 
@@ -158,6 +169,15 @@ GENERIC_CONTEXT_KEY_WORDS = frozenset({
     "status", "type", "value",
 })
 
+_SUBJECT_SWITCH_WORDS = re.compile(
+    r"\b(?:another|different|other|new|second|next|alag|dusri|doosri|nayi)\b",
+    re.I,
+)
+_IDENTITY_KEY_SUFFIX = re.compile(
+    r"(?:^|_)(?:id|number|reference|ref)$", re.I,
+)
+_IDENTITY_MARKERS = frozenset({"id", "number", "reference", "ref"})
+
 
 def mentions_context_fact(text: str, keys) -> bool:
     """Whether an utterance names one of the given context-fact keys.
@@ -190,6 +210,103 @@ def mentions_context_fact(text: str, keys) -> bool:
         ):
             return True
     return False
+
+
+_FACT_QUERY_CUE = re.compile(
+    r"\b(?:what|which|when|where|who|how\s+much|tell|show|read|state|"
+    r"details?|name|status|amount|date|occupancy)\b",
+    re.I,
+)
+_CONTEXT_ACTION_CUE = re.compile(
+    r"\b(?:send|mail|forward|cancel|change|update|modify|book|reserve|pay|"
+    r"refund|transfer|call|contact|upload|submit|download)\b",
+    re.I,
+)
+_EMAIL_AS_VERB = re.compile(
+    r"\bemail\s+(?:me|my|the|this|it|a|an|booking|voucher)\b", re.I,
+)
+_CONFIRM_EXTERNAL = re.compile(
+    r"\bconfirm(?:\s+(?:it|this(?:\s+booking)?|my\s+booking|the\s+booking))?"
+    r"\s+(?:with|to)\b",
+    re.I,
+)
+
+
+def asks_about_context_fact(text: str, keys) -> bool:
+    """Whether the caller requests a known value rather than an action.
+
+    ``mentions_context_fact`` alone is intentionally broad and can also match
+    an action such as "email my voucher" through the ``guest_email`` field.
+    This stricter routing predicate keeps those action requests in their
+    workflow while still recognizing direct and broad fact requests.
+    """
+    normalized = re.sub(r"[^\w?]+", " ", (text or "").lower()).strip()
+    mentioned = mentions_context_fact(text, keys)
+    if not mentioned and "details" in normalized.split():
+        # Broad requests ("booking details please") name the record rather
+        # than one field. Tie the record word back to the tenant's own keys.
+        message_words = set(normalized.split())
+        record_words = {
+            re.sub(r"[^\w]+", " ", str(key).lower().replace("_", " ")).split()[0]
+            for key in keys or ()
+            if re.sub(r"[^\w]+", " ", str(key).lower().replace("_", " ")).split()
+        }
+        mentioned = bool(record_words & message_words)
+    if not mentioned:
+        return False
+    if _CONFIRM_EXTERNAL.search(normalized):
+        return False
+    if (_CONTEXT_ACTION_CUE.search(normalized) or _EMAIL_AS_VERB.search(normalized)):
+        return False
+    return bool(_FACT_QUERY_CUE.search(normalized) or "?" in normalized)
+
+
+def should_reset_verified_subject(text: str, values: dict | None) -> bool:
+    """Whether a turn explicitly switches away from the verified subject.
+
+    The session may safely reuse workflow-verified facts for related actions
+    (for example details followed by a voucher request).  It must not reuse
+    them when the caller clearly asks about another record or supplies a
+    different identifier.  Field names remain tenant-authored: identity keys
+    are recognized by their ``*_id``/``*_number``/``*_reference`` shape.
+    """
+    normalized = re.sub(r"[^\w]+", " ", (text or "").lower()).strip()
+    if not normalized or not values:
+        return False
+
+    identity_values: list[tuple[set[str], str]] = []
+    for raw_key, raw_value in values.items():
+        key = str(raw_key or "").lower()
+        if not _IDENTITY_KEY_SUFFIX.search(key) or raw_value in (None, ""):
+            continue
+        key_words = set(re.sub(r"[^\w]+", " ", key.replace("_", " ")).split())
+        identity_values.append((key_words, str(raw_value)))
+    if not identity_values:
+        return False
+
+    message_words = set(normalized.split())
+    identity_nouns = set().union(*(words - _IDENTITY_MARKERS for words, _ in identity_values))
+    if _SUBJECT_SWITCH_WORDS.search(normalized) and identity_nouns & message_words:
+        return True
+
+    # A different explicit identifier also switches subject. Spoken-number
+    # normalization handles transcripts such as "booking ID six zero one...".
+    mentions_identity = bool(_IDENTITY_MARKERS & message_words) or bool(
+        identity_nouns & message_words
+    )
+    if not mentions_identity:
+        return False
+    from shared.orchestration.spoken_numbers import spoken_digit_sequence
+
+    candidate = spoken_digit_sequence(normalized)
+    if len(candidate) < 3:
+        return False
+    existing = {
+        spoken_digit_sequence(value)
+        for _words, value in identity_values
+        if spoken_digit_sequence(value)
+    }
+    return bool(existing) and candidate not in existing
 
 
 @dataclass(frozen=True)
@@ -265,6 +382,20 @@ class RuntimeContext:
             key: entry for key, entry in self.values.items()
             if entry.source != "workflow"
         }
+
+    def workflow_values(self) -> dict[str, object]:
+        """Facts verified/returned by workflows during this call.
+
+        This view is used only to seed a related workflow once at turn entry;
+        it is never fetched inside an audio or turn-detection hot path.
+        """
+        return {
+            key: entry.value for key, entry in self.values.items()
+            if entry.source == "workflow"
+        }
+
+    def should_reset_verified_subject(self, text: str) -> bool:
+        return should_reset_verified_subject(text, self.workflow_values())
 
     def _prompt_entries(self) -> list[ContextValue]:
         """Facts safe to expose to prompt rendering on the current call."""

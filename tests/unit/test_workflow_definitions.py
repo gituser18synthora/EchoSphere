@@ -129,6 +129,80 @@ class TestDefinitionExecution:
         assert result["source"] == "builtin"
         assert "name" in result["reply"].lower()
 
+    async def test_verified_slots_skip_repeated_asks_and_delegate_answer(
+        self, engine, monkeypatch,
+    ):
+        definition = {
+            "id": "wf_context", "version": 1, "name": "Context flow",
+            "nodes": [
+                {"id": "start", "kind": "start", "label": "Start"},
+                {"id": "booking", "kind": "ask", "label": "Booking ID",
+                 "config": {"question": "What is your booking ID?",
+                            "variable": "booking_id"}},
+                {"id": "details", "kind": "message", "label": "Details",
+                 "config": {"respondFromContext": True,
+                            "text": "Answer from verified context."}},
+                {"id": "end", "kind": "end", "label": "End"},
+            ],
+            "edges": [
+                {"id": "e1", "from": "start", "to": "booking"},
+                {"id": "e2", "from": "booking", "to": "details"},
+                {"id": "e3", "from": "details", "to": "end"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+
+        result = await engine.handle_turn_detailed(
+            session_id="s-context", tenant_id="tn_x", bot_id="bot_x",
+            workflow_name="context_flow", user_text="share my details",
+            initial_slots={"booking_id": "601001", "customer_verified": True},
+        )
+
+        assert result["done"] is True
+        assert result["offScript"] is True
+        assert result["contextResponse"] is True
+        assert result["reply"] == ""
+        assert result["slots"]["booking_id"] == "601001"
+        assert result["trace"] == ["start", "booking", "details", "end"]
+
+    async def test_verified_reentry_consumes_action_at_intent_hub(
+        self, engine, monkeypatch,
+    ):
+        definition = {
+            "id": "wf_reentry", "version": 1, "name": "Reentry flow",
+            "nodes": [
+                {"id": "start", "kind": "start", "label": "Start"},
+                {"id": "booking", "kind": "ask", "label": "Booking ID",
+                 "config": {"question": "Booking ID?", "variable": "booking_id"}},
+                {"id": "hub", "kind": "intent", "label": "Action",
+                 "config": {"prompt": "Details or voucher?"}},
+                {"id": "voucher", "kind": "message", "label": "Voucher",
+                 "config": {"text": "Voucher branch selected."}},
+                {"id": "details", "kind": "message", "label": "Details",
+                 "config": {"text": "Details branch selected."}},
+                {"id": "end", "kind": "end", "label": "End"},
+            ],
+            "edges": [
+                {"id": "e1", "from": "start", "to": "booking"},
+                {"id": "e2", "from": "booking", "to": "hub"},
+                {"id": "e3", "from": "hub", "to": "details", "label": "details"},
+                {"id": "e4", "from": "hub", "to": "voucher", "label": "voucher/email"},
+                {"id": "e5", "from": "voucher", "to": "end"},
+                {"id": "e6", "from": "details", "to": "end"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+
+        result = await engine.handle_turn_detailed(
+            session_id="s-reentry", tenant_id="tn_x", bot_id="bot_x",
+            workflow_name="reentry_flow", user_text="please email my voucher",
+            initial_slots={"booking_id": "601001", "customer_verified": True},
+        )
+
+        assert result["done"] is True
+        assert "Voucher branch selected" in result["reply"]
+        assert result["trace"] == ["start", "booking", "hub", "voucher", "end"]
+
 
 class TestIntentNode:
     GRAPH = {

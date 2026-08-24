@@ -76,11 +76,13 @@ logger = logging.getLogger(__name__)
 # words ("हाँ", "yes") often never trip VAD start, the STT never gets flushed
 # and the first response waits on the provider's own slow endpointing.
 #
-# Per-bot overrides live in voice settings: stt_settings.turn_detection.
+# Tenant settings are merged into the immutable session snapshot before this
+# module is constructed. Legacy per-bot STT values are read only when an old
+# cached snapshot does not yet carry the tenant map.
 # Misconfiguration must never produce an unusable call (e.g. a 30 s endpoint
 # or a VAD that triggers on line noise).
 # Bounds are shared with backend validation (``shared.turn_detection``), so a
-# value accepted by the Voice API is guaranteed to be safe in this worker.
+# value accepted by the Tenant Admin API is guaranteed to be safe here.
 
 
 def _warn_invalid(section: str):
@@ -97,9 +99,20 @@ def resolve_turn_detection(
 ) -> dict[str, float]:
     """Effective turn-detection parameters for one call.
 
-    Transport-aware defaults overridden by the bot's
-    ``stt_settings.turn_detection``, every value clamped to a sane range.
+    Fresh snapshots carry a fully-resolved tenant transport map. The legacy
+    per-bot STT location remains a fallback only for older cached snapshots
+    and direct unit/runtime callers created before tenant settings existed.
     """
+    session_values = (config.turn_detection or {}).get(transport_kind, {})
+    if isinstance(session_values, dict) and isinstance(
+        session_values.get("turn_detection"), dict
+    ):
+        return resolve_bounded(
+            session_values["turn_detection"],
+            TURN_DETECTION_DEFAULTS.get(transport_kind, TURN_DETECTION_DEFAULTS["browser"]),
+            TURN_DETECTION_BOUNDS,
+            on_invalid=_warn_invalid("tenant_turn_detection"),
+        )
     return resolve_bounded(
         ((config.stt or {}).get("settings") or {}).get("turn_detection"),
         TURN_DETECTION_DEFAULTS.get(transport_kind, TURN_DETECTION_DEFAULTS["browser"]),
@@ -113,37 +126,26 @@ def resolve_noise_gate(
 ) -> dict[str, float]:
     """Effective caller-audio noise-gate parameters for one call.
 
-    Transport-aware defaults overridden by ``stt_settings.noise_gate``, every
-    value clamped. ``enabled`` is a 0/1 float so the whole section validates
-    and clamps through one code path.
+    Uses the per-session tenant snapshot when present and the legacy bot STT
+    location for backward-compatible cached/direct configs. ``enabled`` is a
+    0/1 float so the whole section validates and clamps through one code path.
     """
+    session_values = (config.turn_detection or {}).get(transport_kind, {})
+    if isinstance(session_values, dict) and isinstance(
+        session_values.get("noise_gate"), dict
+    ):
+        return resolve_bounded(
+            session_values["noise_gate"],
+            NOISE_GATE_DEFAULTS.get(transport_kind, NOISE_GATE_DEFAULTS["browser"]),
+            NOISE_GATE_BOUNDS,
+            on_invalid=_warn_invalid("tenant_noise_gate"),
+        )
     return resolve_bounded(
         ((config.stt or {}).get("settings") or {}).get("noise_gate"),
         NOISE_GATE_DEFAULTS.get(transport_kind, NOISE_GATE_DEFAULTS["browser"]),
         NOISE_GATE_BOUNDS,
         on_invalid=_warn_invalid("noise_gate"),
     )
-
-
-def _sarvam_stream_encodings() -> set[str]:
-    """Audio encodings the installed sarvamai SDK accepts for streaming STT.
-
-    sarvamai 0.1.28 pins AudioData.encoding to Literal["audio/wav"]; newer
-    SDKs may widen it. Introspecting keeps us honest either way — sending an
-    unsupported value fails per-chunk validation and silently kills STT.
-    """
-    try:
-        import typing
-
-        from sarvamai.requests.audio_data import AudioDataParams
-
-        hints = typing.get_type_hints(AudioDataParams)
-        values = set(typing.get_args(hints["encoding"]))
-        if values:
-            return values
-    except Exception:  # noqa: BLE001 — introspection must never break calls
-        pass
-    return {"audio/wav"}
 
 
 # Deepgram Flux end-of-turn defaults, chosen for telephony voice agents:
@@ -214,6 +216,7 @@ def build_stt_service(
     use_provider_vad: bool | None = None,
     latency=None,
     barge_in_min_words: int = 2,
+    prefer_primary_language: bool = False,
 ):
     """STT service from bot config: Deepgram Flux or Sarvam realtime WS,
     segmented fallback otherwise."""
@@ -285,7 +288,17 @@ def build_stt_service(
             )
         settings_kwargs = stt_conf.get("settings") or {}
         model = stt_conf.get("model") or "saaras:v3"
+        # Auto-detection is unreliable on the sub-three-second, narrowband
+        # snippets common on phone calls.  Telephony therefore supplies the
+        # bot's primary language when STT language is blank, with an explicit
+        # opt-out for genuinely multilingual bots.
         language_code = stt_conf.get("language") or None
+        if (
+            language_code is None
+            and prefer_primary_language
+            and settings_kwargs.get("auto_detect_language") is not True
+        ):
+            language_code = config.language or None
         language = None
         if language_code:
             try:
@@ -323,18 +336,16 @@ def build_stt_service(
             high_vad_sensitivity=settings_kwargs.get("high_vad_sensitivity"),
             **forwarded_settings,
         )
-        codec = settings_kwargs.get("input_encoding", "wav")
-        if codec not in ("wav", "pcm_s16le"):
-            codec = "wav"
-        if f"audio/{codec}" not in _sarvam_stream_encodings():
-            # A codec the installed sarvamai SDK rejects would fail EVERY audio
-            # chunk (pydantic Literal validation) and the call would produce no
-            # transcripts at all — clamp to wav (raw PCM16 bytes either way).
+        codec = settings_kwargs.get("input_encoding") or "pcm_s16le"
+        if codec != "pcm_s16le":
+            # Pipecat audio frames are raw little-endian PCM, not standalone
+            # RIFF/WAV files.  Labelling those bytes "wav" made short phone
+            # utterances intermittently disappear at the provider.
             logger.warning(
-                "sarvam-stt: input_encoding '%s' not supported by the installed "
-                "sarvamai SDK; using 'wav'", codec,
+                "sarvam-stt: input_encoding '%s' does not match Pipecat's raw "
+                "audio frames; using 'pcm_s16le'", codec,
             )
-            codec = "wav"
+            codec = "pcm_s16le"
         return EndpointedSarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
@@ -493,6 +504,7 @@ def build_voice_pipeline(
         use_provider_vad=not use_vad,
         latency=tracker,
         barge_in_min_words=barge_in_min_words,
+        prefer_primary_language=transport_kind == "telephony",
     )
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,

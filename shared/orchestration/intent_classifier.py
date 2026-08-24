@@ -31,7 +31,11 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from shared.orchestration.router import classify_user_signal
+from shared.orchestration.router import (
+    classify_user_signal,
+    match_tokens,
+    sample_match_strength,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,29 +89,39 @@ class IntentClassification:
         }
 
 
+# The phrase fast path may only claim a turn on STRONG evidence — a weaker
+# match must fall through to the LLM, which reads the conversation context.
+_FAST_PATH_FLOOR = 0.75
+
+
 def _phrase_match(intents: list[dict], text: str) -> tuple[dict, float] | None:
     """Exact/near sample-phrase match — the tenant-configurable fast path.
 
     This gate decides whether to SKIP the LLM, so it is deliberately stricter
-    than the router's own sample voting: an exact configured phrase, or a
-    majority of samples hitting, is a confident match; one substring hit on a
-    low-threshold intent is not — live calls showed a 0.06-score hit claiming
-    a turn the model should have read. Weak matches fall through to the LLM
-    (and the router still applies its own legacy voting for routing).
+    than the router's own sample matching: the utterance being a configured
+    phrase, or a configured phrase dominating the utterance, is a confident
+    match; a weak word-level hit is not — live calls showed a marginal hit
+    claiming a turn the model should have read. Weak matches fall through to
+    the LLM (the router still applies its own per-intent thresholds for
+    deterministic routing).
     """
-    lowered = text.lower().strip()
+    utterance_tokens = match_tokens(text)
     best: tuple[dict, float] | None = None
     for intent in intents:
-        samples = [s.lower().strip() for s in (intent.get("samples") or []) if s]
+        samples = [s for s in (intent.get("samples") or []) if s]
         if not samples:
             continue
-        if any(s == lowered for s in samples):
+        strength = max(
+            (sample_match_strength(s, utterance_tokens) for s in samples),
+            default=0.0,
+        )
+        if strength >= 0.95:
             return intent, 0.95
-        hits = sum(1 for s in samples if s and s in lowered)
-        score = hits / len(samples)
-        threshold = max(float(intent.get("confidence_threshold") or 0.5), 0.5)
-        if hits and score >= threshold and (best is None or score > best[1]):
-            best = (intent, score)
+        threshold = max(
+            float(intent.get("confidence_threshold") or 0.5), _FAST_PATH_FLOOR
+        )
+        if strength >= threshold and (best is None or strength > best[1]):
+            best = (intent, strength)
     return best
 
 

@@ -249,3 +249,61 @@ class TestSarvamBargeInFlush:
         await asyncio.sleep(0.05)
         await svc._stop_barge_in_flush()
         assert flushes
+
+
+class TestSarvamMissingFinalRetry:
+    def _service(self):
+        svc = EndpointedSarvamSTTService.__new__(EndpointedSarvamSTTService)
+        svc._utterance_generation = 1
+        svc._transcript_generation = -1
+        svc._missing_final_task = None
+        svc._stt_stopping = False
+        svc._recorder = None
+
+        def _create(coro, name=None):
+            return asyncio.get_event_loop().create_task(coro)
+
+        async def _cancel(task, timeout=None):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        svc.create_task = _create
+        svc.cancel_task = _cancel
+        return svc
+
+    async def test_missing_transcript_retries_flush_once(self, monkeypatch):
+        import voice_runtime.sarvam_stt as sarvam_stt_module
+
+        monkeypatch.setattr(sarvam_stt_module, "_MISSING_FINAL_RETRY_S", 0.01)
+        svc = self._service()
+        flushes = []
+
+        class _Socket:
+            async def flush(self):
+                flushes.append(True)
+
+        svc._socket_client = _Socket()
+        svc._start_missing_final_retry()
+        await asyncio.sleep(0.03)
+        assert flushes == [True]
+
+    async def test_transcript_cancels_missing_final_retry(self, monkeypatch):
+        import voice_runtime.sarvam_stt as sarvam_stt_module
+
+        monkeypatch.setattr(sarvam_stt_module, "_MISSING_FINAL_RETRY_S", 0.03)
+        svc = self._service()
+        flushes = []
+
+        class _Socket:
+            async def flush(self):
+                flushes.append(True)
+
+        svc._socket_client = _Socket()
+        svc._start_missing_final_retry()
+        svc._transcript_generation = svc._utterance_generation
+        await svc._stop_missing_final_retry()
+        await asyncio.sleep(0.04)
+        assert flushes == []

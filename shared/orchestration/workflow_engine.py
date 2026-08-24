@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from typing import Any, TypedDict
+from urllib.parse import quote
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -52,6 +53,7 @@ class WorkflowState(TypedDict, total=False):
     handoff_queue: str | None  # handover node's configured queue, if any
     # Per-turn (recomputed every step, never carried over):
     off_script: bool  # the turn was NOT consumed — node unchanged, no reply
+    context_response: bool  # authored node delegates this reply to the LLM
     awaiting_prompt: str | None  # question of the node the flow is paused at
     signal: str | None  # semantic signal of the caller's utterance
     # Input-only: the caller-supplied semantic signal for THIS turn (from the
@@ -807,6 +809,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         if signal is None and text:
             signal = classify_user_signal(text)
         off_script = False
+        context_response = False
         current = state.get("current_node")
         awaiting = state.get("awaiting")
 
@@ -959,13 +962,33 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 trace.append(current)
 
             if kind == "message":
-                spoken = _node_text(node, "text", "message")
-                if spoken:
-                    replies.append(spoken)
+                if _node_config(node).get("respondFromContext") is True:
+                    # The authored flow deliberately hands this turn to the
+                    # response model, which can state the exact requested
+                    # workflow-verified fact instead of playing a fixed menu.
+                    # The graph still advances normally (usually to end).
+                    audit.append({"action": "respond_from_context", "node": current})
+                    off_script = True
+                    context_response = True
+                else:
+                    spoken = _node_text(node, "text", "message")
+                    if spoken:
+                        replies.append(spoken)
                 current = _next_of(current)
             elif kind == "ask":
-                replies.append(_question(node, retrying=False, lang=lang))
-                awaiting, current = current, None
+                config = _node_config(node)
+                variable = str(config.get("variable") or node.get("id"))
+                existing = slots.get(variable)
+                if existing is not None and str(existing).strip() != "":
+                    # A related journey in this same verified session already
+                    # collected the value. Reuse it without asking the caller
+                    # again; downstream APIs still revalidate it.
+                    audit.append({"action": "slot_reused", "node": current,
+                                  "variable": variable})
+                    current = _next_of(current)
+                else:
+                    replies.append(_question(node, retrying=False, lang=lang))
+                    awaiting, current = current, None
             elif kind == "intent":
                 if entry_text:
                     # First intent node after a workflow entry: the utterance
@@ -975,11 +998,15 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # signal computed above applies to it directly.
                     entry_signal = signal
                     entry_text = ""  # single use, matched or not
-                    if entry_signal in _ENTRY_SIGNALS:
+                    reuse_verified_subject = slots.get("customer_verified") is True
+                    if entry_signal in _ENTRY_SIGNALS or reuse_verified_subject:
                         chosen, why = _choose_intent_edge(
                             edge_meta_from.get(current, []), text, entry_signal
                         )
-                        if chosen is not None and why == "signal":
+                        if chosen is not None and (
+                            why == "signal"
+                            or (reuse_verified_subject and why == "token")
+                        ):
                             audit.append({"action": "intent_entry_branch",
                                           "node": current,
                                           "edge": chosen.get("label") or chosen.get("id"),
@@ -1114,6 +1141,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "awaiting": awaiting,
             "handoff_queue": handoff_queue,
             "off_script": off_script,
+            "context_response": context_response,
             "awaiting_prompt": awaiting_prompt,
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
@@ -1147,8 +1175,10 @@ class WorkflowEngine:
             try:
                 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+                pg_user = quote(str(settings.postgres_user), safe="")
+                pg_password = quote(str(settings.postgres_password), safe="")
                 conninfo = (
-                    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
+                    f"postgresql://{pg_user}:{pg_password}"
                     f"@{settings.postgres_host}:{settings.postgres_port}"
                     f"/{settings.postgres_database}"
                 )
@@ -1211,6 +1241,8 @@ class WorkflowEngine:
         language: str | None = None,
         mock_tool_results: dict | None = None,
         signal: str | None = None,
+        initial_slots: dict | None = None,
+        reset_state: bool = False,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -1249,21 +1281,30 @@ class WorkflowEngine:
             }
 
         thread = {"configurable": {"thread_id": f"{session_id}:{workflow_name}"}}
+        invocation = {
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "session_id": session_id,
+            "workflow": workflow_name,
+            "user_text": user_text,
+            "language": language or "",
+            "mock_tool_results": mock_tool_results,
+            "signal_override": signal,
+        }
+        if initial_slots is not None:
+            invocation["slots"] = dict(initial_slots)
+        if reset_state:
+            invocation.update({
+                "slots": dict(initial_slots or {}),
+                "current_node": None,
+                "awaiting": None,
+                "node_retries": {},
+                "pending_digits": {},
+                "audit": [],
+            })
         try:
             state = await asyncio.wait_for(
-                graph.ainvoke(
-                    {
-                        "tenant_id": tenant_id,
-                        "bot_id": bot_id,
-                        "session_id": session_id,
-                        "workflow": workflow_name,
-                        "user_text": user_text,
-                        "language": language or "",
-                        "mock_tool_results": mock_tool_results,
-                        "signal_override": signal,
-                    },
-                    config=thread,
-                ),
+                graph.ainvoke(invocation, config=thread),
                 timeout=timeout_seconds,
             )
         except TimeoutError:
@@ -1289,6 +1330,7 @@ class WorkflowEngine:
             # Off-script: the turn was NOT consumed — the workflow stays at
             # the same node and the caller (brain) must answer contextually.
             "offScript": off_script,
+            "contextResponse": bool(state.get("context_response")),
             "nodePrompt": state.get("awaiting_prompt"),
             "signal": state.get("signal"),
         }

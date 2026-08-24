@@ -238,7 +238,7 @@ Fires **Booking Voucher**. Verify: `curl -s http://127.0.0.1:9021/api/v1/crm/dis
 
 | Say | Expect |
 |---|---|
-| `booking details please` | "Of course — I have your verified booking right here. Ask me anything about it…" · `done=true` |
+| `booking details please` | The verified hotel, dates, occupancy and payment details are answered in the same turn; no generic “ask me anything” menu |
 | `when is my check-in and which hotel is it?` | `route=chat` — the LLM answers from the bot's runtime-context fact set (Studio → the bot's runtime context), e.g. "Your booking is at OYO Townhouse 121 Sector 29 Gurugram…" |
 
 > This turn is answered from the **runtime-context fact set**, not from the mock booking.

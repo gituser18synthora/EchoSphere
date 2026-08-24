@@ -18,7 +18,8 @@ import type {
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
   RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
-  TenantSettings, TestScenario, UploadConfig, VoiceBot, VoiceCatalog,
+  TenantSettings, TestScenario, TurnDetectionConfig, TurnDetectionMode,
+  TurnDetectionOverrides, UploadConfig, VoiceBot, VoiceCatalog,
   VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
   ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
   ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
@@ -544,6 +545,13 @@ export const saveTenantSettings = (body: Partial<TenantSettings>, tenantId?: str
     editable,
   );
 };
+export const getTurnDetectionSettings = (): Promise<TurnDetectionConfig> =>
+  http.get("/tenant/turn-detection");
+export const saveTurnDetectionSettings = (
+  mode: TurnDetectionMode,
+  overrides: TurnDetectionOverrides,
+): Promise<TurnDetectionConfig> =>
+  http.put("/tenant/turn-detection", { mode, overrides });
 
 /* ---------- Analytics ---------- */
 export const getTenantAnalytics = (days = 30, botId?: string, tenantId?: string): Promise<AnalyticsBundle> =>

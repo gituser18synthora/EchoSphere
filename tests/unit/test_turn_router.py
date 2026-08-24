@@ -352,3 +352,92 @@ class TestUserSignalClassifier:
         assert decision.kind == RouteKind.WORKFLOW
         assert decision.action == "edas_collection_call"
         assert decision.signal == "hardship"
+
+
+class TestIntentMatchStrength:
+    """Confidence measures the QUALITY of a sample match (exact utterance >
+    contained phrase > ordered words with gaps > lone word), gated by each
+    intent's own threshold — so risk lives in configuration: a handoff or
+    destructive intent demands phrase-level evidence, and a single common
+    word can never transfer a call or restart a workflow."""
+
+    HANDOFF_INTENTS = [
+        {
+            "name": "refund_status",
+            "samples": ["refund", "money back", "refund status",
+                        "when will i get my refund"],
+            "route": "handoff",
+            "confidence_threshold": 0.7,
+        },
+        {
+            "name": "cancel_booking",
+            "samples": ["cancel my booking", "cancellation", "want to cancel"],
+            "route": "handoff",
+            "confidence_threshold": 0.7,
+        },
+    ]
+
+    def test_lone_common_word_cannot_reach_a_handoff_intent(self):
+        router = make_router(intents=self.HANDOFF_INTENTS)
+        # "refund" appears, but the utterance clearly is NOT a refund request.
+        decision = router.decide(
+            "I was told there is no refund involved, is my booking confirmed"
+        )
+        assert decision.kind != RouteKind.HANDOFF
+
+    def test_clear_phrase_still_reaches_the_handoff_intent(self):
+        router = make_router(intents=self.HANDOFF_INTENTS)
+        decision = router.decide("I want to cancel my booking")
+        assert decision.kind == RouteKind.HANDOFF
+        assert decision.intent == "cancel_booking"
+
+    def test_exact_configured_phrase_always_counts(self):
+        router = make_router(intents=self.HANDOFF_INTENTS)
+        decision = router.decide("Refund status")
+        assert decision.kind == RouteKind.HANDOFF
+        assert decision.confidence >= 0.9
+
+    def test_samples_match_whole_words_never_substrings(self):
+        router = make_router(intents=[{
+            "name": "call_opening_response",
+            "samples": ["yes", "हाँ", "hello"],
+            "route": "workflow:booking_support",
+            "confidence_threshold": 0.3,
+        }])
+        # "yes" inside "yesterday", "हाँ" inside "कहाँ" must not fire.
+        assert router.decide("I arrived yesterday evening at the hotel").kind \
+            != RouteKind.WORKFLOW
+        assert router.decide("मेरा होटल कहाँ है बताइए ज़रा").kind \
+            != RouteKind.WORKFLOW
+        # The whole word still does.
+        assert router.decide("हाँ").kind == RouteKind.WORKFLOW
+
+    def test_more_samples_do_not_dilute_a_strong_match(self):
+        """The old hits/len(samples) voting punished coverage: adding samples
+        weakened every single-phrase match. Strength must not depend on how
+        many OTHER samples the author added."""
+        few = make_router(intents=[{
+            "name": "booking_confirmation", "route": "workflow:journey",
+            "samples": ["confirm my booking"], "confidence_threshold": 0.55,
+        }])
+        many = make_router(intents=[{
+            "name": "booking_confirmation", "route": "workflow:journey",
+            "samples": ["confirm my booking", "booking confirmation",
+                        "booking status", "is my booking confirmed",
+                        "check my booking", "is my reservation confirmed",
+                        "confirm my upcoming booking", "upcoming booking"],
+            "confidence_threshold": 0.55,
+        }])
+        for router in (few, many):
+            decision = router.decide("can you confirm my booking please")
+            assert decision.kind == RouteKind.WORKFLOW, "phrase must fire"
+
+    def test_buried_phrase_defers_to_higher_layers_on_high_threshold(self):
+        router = make_router(intents=self.HANDOFF_INTENTS)
+        decision = router.decide(
+            "so as I was saying earlier my cousin might possibly want to "
+            "cancel some other reservation at some point next year maybe"
+        )
+        # "want to cancel" is present but buried — below the 0.7 bar the
+        # deterministic router must not transfer; the LLM layer decides.
+        assert decision.kind != RouteKind.HANDOFF
