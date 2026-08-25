@@ -1,0 +1,39 @@
+{
+  "verification_reports": [],
+  "dispositions": [
+    {
+      "disposition_id": "DSP-108294BB",
+      "booking_id": "601001",
+      "call_state": {
+        "booking_id": "601001",
+        "guest_name": "Rahul Sharma",
+        "customer_verified": true,
+        "verified_via": "guest_name",
+        "booking_status": "confirmed",
+        "hotel_name": "Oh-Yo Townhouse 121 Sector 29 Gurugram",
+        "property_id": "P101",
+        "checkin_date": "2026-08-20",
+        "checkout_date": "2026-08-22",
+        "occupancy_details": "2 guests, 1 room",
+        "payment_status": "partially_paid",
+        "amount_pending": 2400,
+        "guest_email": "rahul.sharma@example.com",
+        "hotel_city": "Gurugram",
+        "voucher_sent": true,
+        "voucher_email": "rahul.sharma@example.com"
+      },
+      "recorded_at": "2026-08-25T09:55:56+00:00"
+    }
+  ],
+  "vouchers": [
+    {
+      "voucher_id": "VCH-0DB483FE",
+      "booking_id": "601001",
+      "email": "rahul.sharma@example.com",
+      "sent_at": "2026-08-25T09:55:55+00:00"
+    }
+  ],
+  "shifts": [],
+  "ivr_transfers": [],
+  "complimentary": []
+}

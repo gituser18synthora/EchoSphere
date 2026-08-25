@@ -1,0 +1,175 @@
+<svg viewBox="0 0 1250 700" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="p-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4F46E5"/></marker>
+    <marker id="p-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7C3AED"/></marker>
+    <marker id="p-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="p-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <style>
+      .node { rx: 9; stroke-width: 1.5; }
+      .store { rx: 10; stroke-width: 1.6; }
+      .t { font-size: 12.5px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 9.3px; fill: #55607A; }
+      .h { font-size: 9.3px; fill: #1F2937; font-weight: 700; }
+      .e { fill: none; stroke-width: 1.4; }
+      .el { font-size: 8.8px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- ===== services row ===== -->
+  <rect class="node" x="30" y="30" width="212" height="60" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="136" y="54" text-anchor="middle">Platform API :9001</text>
+  <text class="s" x="136" y="70" text-anchor="middle">source-of-truth writes &#183; serializers</text>
+
+  <rect class="node" x="272" y="30" width="200" height="60" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text class="t" x="372" y="54" text-anchor="middle">Ingestion Worker</text>
+  <text class="s" x="372" y="70" text-anchor="middle">parse &#8594; chunk &#8594; embed &#8594; index</text>
+
+  <rect class="node" x="502" y="30" width="186" height="60" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="595" y="54" text-anchor="middle">MCP Server :9003</text>
+  <text class="s" x="595" y="70" text-anchor="middle">knowledge tools (read-only)</text>
+
+  <rect class="node" x="718" y="30" width="248" height="60" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="842" y="54" text-anchor="middle">Voice Runtime :9002 / :9011</text>
+  <text class="s" x="842" y="70" text-anchor="middle">live calls &#183; pinned config &#183; finalize</text>
+
+  <rect class="node" x="996" y="30" width="224" height="60" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text class="t" x="1108" y="54" text-anchor="middle">Post-Call Worker</text>
+  <text class="s" x="1108" y="70" text-anchor="middle">summary &#183; outcome &#183; next best action</text>
+
+  <!-- ===== stores row ===== -->
+  <!-- MySQL -->
+  <rect class="store" x="30" y="300" width="250" height="360" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="155" y="326" text-anchor="middle">MySQL :3306 &#8212; control plane</text>
+  <text class="s" x="155" y="342" text-anchor="middle">60 tables &#183; 31 Alembic revisions (sync ORM)</text>
+  <line x1="46" y1="352" x2="264" y2="352" stroke="#16A34A" stroke-width="0.6"/>
+  <text class="h" x="46" y="370">Identity &amp; tenancy</text>
+  <text class="s" x="46" y="384">users &#183; roles &#183; permissions &#183; tenants &#183; plans</text>
+  <text class="s" x="46" y="397">subscriptions &#183; invoices &#183; tenant_settings</text>
+  <text class="h" x="46" y="416">Bot studio (config)</text>
+  <text class="s" x="46" y="430">voice_bots &#183; settings &#183; prompts(+versions)</text>
+  <text class="s" x="46" y="443">intents &#183; entity_defs &#183; workflows &#183; api_conns</text>
+  <text class="s" x="46" y="456">knowledge_sources &#183; channels &#183; phone_numbers</text>
+  <text class="h" x="46" y="475">Operations</text>
+  <text class="s" x="46" y="489">conversation_sessions &#183; audit_logs &#183; usage_records</text>
+  <text class="s" x="46" y="502">releases &#183; test_scenarios &#183; conversation_memories</text>
+  <text class="h" x="46" y="521">Billing &amp; governance</text>
+  <text class="s" x="46" y="535">usage_events &#183; pricing &#183; currencies &#183; fx rates</text>
+  <text class="s" x="46" y="548">guardrail_profiles(+rules &#183; triggers)</text>
+  <text class="s" x="46" y="561">compliance_policies &#183; provider catalog &#183; ai_profiles</text>
+
+  <!-- PostgreSQL -->
+  <rect class="store" x="300" y="300" width="240" height="360" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="420" y="326" text-anchor="middle">PostgreSQL :5432</text>
+  <text class="s" x="420" y="342" text-anchor="middle">knowledge plane &#183; 2 Alembic revisions (async)</text>
+  <line x1="316" y1="352" x2="524" y2="352" stroke="#16A34A" stroke-width="0.6"/>
+  <text class="h" x="316" y="370">pgvector tables</text>
+  <text class="s" x="316" y="384">knowledge_documents (dedupe by content hash)</text>
+  <text class="s" x="316" y="397">knowledge_chunks &#8212; Vector(1536)</text>
+  <text class="s" x="316" y="410">&#8226; HNSW cosine index &#8226; GIN tsvector index</text>
+  <text class="s" x="316" y="423">knowledge_ingestion_jobs &#8212; DB-poll queue</text>
+  <text class="s" x="316" y="436">(FOR UPDATE SKIP LOCKED)</text>
+  <text class="h" x="316" y="458">LangGraph checkpoints</text>
+  <text class="s" x="316" y="472">workflow session state survives</text>
+  <text class="s" x="316" y="485">a voice-worker restart</text>
+  <text class="h" x="316" y="507">Cross-DB link</text>
+  <text class="s" x="316" y="521">kb_id &#8594; MySQL knowledge_sources.id</text>
+  <text class="s" x="316" y="534">(logical only &#8212; no FK constraint;</text>
+  <text class="s" x="316" y="547">drift checked by knowledge-verify CLI)</text>
+
+  <!-- Redis -->
+  <rect class="store" x="560" y="300" width="240" height="360" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="680" y="326" text-anchor="middle">Redis :6379</text>
+  <text class="s" x="680" y="342" text-anchor="middle">ephemeral state &#183; every consumer fails open</text>
+  <line x1="576" y1="352" x2="784" y2="352" stroke="#16A34A" stroke-width="0.6"/>
+  <text class="s" x="576" y="372"><tspan class="h">voice:session:{id}</tspan> &#8212; session handoff</text>
+  <text class="s" x="576" y="386">(API mints &#183; runtime consumes, TTL 900 s)</text>
+  <text class="s" x="576" y="406"><tspan class="h">botcfg:*</tspan> &#8212; compiled bot config cache</text>
+  <text class="s" x="576" y="420">(invalidated on save / publish / rollback)</text>
+  <text class="s" x="576" y="440"><tspan class="h">webhook:seen:*</tspan> &#8212; replay protection</text>
+  <text class="s" x="576" y="460"><tspan class="h">ccl:*</tspan> &#8212; compliance daily contact limits</text>
+  <text class="s" x="576" y="480"><tspan class="h">mcp:rate:*</tspan> &#8212; MCP 60 req/min/tenant</text>
+  <text class="s" x="576" y="500"><tspan class="h">tool idempotency</tspan> &#8212; workflow API calls</text>
+  <text class="s" x="576" y="520"><tspan class="h">chat console</tspan> &#8212; workflow + verified ctx</text>
+
+  <!-- MongoDB -->
+  <rect class="store" x="820" y="300" width="200" height="360" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="920" y="326" text-anchor="middle">MongoDB :27017</text>
+  <text class="s" x="920" y="342" text-anchor="middle">Motor async &#183; 2 collections</text>
+  <line x1="836" y1="352" x2="1004" y2="352" stroke="#16A34A" stroke-width="0.6"/>
+  <text class="h" x="836" y="370">conversation_transcripts</text>
+  <text class="s" x="836" y="384">per-turn nested docs &#183; unique</text>
+  <text class="s" x="836" y="397">session_id &#183; recording descriptor</text>
+  <text class="s" x="836" y="410">&#183; transfer + hangup summaries</text>
+  <text class="h" x="836" y="432">voice_events</text>
+  <text class="s" x="836" y="446">turn / barge-in / guardrail /</text>
+  <text class="s" x="836" y="459">telephony lifecycle events</text>
+  <text class="s" x="836" y="481">indexes created only at API</text>
+  <text class="s" x="836" y="494">startup &#183; no migration tooling</text>
+
+  <!-- Filesystem -->
+  <rect class="store" x="1040" y="300" width="180" height="360" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="1130" y="326" text-anchor="middle">Local filesystem</text>
+  <text class="s" x="1130" y="342" text-anchor="middle">no object-storage layer</text>
+  <line x1="1056" y1="352" x2="1204" y2="352" stroke="#16A34A" stroke-width="0.6"/>
+  <text class="h" x="1056" y="370">storage/knowledge/</text>
+  <text class="s" x="1056" y="384">tenant/kb/doc.ext uploads</text>
+  <text class="h" x="1056" y="406">storage/recordings/</text>
+  <text class="s" x="1056" y="420">stereo call WAVs (~1.5 GB,</text>
+  <text class="s" x="1056" y="433">no retention job)</text>
+  <text class="h" x="1056" y="455">storage/voice_clones/</text>
+  <text class="s" x="1056" y="469">clone source samples</text>
+  <text class="h" x="1056" y="491">.devrun/</text>
+  <text class="s" x="1056" y="505">dev.sh pids + logs</text>
+
+  <!-- ===== edges ===== -->
+  <!-- API -->
+  <path class="e" d="M70 90 L 90 300" stroke="#4F46E5" stroke-width="2.2" marker-end="url(#p-indigo)"/>
+  <text class="el" x="42" y="182">ORM writes (all studio + admin)</text>
+  <path class="e" d="M170 90 C 240 190 330 240 375 300" stroke="#4F46E5" marker-end="url(#p-indigo)"/>
+  <text class="el" x="215" y="216">review &#183; search-test</text>
+  <path class="e" d="M200 90 C 330 200 560 230 640 300" stroke="#4F46E5" marker-end="url(#p-indigo)"/>
+  <text class="el" x="386" y="252">mint sessions &#183; caches</text>
+  <path class="e" d="M228 90 C 480 240 770 240 880 300" stroke="#4F46E5" stroke-dasharray="5 4" marker-end="url(#p-indigo)"/>
+  <text class="el" x="500" y="286">read transcripts &#183; create indexes</text>
+  <path class="e" d="M242 62 C 700 96 1010 150 1105 300" stroke="#4F46E5" stroke-dasharray="5 4" marker-end="url(#p-indigo)"/>
+  <text class="el" x="880" y="146">uploads &#183; recording playback</text>
+
+  <!-- ingestion worker -->
+  <path class="e" d="M372 90 L 400 300" stroke="#7C3AED" stroke-width="2" marker-end="url(#p-violet)"/>
+  <text class="el" x="345" y="240">claim jobs &#183; upsert chunks</text>
+  <path class="e" d="M310 90 C 240 170 190 230 165 300" stroke="#7C3AED" stroke-dasharray="5 4" marker-end="url(#p-violet)"/>
+  <text class="el" x="180" y="162">sync source status + readiness</text>
+
+  <!-- MCP -->
+  <path class="e" d="M568 90 C 500 170 450 230 430 300" stroke="#4F46E5" stroke-dasharray="5 4" marker-end="url(#p-indigo)"/>
+  <text class="el" x="404" y="172">authorized search</text>
+  <path class="e" d="M620 90 C 650 170 665 230 672 300" stroke="#4F46E5" stroke-dasharray="5 4" marker-end="url(#p-indigo)"/>
+  <text class="el" x="640" y="234">rate buckets</text>
+
+  <!-- runtime -->
+  <path class="e" d="M770 90 C 730 180 710 240 700 300" stroke="#0D9488" stroke-width="2" marker-end="url(#p-teal)"/>
+  <text class="el" x="678" y="188">consume session &#183; botcfg</text>
+  <path class="e" d="M842 90 L 890 300" stroke="#0D9488" stroke-width="2" marker-end="url(#p-teal)"/>
+  <text class="el" x="822" y="222">write transcripts + events</text>
+  <path class="e" d="M760 90 C 560 220 250 220 180 300" stroke="#0D9488" marker-end="url(#p-teal)"/>
+  <text class="el" x="560" y="214">conversation_sessions &#183; usage_events</text>
+  <path class="e" d="M726 90 C 560 190 480 240 448 300" stroke="#0D9488" marker-end="url(#p-teal)"/>
+  <text class="el" x="482" y="230">RAG retrieval &#183; wf checkpoints</text>
+  <path class="e" d="M966 76 C 1060 120 1105 200 1118 300" stroke="#0D9488" stroke-dasharray="5 4" marker-end="url(#p-teal)"/>
+  <text class="el" x="1054" y="196">stream call WAV</text>
+
+  <!-- post-call -->
+  <path class="e" d="M1052 90 C 900 220 340 250 240 300" stroke="#7C3AED" marker-end="url(#p-violet)"/>
+  <text class="el" x="700" y="256">claim conversation_memories &#183; write results</text>
+  <path class="e" d="M1096 90 C 1040 170 970 240 940 300" stroke="#7C3AED" stroke-dasharray="5 4" marker-end="url(#p-violet)"/>
+  <text class="el" x="962" y="240">read transcript</text>
+
+  <!-- legend -->
+  <g transform="translate(30, 682)" font-size="9px" fill="#55607A">
+    <line x1="0" y1="-4" x2="26" y2="-4" stroke="#64748B" stroke-width="2"/>
+    <text x="32" y="0">primary write path</text>
+    <line x1="140" y1="-4" x2="166" y2="-4" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
+    <text x="172" y="0">secondary / read-mostly path</text>
+    <text x="340" y="0">edge colour = owning service (indigo control plane &#183; teal realtime &#183; violet workers)</text>
+  </g>
+</svg>

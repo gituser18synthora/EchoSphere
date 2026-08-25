@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EchoSphere — System Architecture</title>
+<link rel="stylesheet" href="build/doc.css">
+</head>
+<body>
+
+<header id="cover">
+  <div class="band"></div>
+  <div class="band-accent"></div>
+  <div class="cover-inner">
+    <div class="cover-product">EchoSphere · Aurexion</div>
+    <div class="cover-title">System Architecture</div>
+    <div class="cover-subtitle">A code-verified architecture reference for the EchoSphere multi-tenant
+      voice-AI platform: control plane, realtime voice runtime, knowledge retrieval,
+      telephony integration and supporting infrastructure.</div>
+  </div>
+  <div class="cover-meta">
+    <p class="cover-meta-1"><b>Document</b> SYSTEM_ARCHITECTURE — Technical Architecture Reference</p>
+    <p class="cover-meta-2"><b>Version</b> 1.0 · 25 August 2026</p>
+    <p class="cover-meta-3"><b>Prepared for</b> Engineering leadership, architects &amp; developers</p>
+    <p class="cover-meta-4"><b>Method</b> Full-repository code analysis; claims referenced to source files</p>
+  </div>
+  <div class="cover-foot">Every architectural claim in this document is traced to the implementation and labelled
+    Verified (read directly from code), Inferred (concluded from implementation evidence) or Unclear
+    (not determinable from the repository). Generated with Claude Code.</div>
+</header>
+
+<section id="toc-section">
+  <h1>Table of Contents</h1>
+  <nav id="toc"><!-- generated at render time from main h1/h2 --></nav>
+</section>
+
+<main>
+
+<h1 id="s1">1&#8195;Executive Summary</h1>
+<p><strong>EchoSphere</strong> is Aurexion&#8217;s multi-tenant <strong>voice-AI platform</strong>: organizations (tenants) build, test,
+govern and publish AI voice bots that answer real phone calls, hold natural multilingual conversations
+(Hindi/Hinglish/English focus), answer from tenant knowledge bases, execute business workflows and API calls, and
+hand over to humans &#8212; with per-call usage metering, compliance enforcement and audit trails built in. The dominant
+production use case visible in the repository is <em>outbound collections calling</em> for Indian NBFC customers (mPokket)
+plus a hotel-operations customer (OYO).</p>
+<p>The system is organized as <strong>two Python planes over one shared library, plus a React operations console</strong>:</p>
+<ul>
+  <li>A <strong>control plane</strong> (<code>backend/</code>) &#8212; a FastAPI application with 33 routers / 208 endpoints that owns identity,
+  tenancy, the bot-building studio, governance, billing and audit, backed by MySQL as the source of truth.</li>
+  <li>A <strong>realtime voice plane</strong> (<code>voice_runtime/</code>) &#8212; a Pipecat 1.5 streaming pipeline per call
+  (VAD &#8594; STT &#8594; conversation brain &#8594; TTS) exposed twice: a worker on :9002 for browser test sessions and a telephony
+  gateway on :9011 for dialers (Vaani) and FreeSWITCH, with ESL-based transfer/hangup control.</li>
+  <li>A <strong>shared library</strong> (<code>shared/</code>) holding the data model (60 MySQL tables), AI orchestration (goal engine,
+  LangGraph workflow interpreter, naturalness planner), the RAG subsystem (PostgreSQL + pgvector hybrid retrieval),
+  provider adapters (OpenAI, Sarvam, Deepgram, ElevenLabs), billing, guardrails and compliance.</li>
+  <li>A <strong>React 18 SPA</strong> (~40k LOC, only three runtime dependencies) providing the Super-Admin platform console and
+  the tenant Studio.</li>
+</ul>
+<p>Four data stores split responsibilities deliberately: <strong>MySQL</strong> (configuration and operational source of truth),
+<strong>PostgreSQL/pgvector</strong> (knowledge chunks, vectors and workflow checkpoints), <strong>MongoDB</strong> (variable-shape call
+transcripts and event streams) and <strong>Redis</strong> (session handoff, config caches, replay protection &#8212; all deliberately
+fail-open). Background work (document ingestion, post-call intelligence) runs as durable-row poll workers embedded in
+the API and voice processes. An MCP server exposes tenant-scoped knowledge search to external LLM agents.</p>
+<p>The architecture&#8217;s strongest properties, verified in code: strict server-side tenancy enforcement with 404-based
+non-disclosure; a fail-closed guardrail floor; idempotent, price-snapshotted usage metering; a deeply engineered
+low-latency voice path (explicit per-stage budgets, speculative prefetching, word-confirmed barge-in); and an unusual
+discipline of explanatory comments citing measured incidents. Its most significant gaps: <strong>no rate limiting on the
+REST API</strong>, secrets and sessions in browser <code>localStorage</code>, <strong>no TLS/containers/CI anywhere in the repository</strong>,
+single-host deployment assumptions (per-process session registries), eventual-consistency seams between MySQL and the
+knowledge plane, and several very large god-modules (<code>brain.py</code> 4,482 lines). Section 24 catalogues 40+
+evidence-backed findings and section 25 prioritizes remediations.</p>
+
+<aside><b>How to read this document.</b> Every claim is grounded in the implementation as of
+25&#8201;Aug&#8201;2026 (branch <code>feature/voice-runtime-kmrag-integration</code>, HEAD <code>ea4750c24</code>). Statements are
+<span class="tag v">Verified</span> (read directly from code, usually with a <code>file:line</code> reference),
+<span class="tag i">Inferred</span> (concluded from implementation evidence), or
+<span class="tag u">Unclear</span> (not determinable from the repository). Unlabeled statements are Verified. The
+repository is under active development &#8212; several orchestration files changed during the analysis window.</aside>
+
+<h1 id="s2">2&#8195;System Overview</h1>
+<figure>
+  <img src="diagrams/01-system-overview.svg" alt="High-level system architecture">
+  <figcaption><b>Figure 1</b> &#8212; High-level system architecture: entry points, the two service planes, data stores and external providers.</figcaption>
+</figure>
+<h2 id="s2-1">2.1&#8195;What the platform does</h2>
+<p>A tenant admin creates a <em>VoiceBot</em> in the Studio: uploads knowledge documents, authors versioned prompts
+(structured or freeform), defines intents/entities, draws a workflow on a canvas, selects STT/TTS/LLM providers and
+voices per language, configures channels, tests in a chat/voice console, then publishes a release. Publication is gated
+by a derived readiness checklist (knowledge indexed, prompts approved, workflow published, channels tested, voice
+selected, regression tests passing). Once published, a phone number assignment routes real calls: a dialer&#8217;s signed
+webhook resolves the dialed number to tenant and bot, compliance calling-windows and contact limits are enforced, a
+session is minted, and the caller converses with the bot over a streaming audio WebSocket. Every call produces a
+transcript, an optional stereo recording, idempotent usage events priced from snapshots, guardrail trigger records, and
+&#8212; when the tenant opts in &#8212; an AI post-call summary with a next-best-action that personalizes the customer&#8217;s next call.</p>
+<h2 id="s2-2">2.2&#8195;Processes and ports</h2>
+<table>
+  <thead><tr><th>Process</th><th>Module</th><th>Port</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td>Frontend (Vite dev)</td><td><code>node node_modules/vite/bin/vite.js</code></td><td>5199</td><td>React SPA; proxies <code>/api</code> &#8594; 127.0.0.1:9001 in dev</td></tr>
+    <tr><td>Platform API</td><td><code>backend.main</code></td><td>9001</td><td>REST control plane; embeds the ingestion worker by default</td></tr>
+    <tr><td>Voice worker</td><td><code>voice_runtime.app</code></td><td>9002</td><td>Browser voice sessions (<code>/ws/voice/{id}</code>); embeds the post-call worker</td></tr>
+    <tr><td>MCP server</td><td><code>backend.mcp_server.server</code></td><td>9003</td><td>Knowledge tools for LLM agents (streamable HTTP, platform JWT)</td></tr>
+    <tr><td>Telephony gateway</td><td><code>voice_runtime.gateway</code></td><td>9011</td><td>Same FastAPI app as the worker, public bind; dialer webhook + media WS</td></tr>
+    <tr><td>FreeSWITCH ESL</td><td>external</td><td>9004</td><td>Outbound TCP control connection from the voice plane (plaintext)</td></tr>
+    <tr><td>Ingestion worker</td><td><code>backend.workers.ingestion</code></td><td>&#8212;</td><td>Optional standalone; normally embedded in the API</td></tr>
+    <tr><td>Stores</td><td>MySQL &#183; PostgreSQL &#183; MongoDB &#183; Redis</td><td>3306 / 5432 / 27017 / 6379</td><td>Locally installed; not supervised by <code>dev.sh</code></td></tr>
+  </tbody>
+</table>
+<p class="small">All ports come exclusively from <code>.env</code> via <code>shared/config.py</code>; a regression test
+(<code>tests/unit/test_port_configuration.py</code>) pins the defaults. A client-specific mock service (<code>oyo/</code>) runs on 9021.</p>
+<h2 id="s2-3">2.3&#8195;Scale of the implementation</h2>
+<table>
+  <thead><tr><th>Area</th><th>Size (verified by line count)</th></tr></thead>
+  <tbody>
+    <tr><td>Frontend <code>src/</code></td><td>40,287 LOC (32,575 app + 7,712 tests in 39 vitest suites); 159 shared type declarations</td></tr>
+    <tr><td>Control plane <code>backend/</code></td><td>28,388 LOC; routers are 15,426 (54%); 31 MySQL + 2 PostgreSQL Alembic revisions</td></tr>
+    <tr><td>Shared library <code>shared/</code></td><td>28,055 LOC; knowledge 7,066; orchestration 6,675; models 2,247 (60 tables)</td></tr>
+    <tr><td>Voice runtime <code>voice_runtime/</code></td><td>14,742 LOC; <code>brain.py</code> 4,482; <code>call_policy.py</code> 2,452</td></tr>
+    <tr><td>Backend tests <code>tests/</code></td><td>38,333 LOC &#8212; 84 unit, 45 integration, 3 perf modules (run against real local stores)</td></tr>
+    <tr><td>Documentation <code>docs/</code></td><td>27 files, 10,493 lines, incl. a 5,782-line hand-written API reference</td></tr>
+  </tbody>
+</table>
+
+<h1 id="s3">3&#8195;Architecture Principles (as observed in code)</h1>
+<p>These are not aspirations from a README &#8212; each is a rule the implementation actually follows, with the mechanism named.</p>
+<ul>
+  <li><strong>The server is the only security boundary.</strong> Frontend gates are labeled &#8220;UI affordance only, never security&#8221;
+  (<code>src/state/AppContext.tsx:30</code>); every one of the 208 endpoints carries an auth dependency, and
+  <code>deps.py</code> comments state &#8220;hidden frontend buttons are never the security boundary&#8221;.</li>
+  <li><strong>Tenant identity is never taken from the client</strong> for tenant roles &#8212; it always derives from the authenticated
+  user, the dialed number, or the server-minted session (<code>backend/core/deps.py:1-7</code>; <code>shared/voice_sessions.py:1-11</code>).</li>
+  <li><strong>Cross-tenant probes learn nothing.</strong> By-id access to another tenant&#8217;s row returns 404, deliberately not 403
+  (<code>deps.py:123-131</code>); unauthorized knowledge-base ids are rejected &#8220;without revealing which&#8221;.</li>
+  <li><strong>Fail closed on safety, fail open on availability.</strong> Guardrails degrade to a hardcoded mandatory floor
+  (<code>shared/guardrails/loader.py</code>); Redis-backed conveniences (replay cache, rate buckets, contact counters)
+  deliberately fail open with loud logs (<code>docs/SECURITY.md:114-115</code>). (The asymmetry this creates for compliance
+  policies is flagged as risk R-11.)</li>
+  <li><strong>Configuration is pinned per call.</strong> The compiled bot config snapshot is cached in Redis and frozen at call
+  start; publishing a release invalidates <code>botcfg:*</code> so new calls see it while live calls keep their snapshot
+  (<code>shared/bot_config.py:7-8</code>, <code>backend/routers/releases.py:180-184</code>).</li>
+  <li><strong>Billable events are idempotent and price-snapshotted.</strong> <code>usage_events.request_id</code> is unique; price changes
+  are insert-only; a re-run of call finalization bills nothing (<code>shared/billing/metering.py</code>).</li>
+  <li><strong>Secrets are references, never values.</strong> DB rows and settings store <code>env:VAR</code> / <code>secret://NAME</code>
+  references resolved server-side at the moment of use; a mandatory log-redaction filter guards the logging boundary
+  (<code>shared/secrets.py</code>, <code>shared/logging_utils.py</code>).</li>
+  <li><strong>Latency budgets are explicit constants</strong>, not folklore: decision 1.2&#8201;s / 200 tokens, LLM first token 3&#8201;s,
+  TTS first audio 4&#8201;s, adaptive endpoints 0.35/0.12&#8201;s &#8212; each with a comment explaining the measured incident behind it.</li>
+  <li><strong>Soft delete by default</strong>; hard deletion is environment-gated (<code>ALLOW_HARD_DELETE</code>), and master data used by
+  tenants can be deactivated but never removed.</li>
+  <li><strong>One import direction:</strong> <code>backend &#8594; shared &#8592; voice_runtime</code>; the two planes never import each other
+  (<code>README.md:14-16</code>) &#8212; honored everywhere except four documented breaches (risk R-20).</li>
+</ul>
+
+<h1 id="s4">4&#8195;Technology Stack</h1>
+<table>
+  <thead><tr><th>Layer</th><th>Technology (verified versions/pins)</th></tr></thead>
+  <tbody>
+    <tr><td>Backend runtime</td><td>Python (venv <code>env/</code>, CPython 3.14 <span class="tag i">Inferred</span> from the venv layout) &#183; FastAPI &#8805;0.115 &#183; Uvicorn &#8805;0.30 &#183; Pydantic v2 + pydantic-settings</td></tr>
+    <tr><td>ORM / migrations</td><td>SQLAlchemy 2.0 (sync + PyMySQL for MySQL; async + asyncpg for PostgreSQL) &#183; Alembic (two independent environments, separate version tables)</td></tr>
+    <tr><td>Realtime voice</td><td>pipecat-ai 1.5.0 (<code>[silero]</code> VAD) &#183; <code>sarvamai==0.1.28</code> (the only hard pin) &#183; custom WS serializers per telephony provider</td></tr>
+    <tr><td>AI / orchestration</td><td>OpenAI SDK &#8805;1.60 (LLM <code>gpt-4o-mini</code> default, embeddings <code>text-embedding-3-small</code> 1536-d, Whisper) &#183; LangGraph &#8805;1.0 + langgraph-checkpoint-postgres &#183; tiktoken</td></tr>
+    <tr><td>Knowledge parsing</td><td>PyMuPDF &#183; PyPDF2 &#183; pdfplumber &#183; python-docx &#183; openpyxl &#183; python-pptx &#183; pytesseract (+ GPT-vision OCR fallback)</td></tr>
+    <tr><td>Vector search</td><td>PostgreSQL + pgvector (HNSW cosine) + GIN tsvector full-text; optional cross-encoder reranker (off by default)</td></tr>
+    <tr><td>Other stores</td><td>MongoDB via Motor &#8805;3.5 &#183; Redis &#8805;5.0 (asyncio client per event loop)</td></tr>
+    <tr><td>AuthN</td><td>PyJWT (HS256) &#183; bcrypt &#8805;4.1</td></tr>
+    <tr><td>Frontend</td><td>React 18.3 &#183; react-router-dom 6.26 &#183; TypeScript 5.5 (strict, zero <code>any</code>) &#183; Vite 5.4 &#183; Vitest 3.2 + Testing Library &#8212; <em>no</em> UI kit, chart, state or HTTP library</td></tr>
+    <tr><td>Telephony</td><td>Vaani dialer (WS media, Twilio-style envelope) &#183; FreeSWITCH (<code>mod_audio_fork</code>/<code>mod_audio_stream</code> media, ESL control, Lua glue) &#183; declared-but-thin: Twilio/Telnyx/Plivo/Exotel</td></tr>
+    <tr><td>Reports</td><td>openpyxl (XLSX) &#183; PyMuPDF/fitz (invoice PDF) &#183; CSV with formula-injection defense</td></tr>
+    <tr><td>Tooling gaps</td><td><span class="tag v">Verified</span> no Docker, no CI, no ESLint, no Python lockfile (<code>&#8805;</code> ranges), mixed npm/pnpm lockfiles</td></tr>
+  </tbody>
+</table>
+
+<h1 id="s5">5&#8195;Repository Structure</h1>
+<pre><code>EchoSphere/
+&#9500;&#9472; backend/          Control-plane FastAPI app (routers, core, serializers, seeds, reports,
+&#9474;                    alembic + alembic_pg, mcp_server, workers/ingestion, scripts)   28.4k LOC
+&#9500;&#9472; voice_runtime/    Realtime plane: app+gateway, pipecat pipeline, brain, call_policy,
+&#9474;                    tts_router, STT adapters, telephony serializers, freeswitch ESL  14.7k LOC
+&#9500;&#9472; shared/           Library used by both planes: models (60 tables), db, config, secrets,
+&#9474;                    orchestration, knowledge (RAG), providers, billing, guardrails,
+&#9474;                    compliance, post_call, telephony, safe_http, readiness            28.1k LOC
+&#9500;&#9472; src/              React SPA (pages/admin, pages/tenant, pages/tenant/studio,
+&#9474;                    components, services, state, types)                               40.3k LOC
+&#9500;&#9472; tests/            pytest: unit (84) &#183; integration (45, real local stores) &#183; perf   38.3k LOC
+&#9500;&#9472; docs/             27 markdown docs incl. hand-written API reference (5.8k lines)
+&#9500;&#9472; scripts/dev.sh    The only process orchestrator (304 lines)
+&#9500;&#9472; storage/          Runtime data: knowledge uploads, ~1.5 GB call recordings, clone audio
+&#9500;&#9472; free_sweetch/     FreeSWITCH-host glue (voicebot.lua + webhook helper) &#8212; deployed off-repo
+&#9500;&#9472; oyo/  rateChange/  mpoket-prompt*.txt   client-specific artifacts and one dead ops script
+&#9492;&#9472; env/ node_modules/ .devrun/ .devdb/     local toolchains and runtime state (not app code)</code></pre>
+<p>Notable hygiene observations: 53 files under <code>storage/</code> are git-tracked despite ignore rules (including real call
+recordings &#8212; risk R-6); <code>backend/voice_runtime/</code> contains only a stale <code>__pycache__</code> of a removed runtime copy;
+root-level client prompts and a vendor PDF live beside the code.</p>
+
+<h1 id="s6">6&#8195;Layered Architecture</h1>
+<figure>
+  <img src="diagrams/02-layered-architecture.svg" alt="Layered architecture">
+  <figcaption><b>Figure 2</b> &#8212; The ten layers that actually exist, with their homes in the tree and the cross-cutting concerns that thread through all of them.</figcaption>
+</figure>
+<p>The codebase does not follow a textbook hexagonal or strict service-layer pattern; the honest layering is the one in
+Figure 2. Three deviations from a canonical design deserve emphasis:</p>
+<ul>
+  <li><strong>There is no application-service layer in the control plane.</strong> Routers validate, authorize, query, aggregate,
+  audit and serialize themselves. This keeps each feature in one file but makes routers large (six exceed 800 lines)
+  and spreads aggregate queries across the API surface (risks R-21, R-22).</li>
+  <li><strong>Domain logic is split by <em>plane</em>, not by domain.</strong> Conversation-domain logic lives in the realtime plane
+  (<code>brain.py</code>, <code>call_policy.py</code>) while studio/governance logic lives in routers; the shared library holds the
+  reusable middle (orchestration, knowledge, billing). One consequence: the collections business domain is hardcoded
+  into the runtime plane (risk R-19).</li>
+  <li><strong>Cross-cutting concerns are implemented as library calls, not middleware.</strong> Audit, tenancy scoping, cost
+  stripping and permission checks are explicit per-endpoint calls &#8212; greppable and testable, but dependent on
+  per-endpoint discipline (risk R-2 on the missing global tenant filter).</li>
+</ul>
+<table>
+  <thead><tr><th>#</th><th>Layer</th><th>Purpose &#183; main components</th><th>Depends on</th><th>Talks to</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Presentation</td><td>Operator console; route/nav/tab permission gating; typed API client</td><td>&#8212;</td><td>2 (HTTP), 5 (WS for live voice tests)</td></tr>
+    <tr><td>2</td><td>API / Controller</td><td>33 routers, envelope, serializers, exception handlers</td><td>3, 4, 9</td><td>1, 9; health-probes 5</td></tr>
+    <tr><td>3</td><td>AuthN/AuthZ</td><td>JWT, roles/permissions, tenant scoping, costs.view gate</td><td>9</td><td>every endpoint in 2; MCP</td></tr>
+    <tr><td>4</td><td>Domain services</td><td>readiness, provider governance, billing, guardrail loader, compliance, reports</td><td>9</td><td>2, 5, 6</td></tr>
+    <tr><td>5</td><td>Realtime runtime</td><td>pipecat pipeline, brain, TTS router, telephony serializers, ESL</td><td>4, 6, 7, 8, 9</td><td>callers, providers, stores</td></tr>
+    <tr><td>6</td><td>AI orchestration</td><td>goal engine, decision schema, signal router, workflow engine, naturalness</td><td>8, 9</td><td>5, and 2 (testing console)</td></tr>
+    <tr><td>7</td><td>Knowledge / RAG</td><td>ingestion pipeline, hybrid retriever, review, MCP tools</td><td>8, 9</td><td>5, 6, 2</td></tr>
+    <tr><td>8</td><td>Integration</td><td>provider factory, SSRF-guarded HTTP, telephony webhooks, channels</td><td>9</td><td>external services</td></tr>
+    <tr><td>9</td><td>Persistence</td><td>4 stores + filesystem, models, migrations</td><td>&#8212;</td><td>all layers</td></tr>
+    <tr><td>10</td><td>Infrastructure</td><td>dev.sh, .env settings, redaction, seeds, health probes</td><td>&#8212;</td><td>process level</td></tr>
+  </tbody>
+</table>
+
+<h1 id="s7">7&#8195;Detailed Component Architecture</h1>
+<figure>
+  <img src="diagrams/03-component-map.svg" alt="Component map">
+  <figcaption><b>Figure 3</b> &#8212; Major components with sizes and the sanctioned dependency directions (red: the four verified violations).</figcaption>
+</figure>
+
+<h2 id="s7-1">7.1&#8195;Control plane (backend/)</h2>
+<p><code>backend/main.py</code> assembles the app: exactly one middleware (CORS), eight exception handlers, docs at
+<code>/api/docs</code> (unauthenticated), and a lifespan that optionally runs migrations, connects Mongo and creates its
+indexes, runs the idempotent base seed (<em>on by default</em>), and starts the embedded ingestion worker. The router
+registry spans the whole product surface &#8212; from auth and users through bots, knowledge, prompts, intents, workflows,
+channels, testing, releases, conversations, exports, analytics, usage, compliance, master data and platform
+governance. Response shape is uniform: <code>{"success": true, "data": &#8230;, "meta": {&#8230;}}</code> built by
+<code>ok()/paginated()</code>; errors are <code>{"success": false, "message", "errors": [{field, message}]}</code>. Serialization is
+1,055 lines of hand-written camelCase dict literals that deliberately mirror <code>src/types/domain.ts</code>; there are no
+FastAPI response models, so the OpenAPI schema documents request shapes only (risk R-23).</p>
+<p><code>backend/core/</code> carries the real cross-cutting machinery: <code>deps.py</code> (auth &amp; tenancy &#8212; &#167;9&#8211;10),
+<code>security.py</code> (bcrypt + JWT + shared password policy), <code>audit.py</code> (transactional audit writer with key
+masking; 147 call sites), <code>provider_catalog.py</code> (720 lines of DB-driven provider/model/param validation),
+<code>service_health.py</code> (live probes behind the admin health card), <code>transcripts.py</code> (canonical Mongo transcript
+access) and <code>softdelete.py</code>.</p>
+
+<h2 id="s7-2">7.2&#8195;Realtime plane (voice_runtime/)</h2>
+<p>One FastAPI app, two processes. <code>app.py</code> owns the session lifecycle (&#167;15); <code>gateway.py</code> re-exports the same
+app on the public telephony port after eagerly pre-importing the entire call runtime, because
+<code>mod_audio_stream</code> drops sockets that are not accepted quickly. <code>pipeline.py</code> assembles the per-call Pipecat
+chain with load-bearing ordering (energy gate ahead of VAD; STT before the turn processor; recorder after transport
+output). <code>brain.py</code> is the conversation orchestrator &#8212; turn assembly, routing, guardrail holds, reply generation,
+language following, telephony control &#8212; and at 4,482 lines is the largest component in the system (risk R-18).
+<code>call_policy.py</code> implements the collections domain policy (identity confirmation, transaction-reference capture,
+a strictly-ordered recovery ladder). <code>tts_router.py</code> maintains persistent provider WebSocket engines per
+(provider, model, voice) with transient-error fallback and a first-audio watchdog. <code>freeswitch.py</code> hosts the ESL
+client plus forward-only transfer and hangup state machines. <code>recording.py</code> finalizes exactly once: transcript,
+control-plane row, usage events, recording, post-call enqueue.</p>
+
+<h2 id="s7-3">7.3&#8195;Shared library (shared/)</h2>
+<p>The only sanctioned meeting point of the two planes. Highlights beyond &#167;12&#8211;15: <code>bot_config.py</code> compiles
+&#8220;number &#8594; tenant &#8594; bot &#8594; published release &#8594; providers &#8594; voices &#8594; intents &#8594; authorized KBs&#8221; into one Redis-cached,
+per-call-pinned snapshot; <code>readiness.py</code> derives the r1&#8211;r7 checklist from real platform state;
+<code>turn_detection.py</code> is a single schema driving runtime defaults, API validation and Studio UI;
+<code>safe_http.py</code> is the SSRF guard for all tenant-configured outbound calls; <code>telephony_webhooks.py</code> verifies,
+routes and compliance-gates inbound call webhooks. A noted inversion: <code>shared/errors.py</code> imports FastAPI and
+SQLAlchemy, so non-HTTP processes transitively depend on the web framework (risk R-20).</p>
+
+<h2 id="s7-4">7.4&#8195;Frontend (src/)</h2>
+<p>A deliberately dependency-light SPA: hand-rolled component library (24 components in <code>ui.tsx</code>), hand-rolled SVG
+charts, a single global context (session/theme/toasts), one data-fetch hook (<code>useAsync</code>), and a 186-function typed
+API client over a thin envelope-aware fetch wrapper. Routing gates (<code>Guard</code> by role, <code>Require</code> by permission)
+mirror the server RBAC; the Studio is a 12-tab single route with per-tab permission gating. The live voice console
+(<code>voiceClient.ts</code>) captures 16&#8201;kHz PCM via an inline AudioWorklet, streams it over a raw WebSocket, and plays the
+bot&#8217;s PCM through a gapless scheduling queue that adopts whatever sample rate the worker announces. Notable debt:
+five user-visible actions still route through a 350&#8201;ms <code>simulateAction</code> stub (risk R-25), there is no error
+boundary and no code splitting, and permission strings are duplicated across three registries.</p>
+
+<h2 id="s7-5">7.5&#8195;Background workers &amp; MCP</h2>
+<p>Two durable-row poll workers, no broker: <strong>ingestion</strong> (PostgreSQL <code>ingestion_jobs</code>, <code>FOR UPDATE SKIP
+LOCKED</code>, concurrency 2, 2&#8201;s poll, 3 attempts) and <strong>post-call</strong> (MySQL <code>conversation_memories</code> as its own queue
+row, optimistic single-row claims, 3&#8201;s poll with an in-process wake event, stale-claim reclaim after 600&#8201;s). Both are
+embedded in host processes by default and safe to run multi-instance. The <strong>MCP server</strong> exposes four read-only
+knowledge tools over streamable HTTP, authenticates with the same platform JWTs, takes identity from the verified
+token only, rate-limits 60/min/tenant (fail-open), audits every tool call, and sanitizes all errors.</p>
+
+<h1 id="s8">8&#8195;Request / Data Flow</h1>
+<figure>
+  <img src="diagrams/04-request-lifecycle.svg" alt="Request lifecycle">
+  <figcaption><b>Figure 4</b> &#8212; Life of an authenticated REST request, including the error contract.</figcaption>
+</figure>
+<p>Three details of Figure 4 matter architecturally. First, authorization never trusts JWT claims beyond identity: the
+user row, role and permissions are re-read from MySQL on every request, which makes revocation-by-password-change
+possible but adds a per-request write (<code>last_active_at</code> + commit &#8212; risk R-24). Second, tenant scoping has two
+distinct helpers with different disclosure semantics: list queries resolve the effective tenant (403 on a foreign
+explicit id), while by-id access returns 404 to hide existence (the 403/404 asymmetry is itself noted as a minor leak,
+risk R-31). Third, binary endpoints (exports, recordings, invoice PDFs) deliberately bypass the JSON envelope and
+stream with sanitized filenames and formula-injection defenses.</p>
+
+<h1 id="s9">9&#8195;Authentication &amp; Authorization</h1>
+<figure>
+  <img src="diagrams/06-auth-flow.svg" alt="Authentication and authorization flow">
+  <figcaption><b>Figure 5</b> &#8212; Sign-in, per-request enforcement, and revocation via <code>password_changed_at</code>.</figcaption>
+</figure>
+<h2 id="s9-1">9.1&#8195;Model</h2>
+<p>Single-token HS256 JWT (12&#8201;h expiry; claims <code>sub</code>, <code>role</code>, <code>tenant_id</code>, <code>iat</code>, <code>exp</code>; no
+<code>jti</code>/refresh token). Passwords are bcrypt-hashed with one shared policy (&#8805;8 chars, upper/lower/digit, deny-list)
+used by login, self-change, admin reset, user creation and tenant onboarding. Three seeded roles carry flat permission
+sets resolved from <code>role_permissions</code> at request time: <code>super_admin</code> (all 47), <code>tenant_admin</code> (30),
+<code>tenant_user</code> (12 &#8212; deliberately excluding team, channels, settings, integrations, voice cloning and
+<code>costs.view</code>). Role guards (<code>require_tenant_admin</code>&#8230;) and permission guards
+(<code>require_permission</code>, OR semantics) coexist &#8212; which mechanism an endpoint uses is the author&#8217;s choice
+(risk R-30).</p>
+<h2 id="s9-2">9.2&#8195;Session invalidation &amp; non-interactive auth</h2>
+<p>Any password change/reset stamps <code>password_changed_at</code>; tokens issued earlier are rejected with 401 on next use
+&#8212; this is the platform&#8217;s only revocation lever (logout is audit-only). Non-interactive surfaces authenticate
+differently: telephony webhooks use HMAC signatures with timestamp skew and Redis single-use replay protection;
+WhatsApp uses Meta&#8217;s <code>X-Hub-Signature-256</code>; the MCP server re-uses platform JWTs in an auth middleware; the voice
+WebSocket trusts only the server-minted session id and cross-checks the resolved bot&#8217;s tenant (close 4403 on
+mismatch).</p>
+
+<h1 id="s10">10&#8195;Multi-Tenant Architecture</h1>
+<figure>
+  <img src="diagrams/07-multitenancy.svg" alt="Multi-tenant data flow">
+  <figcaption><b>Figure 6</b> &#8212; Tenant identity sources, enforcement points, a worked cross-tenant example, and the shared-vs-owned resource split.</figcaption>
+</figure>
+<p>Isolation is <strong>application-enforced row-level scoping on shared infrastructure</strong>: one MySQL schema, one vector
+store, one Mongo database, with <code>tenant_id</code> columns and per-query discipline. There are no per-tenant databases,
+schemas or encryption keys. The discipline is real &#8212; 46 <code>resolve_tenant_id</code> and 49 <code>assert_tenant_access</code>
+call sites, a second tenant filter compiled into every pgvector SQL statement, and financial-field stripping behind
+<code>costs.view</code> &#8212; but it is <em>conventional</em>: only five models use the <code>TenantOwnedMixin</code>, the rest declare
+<code>tenant_id</code> inline, and no ORM-level global filter exists (risk R-2). Tenant onboarding is a genuine single
+transaction (tenant + plan-snapshot subscription + settings + first admin with a one-time returned temporary password
+&#8212; there is no email delivery anywhere in the platform). Verified cross-tenant couplings worth leadership awareness:
+provider API keys are platform-level credentials, and Sarvam&#8217;s pronunciation-dictionary quota (10 dictionaries /
+100 words per account) is shared across all tenants (risk R-13).</p>
+
+<h1 id="s11">11&#8195;Database &amp; Storage Architecture</h1>
+<figure>
+  <img src="diagrams/05-persistence.svg" alt="Persistence architecture">
+  <figcaption><b>Figure 7</b> &#8212; Who writes what, where: four stores plus the local filesystem.</figcaption>
+</figure>
+<h2 id="s11-1">11.1&#8195;Division of responsibility</h2>
+<table>
+  <thead><tr><th>Store</th><th>Owns</th><th>Why (verified rationale)</th></tr></thead>
+  <tbody>
+    <tr><td>MySQL</td><td>60 tables: identity/tenancy, the whole bot studio, operations (conversation rows, audit, releases), billing/governance</td><td>Relational source of truth; sync SQLAlchemy; 31 Alembic revisions</td></tr>
+    <tr><td>PostgreSQL</td><td><code>knowledge_documents/chunks/ingestion_jobs</code> (pgvector HNSW + GIN tsvector) and LangGraph workflow checkpoints</td><td>Vector + full-text search need PG; checkpoints let workflow state survive a voice-worker restart; separate async Alembic env (<code>alembic_version_pg</code>)</td></tr>
+    <tr><td>MongoDB</td><td><code>conversation_transcripts</code> (unique <code>session_id</code>), <code>voice_events</code></td><td>&#8220;Per-turn nested lists whose shape varies&#8221; (<code>shared/db/mongo.py:3-9</code>); MySQL keeps the queryable summary row</td></tr>
+    <tr><td>Redis</td><td>Session handoff, <code>botcfg:*</code> cache, webhook replay, contact limits, MCP rate buckets, tool idempotency, chat-console state</td><td>Ephemeral/reconstructible only; every consumer fails open by design</td></tr>
+    <tr><td>Filesystem</td><td>Knowledge uploads, ~1.5&#8201;GB stereo call recordings, voice-clone samples, dev pids/logs</td><td>No object-storage abstraction exists (risk R-16)</td></tr>
+  </tbody>
+</table>
+<h2 id="s11-2">11.2&#8195;Cross-store integrity</h2>
+<p>The MySQL&#8594;PostgreSQL link (<code>kb_id</code>) is logical only &#8212; no FK, with status/counter synchronization performed by the
+ingestion pipeline in separate sessions. The platform acknowledges this seam explicitly: a
+<code>knowledge-verify</code> CLI cross-checks searchable sources against actual chunks, embedding-model drift, orphans and
+missing indexes. Detection is therefore manual rather than guaranteed (risk R-14). Mongo has no migration tooling and
+its indexes are created only by the API&#8217;s startup, while the voice worker is the primary writer (risk R-15).</p>
+
+<h1 id="s12">12&#8195;Cache / Messaging Architecture</h1>
+<p>There is <strong>no message broker, no scheduler and no cron runner</strong> in the repository &#8212; verified by dependency and
+code search (the one &#8220;cron&#8221; string is a dead ops script&#8217;s user-agent). Asynchronous work uses two durable-row poll
+queues (&#167;7.5) whose rows live in the primary databases, giving transactional enqueue and safe multi-instance claims at
+the cost of poll latency (2&#8211;3&#8201;s floors) and no fan-out primitives. <code>Release.scheduled_for</code> is stored but nothing
+consumes it &#8212; scheduled publishing is a stored intention without an executor (risk R-26).</p>
+<p>Caching is layered and everywhere bounded by TTL: the Redis <code>botcfg:*</code> snapshot (300&#8201;s, explicitly invalidated on
+settings save and release publish/rollback); in-process TTL caches for tool connections (45&#8201;s), workflow definitions
+(30&#8201;s) and the provider catalog (frontend module cache); and per-call pinning as the consistency model for live
+calls. Redis clients are cached per event loop; the sync invalidation path opens a second Redis client stack
+(risk R-27). All Redis-dependent <em>controls</em> (replay, rate limits, contact limits) fail open on outage &#8212; an explicit,
+documented availability-over-security trade (risk R-11).</p>
+
+<h1 id="s13">13&#8195;AI / LLM Architecture</h1>
+<h2 id="s13-1">13.1&#8195;A two-stage, budgeted decision loop</h2>
+<p>The conversational core is <strong>decision-first orchestration</strong>. Stage A (the <em>Goal Engine</em>) makes one small,
+hard-budgeted LLM call per turn &#8212; 1.2&#8201;s deadline, 200-token cap, two turns of history &#8212; that returns a validated
+<code>ConversationDecision</code>: scope classification, gate answers, slot updates, a tool request and, crucially,
+co-generated <code>response_text</code>. Deterministic scope rules then run <em>on top of</em> the model output: an out-of-scope or
+injection-classified turn has its tool request and slots stripped and its next action forced to a redirect &#8212; the model
+cannot authorize itself. When the decision&#8217;s action and language checks pass, that co-generated text is spoken
+directly, collapsing the turn to a single model call (&#8220;the single largest latency lever on the voice path&#8221;).
+Otherwise Stage B streams a reply with its own budgets (first token 3&#8201;s, 360-char cap, 0.6&#8201;s pause-flush to TTS).
+Three consecutive Stage-A timeouts disable the engine for the rest of the call.</p>
+<h2 id="s13-2">13.2&#8195;Deterministic layers around the model</h2>
+<p>Before any LLM sees a turn: a transcript quality gate (noise probability, confidence, foreign-script dominance,
+speech-rate sanity &#8212; fail-open), then a deterministic signal router (hangup/emergency/do-not-call detectors with
+negation handling, 12 ordered business-signal patterns, and intent matching by <em>match-strength scoring</em> rather than
+sample voting), then guardrail input checks. Clear yes/no answers, spoken transaction references and explicit
+commitments resolve via deterministic fast paths that skip the model entirely. Spoken-number normalization converts
+multilingual digit words to digits on derived copies only &#8212; the caller&#8217;s words are never rewritten for the transcript.</p>
+<h2 id="s13-3">13.3&#8195;Model resolution, prompts and cost control</h2>
+<p>Model choice is resolved per bot from a four-layer governance chain (&#167;16): the platform default is OpenAI
+<code>gpt-4o-mini</code> for both orchestration and replies; when a reasoning-class conversation model is configured
+(<code>gpt-5*</code>, o-series), the resolver deliberately keeps orchestration on <code>gpt-4o-mini</code> for latency. The live
+system prompt comes from the published <code>prompt_versions.compiled_prompt</code> (structured 11-section builder or
+freeform, with hard size caps that error rather than truncate); persona, delivery bands (empathy/energy as prompt
+suffixes), memory block, context block and scope-adherence block are assembled once per call and cached. Every LLM
+call &#8212; decision, reply, scripted-ask adaptation, grounded workflow reply, memory greeting, post-call analysis &#8212; folds
+tokens into the same per-call counters and ultimately into idempotent <code>usage_events</code>; provider-reported usage is
+preferred, with estimation flagged (<code>usage_source="estimated"</code>). Mock providers are never billed. Naturalness
+(fillers, backchannels, micro-pauses, prosody variation) is planned by a pure-config RNG planner &#8212; zero model calls
+&#8212; and is suppressed around amounts, identifiers, OTPs and compliance wording.</p>
+<h2 id="s13-4">13.4&#8195;Guardrails and compliance at runtime</h2>
+<p>A per-session <code>GuardrailEngine</code> hooks four points: caller input, assistant output (streaming, sentence-held:
+a violating sentence is never synthesized), tool execution (any guardrail hit in a turn denies all tool calls that
+turn) and persistence (PII masking of card/Aadhaar/PAN before Mongo). Effective rules = hardcoded mandatory floor
+&#8746; tenant profile, resolved fail-closed. Compliance policies (versioned, approved, tenant-activated rows: calling
+windows, contact limits, exact legal wordings spoken verbatim) gate call admission and wording substitution &#8212; but
+load fail-<em>open</em>, an asymmetry captured as risk R-11.</p>
+
+<h1 id="s14">14&#8195;RAG / Knowledge Retrieval Architecture</h1>
+<figure>
+  <img src="diagrams/08-rag-pipeline.svg" alt="RAG pipeline">
+  <figcaption><b>Figure 8</b> &#8212; Ingestion (top) and hybrid retrieval with the three-way answer branch (bottom).</figcaption>
+</figure>
+<p>Figure 8 is the complete verified flow. Points that distinguish this implementation:</p>
+<ul>
+  <li><strong>Ingestion verifies itself</strong>: after indexing, a real <code>dense_search</code> probe must return the document&#8217;s own
+  chunks or the job fails &#8212; &#8220;indexed&#8221; means provably searchable.</li>
+  <li><strong>Hybrid with OR-gated relevance</strong>: dense (pgvector HNSW cosine) and keyword (<code>websearch_to_tsquery</code>, AND
+  falling back to OR) run in parallel and fuse weighted 0.65/0.35; a chunk survives if <em>either</em> score clears its
+  threshold, so exact keyword hits are never lost to embedding distance. Embedding failure degrades to keyword-only
+  rather than erroring.</li>
+  <li><strong>Security-in-depth</strong>: authorization happens in MySQL (<code>authorize_kb_ids</code>: bot &#8746; tenant &#8746; global scope,
+  misses unnamed) <em>and</em> again as a tenant clause inside every PG statement; retrieved text passes a prompt-injection
+  sanitizer before entering the LLM context; chunks store injection flags detected at ingestion.</li>
+  <li><strong>Misses do not dead-end</strong>: an unanswerable query with verified caller context (runtime-context record or time
+  context) reroutes to a context-grounded answer; only a true miss speaks the canned <code>kb_miss</code> phrase.</li>
+  <li><strong>Everything is observable</strong>: retrieval returns stage-count/timing diagnostics (never content), the Studio has a
+  retrieval tester with below-threshold visibility, super admins get a chunk-review console with server-computed
+  quality signals (short/overlap/OCR/PII/injection), and the <code>knowledge-verify</code> CLI audits cross-store drift.</li>
+</ul>
+<p>Known seams (details in &#167;24): a re-index hard-deletes before re-inserting (search gap for that document, R-33);
+retrieval&#8217;s context budgeter uses a chars/4 approximation while ingestion counts real tokens (R-34); GPT-vision OCR
+bills nothing (R-35); the shared embedder&#8217;s usage counters can race across concurrent tenants (R-12).</p>
+
+<h1 id="s15">15&#8195;Voice / Realtime Architecture</h1>
+<figure>
+  <img src="diagrams/09-voice-pipeline.svg" alt="Voice pipeline">
+  <figcaption><b>Figure 9</b> &#8212; Call admission, the Pipecat processor chain, per-turn orchestration and single-shot finalize.</figcaption>
+</figure>
+<figure>
+  <img src="diagrams/10-voice-turn-sequence.svg" alt="Voice turn sequence">
+  <figcaption><b>Figure 10</b> &#8212; One conversational turn, including the two end-of-turn regimes and the barge-in path.</figcaption>
+</figure>
+<h2 id="s15-1">15.1&#8195;Session lifecycle</h2>
+<p>The API (or the gateway&#8217;s signed webhook) mints a Redis session; the runtime consumes it, resolves the pinned bot
+config (published release required for non-browser channels), loads guardrails and compliance in parallel, attaches
+runtime context and previous-call memory, builds the pipeline, and greets. Teardown is defensive: capacity (4429) and
+duplicate-session (4409) gates, a max-call-duration hard cap, an inactivity check that deliberately overrides
+Pipecat&#8217;s absolute session timeout while media is flowing, FreeSWITCH <code>uuid_kill</code> on bot-initiated ends (unless
+transferred), and an idempotent finalize whose disconnect verdict is &#8220;first writer wins&#8221; across the transfer monitor,
+the ESL hangup monitor (<code>normalize_disconnect</code> vocabulary) and socket shape.</p>
+<h2 id="s15-2">15.2&#8195;Turn taking, STT and barge-in</h2>
+<p>Two mutually exclusive regimes. With <strong>Deepgram Flux</strong>, the provider owns end-of-turn (its <code>EndOfTurn</code> is
+authoritative; <code>EagerEndOfTurn</code> starts speculation that <code>TurnResumed</code> discards); local VAD and turn strategies
+are not even built. With <strong>Sarvam/segmented STT</strong>, Silero VAD (behind a dBFS energy gate that substitutes silence,
+because normalized loudness makes raw VAD thresholds &#8220;effectively inert&#8221;) drives adaptive endpointing: 0.35&#8201;s after a
+complete thought, 0.12&#8201;s after a lexicon-recognized short reply, extended on continuation cues &#8212; underwritten by
+late-final merge plus a <code>turn_rewound</code> retraction event so the failure mode is a merge, not a talk-over. Barge-in
+is <strong>word-confirmed</strong>: while the bot speaks, a turn opens only after &#8805;2 transcribed words or 1&#8201;s of sustained gated
+speech; interruption cancels generation and provider TTS contexts, clears queued audio, and sends
+<code>killAudio</code>/<code>clear</code> to the transport. Every final passes a transcript-quality gate; a per-turn metrics tracker
+attributes latency to speech/STT/endpoint/decide/LLM/TTS/playout stages. Tenant-tunable turn detection is one schema
+across runtime, API and UI, resolved per transport (browser vs telephony).</p>
+<h2 id="s15-3">15.3&#8195;TTS and telephony transports</h2>
+<p>The streaming TTS router keeps one provider WebSocket per (provider, model, voice), switches per-language voices
+without reconnects, aggregates sentences (NLTK boundaries, merge-forward, forced flush), applies canonical delivery
+settings through a single capability-aware mapper, strips unspeakable fragments (the guard born from a live incident
+where a punctuation-only payload 422&#8217;d and killed calls), falls back to a configured secondary engine only on
+transient errors, and ends the call cleanly on fatal ones &#8212; with a 4&#8201;s first-audio watchdog. Telephony serializers
+adapt the same pipeline to Vaani (JSON media envelope, 8&#8201;kHz PCM16, <code>clear</code>/<code>stop</code> control), FreeSWITCH
+<code>mod_audio_fork</code> (16&#8201;kHz mono in / 8&#8201;kHz out) and <code>mod_audio_stream</code> (8&#8201;kHz stereo, caller = channel 0),
+including a first-packet ramp that removed ~160&#8201;ms from every reply. Call control (transfer, hangup causes) runs over
+a plaintext ESL connection with forward-only state machines and event-sequence dedupe; human handoff works only on
+the <code>audio_fork</code> transport (risk R-8).</p>
+
+<h1 id="s16">16&#8195;External Integrations</h1>
+<table>
+  <thead><tr><th>Provider</th><th>Used for</th><th>Integration shape</th></tr></thead>
+  <tbody>
+    <tr><td>OpenAI</td><td>Conversation + orchestration LLM, Whisper STT, embeddings, GPT-vision OCR fallback</td><td>HTTPS SDK; keys via <code>env:</code> references; usage folded into metering (OCR excepted &#8212; R-35)</td></tr>
+    <tr><td>Sarvam AI</td><td><em>Platform default</em> STT (<code>saaras:v3</code>) and TTS (<code>bulbul:v3</code>); pronunciation dictionaries</td><td>Streaming WS + REST; SDK pinned 0.1.28; local adapter removes a measured 970&#8201;ms per-utterance stall; dictionary quota is account-wide (R-13)</td></tr>
+    <tr><td>Deepgram</td><td>Flux realtime STT with authoritative end-of-turn; legacy nova REST</td><td>WS <code>v2/listen</code>; billing from actual PCM bytes sent, never transcript metadata</td></tr>
+    <tr><td>ElevenLabs</td><td>Streaming TTS (multi-stream WS) and instant voice cloning</td><td>Clones become tenant-owned voice profiles; all provider calls server-side; source audio retained for replay</td></tr>
+    <tr><td>Vaani (eDAS)</td><td>Outbound dialer telephony</td><td>Signed webhook &#8594; per-call minted media WS on :9011; simulator + E2E checker + latency probe ship in-repo</td></tr>
+    <tr><td>FreeSWITCH</td><td>PBX media + call control</td><td><code>mod_audio_fork/stream</code> WS media; ESL :9004 control; Lua/py glue deployed to the PBX host outside this repo&#8217;s packaging (R-9)</td></tr>
+    <tr><td>WhatsApp (Meta)</td><td>Inbound channel webhook per channel row</td><td>Hub-challenge + HMAC verification; the messaging conversation pipeline itself is <span class="tag u">not implemented</span></td></tr>
+    <tr><td>Tenant systems</td><td>Workflow/tool API calls, runtime-context sources</td><td>SSRF-guarded (<code>safe_http</code>): public-IP-only DNS validation, no redirects, response caps, header masking, idempotent execution</td></tr>
+  </tbody>
+</table>
+<p>Provider enablement is governed in four layers: a seeded platform allow-list (llm/embedding = openai; stt = sarvam,
+deepgram; tts = sarvam, elevenlabs), catalog row status (fail-closed 503 for live sessions on deactivated providers;
+<code>mock</code> hidden in production), per-tenant AI config profiles, and per-bot overrides validated against each model&#8217;s
+<code>params_schema</code>. Adapters for Anthropic, Google, Azure and AssemblyAI exist but are outside the governed matrix.
+Notably absent integrations: email/SMTP (invites return temporary passwords in API responses), object storage, and
+payment gateways.</p>
+
+<h1 id="s17">17&#8195;Configuration Management</h1>
+<p>One <code>.env</code> file feeds a cached pydantic <code>Settings</code> object (<code>shared/config.py</code>, ~90 fields): app/ports,
+JWT, four store DSNs, feature switches, knowledge/RAG tuning (17 retrieval knobs), provider defaults and key
+<em>references</em>, SSRF policy, worker cadences, voice/telephony parameters. <code>validate_settings(service)</code> fail-fasts
+per process with named missing keys; provider-key warnings become errors when <code>APP_ENV=production</code>. Secret
+hygiene is a first-class concern born of a documented incident (a trailing <code>&#8201;#paid key</code> comment inside a
+systemd-style env value caused live Sarvam 403s): values are sanitized of quotes/inline comments, and only lengths are
+ever logged. Gaps: several settings lack <code>.env.example</code> counterparts; two FreeSWITCH knobs are documented but have
+no reader (R-36); MySQL credentials are not URL-escaped unlike Postgres (R-37); <code>ENABLE_DATABASE_SEED</code> defaults
+on, so the base seed (which includes convergence writes despite its &#8220;never modifies&#8221; docstring) runs at every API
+boot (R-10).</p>
+
+<h1 id="s18">18&#8195;Error Handling</h1>
+<p>The error architecture is centralized and disclosure-conscious: eight exception handlers translate everything into
+the uniform envelope; SQL driver text never reaches clients; validation errors carry structured
+<code>{field, message}</code> lists that the SPA folds into a <code>fieldErrors</code> map; provider governance failures are 503
+(fail-closed) while missing prices are recorded, never fabricated. The voice plane maps errors to WebSocket close
+codes (4400/4401/4403/4404/4409/4429/4500) and classifies TTS errors into transient (fallback engine), fatal
+(clean call end) and the deliberately nuanced invalid-input case. Runtime resilience decisions are explicit
+per subsystem: transcript gate fails open, guardrails fail closed, compliance fails open, checkpointing degrades to
+memory, metering never fails the caller &#8212; catalogued with their consequences in &#167;24.</p>
+
+<h1 id="s19">19&#8195;Logging &amp; Observability</h1>
+<p><span class="tag v">Verified</span> The observability story is thin by design-age: <code>logging.basicConfig</code> plus a
+mandatory secret-redaction filter installed on every root handler <em>and</em> as a loguru sink replacement (covering
+Pipecat), applied before any router import. There are <strong>no request/correlation ids, no access log, no structured
+logging, no tracing, and no metrics endpoint</strong>; a 500 can only be tied to a path, not a caller or tenant (R-28).
+What exists instead: a 147-call-site transactional audit trail (masked values, spoofable <code>X-Forwarded-For</code> ip
+&#8212; R-29); live operator health probes for the five services (2&#8201;s timeout, real checks only) plus a datastore
+readiness endpoint that always answers HTTP 200 (R-38); per-turn latency attribution inside calls
+(<code>turn_metrics</code> with <code>slowest_stage()</code>); Mongo <code>voice_events</code> as a per-call event ledger; and dev.sh&#8217;s
+per-service log files. </p>
+
+<h1 id="s20">20&#8195;Security Boundaries</h1>
+<table>
+  <thead><tr><th>Boundary</th><th>Mechanism (all verified)</th></tr></thead>
+  <tbody>
+    <tr><td>Browser &#8594; API</td><td>Bearer JWT; CORS pinned to the frontend origin (but <code>allow_credentials</code> + wide methods/headers); envelope-only errors</td></tr>
+    <tr><td>Tenant &#8594; tenant</td><td>&#167;10: derived tenant identity, 404 non-disclosure, per-query scoping, PG tenant clause, costs.view stripping</td></tr>
+    <tr><td>Dialer &#8594; platform</td><td>HMAC signatures + timestamp skew + Redis single-use replay; provider allow-list; sanitized 4xx; per-call minted WS URLs</td></tr>
+    <tr><td>Platform &#8594; tenant systems</td><td>SSRF guard: scheme/DNS/private-IP validation over all resolved addresses, no redirects, response caps, credential-in-URL rejection</td></tr>
+    <tr><td>LLM &#8594; platform</td><td>Decision scope rules; tool gate (guardrail hit &#8658; all tools denied that turn); tool selection never taken from the model; KB text sanitized; MCP identity from verified JWT only</td></tr>
+    <tr><td>Secrets</td><td>Reference model + log redaction + audit masking + channel-config masking on read</td></tr>
+    <tr><td>Uploads/files</td><td>Extension whitelist + magic-byte sniff + size cap; server-generated path segments; traversal-checked reads (recordings, clone audio, documents)</td></tr>
+    <tr><td>Exports</td><td>CSV formula-injection prefix defense; filename/worksheet sanitization; permission-gated financial reports</td></tr>
+  </tbody>
+</table>
+<p>Material gaps, all evidence-backed and consolidated in &#167;24: no HTTP rate limiting or login lockout anywhere on the
+REST API; JWT and session cached in <code>localStorage</code> (XSS-readable) with a 12&#8201;h single token; all services bind
+<code>0.0.0.0</code> with no TLS, security headers, or reverse-proxy config in-repo (ESL and media are plaintext by design
+choice); unauthenticated <code>/api/docs</code>; <code>ALLOW_HARD_DELETE=true</code> in the live env; real call recordings tracked
+in git; no secret rotation; no formal compliance certification claimed.</p>
+
+<h1 id="s21">21&#8195;Scalability Considerations</h1>
+<ul>
+  <li><strong>Control plane:</strong> stateless per request and horizontally scalable in principle, but three boot-time behaviors
+  need coordination first: seed-on-boot convergence writes, optional in-process migrations, and the embedded ingestion
+  worker (CPU-bound parsing/OCR sharing the API&#8217;s event loop and thread pool &#8212; R-17). The per-request
+  <code>last_active_at</code> commit adds a write per authenticated call (R-24).</li>
+  <li><strong>Voice plane:</strong> a call is pinned to one process; the concurrency cap (20/worker) and duplicate-session guard are
+  per-process dictionaries, so horizontal scale requires sticky routing per session and a shared admission check
+  (R-3). Redis session handoff already supports multiple workers; LangGraph checkpoints in PG deliberately let
+  workflow state survive restarts. WS load-balancing guidance exists only as prose.</li>
+  <li><strong>Workers:</strong> SKIP-LOCKED / optimistic-claim designs are safely multi-instance today; poll intervals set the
+  latency floor and the in-process wake event only helps same-process enqueues.</li>
+  <li><strong>Data:</strong> MySQL is a single instance with modest table counts; pgvector HNSW parameters are frozen at migration
+  time (post-hoc tuning of <code>.env</code> knobs silently has no effect &#8212; R-39); recordings grow unboundedly on local disk
+  with no retention job despite plan metadata for it (R-16); Mongo transcripts are per-call documents with
+  appropriate indexes.</li>
+  <li><strong>Throughput-relevant caches</strong> (botcfg 300&#8201;s, tool connections 45&#8201;s, workflow defs 30&#8201;s) bound staleness rather
+  than requiring coherence; in-process caches (guardrail session registry, embedder singleton) are the main
+  multi-process hazards (R-12).</li>
+</ul>
+
+<h1 id="s22">22&#8195;Deployment Architecture</h1>
+<figure>
+  <img src="diagrams/11-deployment.svg" alt="Deployment architecture">
+  <figcaption><b>Figure 11</b> &#8212; The verifiable deployment: one Linux host under <code>scripts/dev.sh</code>, locally installed stores, and external telephony/AI dependencies.</figcaption>
+</figure>
+<p><span class="tag v">Verified</span> The only reproducible deployment path in the repository is
+<code>scripts/dev.sh</code> on a single host: careful process supervision (PID files, port-conflict rollback, readiness
+polling, recycled-PID-safe stop) but no containers, unit files, reverse proxy, CI or TLS anywhere.
+<span class="tag i">Inferred</span> Production-like operation exists on Linux hosts under systemd with journald (the
+secret-sanitizer documents a live systemd incident; a hardcoded <code>echosphere.edas.tech</code> appears in the FreeSWITCH
+glue) &#8212; but no unit files are in-repo, so the actual production topology is <span class="tag u">Unclear</span>.
+<code>docs/DEPLOYMENT.md</code> contains an unexercised docker-compose sketch and nginx advice as prose. The FreeSWITCH
+integration deploys two files to the PBX host with hostnames hardcoded in both a Lua URL-validation regex and a
+Python helper &#8212; currently inconsistent with the live <code>.env</code>&#8217;s IP-based WS base, meaning that path works only when
+configured with the DNS name (R-9).</p>
+
+<h1 id="s23">23&#8195;Important Runtime Flows</h1>
+<h2 id="s23-1">23.1&#8195;Inbound call &#8594; first bot words</h2>
+<p>Signed webhook &#8594; replay check &#8594; number&#8594;tenant&#8594;bot (published release required) &#8594; voice-channel gate &#8594;
+compliance (outbound-block guardrail, calling window, daily contact limit; refusals write trigger rows and return
+sanitized 403) &#8594; session minted &#8594; dialer connects the media WS &#8594; duplicate/capacity gates &#8594; pinned config +
+guardrails&#8743;compliance loaded in parallel &#8594; runtime context + previous-call memory attached &#8594; pipeline built &#8594;
+greeting (memory-personalized, language-continuous when enabled). Figure 9, top strip.</p>
+<h2 id="s23-2">23.2&#8195;One caller turn</h2>
+<p>Figure 10 end-to-end: gate&#8594;VAD&#8594;STT&#8594;transcript gate&#8594;segment buffer&#8594;endpoint (or provider EOT)&#8594;deterministic
+router&#8594;guardrail input&#8594;Stage-A decision (with speculative prefetch)&#8594;route handler (workflow step / KB retrieve /
+tool)&#8594;direct or streamed reply&#8594;sentence-held guardrail check&#8594;TTS&#8594;ramped audio out, with word-confirmed barge-in
+and turn-retraction correcting the two natural failure modes (talk-over, split turns).</p>
+<h2 id="s23-3">23.3&#8195;Publish &#8594; live traffic</h2>
+<p>Studio edits &#8594; readiness r1&#8211;r7 derive from real state &#8594; release created at <em>review</em> &#8594; approve &#8594; publish
+re-computes the six-item checklist and hard-blocks on any gap &#8594; bot flips to published, versions stamped &#8594;
+<code>botcfg:*</code> invalidated (new calls see the release; live calls keep their snapshot) &#8594; voice/WhatsApp/SMS channels
+become activatable &#8594; rollback re-points <code>live_version</code> to the previous published release. Transition table is
+enforced server-side; scheduled publish is stored but inert (R-26).</p>
+<h2 id="s23-4">23.4&#8195;Document upload &#8594; answerable knowledge</h2>
+<p>Figure 8, top lane, ending in the self-verification probe, MySQL status/readiness sync, and immediate availability
+to retrieval, the Studio tester, the chat console and MCP clients.</p>
+<h2 id="s23-5">23.5&#8195;Call end &#8594; intelligence &#8594; next call</h2>
+<p>Single-shot finalize (transcript, conversation row, idempotent usage events, recording descriptor, guardrail
+ledger) &#8594; post-call queue row (tenant opt-in) &#8594; worker produces summary/outcome/commitments and a deterministic
+next-best-action (verified platform state &gt; captured commitments &gt; LLM proposal) &#8594; the customer&#8217;s next call recalls
+the memory (tenant+bot scoped, resolution mirroring how the call identified the customer) into a generated,
+persona-consistent greeting with language continuity.</p>
+
+<h1 id="s24">24&#8195;Architecture Findings &#8212; Risks &amp; Technical Debt</h1>
+<p>All findings below are <span class="tag v">Verified</span> against code (file references abbreviated; severities are the
+author&#8217;s judgment). <b>S</b> = security, <b>R</b> = reliability/correctness, <b>D</b> = data integrity, <b>C</b> = coupling/
+maintainability, <b>O</b> = operability, <b>F</b> = frontend.</p>
+<table>
+  <thead><tr><th>Id</th><th>Sev.</th><th>Finding</th><th>Evidence &#183; consequence</th></tr></thead>
+  <tbody>
+    <tr><td>R-1 (S)</td><td>High</td><td>No rate limiting or login lockout on the REST API</td><td>Only the MCP server rate-limits (fail-open). <code>POST /auth/login</code> is unauthenticated and unthrottled &#8212; credential stuffing and enumeration-by-timing are unimpeded.</td></tr>
+    <tr><td>R-2 (S)</td><td>High</td><td>Tenant isolation is per-query discipline; no ORM-level global filter</td><td>Only 5 models use <code>TenantOwnedMixin</code>; one verified asymmetric miss already exists (<code>delete_knowledge_base_data</code> filters kb_id only). A single forgotten helper call is a cross-tenant leak.</td></tr>
+    <tr><td>R-3 (R)</td><td>High</td><td>Voice admission guards are per-process</td><td><code>_active_sessions</code> dict + capacity cap don&#8217;t span the worker and gateway processes, let alone replicas &#8212; duplicate sessions possible across processes; dialer retries also mint new sessions (no callId idempotency).</td></tr>
+    <tr><td>R-4 (S)</td><td>High</td><td>JWT + session + permissions cached in localStorage; 12&#8201;h token; logout cosmetic</td><td>XSS-readable credentials; first render trusts client-cached RBAC until <code>me()</code> refresh; no refresh-token or revocation list.</td></tr>
+    <tr><td>R-5 (S)</td><td>High</td><td>Everything binds 0.0.0.0 with no TLS/headers/proxy in-repo; ESL and media WS plaintext; <code>/api/docs</code> unauthenticated</td><td>Security rests entirely on network placement that the repository cannot verify.</td></tr>
+    <tr><td>R-6 (S)</td><td>High</td><td>Real call recordings (~1.5&#8201;GB) and other <code>storage/</code> files are git-tracked; <code>ALLOW_HARD_DELETE=true</code> in the live env</td><td>Customer call audio in VCS history; the soft-delete safety net is off in this environment.</td></tr>
+    <tr><td>R-7 (R)</td><td>High</td><td>Dead serializer branches on the transport path (Pipecat 1.5 only serializes a fixed frame set)</td><td>Browser <code>bot_speaking_*</code> events never emitted (test-console state never driven); telephony end-of-utterance tail flush unreachable; Vaani gets no protocol <code>stop</code> on the common cancel teardown.</td></tr>
+    <tr><td>R-8 (R)</td><td>High</td><td>Transfer flag set before wire delivery on <code>mod_audio_stream</code></td><td><code>recorder.transferred=True</code> even though that transport cannot transfer &#8594; hangup monitor stands down, uuid_kill skipped, end reason lies &#8220;transferred&#8221; &#8212; caller can sit on silence.</td></tr>
+    <tr><td>R-9 (O)</td><td>High</td><td>FreeSWITCH glue is unpackaged, host-hardcoded, and currently inconsistent with <code>.env</code></td><td>Lua regex + helper pin <code>echosphere.edas.tech:9011</code> while the env announces an IP &#8212; that path fails closed with a temporary-failure hangup unless configs are manually kept in lockstep.</td></tr>
+    <tr><td>R-10 (O)</td><td>Med</td><td>Base seed runs at every API boot and performs convergence writes despite &#8220;never modifies&#8221; docstring</td><td>Production rows can change on restart; multi-replica boots race; demo seed carries a hardcoded password constant with no env gate.</td></tr>
+    <tr><td>R-11 (R)</td><td>Med</td><td>Fail-open asymmetry: compliance policies and Redis controls vs fail-closed guardrails</td><td>A MySQL blip silently disables calling-window/contact-limit enforcement; a Redis outage disables webhook replay protection and MCP rate limits &#8212; documented, but a real regulatory exposure for a collections platform.</td></tr>
+    <tr><td>R-12 (D)</td><td>Med</td><td>Shared embedder singleton stores per-call usage in mutable attributes; metering task fire-and-forget</td><td>Concurrent retrievals can misattribute token usage across tenants; the unreferenced asyncio task can be GC&#8217;d &#8212; query-embedding billing silently lossy.</td></tr>
+    <tr><td>R-13 (S)</td><td>Med</td><td>Cross-tenant shared provider credentials and quotas</td><td>One Sarvam key &#8658; account-wide pronunciation-dictionary quota (10/100) shared by all tenants; a noisy tenant exhausts it platform-wide.</td></tr>
+    <tr><td>R-14 (D)</td><td>Med</td><td>MySQL&#8596;PG knowledge consistency is eventual and manually audited</td><td>Logical <code>kb_id</code> link, separate-session status/counter sync, drift detected only by the <code>knowledge-verify</code> CLI; original upload files are never deleted (uncalled <code>delete_original</code>).</td></tr>
+    <tr><td>R-15 (D)</td><td>Med</td><td>Mongo indexes bootstrapped only by the API process; no Mongo migrations</td><td>Voice worker booted against fresh Mongo lacks the unique <code>session_id</code> index &#8594; duplicate transcript docs possible.</td></tr>
+    <tr><td>R-16 (O)</td><td>Med</td><td>No object storage, no retention enforcement</td><td>1.5&#8201;GB local WAVs and counting; <code>recording_retention_days</code> exists only as plan metadata; one orphaned <code>.pcm.part</code> proves temp-file leakage on crash.</td></tr>
+    <tr><td>R-17 (O)</td><td>Med</td><td>Ingestion worker embedded in the API process by default (hardcoded concurrency 2)</td><td>Tesseract-at-350-DPI over 25&#8201;MB PDFs competes with request handling; disable switch is a <em>test</em> env var, not ops config.</td></tr>
+    <tr><td>R-18 (C)</td><td>Med</td><td>God modules</td><td><code>brain.py</code> 4,482 (110 methods, 60+ init attributes), <code>call_policy.py</code> 2,452, <code>master_data.py</code> 1,627, <code>VoiceTab.tsx</code> 1,942, <code>PlatformConfig.tsx</code> 1,837, <code>api.ts</code> 766/186 fns.</td></tr>
+    <tr><td>R-19 (C)</td><td>Med</td><td>Collections domain hardcoded in the &#8220;domain-neutral&#8221; runtime</td><td><code>call_policy</code> imported unconditionally; magic intent names and a hardcoded tool list in <code>brain.py</code> contradict the stated neutrality of goal engine/decision schema.</td></tr>
+    <tr><td>R-20 (C)</td><td>Med</td><td>Layering breaches</td><td><code>shared/errors.py</code> imports FastAPI/SQLAlchemy (web stack leaks into every process); backend imports <code>voice_runtime</code> in 4 places (API transitively depends on Pipecat for preview/test endpoints).</td></tr>
+    <tr><td>R-21 (C)</td><td>Med</td><td>No service layer; aggregates in routers; serializers demand caller-computed stats</td><td>N+1 responsibility and business rules spread across 33 modules; consistency by convention.</td></tr>
+    <tr><td>R-22 (C)</td><td>Low</td><td>Route-prefix inconsistency and split knowledge routing</td><td>2 of 33 routers use APIRouter prefixes; <code>GET</code> vs <code>PATCH/DELETE /knowledge/{id}</code> live in different modules with order-dependent matching.</td></tr>
+    <tr><td>R-23 (C)</td><td>Med</td><td>Hand-mirrored contract: 1,055-line serializers &#8596; 2,027-line domain.ts</td><td>No response models; drift caught only by tests; OpenAPI lacks response shapes.</td></tr>
+    <tr><td>R-24 (R)</td><td>Med</td><td><code>get_current_user</code> writes + commits on every request</td><td>Hot-path write amplification; the commit also flushes any pending session state mid-request.</td></tr>
+    <tr><td>R-25 (F)</td><td>Med</td><td>Five fake success actions still shipping</td><td>Tenant suspend, alert acknowledge, bot clone/archive-adjacent action, three conversation &#8220;improvement&#8221; CTAs &#8212; all toast success via <code>simulateAction</code> without doing anything.</td></tr>
+    <tr><td>R-26 (O)</td><td>Low</td><td>Stored-but-inert features</td><td><code>Release.scheduled_for</code> (no scheduler exists); 3 of 6 feature flags referenced nowhere; per-channel <code>publicWsBase</code> validated, persisted, never read.</td></tr>
+    <tr><td>R-27 (C)</td><td>Low</td><td>Duplicate client stacks &amp; loop-keyed Redis cache</td><td>Sync + async Redis clients for one cache; clients keyed on <code>id(event_loop)</code> can collide after GC; demo seed uses raw pymongo beside Motor.</td></tr>
+    <tr><td>R-28 (O)</td><td>Med</td><td>No request ids / tracing / structured logs / metrics</td><td>500s untraceable to caller/tenant; cross-service call debugging depends on per-call Mongo events only.</td></tr>
+    <tr><td>R-29 (S)</td><td>Low</td><td>Audit IP trusts first <code>X-Forwarded-For</code> hop unconditionally</td><td>Attacker-controllable audit provenance absent a trusted proxy (none configured in-repo).</td></tr>
+    <tr><td>R-30 (S)</td><td>Low</td><td>Two authorization vocabularies with overlapping codes</td><td>Dotted vs snake_case permissions (<code>knowledge.manage</code> vs <code>manage_knowledge</code>) grant differently to tenant_user; role-guard vs permission-guard choice is per-endpoint convention.</td></tr>
+    <tr><td>R-31 (S)</td><td>Low</td><td>403/404 disclosure asymmetry</td><td><code>resolve_tenant_id</code> confirms foreign-tenant validity with 403 where <code>assert_tenant_access</code> deliberately hides it with 404.</td></tr>
+    <tr><td>R-32 (R)</td><td>Low</td><td>Workflow checkpointing silently degrades to memory</td><td>Any PG error &#8658; <code>MemorySaver</code>; in-progress workflows then do not survive restart, contrary to the module&#8217;s stated guarantee.</td></tr>
+    <tr><td>R-33 (D)</td><td>Low</td><td>Re-index search gap</td><td>Hard-delete-then-reinsert contradicts the &#8220;old chunks stay searchable&#8221; docstring; large OCR docs are unanswerable for the whole run.</td></tr>
+    <tr><td>R-34 (D)</td><td>Low</td><td>Two token models in one RAG path</td><td>tiktoken at ingestion vs chars/4 at retrieval budgeting; stored per-chunk <code>token_count</code> ignored by the budgeter.</td></tr>
+    <tr><td>R-35 (D)</td><td>Low</td><td>Unmetered GPT-vision OCR; mock-never-billed is a convention</td><td>OCR LLM calls emit no usage events; the mock guard is re-implemented at 3+ sites rather than enforced centrally in <code>record_usage_event</code>.</td></tr>
+    <tr><td>R-36 (O)</td><td>Low</td><td>Documented settings with no reader</td><td><code>freeswitch_caller_channel</code>, <code>freeswitch_input_gain</code> exist in config+docs only; serializers hardcode channel 0 and apply no gain.</td></tr>
+    <tr><td>R-37 (R)</td><td>Low</td><td>Config sharp edges</td><td>MySQL DSN unescaped credentials; <code>postgres_sync_url</code> returns the async URL; <code>MAX_PASSWORD_LENGTH</code> declared, never enforced.</td></tr>
+    <tr><td>R-38 (O)</td><td>Low</td><td>Readiness endpoint always returns HTTP 200; two health systems don&#8217;t reference each other</td><td>Status-code-keyed orchestrator probes would treat an unready API as healthy.</td></tr>
+    <tr><td>R-39 (D)</td><td>Low</td><td>Index/config drift traps in pgvector</td><td>HNSW params and tsvector config frozen at migration; changing the env knobs silently degrades (sequential scans / no effect); <code>EMBEDDING_DIM</code> constant vs configurable dimension fails per-document at runtime.</td></tr>
+    <tr><td>R-40 (F)</td><td>Low</td><td>Frontend robustness gaps</td><td>No error boundary or code splitting (whole admin bundle to every user; render throw white-screens); hard-coded <code>ws://</code> breaks live voice under HTTPS; permission strings triplicated; a few hardcoded light-theme colors; no ESLint despite disable comments.</td></tr>
+  </tbody>
+</table>
+<p class="small">Positive findings worth preserving as intentional architecture: 404-based tenancy non-disclosure; idempotent
+finalize/metering; word-confirmed barge-in; ingestion self-verification; fail-closed guardrail floor; incident-documenting
+comments; readiness derived from real state; the &#8220;no fabricated health&#8221; probe rule; export injection defenses.</p>
+
+<h1 id="s25">25&#8195;Recommended Improvements</h1>
+<p>Prioritized against the register above; effort grades are relative. <em>These are recommendations, not verified facts.</em></p>
+<h2 id="s25-1">25.1&#8195;Now (security &amp; correctness, low effort)</h2>
+<ul>
+  <li>Add rate limiting + lockout to <code>/auth/login</code> and a global limiter (Redis token bucket already idiomatic here) &#8212; R-1. Gate <code>/api/docs</code> by env. Purge recordings from git history and re-point ignores &#8212; R-6.</li>
+  <li>Fix the <code>mod_audio_stream</code> transfer flag (set <code>transferred</code> only when the control actually reaches the wire) &#8212; R-8; add Vaani <code>stop</code>/tail-flush on <code>CancelFrame</code> paths and either emit browser speaking events from the brain or drop the dead branches &#8212; R-7.</li>
+  <li>Make compliance-policy load failures fail closed for collections tenants (block the call, as calling-window law implies) or at minimum alert &#8212; R-11.</li>
+  <li>Add a <code>provider_code=="mock"</code> guard inside <code>record_usage_event</code>; return per-call usage objects from the embedder instead of instance attributes; hold references to metering tasks &#8212; R-12, R-35.</li>
+  <li>Create Mongo indexes from the voice worker&#8217;s lifespan too &#8212; R-15. Honor <code>callId</code> as an idempotency key at the webhook &#8212; R-3 (partial).</li>
+</ul>
+<h2 id="s25-2">25.2&#8195;Next (structural, medium effort)</h2>
+<ul>
+  <li>Introduce a shared admission service for voice sessions (Redis SETNX per session id + global concurrency) to unlock multi-process/multi-host voice &#8212; R-3; document/automate sticky WS routing.</li>
+  <li>Split ingestion out of the API process by default; make embedded mode an explicit ops flag &#8212; R-17. Add an object-storage abstraction + retention job for recordings/uploads &#8212; R-16.</li>
+  <li>Adopt an ORM-level tenant guard (SQLAlchemy <code>with_loader_criteria</code> on a marker base) as defense-in-depth beneath the existing helpers &#8212; R-2; unify the permission catalog naming and pick one guard vocabulary per surface &#8212; R-30.</li>
+  <li>Carve <code>brain.py</code> along its already-visible seams (turn assembly / routing / reply / telephony control) and extract the collections policy behind the existing domain-policy interface into a plugin package &#8212; R-18, R-19. Split <code>api.ts</code> by domain and add an error boundary + route-level code splitting &#8212; R-40.</li>
+  <li>Introduce request ids (middleware + log record factory + audit column) and structured logging; emit the existing turn metrics to a metrics sink &#8212; R-28.</li>
+  <li>Generate the frontend types from typed response models (or publish serializer-driven JSON schema) to end the hand-mirroring &#8212; R-23.</li>
+</ul>
+<h2 id="s25-3">25.3&#8195;Later (platform maturity)</h2>
+<ul>
+  <li>Containerize the six processes and add CI (pytest + vitest + the port/contract regression tests already written); pin Python deps with a lockfile &#8212; closes the largest operability gap.</li>
+  <li>TLS termination + security headers via a checked-in reverse-proxy config; move browser auth toward short-lived tokens + httpOnly refresh &#8212; R-4, R-5.</li>
+  <li>Replace poll queues with Redis streams (or keep rows + LISTEN/NOTIFY) where latency matters; implement the scheduled-publish executor or remove the field &#8212; R-26.</li>
+  <li>Per-tenant provider credentials/quotas for externally billed resources (starting with pronunciation dictionaries) &#8212; R-13.</li>
+  <li>Wire the five simulated UI actions to the real endpoints that already exist (suspend, acknowledge, archive) or hide them behind flags &#8212; R-25; finish or remove the three dead feature flags.</li>
+</ul>
+
+<hr>
+<p class="small">Prepared from full-repository static analysis (six parallel code surveys, cross-checked; no application code was
+modified). Companion sources: the editable master of this document (<code>docs/architecture/SYSTEM_ARCHITECTURE.html</code>),
+the eleven diagram sources (<code>docs/architecture/diagrams/*.svg</code>) and the build pipeline
+(<code>docs/architecture/build/</code>).</p>
+</main>
+
+</body>
+</html>

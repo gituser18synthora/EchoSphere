@@ -640,6 +640,28 @@ async def chat_test(
             finally:
                 release_session_engine(workflow_session)
             reply, done = result["reply"], result["done"]
+            # Fold THIS turn's workflow-verified facts in BEFORE any reply
+            # delivery (mirrors the live brain): the turn that completes
+            # verification must generate under the verified state, or the
+            # LLM's prompt still says "NOT verified" and it can invent an
+            # extra verification question the flow never asked.
+            workflow_slots = result.get("slots") or {}
+            if workflow_slots.get("customer_verified") is True:
+                verified_context = dict(workflow_slots)
+                try:
+                    await redis.set(
+                        verified_key,
+                        json.dumps(verified_context, default=str),
+                        ex=_CHAT_SESSION_TTL_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 — current turn stays scripted
+                    pass
+            elif result.get("status") == "handoff":
+                verified_context = None
+                try:
+                    await redis.delete(verified_key)
+                except Exception:  # noqa: BLE001
+                    pass
             if result.get("offScript"):
                 # The workflow held its node. Mirror a live call: the LLM
                 # answers the caller's message (grounded in any verified
@@ -661,6 +683,37 @@ async def chat_test(
                     "current step; in a live call the assistant would "
                     "answer the caller's message via the LLM.)"
                 )
+            elif result.get("responseMode") == "llm_grounded" and reply:
+                # Grounded delivery parity with the live brain: the flow
+                # decided WHAT happened; the LLM words it. The authored reply
+                # stands whenever generation fails or validation cannot prove
+                # the pending question / required literals survived.
+                from shared.orchestration.response_modes import (
+                    grounded_delivery_instruction,
+                    validate_grounded_reply,
+                )
+                from voice_runtime.transcript_gate import script_supports_language
+
+                pending_question = str(result.get("nodePrompt") or "").strip()
+                try:
+                    grounded_reply = await _testing_llm_reply(
+                        db, bot, body, conversation_language,
+                        verified_context=verified_context,
+                        extra_system=grounded_delivery_instruction(
+                            directives=result.get("responseDirectives") or (),
+                            script=reply,
+                            pending_question=pending_question or None,
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — authored reply stands
+                    grounded_reply = None
+                if grounded_reply and validate_grounded_reply(
+                    reply, grounded_reply, conversation_language,
+                    require_question=bool(pending_question),
+                    must_include=result.get("responseMustInclude") or (),
+                    language_check=script_supports_language,
+                ):
+                    reply = grounded_reply
             workflow_detail = {
                 "name": name,
                 "source": result["source"],
@@ -670,25 +723,9 @@ async def chat_test(
                 "slots": result["slots"],
                 "offScript": bool(result.get("offScript")),
                 "signal": result.get("signal"),
+                "responseMode": result.get("responseMode"),
                 "done": done,
             }
-            workflow_slots = result.get("slots") or {}
-            if workflow_slots.get("customer_verified") is True:
-                verified_context = dict(workflow_slots)
-                try:
-                    await redis.set(
-                        verified_key,
-                        json.dumps(verified_context, default=str),
-                        ex=_CHAT_SESSION_TTL_SECONDS,
-                    )
-                except Exception:  # noqa: BLE001 — current turn stays scripted
-                    pass
-            elif result.get("status") == "handoff":
-                verified_context = None
-                try:
-                    await redis.delete(verified_key)
-                except Exception:  # noqa: BLE001
-                    pass
             try:
                 if done:
                     await redis.delete(active_key)
@@ -1184,6 +1221,7 @@ async def simulate_turn(
                 "name": name, "status": result["status"],
                 "nodeTrace": result["trace"], "slots": result["slots"],
                 "offScript": bool(result.get("offScript")), "done": result["done"],
+                "responseMode": result.get("responseMode"),
             }
             trace["route"] = "workflow"
             response_text = result["reply"]
@@ -1201,6 +1239,33 @@ async def simulate_turn(
                     body.messages, body.message,
                 )
                 trace["route"] = "workflow_off_script_llm"
+            elif result.get("responseMode") == "llm_grounded" and result["reply"]:
+                # Same grounded delivery as the live brain / chat endpoint:
+                # generated wording, validated, authored text as fallback.
+                from shared.orchestration.response_modes import (
+                    grounded_delivery_instruction,
+                    validate_grounded_reply,
+                )
+                from voice_runtime.transcript_gate import script_supports_language
+
+                pending_question = str(result.get("nodePrompt") or "").strip()
+                grounded_text = await _simulate_llm_reply(
+                    llm,
+                    rendered_prompt + grounded_delivery_instruction(
+                        directives=result.get("responseDirectives") or (),
+                        script=result["reply"],
+                        pending_question=pending_question or None,
+                    ),
+                    body.messages, body.message,
+                )
+                if validate_grounded_reply(
+                    result["reply"], grounded_text, body.language or None,
+                    require_question=bool(pending_question),
+                    must_include=result.get("responseMustInclude") or (),
+                    language_check=script_supports_language,
+                ):
+                    response_text = grounded_text
+                    trace["route"] = "workflow_llm_grounded"
     if not response_text:
         extra = (plan.instruction if plan else "") + tool_instruction
         trace.setdefault("route", decision.kind.value if decision.kind != RouteKind.WORKFLOW else "chat")

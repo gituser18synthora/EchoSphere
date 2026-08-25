@@ -1,0 +1,212 @@
+<svg viewBox="0 0 1240 710" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="c-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748B"/></marker>
+    <marker id="c-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; }
+      .mod { rx: 6; stroke-width: 1.1; }
+      .mt { font-size: 9.6px; font-weight: 700; fill: #1F2937; }
+      .ms { font-size: 8.2px; fill: #55607A; }
+      .loc { font-size: 8px; fill: #8892A6; font-style: italic; }
+      .e { fill: none; stroke: #64748B; stroke-width: 1.6; }
+      .ev { fill: none; stroke: #E11D48; stroke-width: 1.3; stroke-dasharray: 5 3; }
+      .el { font-size: 9px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- ===== Frontend ===== -->
+  <rect class="cl" x="20" y="20" width="270" height="560" fill="#EFF5FE" stroke="#2563EB"/>
+  <text class="clabel" x="38" y="42" fill="#2563EB">FRONTEND &#8212; src/ (40.3k LOC)</text>
+  <g>
+    <rect class="mod" x="36" y="56" width="238" height="46" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="73">App.tsx + AppShell</text>
+    <text class="ms" x="46" y="86">route table &#183; Guard/Require gates &#183; nav</text>
+    <rect class="mod" x="36" y="110" width="238" height="58" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="127">pages/admin (17 pages)</text>
+    <text class="ms" x="46" y="140">tenants &#183; governance &#183; platform config &#183; chunk</text>
+    <text class="ms" x="46" y="152">review &#183; monitoring &#183; reports <tspan class="loc">9.1k</tspan></text>
+    <rect class="mod" x="36" y="176" width="238" height="58" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="193">pages/tenant (13 pages)</text>
+    <text class="ms" x="46" y="206">bots &#183; knowledge hub &#183; conversations &#183; voices</text>
+    <text class="ms" x="46" y="218">team &#183; analytics &#183; settings <tspan class="loc">5.9k</tspan></text>
+    <rect class="mod" x="36" y="242" width="238" height="58" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="259">pages/tenant/studio (12 tabs)</text>
+    <text class="ms" x="46" y="272">voice &#183; prompts &#183; intents &#183; workflows canvas &#183;</text>
+    <text class="ms" x="46" y="284">APIs &#183; channels &#183; testing &#183; publish <tspan class="loc">12.2k</tspan></text>
+    <rect class="mod" x="36" y="308" width="238" height="46" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="325">components/ + styles/</text>
+    <text class="ms" x="46" y="338">ui.tsx (24) &#183; DataTable &#183; charts &#183; tokens.css <tspan class="loc">7.6k</tspan></text>
+    <rect class="mod" x="36" y="362" width="238" height="58" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="379">services/</text>
+    <text class="ms" x="46" y="392">http.ts (envelope, 401) &#183; api.ts (186 fns) &#183;</text>
+    <text class="ms" x="46" y="404">voiceClient.ts (mic&#8594;WS&#8594;PCM queue) <tspan class="loc">2.1k</tspan></text>
+    <rect class="mod" x="36" y="428" width="238" height="46" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="445">state/ + hooks/ + types/</text>
+    <text class="ms" x="46" y="458">AppContext &#183; useAsync &#183; domain.ts (159 types)</text>
+    <rect class="mod" x="36" y="482" width="238" height="40" fill="#FFFFFF" stroke="#2563EB"/>
+    <text class="mt" x="46" y="499">39 vitest suites</text>
+    <text class="ms" x="46" y="511">jsdom &#183; mocked api/context <tspan class="loc">7.7k</tspan></text>
+    <text class="ms" x="36" y="536" font-style="italic">3 runtime deps only: react, react-dom,</text>
+    <text class="ms" x="36" y="548" font-style="italic">react-router-dom &#8212; everything else hand-rolled</text>
+    <text class="ms" x="36" y="564" font-weight="700">&#8594; HTTP /api/v1 to the API &#183; WS :9002 raw PCM</text>
+    <text class="ms" x="36" y="576" font-weight="700">to the voice worker (Studio test console)</text>
+  </g>
+
+  <!-- ===== Backend ===== -->
+  <rect class="cl" x="322" y="20" width="290" height="360" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="clabel" x="340" y="42" fill="#4F46E5">PLATFORM API &#8212; backend/ (28.4k LOC)</text>
+  <g>
+    <rect class="mod" x="338" y="56" width="258" height="58" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="348" y="73">routers/ &#8212; 33 modules, 208 endpoints</text>
+    <text class="ms" x="348" y="86">largest: master_data 1.6k &#183; testing 1.2k &#183; tenants,</text>
+    <text class="ms" x="348" y="98">voice_clones, channels ~0.9k each <tspan class="loc">15.4k</tspan></text>
+    <rect class="mod" x="338" y="122" width="258" height="46" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="348" y="139">core/ &#8212; deps &#183; security &#183; audit &#183; pagination</text>
+    <text class="ms" x="348" y="152">provider_catalog (720) &#183; service_health &#183; transcripts</text>
+    <rect class="mod" x="338" y="176" width="258" height="40" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="348" y="193">serializers.py &#8212; 47 fns, camelCase <tspan class="loc">1.1k</tspan></text>
+    <text class="ms" x="348" y="205">mirrors src/types/domain.ts by hand</text>
+    <rect class="mod" x="338" y="224" width="122" height="46" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="348" y="241">seeds/</text>
+    <text class="ms" x="348" y="254">base &#183; demo &#183; catalog</text>
+    <text class="loc" x="348" y="264">2.4k</text>
+    <rect class="mod" x="474" y="224" width="122" height="46" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="484" y="241">reports/ + alembic</text>
+    <text class="ms" x="484" y="254">CSV/XLSX/PDF &#183; 31+2</text>
+    <text class="loc" x="484" y="264">revisions</text>
+    <rect class="mod" x="338" y="278" width="122" height="46" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text class="mt" x="348" y="295">workers/ingestion</text>
+    <text class="ms" x="348" y="308">embedded by default</text>
+    <rect class="mod" x="474" y="278" width="122" height="46" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="mt" x="484" y="295">mcp_server/</text>
+    <text class="ms" x="484" y="308">4 tools &#183; JWT &#183; :9003</text>
+    <text class="ms" x="338" y="344" font-style="italic">no service layer: routers own business logic,</text>
+    <text class="ms" x="338" y="356" font-style="italic">aggregates and audit calls</text>
+  </g>
+
+  <!-- ===== Voice runtime ===== -->
+  <rect class="cl" x="644" y="20" width="280" height="360" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="662" y="42" fill="#0D9488">VOICE RUNTIME (14.6k LOC)</text>
+  <g>
+    <rect class="mod" x="660" y="56" width="248" height="46" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="670" y="73">app.py + gateway.py</text>
+    <text class="ms" x="670" y="86">session lifecycle &#183; WS endpoints &#183; :9002/:9011</text>
+    <rect class="mod" x="660" y="110" width="248" height="46" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="670" y="127">pipeline.py &#8212; pipecat assembly</text>
+    <text class="ms" x="670" y="140">gate &#8594; VAD &#8594; STT &#8594; turns &#8594; brain &#8594; TTS &#8594; out</text>
+    <rect class="mod" x="660" y="164" width="248" height="52" fill="#CCFBF1" stroke="#0D9488"/>
+    <text class="mt" x="670" y="181">brain.py <tspan class="loc">4,482</tspan> + call_policy.py <tspan class="loc">2,452</tspan></text>
+    <text class="ms" x="670" y="194">turn assembly &#183; routing &#183; replies &#183; guardrail holds</text>
+    <text class="ms" x="670" y="206">collections domain policy (recovery ladder)</text>
+    <rect class="mod" x="660" y="224" width="120" height="52" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="670" y="241">tts_router.py</text>
+    <text class="ms" x="670" y="254">streaming engines &#183;</text>
+    <text class="ms" x="670" y="266">fallback &#183; sentences</text>
+    <rect class="mod" x="788" y="224" width="120" height="52" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="798" y="241">STT adapters</text>
+    <text class="ms" x="798" y="254">sarvam_stt &#183; deepgram</text>
+    <text class="ms" x="798" y="266">_stt &#183; transcript_gate</text>
+    <rect class="mod" x="660" y="284" width="120" height="52" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="670" y="301">telephony.py</text>
+    <text class="ms" x="670" y="314">Vaani/FS serializers &#183;</text>
+    <text class="ms" x="670" y="326">ramps &#183; killAudio</text>
+    <rect class="mod" x="788" y="284" width="120" height="52" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="mt" x="798" y="301">freeswitch.py</text>
+    <text class="ms" x="798" y="314">ESL &#183; transfer + hangup</text>
+    <text class="ms" x="798" y="326">state machines</text>
+    <rect class="mod" x="660" y="344" width="248" height="26" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="ms" x="670" y="361">recording.py (finalize &#183; metering) &#183; turn_metrics &#183; audio_gate</text>
+  </g>
+
+  <!-- ===== Shared ===== -->
+  <rect class="cl" x="322" y="404" width="602" height="286" fill="#F4F6FA" stroke="#475569"/>
+  <text class="clabel" x="340" y="426" fill="#475569">SHARED LIBRARY &#8212; shared/ (28.1k LOC) &#8212; imported by both planes</text>
+  <g>
+    <rect class="mod" x="338" y="440" width="180" height="52" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="348" y="457">models/ &#8212; 60 tables</text>
+    <text class="ms" x="348" y="470">auth &#183; tenancy &#183; bots &#183; content &#183;</text>
+    <text class="ms" x="348" y="482">billing &#183; ops &#183; compliance <tspan class="loc">2.2k</tspan></text>
+    <rect class="mod" x="530" y="440" width="180" height="52" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="540" y="457">orchestration/ <tspan class="loc">6.7k</tspan></text>
+    <text class="ms" x="540" y="470">goal engine &#183; decision schema &#183;</text>
+    <text class="ms" x="540" y="482">router &#183; workflow engine &#183; naturalness</text>
+    <rect class="mod" x="722" y="440" width="186" height="52" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="732" y="457">knowledge/ <tspan class="loc">7.1k</tspan></text>
+    <text class="ms" x="732" y="470">parsing &#183; chunking &#183; embeddings &#183;</text>
+    <text class="ms" x="732" y="482">hybrid retriever &#183; review &#183; security</text>
+    <rect class="mod" x="338" y="500" width="180" height="52" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="348" y="517">providers/ (factory)</text>
+    <text class="ms" x="348" y="530">stt: whisper &#183; deepgram &#183; sarvam &#183; aai</text>
+    <text class="ms" x="348" y="542">tts: sarvam/11L WS &#183; llm: oai/anthropic</text>
+    <rect class="mod" x="530" y="500" width="180" height="52" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="540" y="517">billing &#183; guardrails &#183; compliance</text>
+    <text class="ms" x="540" y="530">pricing snapshots &#183; metering &#183;</text>
+    <text class="ms" x="540" y="542">floor &#183; policies <tspan class="loc">2.1k</tspan></text>
+    <rect class="mod" x="722" y="500" width="186" height="52" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text class="mt" x="732" y="517">post_call/ <tspan class="loc">1.9k</tspan></text>
+    <text class="ms" x="732" y="530">analyzer &#183; NBA rules &#183; recall &#183;</text>
+    <text class="ms" x="732" y="542">durable-row worker</text>
+    <rect class="mod" x="338" y="560" width="180" height="46" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="348" y="577">db/ + config.py + secrets</text>
+    <text class="ms" x="348" y="590">mysql &#183; pg &#183; mongo &#183; redis &#183; env refs</text>
+    <rect class="mod" x="530" y="560" width="180" height="46" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="540" y="577">telephony*.py + safe_http.py</text>
+    <text class="ms" x="540" y="590">webhook verify &#183; connect payloads &#183; SSRF</text>
+    <rect class="mod" x="722" y="560" width="186" height="46" fill="#FFFFFF" stroke="#475569"/>
+    <text class="mt" x="732" y="577">bot_config.py + voice_sessions</text>
+    <text class="ms" x="732" y="590">compiled snapshot &#183; Redis cache/handoff</text>
+    <text class="ms" x="338" y="630" font-style="italic">also: readiness.py &#183; turn_detection.py &#183; runtime_context.py &#183; audio/text &#183; logging_utils (redaction) &#183; errors.py (FastAPI-coupled &#8212; noted risk)</text>
+    <text class="ms" x="338" y="644" font-style="italic">tests/: 84 unit + 45 integration + 3 perf modules against real local stores (38.3k LOC)</text>
+  </g>
+
+  <!-- ===== deps ===== -->
+  <path class="e" d="M290 120 L 322 120" marker-end="url(#c-a)"/>
+  <text class="el" x="284" y="110" text-anchor="end">HTTP /api/v1</text>
+  <path class="e" d="M467 380 L 467 404" marker-end="url(#c-a)"/>
+  <text class="el" x="475" y="398">imports</text>
+  <path class="e" d="M784 380 L 784 404" marker-end="url(#c-a)"/>
+  <text class="el" x="792" y="398">imports</text>
+  <path class="ev" d="M612 250 C 636 250 640 240 644 230" marker-end="url(#c-r)"/>
+  <text class="el" x="616" y="396" text-anchor="middle" fill="#E11D48">4 breaches: routers/testing.py + providers.py import voice_runtime</text>
+
+  <!-- external strip -->
+  <rect class="cl" x="956" y="20" width="264" height="670" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="clabel" x="974" y="42" fill="#B45D09">OUTBOUND DEPENDENCIES</text>
+  <g>
+    <rect class="mod" x="972" y="56" width="232" height="54" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="mt" x="982" y="73">OpenAI</text>
+    <text class="ms" x="982" y="86">gpt-4o-mini orchestration/replies &#183; whisper &#183;</text>
+    <text class="ms" x="982" y="98">text-embedding-3-small &#183; GPT-vision OCR</text>
+    <rect class="mod" x="972" y="118" width="232" height="42" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="mt" x="982" y="135">Sarvam AI (default STT/TTS)</text>
+    <text class="ms" x="982" y="148">saaras:v3 &#183; bulbul:v3 &#183; pronunciation dicts</text>
+    <rect class="mod" x="972" y="168" width="232" height="42" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="mt" x="982" y="185">Deepgram Flux</text>
+    <text class="ms" x="982" y="198">wss v2/listen &#183; authoritative end-of-turn</text>
+    <rect class="mod" x="972" y="218" width="232" height="42" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="mt" x="982" y="235">ElevenLabs</text>
+    <text class="ms" x="982" y="248">multi-stream WS TTS &#183; instant voice cloning</text>
+    <rect class="mod" x="972" y="268" width="232" height="42" fill="#FFE4E6" stroke="#E11D48"/>
+    <text class="mt" x="982" y="285">Vaani dialer + FreeSWITCH</text>
+    <text class="ms" x="982" y="298">webhook + media WS &#183; ESL control</text>
+    <rect class="mod" x="972" y="318" width="232" height="42" fill="#FFE4E6" stroke="#E11D48"/>
+    <text class="mt" x="982" y="335">WhatsApp (Meta Cloud API)</text>
+    <text class="ms" x="982" y="348">signed inbound webhook per channel</text>
+    <rect class="mod" x="972" y="368" width="232" height="42" fill="#FFFFFF" stroke="#D97706"/>
+    <text class="mt" x="982" y="385">Tenant APIs (tool calls)</text>
+    <text class="ms" x="982" y="398">api_connections via SSRF-guarded fetch_json</text>
+    <text class="ms" x="972" y="432" font-weight="700" fill="#1F2937">Governance matrix (seeded):</text>
+    <text class="ms" x="972" y="446">llm = openai &#183; embedding = openai</text>
+    <text class="ms" x="972" y="458">stt = sarvam + deepgram &#183; tts = sarvam + 11L</text>
+    <text class="ms" x="972" y="470">others (anthropic/google/azure/aai) inactive</text>
+    <text class="ms" x="972" y="490" font-weight="700" fill="#1F2937">Client-specific artifacts in repo:</text>
+    <text class="ms" x="972" y="504">oyo/ mock service :9021 &#183; mpokket prompts &#183;</text>
+    <text class="ms" x="972" y="516">free_sweetch/ (deployed to the PBX host) &#183;</text>
+    <text class="ms" x="972" y="528">rateChange/ (dead FX cron script)</text>
+    <text class="ms" x="972" y="548" font-weight="700" fill="#1F2937">LOC totals (code, excl. env/node_modules):</text>
+    <text class="ms" x="972" y="562">frontend 40.3k &#183; backend 28.4k &#183; shared 28.1k</text>
+    <text class="ms" x="972" y="574">voice_runtime 14.6k &#183; tests 38.3k</text>
+    <text class="ms" x="972" y="586">docs/ 10.5k md &#183; &#8776;150k total app code</text>
+  </g>
+</svg>

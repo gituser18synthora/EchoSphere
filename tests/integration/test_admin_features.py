@@ -550,6 +550,89 @@ class TestAdminChosenPasswordReset:
         assert response.status_code == 400
 
 
+class TestTenantAdminTeamPasswordReset:
+    """Team page: a tenant admin changes a member's password
+    (POST /users/{id}/reset-password with newPassword/confirmPassword).
+    Same-tenant only — cross-tenant and platform targets must 404, never 403,
+    so foreign accounts stay undiscoverable."""
+
+    @pytest.fixture(scope="class")
+    def member(self, client, tenant_admin):
+        """A tenant_user in the tenant admin's own tenant (tn-001), created
+        through the same API the Team page uses."""
+        email = f"team-member-{_SUFFIX}@example.com"
+        created = _data(client.post(f"{API}/users", headers=tenant_admin, json={
+            "name": "Team Member", "email": email, "roleCode": "tenant_user",
+            "password": "Original2026pw",
+        }))
+        _created.append(("users", created["id"]))
+        return {"id": created["id"], "email": email, "password": "Original2026pw"}
+
+    @pytest.fixture(scope="class")
+    def outsider(self, client, super_admin):
+        """A tenant_user in ANOTHER tenant (tn-002)."""
+        email = f"outsider-{_SUFFIX}@example.com"
+        created = _data(client.post(f"{API}/users", headers=super_admin, json={
+            "name": "Other Tenant Member", "email": email, "roleCode": "tenant_user",
+            "tenantId": "tn-002", "password": "Outsider2026pw",
+        }))
+        _created.append(("users", created["id"]))
+        return {"id": created["id"], "email": email, "password": "Outsider2026pw"}
+
+    def _login(self, client, email, password):
+        return client.post(f"{API}/auth/login", json={"email": email, "password": password})
+
+    def _reset(self, client, headers, user_id, new, confirm):
+        return client.post(f"{API}/users/{user_id}/reset-password", headers=headers,
+                           json={"newPassword": new, "confirmPassword": confirm})
+
+    def test_tenant_admin_resets_member_password(self, client, tenant_admin, member):
+        result = _data(self._reset(client, tenant_admin, member["id"],
+                                   "Rotated2026pw", "Rotated2026pw"))
+        assert result["reset"] is True and result["sessionsInvalidated"] is True
+        assert "temporaryPassword" not in result
+        # The old password is dead; the new one signs in.
+        assert self._login(client, member["email"], member["password"]).status_code == 401
+        assert self._login(client, member["email"], "Rotated2026pw").status_code == 200
+        member["password"] = "Rotated2026pw"
+
+    def test_cross_tenant_reset_rejected(self, client, tenant_admin, outsider):
+        response = self._reset(client, tenant_admin, outsider["id"],
+                               "Hijack2026pw", "Hijack2026pw")
+        assert response.status_code == 404
+        # The target's password is untouched.
+        assert self._login(client, outsider["email"], outsider["password"]).status_code == 200
+        assert self._login(client, outsider["email"], "Hijack2026pw").status_code == 401
+
+    def test_platform_account_not_reachable(self, client, tenant_admin):
+        from sqlalchemy import select
+
+        from shared.db.mysql import get_sessionmaker
+        from shared.models import User
+
+        session = get_sessionmaker()()
+        try:
+            platform_admin = session.execute(
+                select(User).where(User.email == "admin@aurexion.com")).scalar_one()
+        finally:
+            session.close()
+        response = self._reset(client, tenant_admin, platform_admin.id,
+                               "Hijack2026pw", "Hijack2026pw")
+        assert response.status_code == 404
+
+    def test_own_account_rejected(self, client, tenant_admin):
+        me = _data(client.get(f"{API}/auth/me", headers=tenant_admin))
+        response = self._reset(client, tenant_admin, me["id"],
+                               "Selfie2026pw", "Selfie2026pw")
+        assert response.status_code == 400
+
+    def test_tenant_user_forbidden(self, client, tenant_user, member):
+        response = self._reset(client, tenant_user, member["id"],
+                               "Sneaky2026pw", "Sneaky2026pw")
+        assert response.status_code == 403
+        assert self._login(client, member["email"], member["password"]).status_code == 200
+
+
 class TestPasswordMinimumLength:
     """The password minimum is 8 characters; composition (upper/lower/digit)
     is unchanged. Verifies the boundary on both the self-service change and the

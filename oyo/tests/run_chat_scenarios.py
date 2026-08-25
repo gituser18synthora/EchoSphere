@@ -78,8 +78,10 @@ SCENARIOS = [
     ("01 system confirmation only (601001)", BOT1, [
         ("hello", [(RT, "workflow"), (R, "booking id")]),
         ("my booking id is 601001", [(R, "guest name")]),
-        ("Rahul Sharma", [(R, "confirmed in our system")]),
-        ("no, that's all, thank you", [(R, "proceed with your check-in"), ("done", "true")]),
+        ("Rahul Sharma", [(R, "confirmed")]),
+        # n_msg_sysconfirm is llm_grounded now: assert the semantic content
+        # (check-in goes ahead), not the authored sentence.
+        ("no, that's all, thank you", [(R, "check-in"), ("done", "true")]),
     ]),
     ("02 cancelled + dispute -> transfer (601002)", BOT1, [
         ("is my booking confirmed", [(RT, "workflow"), (R, "booking id")]),
@@ -91,12 +93,14 @@ SCENARIOS = [
         ("booking status please", [(R, "booking id")]),
         ("601013", [(R, "guest name")]),
         ("Nisha Reddy", [(R, "cancelled")]),
-        ("yes, I cancelled it myself", [(R, "nothing pending"), ("done", "true")]),
+        # n_msg_cancel_ack is llm_grounded: the ack restates the caller's own
+        # cancellation; exact phrasing is generated.
+        ("yes, I cancelled it myself", [(R, "cancel"), ("done", "true")]),
     ]),
     ("04 PM confirms booking (601001)", BOT1, [
         ("I want to confirm my booking with the hotel", [(R, "booking id")]),
         ("601001", [(R, "guest name")]),
-        ("Rahul Sharma", [(R, "confirmed in our system")]),
+        ("Rahul Sharma", [(R, "confirmed")]),
         ("please confirm with the property", [
             (R, "stay on the line"),
             (R, "successfully confirmed your booking with the property"),
@@ -105,7 +109,7 @@ SCENARIOS = [
     ("05 PM no answer -> stock confirms (601003)", BOT1, [
         ("check-in confirmation", [(R, "booking id")]),
         ("601003", [(R, "guest name")]),
-        ("Arjun Mehta", [(R, "confirmed in our system")]),
+        ("Arjun Mehta", [(R, "confirmed")]),
         ("yes please check with the property", [
             (R, "unable to reach the property manager"),
             (R, "internal team has validated"),
@@ -114,7 +118,7 @@ SCENARIOS = [
     ("06 overbooked -> shift accepted (601004)", BOT1, [
         ("confirm my booking", [(R, "booking id")]),
         ("601004", [(R, "guest name")]),
-        ("Sneha Iyer", [(R, "confirmed in our system")]),
+        ("Sneha Iyer", [(R, "confirmed")]),
         ("confirm with the property please", [
             (R, "overbooked"), (R, "alternate oyo property")]),
         ("yes please", [(R, "shall i proceed with shifting")]),
@@ -123,7 +127,7 @@ SCENARIOS = [
     ("07 overbooked-but-available -> penalty accepted (601005)", BOT1, [
         ("confirm my booking with the hotel", [(R, "booking id")]),
         ("601005", [(R, "guest name")]),
-        ("Vikram Singh", [(R, "confirmed in our system")]),
+        ("Vikram Singh", [(R, "confirmed")]),
         ("please verify with the property", [
             (R, "successfully confirmed your booking with the property"),
             ("done", "true")]),
@@ -131,14 +135,14 @@ SCENARIOS = [
     ("08 maintenance + alternate room (601006)", BOT1, [
         ("booking confirmation", [(R, "booking id")]),
         ("601006", [(R, "guest name")]),
-        ("Ananya Das", [(R, "confirmed in our system")]),
+        ("Ananya Das", [(R, "confirmed")]),
         ("confirm with the property", [
             (R, "alternate room"), ("done", "true")]),
     ]),
     ("09 maintenance no room -> shift declined (601007)", BOT1, [
         ("check my booking", [(R, "booking id")]),
         ("601007", [(R, "guest name")]),
-        ("Rohan Kapoor", [(R, "confirmed in our system")]),
+        ("Rohan Kapoor", [(R, "confirmed")]),
         ("please confirm with the property", [
             (R, "maintenance"), (R, "alternate oyo property")]),
         ("no, don't shift", [(R, "contact oyo support"), ("done", "true")]),
@@ -146,7 +150,7 @@ SCENARIOS = [
     ("10 price meets ARR -> honored (601008)", BOT1, [
         ("is my reservation confirmed", [(R, "booking id")]),
         ("601008", [(R, "guest name")]),
-        ("Meera Nair", [(R, "confirmed in our system")]),
+        ("Meera Nair", [(R, "confirmed")]),
         ("confirm with the property", [
             (R, "successfully confirmed your booking with the property"),
             ("done", "true")]),
@@ -154,14 +158,14 @@ SCENARIOS = [
     ("11 price below ARR -> compensation added (601009)", BOT1, [
         ("booking confirmation", [(R, "booking id")]),
         ("601009", [(R, "guest name")]),
-        ("Aditya Rao", [(R, "confirmed in our system")]),
+        ("Aditya Rao", [(R, "confirmed")]),
         ("confirm with the property", [
             (R, "successfully confirmed with the property"), ("done", "true")]),
     ]),
     ("12 price refused -> shift (601010)", BOT1, [
         ("confirm my booking", [(R, "booking id")]),
         ("601010", [(R, "guest name")]),
-        ("Kavita Joshi", [(R, "confirmed in our system")]),
+        ("Kavita Joshi", [(R, "confirmed")]),
         ("please confirm with the property", [
             (R, "unable to accommodate"), (R, "alternate oyo property")]),
         ("yes", [(R, "shall i proceed with shifting")]),
@@ -170,7 +174,7 @@ SCENARIOS = [
     ("13 PM + stock unavailable -> shift (601011)", BOT1, [
         ("check-in confirmation", [(R, "booking id")]),
         ("601011", [(R, "guest name")]),
-        ("Sanjay Gupta", [(R, "confirmed in our system")]),
+        ("Sanjay Gupta", [(R, "confirmed")]),
         ("confirm with the property", [
             (R, "unable to reach the property manager"),
             (R, "could not get a confirmation"),
@@ -181,23 +185,26 @@ SCENARIOS = [
     ("14 voucher to email on file (601001)", BOT1, [
         ("I need my booking voucher", [(R, "booking id")]),
         ("601001", [(R, "guest name")]),
-        ("Rahul Sharma", [(R, "confirmed in our system")]),
+        ("Rahul Sharma", [(R, "confirmed")]),
         ("send me the voucher", [(R, "email address from your booking on file")]),
-        ("yes please", [(R, "emailed your booking voucher"), (R, "anything else")]),
+        # n_msg_voucher_ok is llm_grounded (success-edge only) and the turn
+        # pauses on the anything-else hub: the validated generation must keep
+        # the voucher confirmation and end with a question.
+        ("yes please", [(R, "voucher"), (R, "?")]),
         ("no thanks", [("done", "true")]),
     ]),
     ("15 voucher, no email on file (601012)", BOT1, [
         ("booking voucher please", [(R, "booking id")]),
         ("601012", [(R, "guest name")]),
-        ("Farhan Ali", [(R, "confirmed in our system")]),
+        ("Farhan Ali", [(R, "confirmed")]),
         ("email the voucher", [(R, "email address where i should send")]),
-        ("farhan.ali@example.com", [(R, "emailed your booking voucher")]),
+        ("farhan.ali@example.com", [(R, "voucher"), (R, "?")]),
         ("nothing else", [("done", "true")]),
     ]),
     ("16 booking details answered immediately (601001)", BOT1, [
         ("share my booking details", [(R, "booking id")]),
         ("601001", [(R, "guest name")]),
-        ("Rahul Sharma", [(R, "confirmed in our system")]),
+        ("Rahul Sharma", [(R, "confirmed")]),
         # The workflow delegates this exact turn to grounded generation. It
         # must give the details now, not a generic "ask me anything" menu.
         ("booking details please", [(R, "gurugram"), ("done", "true")]),
@@ -208,7 +215,7 @@ SCENARIOS = [
     ("32 direct hotel-name answer after verification (601001)", BOT1, [
         ("confirm my upcoming booking details", [(R, "booking id")]),
         ("601001", [(R, "guest name")]),
-        ("Rahul Sharma", [(R, "confirmed in our system")]),
+        ("Rahul Sharma", [(R, "confirmed")]),
         ("Can you confirm my hotel name?", [(R, "townhouse 121"),
                                              (RT, "chat")]),
     ]),

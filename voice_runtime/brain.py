@@ -126,6 +126,13 @@ from shared.orchestration.router import (
     detect_do_not_call,
     detect_hangup,
 )
+from shared.orchestration.response_modes import (
+    RESPONSE_MODE_EXACT,
+    RESPONSE_MODE_FIXED,
+    RESPONSE_MODE_GROUNDED,
+    grounded_delivery_instruction,
+    validate_grounded_reply,
+)
 from shared.orchestration.spoken_numbers import meaningful_language_words
 from shared.orchestration.time_context import (
     TIME_CONTEXT_SETTING,
@@ -3459,14 +3466,18 @@ class ConversationBrain(FrameProcessor):
             await self._generate_reply(text, decision, started, extra_system=extra)
             return
         reply = result["reply"]
+        response_mode = str(result.get("responseMode") or RESPONSE_MODE_FIXED)
         # A step carrying an approved legal wording reference must be spoken
         # VERBATIM through the fixed-phrase path (where the template
         # substitutes) — never re-delivered by generation, which could
-        # paraphrase legally-exact text.
-        contains_exact_wording = bool(reply) and "{{wording:" in reply.replace(" ", "")
+        # paraphrase legally-exact text. `exact` is the config-declared form
+        # of the same rule: no paraphrase, no language adaptation.
+        exact_delivery = response_mode == RESPONSE_MODE_EXACT or (
+            bool(reply) and "{{wording:" in reply.replace(" ", "")
+        )
         needs_language_adaptation = bool(
             reply
-            and not contains_exact_wording
+            and not exact_delivery
             and self._conversation_language != self._config.language
             and not self._decision_text_matches_language(reply)
         )
@@ -3474,7 +3485,14 @@ class ConversationBrain(FrameProcessor):
         # that is WAITING for the caller's answer (ask / choice). That
         # question is the turn's semantic payload — it must survive delivery.
         awaiting_input = bool(result.get("nodePrompt"))
-        if needs_language_adaptation and awaiting_input:
+        if reply and not exact_delivery and response_mode == RESPONSE_MODE_GROUNDED:
+            # The flow decided WHAT happened; the node opted its wording into
+            # grounded generation. At most one generation call; the authored
+            # text stays the fallback on failure or failed validation.
+            await self._deliver_grounded_workflow_reply(
+                result, decision, text, started, workflow_name,
+            )
+        elif needs_language_adaptation and awaiting_input:
             # An input-collecting step may never be re-delivered by open
             # conversational generation: with the full persona, history and
             # turn instructions in play, the model can replace the pending
@@ -3560,7 +3578,7 @@ class ConversationBrain(FrameProcessor):
         text verbatim.
         """
         label = language_label(self._conversation_language)
-        if not label or self._llm is None:
+        if not label:
             return None
         system = (
             "You adapt one scripted line of a phone call flow into the "
@@ -3573,6 +3591,23 @@ class ConversationBrain(FrameProcessor):
             "replace the request with acknowledgements or progress filler "
             "such as 'please wait'. Output ONLY the rewritten script."
         )
+        adapted = await self._constrained_generate(script, system)
+        if adapted is None or not validate_scripted_adaptation(
+            script, adapted, self._conversation_language
+        ):
+            return None
+        return adapted
+
+    async def _constrained_generate(self, script: str, system: str) -> str | None:
+        """One constrained, non-streamed generation over a single script.
+
+        Unlike :meth:`_generate_reply`, this call carries NO conversation
+        history, persona, or goal instructions — the model has nothing to
+        say except the step itself. Returns None on provider failure or
+        timeout; callers speak the authored text instead.
+        """
+        if self._llm is None:
+            return None
         try:
             result = await asyncio.wait_for(
                 self._llm.generate(
@@ -3583,9 +3618,9 @@ class ConversationBrain(FrameProcessor):
                 ),
                 timeout=_ADAPTATION_TIMEOUT_SECONDS,
             )
-        except Exception:  # noqa: BLE001 — fall back to the authored ask
+        except Exception:  # noqa: BLE001 — fall back to the authored text
             logger.exception(
-                "turn[%s] scripted-ask adaptation failed",
+                "turn[%s] constrained scripted generation failed",
                 self._recorder.session_id,
             )
             return None
@@ -3599,12 +3634,76 @@ class ConversationBrain(FrameProcessor):
             usage.get("llm_output_tokens", 0)
             + int(getattr(result, "output_tokens", 0) or 0)
         )
-        adapted = (getattr(result, "text", "") or "").strip()
-        if not validate_scripted_adaptation(
-            script, adapted, self._conversation_language
-        ):
-            return None
-        return adapted
+        return (getattr(result, "text", "") or "").strip() or None
+
+    async def _deliver_grounded_workflow_reply(
+        self, result: dict, decision: RouteDecision, text: str,
+        started: float, workflow_name: str,
+    ) -> None:
+        """Speak one ``llm_grounded`` workflow reply.
+
+        The deterministic flow already decided the outcome; the LLM only
+        words it. Two paths, both a single generation call per turn:
+
+        - a turn that pauses on a question, or that carries must-include
+          literals, uses a CONSTRAINED validated generation (script only —
+          no history), spoken only when validation proves the pending ask
+          and the literals survived; otherwise the authored text is spoken;
+        - a purely informational grounded turn streams through the normal
+          generation path (full conversation + verified caller context), so
+          it can answer the caller's current request first; the authored
+          text remains the provider-failure fallback.
+        """
+        reply = result["reply"]
+        directives = list(result.get("responseDirectives") or [])
+        must_include = list(result.get("responseMustInclude") or [])
+        pending_question = str(result.get("nodePrompt") or "").strip()
+        instruction = grounded_delivery_instruction(
+            directives=directives,
+            script=reply,
+            pending_question=pending_question or None,
+        )
+        if pending_question or must_include:
+            label = language_label(self._conversation_language)
+            system = (
+                "You word one step of a phone call flow for a voice "
+                "assistant. Rewrite the script below per the rules; output "
+                "ONLY the spoken reply."
+                + self._verified_runtime_context_block
+                + instruction
+                + (f"\nRespond in natural spoken {label}." if label else "")
+            )
+            generated = await self._constrained_generate(reply, system)
+            if generated is not None and validate_grounded_reply(
+                reply, generated, self._conversation_language,
+                require_question=bool(pending_question),
+                must_include=must_include,
+                language_check=script_supports_language,
+            ):
+                self._recorder.add_event(
+                    "workflow_reply_grounded",
+                    workflow=workflow_name, mode="constrained",
+                )
+                await self._say(generated, authored=False)
+            else:
+                # Validation could not prove the ask/literals survived (or
+                # the provider failed): the authored text keeps the
+                # conversation answerable — filler or silence would not.
+                self._recorder.add_event(
+                    "workflow_grounded_fallback",
+                    workflow=workflow_name,
+                    reason="provider" if generated is None else "validation",
+                )
+                await self._say(reply)
+            return
+        self._recorder.add_event(
+            "workflow_reply_grounded", workflow=workflow_name, mode="generation",
+        )
+        await self._generate_reply(
+            text, decision, started,
+            extra_system=instruction,
+            fallback_text=reply,
+        )
 
     # ── generation ────────────────────────────────────────────────────────
 

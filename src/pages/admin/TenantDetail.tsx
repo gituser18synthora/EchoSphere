@@ -13,6 +13,7 @@ import {
   Toggle,
 } from "@/components/ui";
 import { DataTable, type Column } from "@/components/DataTable";
+import { passwordPolicyError } from "@/services/password";
 import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
@@ -92,17 +93,6 @@ export default function TenantDetail() {
       </div>
     </>
   );
-}
-
-/* Mirrors the backend password policy (backend/core/security.py) so the Super
-   Admin gets instant feedback; the API remains the enforcement boundary. */
-function passwordPolicyError(password: string): string | null {
-  const missing: string[] = [];
-  if (password.length < 8) missing.push("at least 8 characters");
-  if (!/[a-z]/.test(password)) missing.push("a lowercase letter");
-  if (!/[A-Z]/.test(password)) missing.push("an uppercase letter");
-  if (!/\d/.test(password)) missing.push("a digit");
-  return missing.length ? `Password must contain ${missing.join(", ")}.` : null;
 }
 
 function EditTenantModal({ tenant, onClose, onSaved }: { tenant: Tenant; onClose: () => void; onSaved: () => void }) {
