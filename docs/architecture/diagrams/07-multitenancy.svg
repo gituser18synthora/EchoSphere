@@ -1,0 +1,101 @@
+<svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="mt-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4F46E5"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; }
+      .node { rx: 8; stroke-width: 1.4; }
+      .t { font-size: 11px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 8.7px; fill: #55607A; }
+      .e { fill: none; stroke: #4F46E5; stroke-width: 1.5; }
+      .el { font-size: 8.8px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- identity sources -->
+  <rect class="cl" x="20" y="20" width="1160" height="112" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="clabel" x="38" y="42" fill="#4F46E5">WHERE TENANT IDENTITY COMES FROM (never the request payload for tenant roles)</text>
+
+  <rect class="node" x="38" y="54" width="262" height="64" fill="#FFFFFF" stroke="#4F46E5"/>
+  <text class="t" x="169" y="74" text-anchor="middle">Interactive: JWT &#8594; User row</text>
+  <text class="s" x="169" y="90" text-anchor="middle">users.tenant_id of the authenticated user;</text>
+  <text class="s" x="169" y="102" text-anchor="middle">?tenantId honoured for super_admin only</text>
+
+  <rect class="node" x="320" y="54" width="262" height="64" fill="#FFFFFF" stroke="#4F46E5"/>
+  <text class="t" x="451" y="74" text-anchor="middle">Telephony: dialed number</text>
+  <text class="s" x="451" y="90" text-anchor="middle">phone_numbers row anchors the tenant;</text>
+  <text class="s" x="451" y="102" text-anchor="middle">botId may only pick a bot inside that tenant</text>
+
+  <rect class="node" x="602" y="54" width="262" height="64" fill="#FFFFFF" stroke="#4F46E5"/>
+  <text class="t" x="733" y="74" text-anchor="middle">Voice runtime: minted session</text>
+  <text class="s" x="733" y="90" text-anchor="middle">API writes tenant into voice:session:{id};</text>
+  <text class="s" x="733" y="102" text-anchor="middle">worker consumes, never mints (4403 on mismatch)</text>
+
+  <rect class="node" x="884" y="54" width="278" height="64" fill="#FFFFFF" stroke="#4F46E5"/>
+  <text class="t" x="1023" y="74" text-anchor="middle">MCP: verified JWT contextvar</text>
+  <text class="s" x="1023" y="90" text-anchor="middle">identity from the token middleware only &#8212;</text>
+  <text class="s" x="1023" y="102" text-anchor="middle">tool arguments can never set the tenant</text>
+
+  <!-- enforcement -->
+  <rect class="cl" x="20" y="156" width="750" height="330" fill="#F4F6FA" stroke="#475569"/>
+  <text class="clabel" x="38" y="178" fill="#475569">ENFORCEMENT POINTS (server-side; frontend gates are affordances)</text>
+
+  <rect class="node" x="38" y="192" width="346" height="80" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="54" y="212">API list queries &#8212; resolve_tenant_id()</text>
+  <text class="s" x="54" y="228">tenant role + foreign tenantId &#8594; 403; unlinked account &#8594; 403;</text>
+  <text class="s" x="54" y="240">super_admin must name a tenant explicitly (400 otherwise)</text>
+  <text class="s" x="54" y="256">46 call sites across routers</text>
+
+  <rect class="node" x="404" y="192" width="346" height="80" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="420" y="212">API by-id access &#8212; assert_tenant_access()</text>
+  <text class="s" x="420" y="228">cross-tenant row &#8594; NotFoundError (404, never 403) so foreign</text>
+  <text class="s" x="420" y="240">record existence is not leaked &#183; 49 call sites</text>
+  <text class="s" x="420" y="256">create/update guards block role escalation + cross-tenant refs</text>
+
+  <rect class="node" x="38" y="286" width="346" height="80" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="54" y="306">Knowledge plane &#8212; two layers</text>
+  <text class="s" x="54" y="322">authorize_kb_ids: bot-scoped &#8746; tenant &#8746; global KBs, any miss &#8594;</text>
+  <text class="s" x="54" y="334">404 without naming which id failed</text>
+  <text class="s" x="54" y="350">pgvector _tenant_clause re-filters tenant_id inside every SQL read/write</text>
+
+  <rect class="node" x="404" y="286" width="346" height="80" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="420" y="306">Financial visibility &#8212; costs.view</text>
+  <text class="s" x="420" y="322">cost / pricing / spend fields nulled in serializers, analytics,</text>
+  <text class="s" x="420" y="334">conversation detail and exports for roles without the permission</text>
+  <text class="s" x="420" y="350">(tenant_user has no costs.view; reports refuse financial exports)</text>
+
+  <rect class="node" x="38" y="380" width="712" height="92" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="54" y="400">Data model &#8212; tenant_id columns, per-query discipline</text>
+  <text class="s" x="54" y="416">TenantOwnedMixin (NOT NULL FK + index) on 5 models; ~25 more tables carry tenant_id declared inline; global/shared rows use tenant_id NULL</text>
+  <text class="s" x="54" y="428">(platform voices, global KBs, platform compliance templates). Tenant deletes are soft; hard delete is env-gated.</text>
+  <text class="s" x="54" y="446" font-weight="700" fill="#B45D09">No ORM-level global tenant filter exists &#8212; isolation depends on every query using the helpers above (verified risk, see &#167;24).</text>
+  <text class="s" x="54" y="462">Audit: every mutation writes an audit row with tenant_id; tenant admins can read only their tenant's slice of /audit.</text>
+
+  <!-- example flow -->
+  <rect class="cl" x="790" y="156" width="390" height="330" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="808" y="178" fill="#0D9488">WORKED EXAMPLE &#8212; TENANT A &#8594; TENANT B</text>
+  <g font-size="9px">
+    <rect class="node" x="808" y="194" width="354" height="54" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="t" x="985" y="214" text-anchor="middle">GET /bots?tenantId=tn-B  (as tenant-A admin)</text>
+    <text class="s" x="985" y="230" text-anchor="middle">resolve_tenant_id &#8594; 403 &#8220;You cannot access another tenant's data.&#8221;</text>
+    <rect class="node" x="808" y="258" width="354" height="54" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="t" x="985" y="278" text-anchor="middle">GET /bots/bot-of-B</text>
+    <text class="s" x="985" y="294" text-anchor="middle">assert_tenant_access &#8594; 404 &#8220;Record not found.&#8221; (existence hidden)</text>
+    <rect class="node" x="808" y="322" width="354" height="54" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="t" x="985" y="342" text-anchor="middle">search_knowledge(kb_ids=[kb-of-B]) via MCP / runtime</text>
+    <text class="s" x="985" y="358" text-anchor="middle">authorize_kb_ids &#8594; 404 &#8220;Knowledge base not found&#8221; (id not named)</text>
+    <rect class="node" x="808" y="386" width="354" height="54" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="t" x="985" y="406" text-anchor="middle">Voice WS with a session minted for tenant B&#8217;s bot</text>
+    <text class="s" x="985" y="422" text-anchor="middle">session.tenant_id &#8260;= config.tenant_id &#8594; WS close 4403</text>
+    <rect class="node" x="808" y="450" width="354" height="24" fill="#F0FBF3" stroke="#16A34A"/>
+    <text class="s" x="985" y="466" text-anchor="middle" font-weight="700" fill="#0F7B3E">Onboarding: one txn = tenant + subscription + settings + first admin</text>
+  </g>
+
+  <!-- provisioning strip -->
+  <rect class="cl" x="20" y="506" width="1160" height="110" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="clabel" x="38" y="528" fill="#B45D09">SHARED VS TENANT-OWNED RESOURCES</text>
+  <text class="s" x="38" y="548"><tspan font-weight="700" fill="#1F2937">Platform-shared (tenant_id NULL / global):</tspan> provider catalog + models + pricing &#183; languages &#183; industries/regions/plans &#183; AI profiles &#183; guardrail registry &#183; platform voices &#183; global KBs &#183; compliance templates</text>
+  <text class="s" x="38" y="566"><tspan font-weight="700" fill="#1F2937">Tenant-owned:</tspan> users/team &#183; bots + all studio config (prompts, intents, workflows, channels, voice settings, context schemas) &#183; KBs + documents + chunks &#183; cloned voices &#183; conversations/recordings &#183; usage events &#183; audit slice</text>
+  <text class="s" x="38" y="584"><tspan font-weight="700" fill="#1F2937">Known cross-tenant couplings (verified):</tspan> Sarvam pronunciation-dictionary quota rides one platform key (10 dicts / 100 words shared) &#183; provider API keys are platform credentials, not per-tenant</text>
+  <text class="s" x="38" y="602" font-style="italic">Isolation grade: application-enforced row-level scoping on shared infrastructure &#8212; no per-tenant databases, schemas or encryption keys exist in the implementation.</text>
+</svg>

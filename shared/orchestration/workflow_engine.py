@@ -24,6 +24,12 @@ from langgraph.graph import END, StateGraph
 from shared.config import get_settings
 from shared.orchestration.async_tools import to_thread_abandonable
 from shared.orchestration.phrases import canned
+from shared.orchestration.response_modes import (
+    RESPONSE_MODE_FIXED,
+    RESPONSE_MODE_GROUNDED,
+    aggregate_response_mode,
+    node_response_mode,
+)
 from shared.orchestration.router import classify_user_signal
 
 logger = logging.getLogger(__name__)
@@ -56,6 +62,10 @@ class WorkflowState(TypedDict, total=False):
     context_response: bool  # authored node delegates this reply to the LLM
     awaiting_prompt: str | None  # question of the node the flow is paused at
     signal: str | None  # semantic signal of the caller's utterance
+    # Response-delivery contract for THIS turn's reply (see response_modes):
+    response_mode: str  # fixed | exact | llm_grounded (aggregated per turn)
+    response_directives: list[str]  # grounded nodes' response goals
+    response_must_include: list[str]  # literals that must survive generation
     # Input-only: the caller-supplied semantic signal for THIS turn (from the
     # Goal Engine's validated decision). Consumed by _step and cleared in the
     # returned state so a checkpointed value can never leak into a later turn;
@@ -799,6 +809,32 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         audit = list(state.get("audit") or [])
         trace: list[str] = []
         replies: list[str] = []
+        # Delivery contract of THIS turn's reply. Engine-generated strings
+        # (retries, canned fallbacks) append to `replies` directly and stay
+        # fixed; only node-authored speech carries the node's declared mode.
+        segment_modes: list[str] = []
+        response_directives: list[str] = []
+        response_must_include: list[str] = []
+
+        def _speak(node: dict, spoken: str) -> None:
+            """Speak node-authored text under the node's response mode."""
+            if not spoken:
+                return
+            replies.append(spoken)
+            config = _node_config(node)
+            mode = node_response_mode(config)
+            segment_modes.append(mode)
+            if mode == RESPONSE_MODE_GROUNDED:
+                directive = str(config.get("responseDirective") or "").strip()
+                if directive:
+                    response_directives.append(directive)
+                include = config.get("responseMustInclude")
+                if isinstance(include, list):
+                    response_must_include.extend(
+                        str(item).strip() for item in include
+                        if str(item or "").strip()
+                    )
+
         status = "collecting"
         handoff_queue: str | None = None
         text = (state.get("user_text") or "").strip()
@@ -971,9 +1007,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     off_script = True
                     context_response = True
                 else:
-                    spoken = _node_text(node, "text", "message")
-                    if spoken:
-                        replies.append(spoken)
+                    _speak(node, _node_text(node, "text", "message"))
                 current = _next_of(current)
             elif kind == "ask":
                 config = _node_config(node)
@@ -987,7 +1021,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                   "variable": variable})
                     current = _next_of(current)
                 else:
-                    replies.append(_question(node, retrying=False, lang=lang))
+                    _speak(node, _question(node, retrying=False, lang=lang))
                     awaiting, current = current, None
             elif kind == "intent":
                 if entry_text:
@@ -1015,7 +1049,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                             continue
                 prompt = _node_text(node, "prompt", "question", "text",
                                     fallback_label=False)
-                replies.append(prompt or "How can I help you today?")
+                _speak(node, prompt or canned("wf_how_help", lang))
                 awaiting, current = current, None
             elif kind == "condition":
                 result = _evaluate_condition(_node_config(node), slots)
@@ -1060,9 +1094,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 else:
                     audit.append({"action": "api_call_skipped", "node": current,
                                   "reason": "no connection configured"})
-                spoken = _node_text(node, "text", fallback_label=False)
-                if spoken:
-                    replies.append(spoken)
+                _speak(node, _node_text(node, "text", fallback_label=False))
                 out_edges = edges_from.get(current, [])
                 wanted = (
                     ("success", "ok", "done") if succeeded
@@ -1093,6 +1125,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 )
                 current = str(edge.get("to")) if edge else None
             elif kind == "handover":
+                # Handoff/call-control confirmations are always deterministic:
+                # a handover node's text is spoken as authored regardless of
+                # any configured response mode.
                 spoken = _node_text(node, "text", fallback_label=False) or canned(
                     "wf_handover", lang
                 )
@@ -1104,9 +1139,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 status = "handoff"
                 current = None
             elif kind == "end":
-                spoken = _node_text(node, "text", fallback_label=False)
-                if spoken:
-                    replies.append(spoken)
+                _speak(node, _node_text(node, "text", fallback_label=False))
                 status = "done"
                 current = None
             else:  # start / unknown kinds pass through
@@ -1124,7 +1157,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
 
         reply_text = " ".join(r for r in replies if r).strip()
         if not reply_text and not off_script:
-            reply_text = "Is there anything else I can help you with?"
+            reply_text = canned("wf_anything_else", lang)
         awaiting_prompt = (
             _node_text(nodes_by_id[awaiting], "question", "prompt", "text",
                        fallback_label=False)
@@ -1147,6 +1180,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "signal_override": None,  # input-only; never survives the turn
             "status": status if not awaiting else "collecting",
             "reply": reply_text,
+            "response_mode": aggregate_response_mode(segment_modes),
+            "response_directives": response_directives,
+            "response_must_include": response_must_include,
         }
 
     graph = StateGraph(WorkflowState)
@@ -1333,6 +1369,12 @@ class WorkflowEngine:
             "contextResponse": bool(state.get("context_response")),
             "nodePrompt": state.get("awaiting_prompt"),
             "signal": state.get("signal"),
+            # How this turn's reply must be delivered (fixed | exact |
+            # llm_grounded). Builders and legacy definitions produce no mode
+            # → fixed, so existing workflows keep their behavior.
+            "responseMode": state.get("response_mode") or RESPONSE_MODE_FIXED,
+            "responseDirectives": list(state.get("response_directives") or []),
+            "responseMustInclude": list(state.get("response_must_include") or []),
         }
 
     async def aclose(self) -> None:

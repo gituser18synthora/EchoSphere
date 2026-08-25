@@ -1,0 +1,142 @@
+<svg viewBox="0 0 1200 820" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="l-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748B"/></marker>
+    <style>
+      .band { rx: 10; stroke-width: 1.5; }
+      .lt { font-size: 12.5px; font-weight: 800; }
+      .lp { font-size: 9.2px; fill: #55607A; }
+      .lf { font-size: 8.6px; fill: #55607A; font-style: italic; }
+      .chip { rx: 7; stroke-width: 1; }
+      .ct { font-size: 9px; font-weight: 700; fill: #1F2937; }
+      .cs { font-size: 8px; fill: #55607A; }
+    </style>
+  </defs>
+
+  <!-- 1 Presentation -->
+  <rect class="band" x="24" y="20" width="1000" height="88" fill="#EFF5FE" stroke="#2563EB"/>
+  <text class="lt" x="42" y="44" fill="#2563EB">1 &#183; Presentation</text>
+  <text class="lp" x="42" y="60">React 18 SPA (Vite :5199) &#8212; 40 eagerly-loaded pages, hand-rolled component/chart library, strict TS contract (types/domain.ts, 159 declarations)</text>
+  <text class="lf" x="42" y="76">src/pages (admin &#183; tenant &#183; studio tabs) &#183; src/components &#183; src/layouts/AppShell &#183; src/state/AppContext &#183; src/services/http.ts + api.ts (186 fns)</text>
+  <text class="lp" x="42" y="94">Guards mirror server RBAC as affordances only: Guard(role) routes &#183; Require(perm) &#183; nav &#183; Studio tab gates &#183; costs.view stripping</text>
+
+  <!-- 2 API -->
+  <rect class="band" x="24" y="122" width="1000" height="74" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="lt" x="42" y="146" fill="#4F46E5">2 &#183; API / Controller</text>
+  <text class="lp" x="42" y="162">FastAPI :9001 &#8212; 33 routers, 208 endpoints under /api/v1; camelCase serializers (1,055 lines); {success, data, meta} envelope; 8 exception handlers</text>
+  <text class="lf" x="42" y="178">backend/main.py &#183; backend/routers/* &#183; backend/serializers.py &#183; backend/core/responses.py &#183; shared/errors.py</text>
+  <text class="lp" x="42" y="192">Note: no separate service layer &#8212; business logic and aggregate queries live inside routers (see risk register)</text>
+
+  <!-- 3 auth -->
+  <rect class="band" x="24" y="210" width="1000" height="66" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="lt" x="42" y="234" fill="#4F46E5">3 &#183; Authentication &amp; Authorization</text>
+  <text class="lp" x="42" y="250">HS256 JWT (12 h) &#183; bcrypt &#183; password_changed_at invalidation &#183; 3 roles / 47 permissions (DB-resolved) &#183; tenant scoping (404 on cross-tenant by-id)</text>
+  <text class="lf" x="42" y="266">backend/core/deps.py &#183; backend/core/security.py &#183; backend/routers/auth.py &#183; seeds ROLE_PERMISSIONS</text>
+
+  <!-- 4 domain -->
+  <rect class="band" x="24" y="290" width="1000" height="66" fill="#F4F6FA" stroke="#475569"/>
+  <text class="lt" x="42" y="314" fill="#475569">4 &#183; Domain Services (shared library)</text>
+  <text class="lp" x="42" y="330">Readiness derivation &#183; provider catalog governance &#183; billing (pricing/metering/FX) &#183; guardrail loader (fail-closed floor) &#183; compliance policies &#183; reports/exports</text>
+  <text class="lf" x="42" y="346">shared/readiness.py &#183; backend/core/provider_catalog.py &#183; shared/billing/* &#183; shared/guardrails/* &#183; shared/compliance/* &#183; backend/reports/*</text>
+
+  <!-- 5 runtime -->
+  <rect class="band" x="24" y="370" width="1000" height="76" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="lt" x="42" y="394" fill="#0D9488">5 &#183; Realtime Conversation Runtime</text>
+  <text class="lp" x="42" y="410">Pipecat 1.5 pipeline per call &#8212; audio gate, Silero VAD, streaming STT, turn detection/barge-in, ConversationBrain, streaming TTS router, telephony serializers, ESL control</text>
+  <text class="lf" x="42" y="426">voice_runtime/* (14,742 LOC; brain.py 4,482 &#183; call_policy.py 2,452) &#8212; two processes: worker :9002 (browser) + gateway :9011 (telephony), same app</text>
+  <text class="lp" x="42" y="442">Latency budgets are architecture: decision 1.2 s &#183; first token 3 s &#183; first audio 4 s &#183; adaptive endpoints 0.35/0.12 s</text>
+
+  <!-- 6 AI orchestration -->
+  <rect class="band" x="24" y="460" width="1000" height="66" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="lt" x="42" y="484" fill="#B45D09">6 &#183; AI Orchestration</text>
+  <text class="lp" x="42" y="500">Goal Engine (structured ConversationDecision, scope rules) &#183; deterministic signal router &#183; LangGraph workflow interpreter (PG checkpoints) &#183; naturalness planner &#183; prompt compiler</text>
+  <text class="lf" x="42" y="516">shared/orchestration/* (6,675 LOC) &#183; goal_engine.py &#183; decision_schema.py &#183; router.py &#183; workflow_engine.py &#183; naturalness.py &#183; prompt_compiler.py</text>
+
+  <!-- 7 knowledge -->
+  <rect class="band" x="24" y="540" width="1000" height="66" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="lt" x="42" y="564" fill="#B45D09">7 &#183; Knowledge / Retrieval (RAG)</text>
+  <text class="lp" x="42" y="580">Ingestion (parse&#8594;chunk&#8594;embed&#8594;index&#8594;verify, DB-poll queue) &#183; hybrid retrieval (pgvector HNSW + BM25-style tsquery, weighted fusion, relevance gate) &#183; chunk review &#183; MCP tools</text>
+  <text class="lf" x="42" y="596">shared/knowledge/* (7,066 LOC) &#183; backend/workers/ingestion.py &#183; backend/mcp_server/* &#183; backend/knowledge_verify.py</text>
+
+  <!-- 8 integration -->
+  <rect class="band" x="24" y="620" width="1000" height="66" fill="#FEF1F2" stroke="#E11D48"/>
+  <text class="lt" x="42" y="644" fill="#E11D48">8 &#183; Integration</text>
+  <text class="lp" x="42" y="660">Provider adapters (OpenAI &#183; Sarvam &#183; Deepgram Flux &#183; ElevenLabs + inactive Anthropic/Google/Azure/AssemblyAI) &#183; SSRF-guarded outbound tools &#183; telephony webhooks &#183; WhatsApp channel</text>
+  <text class="lf" x="42" y="676">shared/providers/* (factory dispatch, secret references) &#183; shared/safe_http.py &#183; shared/telephony*.py &#183; backend/routers/channels.py &#183; free_sweetch/*</text>
+
+  <!-- 9 persistence -->
+  <rect class="band" x="24" y="700" width="1000" height="50" fill="#F0FBF3" stroke="#16A34A"/>
+  <text class="lt" x="42" y="722" fill="#0F7B3E">9 &#183; Persistence</text>
+  <text class="lp" x="42" y="738">MySQL (60 tables, source of truth) &#183; PostgreSQL+pgvector (knowledge, checkpoints) &#183; MongoDB (transcripts/events) &#183; Redis (fail-open) &#183; local disk &#8212; 31+2 Alembic revisions</text>
+
+  <!-- 10 infra -->
+  <rect class="band" x="24" y="762" width="1000" height="46" fill="#F4F6FA" stroke="#475569"/>
+  <text class="lt" x="42" y="782" fill="#475569">10 &#183; Infrastructure &amp; Operations</text>
+  <text class="lp" x="42" y="798">scripts/dev.sh process supervisor &#183; shared/config.py (.env, secret references, fail-fast validation) &#183; log redaction &#183; seeds &#183; live health probes &#183; audit trail &#8212; no containers/CI/TLS in-repo</text>
+
+  <!-- right rail: cross-cutting -->
+  <g>
+    <rect class="band" x="1042" y="20" width="138" height="730" fill="#FFFFFF" stroke="#94A3B8" stroke-dasharray="5 4"/>
+    <text class="lt" x="1111" y="46" text-anchor="middle" fill="#475569" font-size="11px">Cross-cutting</text>
+    <g transform="translate(1052, 62)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Multi-tenancy</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">tenant_id scoping at</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">every layer (&#167;10)</text>
+    </g>
+    <g transform="translate(1052, 126)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Guardrails</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">mandatory floor, input/</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">output/tool hooks</text>
+    </g>
+    <g transform="translate(1052, 190)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Compliance</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">calling windows, limits,</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">exact wordings</text>
+    </g>
+    <g transform="translate(1052, 254)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Usage metering</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">idempotent usage_events,</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">price snapshots, FX</text>
+    </g>
+    <g transform="translate(1052, 318)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Audit trail</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">147 call sites, masked</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">values, same txn</text>
+    </g>
+    <g transform="translate(1052, 382)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Secrets</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">env:/secret:// references,</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">log redaction</text>
+    </g>
+    <g transform="translate(1052, 446)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Config</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">one .env &#8594; pydantic</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">Settings, per-service gates</text>
+    </g>
+    <g transform="translate(1052, 510)">
+      <rect class="chip" width="118" height="64" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Import rule</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">backend &#8594; shared &#8592;</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">voice_runtime; planes never</text>
+      <text class="cs" x="59" y="53" text-anchor="middle">cross-import (4 breaches)</text>
+    </g>
+    <g transform="translate(1052, 586)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Observability</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">basic logging + redaction;</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">no tracing/request ids</text>
+    </g>
+    <g transform="translate(1052, 650)">
+      <rect class="chip" width="118" height="52" fill="#F4F6FA" stroke="#94A3B8"/>
+      <text class="ct" x="59" y="18" text-anchor="middle">Testing</text>
+      <text class="cs" x="59" y="31" text-anchor="middle">84 unit + 45 integration</text>
+      <text class="cs" x="59" y="42" text-anchor="middle">+ 39 FE suites &#183; no CI</text>
+    </g>
+  </g>
+</svg>

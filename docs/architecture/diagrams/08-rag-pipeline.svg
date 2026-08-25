@@ -1,0 +1,152 @@
+<svg viewBox="0 0 1240 620" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="r-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7C3AED"/></marker>
+    <marker id="r-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="r-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#D97706"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; }
+      .stage { rx: 8; stroke-width: 1.4; }
+      .t { font-size: 11px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 8.6px; fill: #55607A; }
+      .e { fill: none; stroke-width: 1.5; }
+      .el { font-size: 8.6px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- ============ INGESTION LANE ============ -->
+  <rect class="cl" x="20" y="20" width="1200" height="250" fill="#F5F2FE" stroke="#7C3AED"/>
+  <text class="clabel" x="38" y="42" fill="#7C3AED">INGESTION &#8212; upload &#8594; searchable chunks (async, DB-poll queue)</text>
+
+  <rect class="stage" x="38" y="60" width="176" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="126" y="80" text-anchor="middle">1 &#183; Upload API</text>
+  <text class="s" x="126" y="95" text-anchor="middle">12 extensions &#183; 25 MB cap</text>
+  <text class="s" x="126" y="107" text-anchor="middle">magic-byte MIME check</text>
+  <text class="s" x="126" y="119" text-anchor="middle">content-hash dedupe</text>
+
+  <rect class="stage" x="244" y="60" width="160" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="324" y="80" text-anchor="middle">2 &#183; Persist + queue</text>
+  <text class="s" x="324" y="95" text-anchor="middle">storage/knowledge/&#8230;</text>
+  <text class="s" x="324" y="107" text-anchor="middle">ingestion_jobs row (PG)</text>
+  <text class="s" x="324" y="119" text-anchor="middle">status = queued</text>
+
+  <rect class="stage" x="434" y="60" width="160" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="514" y="80" text-anchor="middle">3 &#183; Worker claim</text>
+  <text class="s" x="514" y="95" text-anchor="middle">poll 2 s &#183; concurrency 2</text>
+  <text class="s" x="514" y="107" text-anchor="middle">FOR UPDATE SKIP LOCKED</text>
+  <text class="s" x="514" y="119" text-anchor="middle">3 attempts max</text>
+
+  <rect class="stage" x="624" y="60" width="170" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="709" y="80" text-anchor="middle">4 &#183; Parse (+OCR)</text>
+  <text class="s" x="709" y="95" text-anchor="middle">PyMuPDF &#183; docx &#183; xlsx &#183; pptx</text>
+  <text class="s" x="709" y="107" text-anchor="middle">csv &#183; json &#183; md &#183; txt</text>
+  <text class="s" x="709" y="119" text-anchor="middle">tesseract &#8594; GPT-vision fallback</text>
+
+  <rect class="stage" x="824" y="60" width="180" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="914" y="80" text-anchor="middle">5 &#183; Chunk + scan</text>
+  <text class="s" x="914" y="95" text-anchor="middle">512 tok / 100 overlap (tiktoken)</text>
+  <text class="s" x="914" y="107" text-anchor="middle">header- &amp; layout-aware modes</text>
+  <text class="s" x="914" y="119" text-anchor="middle">prompt-injection flags stored</text>
+
+  <rect class="stage" x="1034" y="60" width="170" height="72" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="1119" y="80" text-anchor="middle">6 &#183; Embed</text>
+  <text class="s" x="1119" y="95" text-anchor="middle">OpenAI text-embedding-3-small</text>
+  <text class="s" x="1119" y="107" text-anchor="middle">1536-d &#183; batch 64</text>
+  <text class="s" x="1119" y="119" text-anchor="middle">usage event per batch</text>
+
+  <rect class="stage" x="624" y="168" width="250" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="749" y="188" text-anchor="middle">7 &#183; Index into pgvector</text>
+  <text class="s" x="749" y="203" text-anchor="middle">upsert ON CONFLICT (document, chunk_index)</text>
+  <text class="s" x="749" y="215" text-anchor="middle">HNSW cosine + GIN tsvector indexes</text>
+  <text class="s" x="749" y="227" text-anchor="middle">verify: real dense_search probe must hit</text>
+
+  <rect class="stage" x="284" y="168" width="280" height="72" fill="#FFFFFF" stroke="#7C3AED"/>
+  <text class="t" x="424" y="188" text-anchor="middle">8 &#183; Sync control plane (MySQL)</text>
+  <text class="s" x="424" y="203" text-anchor="middle">knowledge_sources.status = indexed | failed</text>
+  <text class="s" x="424" y="215" text-anchor="middle">chunk counter &#183; last_sync_at</text>
+  <text class="s" x="424" y="227" text-anchor="middle">bot readiness item r1 recomputed</text>
+
+  <path class="e" d="M214 96 L 244 96" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M404 96 L 434 96" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M594 96 L 624 96" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M794 96 L 824 96" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M1004 96 L 1034 96" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M1119 132 C 1119 168 940 190 876 200" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+  <path class="e" d="M624 204 L 566 204" stroke="#7C3AED" marker-end="url(#r-violet)"/>
+
+  <!-- ============ RETRIEVAL LANE ============ -->
+  <rect class="cl" x="20" y="292" width="1200" height="308" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="38" y="314" fill="#0D9488">RETRIEVAL &#8212; hybrid search on every knowledge question (voice brain &#183; workflow node &#183; chat console &#183; MCP tools)</text>
+
+  <rect class="stage" x="38" y="332" width="176" height="76" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="126" y="352" text-anchor="middle">1 &#183; Authorize</text>
+  <text class="s" x="126" y="367" text-anchor="middle">authorize_kb_ids: bot-scoped</text>
+  <text class="s" x="126" y="379" text-anchor="middle">&#8746; tenant &#8746; global KBs only</text>
+  <text class="s" x="126" y="391" text-anchor="middle">miss &#8594; 404, never named</text>
+
+  <rect class="stage" x="244" y="332" width="170" height="76" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="329" y="352" text-anchor="middle">2 &#183; Embed query</text>
+  <text class="s" x="329" y="367" text-anchor="middle">normalize (NFKC) &#8594; OpenAI</text>
+  <text class="s" x="329" y="379" text-anchor="middle">on failure: degrade to</text>
+  <text class="s" x="329" y="391" text-anchor="middle">keyword-only, never error</text>
+
+  <rect class="stage" x="444" y="332" width="186" height="46" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="537" y="351" text-anchor="middle">3a &#183; Dense search</text>
+  <text class="s" x="537" y="366" text-anchor="middle">pgvector HNSW cosine &#183; candidate_k 24</text>
+
+  <rect class="stage" x="444" y="390" width="186" height="46" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="537" y="409" text-anchor="middle">3b &#183; Keyword search</text>
+  <text class="s" x="537" y="424" text-anchor="middle">websearch_to_tsquery &#183; AND&#8594;OR retry</text>
+
+  <rect class="stage" x="660" y="356" width="180" height="56" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="750" y="376" text-anchor="middle">4 &#183; Fuse + dedupe</text>
+  <text class="s" x="750" y="391" text-anchor="middle">weighted 0.65 / 0.35 (or RRF)</text>
+  <text class="s" x="750" y="403" text-anchor="middle">phrase boost +0.1</text>
+
+  <rect class="stage" x="870" y="356" width="160" height="56" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="950" y="376" text-anchor="middle">5 &#183; Relevance gate</text>
+  <text class="s" x="950" y="391" text-anchor="middle">vector &#8805; 0.35 OR</text>
+  <text class="s" x="950" y="403" text-anchor="middle">keyword &#8805; 0.02</text>
+
+  <rect class="stage" x="1060" y="356" width="150" height="56" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="1135" y="376" text-anchor="middle">6 &#183; Budget + top-k</text>
+  <text class="s" x="1135" y="391" text-anchor="middle">~3000-token context cap</text>
+  <text class="s" x="1135" y="403" text-anchor="middle">top_k 6 &#183; optional reranker (off)</text>
+
+  <path class="e" d="M214 370 L 244 370" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M414 362 L 444 356" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M414 378 L 444 410" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M630 355 L 660 372" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M630 413 L 660 396" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M840 384 L 870 384" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M1030 384 L 1060 384" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <text class="el" x="452" y="326">runs in parallel (asyncio.gather)</text>
+
+  <!-- outcome branch -->
+  <rect class="stage" x="80" y="470" width="330" height="106" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="245" y="492" text-anchor="middle">Answerable &#8594; grounded generation</text>
+  <text class="s" x="245" y="509" text-anchor="middle">chunks sanitized (sanitize_for_context), numbered citations,</text>
+  <text class="s" x="245" y="522" text-anchor="middle">LLM instructed: &#8220;answer using ONLY the reference context&#8221;</text>
+  <text class="s" x="245" y="535" text-anchor="middle">kb_sources event emitted to the console</text>
+  <text class="s" x="245" y="556" text-anchor="middle" font-style="italic">speculative prefetch: brain starts retrieval on route&#8594;KNOWLEDGE,</text>
+  <text class="s" x="245" y="569" text-anchor="middle" font-style="italic">cancelled if the final utterance text differs</text>
+
+  <rect class="stage" x="450" y="470" width="320" height="106" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="610" y="492" text-anchor="middle">KB miss + verified caller context</text>
+  <text class="s" x="610" y="509" text-anchor="middle">&#8220;The knowledge base has no entry for this message.</text>
+  <text class="s" x="610" y="522" text-anchor="middle">Answer only from the caller context&#8221;</text>
+  <text class="s" x="610" y="543" text-anchor="middle">runtime-context / time-context grounded reply</text>
+  <text class="s" x="610" y="556" text-anchor="middle">(caller-fact questions never dead-end)</text>
+
+  <rect class="stage" x="810" y="470" width="270" height="106" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="t" x="945" y="492" text-anchor="middle">KB miss, no context</text>
+  <text class="s" x="945" y="509" text-anchor="middle">canned kb_miss phrase (en / hi)</text>
+  <text class="s" x="945" y="522" text-anchor="middle">from shared/orchestration/phrases.py</text>
+  <text class="s" x="945" y="543" text-anchor="middle">workflow node variant: wf_kb_miss;</text>
+  <text class="s" x="945" y="556" text-anchor="middle">test console mirrors the same branch</text>
+
+  <path class="e" d="M1135 412 C 1135 446 400 430 260 470" stroke="#0D9488" marker-end="url(#r-teal)"/>
+  <path class="e" d="M1135 412 C 1120 446 700 436 615 470" stroke="#0D9488" stroke-dasharray="5 4" marker-end="url(#r-teal)"/>
+  <path class="e" d="M1135 412 C 1130 440 990 444 950 470" stroke="#0D9488" stroke-dasharray="5 4" marker-end="url(#r-teal)"/>
+  <text class="el" x="1146" y="440">3-way branch</text>
+</svg>

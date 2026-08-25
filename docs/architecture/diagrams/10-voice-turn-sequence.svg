@@ -1,0 +1,117 @@
+<svg viewBox="0 0 1180 800" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="s-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+    <marker id="s-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="s-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#D97706"/></marker>
+    <style>
+      .life { stroke: #B9C2D4; stroke-width: 1; stroke-dasharray: 4 4; }
+      .head { rx: 8; stroke-width: 1.5; }
+      .ht { font-size: 10.5px; font-weight: 700; fill: #1F2937; }
+      .hs { font-size: 8px; fill: #55607A; }
+      .m { stroke: #475569; stroke-width: 1.3; fill: none; }
+      .mt { stroke: #0D9488; stroke-width: 1.3; fill: none; }
+      .mm { stroke: #D97706; stroke-width: 1.3; fill: none; stroke-dasharray: 6 3; }
+      .ml { font-size: 8.8px; fill: #1F2937; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+      .note { font-size: 8.4px; fill: #55607A; }
+      .band { fill: #ECFBF8; stroke: #0D9488; stroke-width: 0.8; rx: 4; }
+      .bt { font-size: 9.4px; font-weight: 700; fill: #0D9488; letter-spacing: 0.6px; }
+    </style>
+  </defs>
+
+  <!-- heads -->
+  <g>
+    <rect class="head" x="14" y="16" width="120" height="46" fill="#FFE4E6" stroke="#E11D48"/>
+    <text class="ht" x="74" y="36" text-anchor="middle">Caller</text>
+    <text class="hs" x="74" y="50" text-anchor="middle">telephony / browser WS</text>
+    <rect class="head" x="158" y="16" width="130" height="46" fill="#CCFBF1" stroke="#0D9488"/>
+    <text class="ht" x="223" y="36" text-anchor="middle">Gate + VAD</text>
+    <text class="hs" x="223" y="50" text-anchor="middle">audio_gate &#183; Silero</text>
+    <rect class="head" x="312" y="16" width="130" height="46" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="ht" x="377" y="36" text-anchor="middle">STT provider</text>
+    <text class="hs" x="377" y="50" text-anchor="middle">Sarvam WS / Flux</text>
+    <rect class="head" x="466" y="16" width="140" height="46" fill="#CCFBF1" stroke="#0D9488"/>
+    <text class="ht" x="536" y="36" text-anchor="middle">ConversationBrain</text>
+    <text class="hs" x="536" y="50" text-anchor="middle">turn assembly &#183; routing</text>
+    <rect class="head" x="630" y="16" width="126" height="46" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="ht" x="693" y="36" text-anchor="middle">Decision LLM</text>
+    <text class="hs" x="693" y="50" text-anchor="middle">gpt-4o-mini &#183; 1.2 s</text>
+    <rect class="head" x="780" y="16" width="120" height="46" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="ht" x="840" y="36" text-anchor="middle">KB (pgvector)</text>
+    <text class="hs" x="840" y="50" text-anchor="middle">hybrid retrieval</text>
+    <rect class="head" x="924" y="16" width="116" height="46" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="ht" x="982" y="36" text-anchor="middle">Reply LLM</text>
+    <text class="hs" x="982" y="50" text-anchor="middle">streamed</text>
+    <rect class="head" x="1054" y="16" width="112" height="46" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="ht" x="1110" y="36" text-anchor="middle">TTS engine</text>
+    <text class="hs" x="1110" y="50" text-anchor="middle">Sarvam/11L WS</text>
+  </g>
+  <line class="life" x1="74" y1="62" x2="74" y2="770"/>
+  <line class="life" x1="223" y1="62" x2="223" y2="770"/>
+  <line class="life" x1="377" y1="62" x2="377" y2="770"/>
+  <line class="life" x1="536" y1="62" x2="536" y2="770"/>
+  <line class="life" x1="693" y1="62" x2="693" y2="770"/>
+  <line class="life" x1="840" y1="62" x2="840" y2="770"/>
+  <line class="life" x1="982" y1="62" x2="982" y2="770"/>
+  <line class="life" x1="1110" y1="62" x2="1110" y2="770"/>
+
+  <!-- band 1: speech -->
+  <rect class="band" x="14" y="80" width="220" height="16"/>
+  <text class="bt" x="22" y="92">CALLER SPEAKS</text>
+  <path class="m" d="M78 116 L 219 116" marker-end="url(#s-a)"/>
+  <text class="ml" x="88" y="110">PCM frames (8/16 kHz)</text>
+  <text class="note" x="88" y="128">noise-floor gate substitutes silence; suppressed audio can never open a turn</text>
+  <path class="m" d="M227 148 L 373 148" marker-end="url(#s-a)"/>
+  <text class="ml" x="240" y="142">speech-start &#183; gated audio</text>
+  <path class="mm" d="M373 176 L 540 176" marker-end="url(#s-m)"/>
+  <text class="ml" x="392" y="170">interim / final transcripts</text>
+  <text class="note" x="392" y="190">transcript gate on every final: noise-probability, confidence, foreign-script/language, rate checks &#8212; fails open</text>
+  <text class="note" x="392" y="202">segments buffered; hangup/DNC/emergency detectors run deterministically before anything else</text>
+
+  <!-- band 2: endpoint -->
+  <rect class="band" x="14" y="220" width="330" height="16"/>
+  <text class="bt" x="22" y="232">END-OF-TURN DECISION (two regimes)</text>
+  <text class="note" x="88" y="252">Sarvam/segmented: VAD stop + adaptive endpoint &#8212; complete thought 0.35 s &#183; short reply 0.12 s &#183; continuation cue extends &#183; settle-skip</text>
+  <text class="note" x="88" y="264">Deepgram Flux: provider EndOfTurn is authoritative (no local debounce); EagerEndOfTurn starts speculation, TurnResumed discards it</text>
+  <path class="mm" d="M540 288 L 689 288" marker-end="url(#s-m)"/>
+  <text class="ml" x="556" y="282">speculative decision prefetch (during endpoint wait)</text>
+  <text class="note" x="556" y="302">consumed only if the final turn text matches exactly; deterministic fast paths (clear yes/no, reference, commitment) skip the LLM entirely</text>
+
+  <!-- band 3: decide -->
+  <rect class="band" x="14" y="322" width="250" height="16"/>
+  <text class="bt" x="22" y="334">UNDERSTAND &amp; DECIDE</text>
+  <path class="m" d="M540 356 L 689 356" marker-end="url(#s-a)"/>
+  <text class="ml" x="556" y="350">Stage A: goal state + history (2 turns) + guarded prompt</text>
+  <path class="mm" d="M689 382 L 540 382" marker-end="url(#s-m)"/>
+  <text class="ml" x="556" y="376">ConversationDecision (scope-rule enforced, 200 tok cap)</text>
+  <path class="mt" d="M540 410 L 836 410" marker-end="url(#s-t)"/>
+  <text class="ml" x="556" y="404">KB prefetch runs in parallel when route = KNOWLEDGE</text>
+  <path class="mm" d="M836 436 L 540 436" marker-end="url(#s-m)"/>
+  <text class="ml" x="556" y="430">top-6 chunks (sanitized) or miss</text>
+  <text class="note" x="556" y="452">guardrail input check before any reply; blocked input &#8594; localized safe reply &#183; workflow route &#8594; LangGraph step &#183; tool route &#8594; SSRF-guarded executor</text>
+
+  <!-- band 4: reply -->
+  <rect class="band" x="14" y="472" width="200" height="16"/>
+  <text class="bt" x="22" y="484">REPLY</text>
+  <text class="note" x="556" y="500">fast path: decision&#8217;s own response_text spoken directly (one model call per turn) when action + language checks pass</text>
+  <path class="m" d="M540 522 L 978 522" marker-end="url(#s-a)"/>
+  <text class="ml" x="560" y="516">else: streamed generation (first-token deadline 3 s &#183; 360-char cap &#183; grounded-context instruction)</text>
+  <path class="mm" d="M978 548 L 540 548" marker-end="url(#s-m)"/>
+  <text class="ml" x="560" y="542">token stream</text>
+  <path class="m" d="M540 576 L 1106 576" marker-end="url(#s-a)"/>
+  <text class="ml" x="560" y="570">sentence-by-sentence after guardrail hold (violating sentence never synthesized) &#183; pause-flush 0.6 s</text>
+  <path class="mm" d="M1106 604 L 540 604" marker-end="url(#s-m)"/>
+  <text class="ml" x="560" y="598">audio chunks per generation (first-audio watchdog 4 s, transient errors &#8594; fallback engine)</text>
+  <path class="mt" d="M532 632 L 78 632" marker-end="url(#s-t)"/>
+  <text class="ml" x="96" y="626">PCM to caller (ramped first packet) + bot_text / transcript JSON events (browser)</text>
+
+  <!-- band 5: barge-in -->
+  <rect class="band" x="14" y="656" width="360" height="16"/>
+  <text class="bt" x="22" y="668">BARGE-IN (any time while the bot speaks)</text>
+  <path class="m" d="M78 692 L 219 692" marker-end="url(#s-a)"/>
+  <text class="ml" x="88" y="686">caller speech over bot audio</text>
+  <path class="m" d="M227 718 L 532 718" marker-end="url(#s-a)"/>
+  <text class="ml" x="240" y="712">turn opens only after &#8805;2 transcribed words OR 1 s sustained gated VAD (word-confirmed strategy)</text>
+  <text class="note" x="240" y="734">then: cancel generation + provider context &#183; clear queued audio &#183; killAudio / clear to the transport &#183; backchannels excluded;</text>
+  <text class="note" x="240" y="746">a late final after the reply started merges as a clarified turn &#8594; turn_rewound retraction event (browser console pops the stale bubbles)</text>
+  <text class="note" x="240" y="764" font-style="italic">every stage stamped by turn_metrics: speech &#183; stt_final &#183; endpoint &#183; classify &#183; llm_first_token &#183; tts_first_audio &#183; playout &#8594; slowest_stage()</text>
+</svg>

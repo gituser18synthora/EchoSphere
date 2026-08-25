@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
-import { inviteUser, listRoles, listTeam } from "@/services/api";
-import { Avatar, Button, CardSkeleton, Field, MenuButton, Modal, StatusChip } from "@/components/ui";
+import { inviteUser, listRoles, listTeam, resetUserPassword } from "@/services/api";
+import {
+  Avatar, Button, CardSkeleton, Field, MenuButton, Modal, PasswordInput, StatusChip,
+  type MenuAction,
+} from "@/components/ui";
 import { DataTable } from "@/components/DataTable";
+import { PASSWORD_POLICY_HINT, passwordPolicyError } from "@/services/password";
+import type { TeamMember } from "@/types/domain";
 import { useApp } from "@/state/AppContext";
 
 const prettyPermission = (code: string) => {
@@ -18,6 +23,7 @@ export default function Team() {
   const { user, toast, hasPermission } = useApp();
   // Server-enforced: user create/update APIs require tenant admin.
   const canManageTeam = hasPermission("team.manage");
+  const canResetPassword = hasPermission("reset_user_password");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [mode, setMode] = useState<"invite" | "create">("invite");
   const [name, setName] = useState("");
@@ -35,11 +41,53 @@ export default function Team() {
   const memberRoles = tenantRoles.filter((r) => r.code === "tenant_user");
   const selectedRole = memberRoles[0]?.code ?? "tenant_user";
 
+  // Change-password modal (per-member row action). The backend enforces
+  // permission + tenant isolation; this is only the affordance.
+  const [pwTarget, setPwTarget] = useState<TeamMember | null>(null);
+  const [pwForm, setPwForm] = useState({ next: "", confirm: "" });
+  const [resetErr, setResetErr] = useState<{ next?: string; confirm?: string }>({});
+  const [resetBusy, setResetBusy] = useState(false);
+
   const closeModal = () => {
     setInviteOpen(false);
     setName(""); setEmail(""); setPassword(""); setConfirm("");
     setNameErr(""); setErr(""); setPwErr("");
     setMode("invite");
+  };
+
+  const openPasswordModal = (member: TeamMember) => {
+    setPwForm({ next: "", confirm: "" });
+    setResetErr({});
+    setPwTarget(member);
+  };
+
+  const closePasswordModal = () => {
+    setPwTarget(null);
+    setPwForm({ next: "", confirm: "" });
+    setResetErr({});
+  };
+
+  const submitPasswordChange = async () => {
+    if (!pwTarget) return;
+    const errs: { next?: string; confirm?: string } = {};
+    const policy = passwordPolicyError(pwForm.next);
+    if (policy) errs.next = policy;
+    if (pwForm.next !== pwForm.confirm) errs.confirm = "Passwords do not match";
+    setResetErr(errs);
+    if (errs.next || errs.confirm) return;
+    setResetBusy(true);
+    try {
+      await resetUserPassword(pwTarget.id, {
+        newPassword: pwForm.next, confirmPassword: pwForm.confirm,
+      });
+      toast(`Password changed for ${pwTarget.name} — their existing sessions have been signed out.`);
+      q.reload(); // an invited member becomes active once a real password is set
+      closePasswordModal();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not change the password", "error");
+    } finally {
+      setResetBusy(false);
+    }
   };
 
   const submit = async () => {
@@ -96,16 +144,27 @@ export default function Team() {
             { key: "last", header: "Last active", render: (m) => <span className="t-sub">{m.lastActive === "—" ? "—" : new Date(m.lastActive).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> },
             {
               key: "act", header: "", width: 48,
-              render: (m) => canManageTeam ? (
-                <MenuButton actions={[
+              render: (m) => {
+                if (!canManageTeam) return null;
+                // Own account rotates via Profile → Security (the API rejects
+                // self-reset too); every other member gets the row action.
+                const isSelf = m.id === user?.id ||
+                  (!!user?.email && m.email.toLowerCase() === user.email.toLowerCase());
+                const actions: (MenuAction | "sep")[] = [
                   { label: "Change role", icon: "shield", onClick: () => toast(`Role editor opened for ${m.name}`, "info") },
                   { label: "Transfer bot ownership", icon: "bot", onClick: () => toast("Ownership transfer requires the receiving member to accept", "info") },
+                ];
+                if (canResetPassword && !isSelf) {
+                  actions.push({ label: "Change password", icon: "key", onClick: () => openPasswordModal(m) });
+                }
+                actions.push(
                   "sep",
                   m.status === "invited"
                     ? { label: "Resend invite", icon: "mail", onClick: () => toast(`Invite resent to ${m.email}`) }
                     : { label: "Deactivate", icon: "x-circle", danger: true, onClick: () => toast(`${m.name} deactivated — owned bots need reassignment`, "info") },
-                ]} />
-              ) : null,
+                );
+                return <MenuButton actions={actions} />;
+              },
             },
           ]}
         />
@@ -184,6 +243,43 @@ export default function Team() {
                 <option key={r.code} value={r.code}>{r.name}</option>
               ))}
             </select>
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={pwTarget !== null} onClose={closePasswordModal}
+        title="Change password"
+        sub={pwTarget
+          ? `Set a new password for ${pwTarget.name} (${pwTarget.email}). Their current password is never shown, and changing it signs them out of all existing sessions.`
+          : undefined}
+        footer={
+          <>
+            <Button variant="ghost" onClick={closePasswordModal} disabled={resetBusy}>Cancel</Button>
+            <Button variant="primary" icon="key" busy={resetBusy} onClick={submitPasswordChange}>
+              Change password
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-16">
+          <Field label="New password" required error={resetErr.next} hint={PASSWORD_POLICY_HINT}>
+            <PasswordInput
+              value={pwForm.next}
+              onChange={(v) => { setPwForm((p) => ({ ...p, next: v })); setResetErr({}); }}
+              autoComplete="new-password"
+              invalid={Boolean(resetErr.next)}
+              aria-label="New password"
+            />
+          </Field>
+          <Field label="Confirm password" required error={resetErr.confirm}>
+            <PasswordInput
+              value={pwForm.confirm}
+              onChange={(v) => { setPwForm((p) => ({ ...p, confirm: v })); setResetErr({}); }}
+              autoComplete="new-password"
+              invalid={Boolean(resetErr.confirm)}
+              aria-label="Confirm password"
+            />
           </Field>
         </div>
       </Modal>

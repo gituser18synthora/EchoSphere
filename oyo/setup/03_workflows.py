@@ -8,6 +8,14 @@ Engine contract (shared/orchestration/workflow_engine.py):
   literal token; tokens ending in '?' carry the 'question' signal so
   question-phrased utterances can advance.
 - message/end/handover speak config.text verbatim (no slot interpolation).
+- responseMode (message/ask/intent/api/end config): "fixed" (default,
+  verbatim), "exact" (never paraphrased/adapted), or "llm_grounded" — the
+  flow decided WHAT happened, the LLM words it from responseDirective +
+  verified facts; config.text stays the spoken fallback whenever generation
+  fails or validation rejects the output. Verification failures, transfers,
+  errors and unsafe transactional claims stay fixed on purpose; grounded
+  success wording sits ONLY on deterministically-guaranteed branches (an
+  api node's success edge, a condition's true edge).
 """
 
 import json
@@ -75,7 +83,13 @@ B1_NODES = layout([
     N("n_intent_cancel", "intent", "Did you cancel?", {
         "prompt": "Did you cancel this booking yourself?"}),
     N("n_msg_cancel_ack", "message", "Cancel acknowledged", {
-        "text": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime."}),
+        "text": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime.",
+        "responseMode": "llm_grounded",
+        "responseDirective": (
+            "Acknowledge that the caller confirmed they cancelled this "
+            "booking themselves, so nothing is pending on it; mention the "
+            "OYO app or support team can help with any new booking, and "
+            "close politely.")}),
     N("n_msg_cancel_dispute", "message", "Cancel dispute", {
         "text": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away."}),
     N("n_api_ivr_esc", "api", "IVR Transfer API (escalation)", {
@@ -84,16 +98,41 @@ B1_NODES = layout([
         "queue": "escalations",
         "text": "Transferring you now — please stay on the line."}),
 
-    # requirement hub
+    # requirement hub — grounded delivery: the flow decided the booking is
+    # confirmed (condition true edge); the LLM only words the announcement
+    # and MUST keep asking the three-option question (validated; the
+    # authored prompt is the fallback).
     N("n_hub", "intent", "What would you like?", {
-        "prompt": "Great news — your booking is confirmed in our system. Would you like me to also confirm it directly with the property, hear your booking details, or get the booking voucher emailed to you?"}),
+        "prompt": "Great news — your booking is confirmed in our system. Would you like me to also confirm it directly with the property, hear your booking details, or get the booking voucher emailed to you?",
+        "responseMode": "llm_grounded",
+        "responseDirective": (
+            "Tell the caller their booking is confirmed in our system, then "
+            "ask what they would like next, offering exactly these three "
+            "options: confirming the booking directly with the property, "
+            "hearing their booking details, or emailing the booking "
+            "voucher. Never choose an option for them.")}),
     N("n_msg_sysconfirm", "message", "System confirmation", {
-        "text": "Perfect. Your booking is confirmed in our system, and you can proceed with your check-in without any issues."}),
+        "text": "Perfect. Your booking is confirmed in our system, and you can proceed with your check-in without any issues.",
+        "responseMode": "llm_grounded",
+        "responseDirective": (
+            "Confirm that the booking is confirmed in our system and the "
+            "caller can proceed with their check-in without any issues, "
+            "then close warmly.")}),
 
-    # details branch — exits the workflow so detail Q&A runs on the LLM with facts
-    N("n_msg_details_exit", "message", "Details handoff to LLM", {
-        "respondFromContext": True,
-        "text": "Answer the caller's current booking-detail request directly from the workflow-verified context."}),
+    # details branch — grounded: answer the caller's actual detail request
+    # from the workflow-verified facts (single fact first; broad request →
+    # concise summary). The authored text is only the LLM-down fallback.
+    N("n_msg_details_exit", "message", "Details answered from facts", {
+        "responseMode": "llm_grounded",
+        "responseDirective": (
+            "Answer the caller's current booking question directly from the "
+            "workflow-verified booking facts. For a single fact (hotel "
+            "name, check-in or check-out date, occupancy, payment status, "
+            "pending amount) state that value in the first sentence. For a "
+            "broad details request give one concise spoken summary of the "
+            "hotel, stay dates, occupancy and payment facts. Never recite a "
+            "menu of what they may ask."),
+        "text": "I have your verified booking open — please tell me which detail you need."}),
     N("n_end_details", "end", "End (details Q&A)"),
 
     # voucher branch
@@ -106,8 +145,16 @@ B1_NODES = layout([
         "variable": "email_address", "entityType": "email"}),
     N("n_api_voucher", "api", "Booking Voucher API", {
         "connection": "OYO Booking Voucher"}),
+    # Grounded success wording is safe here ONLY because this node sits on
+    # the Booking Voucher API's success edge — a failed send can never
+    # reach it (it routes to the fixed n_msg_voucher_fail instead).
     N("n_msg_voucher_ok", "message", "Voucher sent", {
-        "text": "Done! I've emailed your booking voucher — it should reach your inbox within a few minutes."}),
+        "text": "Done! I've emailed your booking voucher — it should reach your inbox within a few minutes.",
+        "responseMode": "llm_grounded",
+        "responseDirective": (
+            "Tell the caller their booking voucher was just emailed "
+            "successfully (the send is system-verified) and should reach "
+            "their inbox within a few minutes.")}),
     N("n_msg_voucher_fail", "message", "Voucher failed", {
         "text": "I'm sorry, I couldn't send the voucher right now. Our support team can email it to you manually."}),
     N("n_hub_more", "intent", "Anything else?", {

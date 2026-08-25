@@ -1,0 +1,140 @@
+<svg viewBox="0 0 1220 600" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="d-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748B"/></marker>
+    <marker id="d-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; }
+      .node { rx: 8; stroke-width: 1.4; }
+      .t { font-size: 11px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 8.6px; fill: #55607A; }
+      .e { fill: none; stroke-width: 1.4; }
+      .el { font-size: 8.8px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; font-weight: 600; }
+      .warn { font-size: 8.8px; fill: #B4231F; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- single host -->
+  <rect class="cl" x="20" y="20" width="770" height="560" fill="#F4F6FA" stroke="#475569"/>
+  <text class="clabel" x="38" y="42" fill="#475569">SINGLE LINUX HOST &#8212; the only deployment path discoverable in the repo (scripts/dev.sh)</text>
+
+  <!-- dev.sh -->
+  <rect class="node" x="38" y="56" width="330" height="120" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="203" y="76" text-anchor="middle">scripts/dev.sh &#8212; process supervisor (304 lines)</text>
+  <text class="s" x="54" y="94">start / stop / restart / status / logs &#183; ports read from .env only</text>
+  <text class="s" x="54" y="107">nohup + PID files (.devrun/pids) &#183; logs (.devrun/logs)</text>
+  <text class="s" x="54" y="120">port-conflict refusal with rollback &#183; 60 s HTTP readiness poll</text>
+  <text class="s" x="54" y="133">stop: reverse order, TERM&#8594;10 s&#8594;KILL, recycled-PID safe</text>
+  <text class="s" x="54" y="146">preflight: env/bin/python &#183; node &#183; .env &#183; vite present</text>
+  <text class="s" x="54" y="159" font-style="italic">no Dockerfile &#183; no compose &#183; no k8s &#183; no systemd &#183; no CI &#183; no nginx</text>
+
+  <!-- processes -->
+  <rect class="node" x="392" y="56" width="180" height="56" fill="#DBEAFE" stroke="#2563EB"/>
+  <text class="t" x="482" y="78" text-anchor="middle">Vite dev server :5199</text>
+  <text class="s" x="482" y="93" text-anchor="middle">proxies /api &#8594; 127.0.0.1:9001</text>
+
+  <rect class="node" x="592" y="56" width="180" height="56" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="682" y="74" text-anchor="middle">Platform API :9001</text>
+  <text class="s" x="682" y="88" text-anchor="middle">backend.main &#183; embeds ingestion</text>
+  <text class="s" x="682" y="100" text-anchor="middle">worker task + optional migrations/seed</text>
+
+  <rect class="node" x="392" y="126" width="180" height="56" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="482" y="146" text-anchor="middle">Voice worker :9002</text>
+  <text class="s" x="482" y="160" text-anchor="middle">voice_runtime.app &#183; browser WS</text>
+  <text class="s" x="482" y="172" text-anchor="middle">embeds post-call worker</text>
+
+  <rect class="node" x="592" y="126" width="180" height="56" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="682" y="146" text-anchor="middle">Telephony gateway :9011</text>
+  <text class="s" x="682" y="160" text-anchor="middle">voice_runtime.gateway (same app,</text>
+  <text class="s" x="682" y="172" text-anchor="middle">public bind, runtime preloaded)</text>
+
+  <rect class="node" x="392" y="196" width="180" height="50" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text class="t" x="482" y="216" text-anchor="middle">Ingestion worker</text>
+  <text class="s" x="482" y="230" text-anchor="middle">optional standalone (no port)</text>
+
+  <rect class="node" x="592" y="196" width="180" height="50" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="682" y="216" text-anchor="middle">MCP server :9003</text>
+  <text class="s" x="682" y="230" text-anchor="middle">gated by MCP_ENABLED</text>
+
+  <!-- datastores -->
+  <rect class="cl" x="38" y="262" width="734" height="120" fill="#F0FBF3" stroke="#16A34A"/>
+  <text class="clabel" x="54" y="282" fill="#16A34A">LOCALLY INSTALLED DATASTORES (not managed by dev.sh)</text>
+  <g>
+    <rect class="node" x="54" y="294" width="166" height="42" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="137" y="312" text-anchor="middle" font-size="10px">MySQL :3306</text>
+    <text class="s" x="137" y="326" text-anchor="middle">voice_bot &#183; 31 migrations</text>
+    <rect class="node" x="236" y="294" width="166" height="42" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="319" y="312" text-anchor="middle" font-size="10px">PostgreSQL :5432</text>
+    <text class="s" x="319" y="326" text-anchor="middle">pgvector &#183; manual pg-migrate</text>
+    <rect class="node" x="418" y="294" width="166" height="42" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="501" y="312" text-anchor="middle" font-size="10px">MongoDB :27017</text>
+    <text class="s" x="501" y="326" text-anchor="middle">indexes made by API boot</text>
+    <rect class="node" x="600" y="294" width="158" height="42" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="679" y="312" text-anchor="middle" font-size="10px">Redis :6379</text>
+    <text class="s" x="679" y="326" text-anchor="middle">consumers fail open</text>
+  </g>
+  <text class="s" x="54" y="356">storage/ on local disk: knowledge uploads (13 MB) &#183; call recordings (~1.5 GB, no retention job) &#183; voice-clone samples &#183; logs</text>
+  <text class="s" x="54" y="370">config: one .env (pydantic Settings, secret references env:VAR, fail-fast per-service validation; production mode turns provider-key warnings into errors)</text>
+
+  <!-- deployment notes -->
+  <rect class="node" x="38" y="398" width="734" height="76" fill="#FFFFFF" stroke="#475569"/>
+  <text class="t" x="54" y="418">Boot behaviour (backend/main.py lifespan)</text>
+  <text class="s" x="54" y="434">AUTO_RUN_MIGRATIONS (off) &#8594; blocking alembic upgrade in-process &#183; ENABLE_DATABASE_SEED (ON by default) &#8594; idempotent base seed every start</text>
+  <text class="s" x="54" y="448">Mongo connect + index bootstrap &#183; embedded ingestion worker task (30 s drain on shutdown) &#183; readiness endpoint always answers HTTP 200</text>
+  <text class="s" x="54" y="462">Voice worker lifespan: Mongo connect (no indexes) + embedded post-call worker &#183; gateway preloads pipecat before accepting sockets</text>
+
+  <!-- security posture strip -->
+  <rect class="node" x="38" y="490" width="734" height="74" fill="#FEF1F2" stroke="#E11D48"/>
+  <text class="t" x="54" y="510" fill="#E11D48">Exposure notes (verified)</text>
+  <text class="warn" x="54" y="527">All services bind 0.0.0.0 &#183; no TLS anywhere in-repo (http/ws only; ESL :9004 plaintext) &#183; API docs + OpenAPI unauthenticated</text>
+  <text class="warn" x="54" y="541">No HTTP rate limiting on the REST API (login included) &#183; JWT + session in localStorage &#183; ALLOW_HARD_DELETE=true in the live .env</text>
+  <text class="s" x="54" y="556">Network placement/firewalling is the assumed control &#8212; docs/DEPLOYMENT.md gives prose guidance only (nginx/compose sketches, not exercised)</text>
+
+  <!-- external column -->
+  <rect class="cl" x="810" y="20" width="390" height="560" fill="#FEF1F2" stroke="#E11D48"/>
+  <text class="clabel" x="828" y="42" fill="#E11D48">EXTERNAL / REMOTE</text>
+
+  <rect class="node" x="828" y="56" width="354" height="96" fill="#FFFFFF" stroke="#E11D48"/>
+  <text class="t" x="1005" y="76" text-anchor="middle">FreeSWITCH host (separate machine)</text>
+  <text class="s" x="1005" y="92" text-anchor="middle">free_sweetch/voicebot.lua + voicebot_webhook.py deployed to</text>
+  <text class="s" x="1005" y="104" text-anchor="middle">/usr/local/freeswitch/scripts &#8212; outside this repo's packaging</text>
+  <text class="s" x="1005" y="116" text-anchor="middle">media: mod_audio_fork WS &#8594; :9011 &#183; control: ESL :9004 inbound</text>
+  <text class="warn" x="1005" y="134" text-anchor="middle">hostname hardcoded in Lua + helper &#8212; must match .env</text>
+
+  <rect class="node" x="828" y="166" width="354" height="66" fill="#FFFFFF" stroke="#E11D48"/>
+  <text class="t" x="1005" y="186" text-anchor="middle">Vaani dialer (eDAS cloud)</text>
+  <text class="s" x="1005" y="202" text-anchor="middle">signed webhook &#8594; ws://&#8230;:9011 media &#183; per-call minted WS URL</text>
+  <text class="s" x="1005" y="214" text-anchor="middle">TELEPHONY_PUBLIC_WS_BASE announces the reachable address</text>
+
+  <rect class="node" x="828" y="246" width="354" height="86" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="1005" y="266" text-anchor="middle">SaaS AI providers (HTTPS / WSS egress)</text>
+  <text class="s" x="1005" y="282" text-anchor="middle">OpenAI (LLM &#183; embeddings &#183; whisper) &#183; Sarvam (saaras STT &#183; bulbul TTS)</text>
+  <text class="s" x="1005" y="294" text-anchor="middle">Deepgram Flux (v2/listen) &#183; ElevenLabs (multi-stream TTS &#183; IVC)</text>
+  <text class="s" x="1005" y="306" text-anchor="middle">keys via env: references; governance matrix gates which are usable</text>
+  <text class="s" x="1005" y="320" text-anchor="middle">WhatsApp Meta Cloud API webhook &#8594; API :9001 (signature-verified)</text>
+
+  <rect class="node" x="828" y="346" width="354" height="60" fill="#FFFFFF" stroke="#E11D48"/>
+  <text class="t" x="1005" y="366" text-anchor="middle">MCP clients (LLM agents)</text>
+  <text class="s" x="1005" y="382" text-anchor="middle">streamable HTTP :9003 &#183; platform JWT &#183; 60 req/min/tenant</text>
+
+  <rect class="node" x="828" y="420" width="354" height="140" fill="#FFFFFF" stroke="#94A3B8"/>
+  <text class="t" x="1005" y="440" text-anchor="middle">Scaling model (verified constraints)</text>
+  <text class="s" x="842" y="458">&#8226; API: stateless behind the JWT &#8212; horizontally scalable, but embedded</text>
+  <text class="s" x="850" y="470">ingestion worker + seed-on-boot need coordination</text>
+  <text class="s" x="842" y="484">&#8226; Voice: session pinned to one process; duplicate-session guard and</text>
+  <text class="s" x="850" y="496">capacity cap (20) are per-process, not cluster-wide</text>
+  <text class="s" x="842" y="510">&#8226; Workers: SKIP-LOCKED / optimistic claims &#8212; safely multi-instance</text>
+  <text class="s" x="842" y="524">&#8226; State that survives restarts: MySQL/PG/Mongo + LangGraph checkpoints;</text>
+  <text class="s" x="850" y="536">Redis is reconstructible cache/session state</text>
+  <text class="s" x="842" y="550">&#8226; WS load-balancing guidance is prose-only (docs/DEPLOYMENT.md)</text>
+
+  <!-- edges -->
+  <path class="e" d="M368 100 L 392 84" stroke="#64748B" marker-end="url(#d-g)"/>
+  <path class="e" d="M368 116 L 392 148" stroke="#64748B" marker-end="url(#d-g)"/>
+  <path class="e" d="M368 140 C 380 190 380 205 392 214" stroke="#64748B" marker-end="url(#d-g)"/>
+  <path class="e" d="M368 128 C 480 240 560 240 592 220" stroke="#64748B" marker-end="url(#d-g)"/>
+  <path class="e" d="M368 92 C 500 40 560 50 592 70" stroke="#64748B" marker-end="url(#d-g)"/>
+  <text class="el" x="332" y="180">starts &#183; monitors</text>
+  <path class="e" d="M828 106 C 800 120 770 140 772 150" stroke="#E11D48" marker-end="url(#d-r)"/>
+  <path class="e" d="M828 196 C 806 190 790 176 772 168" stroke="#E11D48" marker-end="url(#d-r)"/>
+</svg>

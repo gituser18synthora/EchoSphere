@@ -103,6 +103,17 @@ _PHRASES: dict[str, dict[str, str]] = {
         "en": "Could you repeat that?",
         "hi": "कृपया दोबारा बोलिए?",
     },
+    # An intent node whose author left the prompt empty still needs to ask
+    # SOMETHING; and a turn that consumed input while producing no authored
+    # reply needs a neutral continuation. Both were hardcoded English before.
+    "wf_how_help": {
+        "en": "How can I help you today?",
+        "hi": "बताइए, मैं आपकी क्या मदद कर सकता हूँ?",
+    },
+    "wf_anything_else": {
+        "en": "Is there anything else I can help you with?",
+        "hi": "क्या मैं आपकी किसी और चीज़ में मदद कर सकता हूँ?",
+    },
     "wf_kb_miss": {
         "en": "I couldn't find that in the information I have.",
         "hi": "माफ़ कीजिए, यह जानकारी मेरे पास नहीं है।",

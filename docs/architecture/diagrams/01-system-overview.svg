@@ -1,0 +1,174 @@
+<svg viewBox="0 0 1200 730" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748B"/></marker>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2563EB"/></marker>
+    <marker id="a-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="a-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4F46E5"/></marker>
+    <marker id="a-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#D97706"/></marker>
+    <marker id="a-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <style>
+      .cl { rx: 12; stroke-dasharray: 6 4; stroke-width: 1.2; }
+      .clabel { font-size: 10.5px; font-weight: 700; letter-spacing: 1.4px; }
+      .node { rx: 9; stroke-width: 1.5; }
+      .t { font-size: 12.5px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 9.5px; fill: #55607A; }
+      .e { fill: none; stroke-width: 1.6; }
+      .el { font-size: 9.3px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 3.5px; font-weight: 600; }
+      .port { font-size: 9px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <!-- ===== Row 1: entry points ===== -->
+  <rect class="node" x="60" y="34" width="250" height="62" fill="#DBEAFE" stroke="#2563EB"/>
+  <text class="t" x="185" y="59" text-anchor="middle">Web Console (React SPA)</text>
+  <text class="s" x="185" y="76" text-anchor="middle">admin + tenant studio &#183; Vite dev :5199</text>
+
+  <rect class="node" x="470" y="34" width="250" height="62" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="t" x="595" y="59" text-anchor="middle">MCP Clients</text>
+  <text class="s" x="595" y="76" text-anchor="middle">LLM agents &#183; streamable HTTP + JWT</text>
+
+  <rect class="node" x="880" y="34" width="280" height="62" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="t" x="1020" y="59" text-anchor="middle">Telephony &#183; PSTN callers</text>
+  <text class="s" x="1020" y="76" text-anchor="middle">Vaani dialer (eDAS) &#183; FreeSWITCH PBX</text>
+
+  <!-- ===== Control plane cluster ===== -->
+  <rect class="cl" x="40" y="186" width="530" height="216" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="clabel" x="58" y="208" fill="#4F46E5">CONTROL PLANE (backend/)</text>
+
+  <rect class="node" x="62" y="224" width="236" height="88" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="180" y="248" text-anchor="middle">Platform API</text>
+  <text class="s" x="180" y="264" text-anchor="middle">FastAPI &#183; 33 routers &#183; 208 endpoints</text>
+  <text class="s" x="180" y="278" text-anchor="middle">auth &#183; tenancy &#183; studio &#183; billing &#183; audit</text>
+  <rect x="146" y="288" width="68" height="16" rx="8" fill="#4F46E5"/>
+  <text class="port" x="180" y="299.5" text-anchor="middle" fill="#FFFFFF">HTTP :9001</text>
+
+  <rect class="node" x="322" y="224" width="226" height="56" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="435" y="247" text-anchor="middle">MCP Server  :9003</text>
+  <text class="s" x="435" y="263" text-anchor="middle">4 knowledge tools &#183; per-tenant rate limit</text>
+
+  <rect class="node" x="322" y="292" width="226" height="56" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text class="t" x="435" y="315" text-anchor="middle">Ingestion Worker</text>
+  <text class="s" x="435" y="331" text-anchor="middle">embedded task &#183; polls ingestion_jobs (PG)</text>
+
+  <text class="s" x="62" y="382" font-style="italic">shared/ library: config &#183; models &#183; providers &#183; guardrails &#183; compliance &#183; knowledge</text>
+
+  <!-- ===== Realtime plane cluster ===== -->
+  <rect class="cl" x="600" y="186" width="560" height="216" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="618" y="208" fill="#0D9488">REALTIME VOICE PLANE (voice_runtime/)</text>
+
+  <rect class="node" x="622" y="224" width="248" height="88" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="746" y="248" text-anchor="middle">Voice Runtime Worker</text>
+  <text class="s" x="746" y="264" text-anchor="middle">Pipecat pipeline &#183; STT &#8594; brain &#8594; TTS</text>
+  <text class="s" x="746" y="278" text-anchor="middle">browser sessions /ws/voice</text>
+  <rect x="712" y="288" width="68" height="16" rx="8" fill="#0D9488"/>
+  <text class="port" x="746" y="299.5" text-anchor="middle" fill="#FFFFFF">WS :9002</text>
+
+  <rect class="node" x="892" y="224" width="246" height="88" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="1015" y="248" text-anchor="middle">Telephony Gateway</text>
+  <text class="s" x="1015" y="264" text-anchor="middle">same FastAPI app, public bind</text>
+  <text class="s" x="1015" y="278" text-anchor="middle">signed webhook + media WS</text>
+  <rect x="981" y="288" width="68" height="16" rx="8" fill="#0D9488"/>
+  <text class="port" x="1015" y="299.5" text-anchor="middle" fill="#FFFFFF">WS :9011</text>
+
+  <rect class="node" x="622" y="324" width="248" height="52" fill="#EDE9FE" stroke="#7C3AED"/>
+  <text class="t" x="746" y="345" text-anchor="middle">Post-Call Worker</text>
+  <text class="s" x="746" y="361" text-anchor="middle">embedded &#183; summaries &#183; NBA &#183; memories</text>
+
+  <rect class="node" x="892" y="324" width="246" height="52" fill="#E2E8F0" stroke="#475569"/>
+  <text class="t" x="1015" y="345" text-anchor="middle">ESL Control Client</text>
+  <text class="s" x="1015" y="361" text-anchor="middle">transfer + hangup monitors &#183; uuid_kill</text>
+
+  <!-- ===== Data stores cluster ===== -->
+  <rect class="cl" x="40" y="470" width="700" height="180" fill="#F0FBF3" stroke="#16A34A"/>
+  <text class="clabel" x="58" y="492" fill="#16A34A">DATA STORES (single-host, from .env)</text>
+
+  <rect class="node" x="62" y="508" width="196" height="58" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="160" y="530" text-anchor="middle">MySQL :3306</text>
+  <text class="s" x="160" y="546" text-anchor="middle">control plane &#183; 60 tables</text>
+
+  <rect class="node" x="62" y="576" width="196" height="58" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="160" y="598" text-anchor="middle">PostgreSQL :5432</text>
+  <text class="s" x="160" y="614" text-anchor="middle">pgvector KB &#183; LangGraph ckpts</text>
+
+  <rect class="node" x="278" y="508" width="196" height="58" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="376" y="530" text-anchor="middle">MongoDB :27017</text>
+  <text class="s" x="376" y="546" text-anchor="middle">transcripts &#183; voice events</text>
+
+  <rect class="node" x="278" y="576" width="196" height="58" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="376" y="598" text-anchor="middle">Redis :6379</text>
+  <text class="s" x="376" y="614" text-anchor="middle">sessions &#183; botcfg cache &#183; replay</text>
+
+  <rect class="node" x="494" y="508" width="224" height="126" fill="#DCFCE7" stroke="#16A34A"/>
+  <text class="t" x="606" y="532" text-anchor="middle">Local Filesystem</text>
+  <text class="s" x="606" y="550" text-anchor="middle">storage/knowledge &#8212; uploads</text>
+  <text class="s" x="606" y="566" text-anchor="middle">storage/recordings &#8212; call WAVs</text>
+  <text class="s" x="606" y="582" text-anchor="middle">storage/voice_clones &#8212; samples</text>
+  <text class="s" x="606" y="598" text-anchor="middle">.devrun/ &#8212; pids + logs</text>
+
+  <!-- ===== External providers cluster ===== -->
+  <rect class="cl" x="770" y="470" width="390" height="180" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="clabel" x="788" y="492" fill="#B45D09">EXTERNAL AI &amp; CHANNEL PROVIDERS</text>
+
+  <rect class="node" x="788" y="508" width="170" height="42" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="873" y="526" text-anchor="middle" font-size="11.5">OpenAI</text>
+  <text class="s" x="873" y="540" text-anchor="middle">LLM &#183; embeddings</text>
+
+  <rect class="node" x="972" y="508" width="170" height="42" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="1057" y="526" text-anchor="middle" font-size="11.5">Sarvam AI</text>
+  <text class="s" x="1057" y="540" text-anchor="middle">STT &#183; TTS &#183; pron. dicts</text>
+
+  <rect class="node" x="788" y="558" width="170" height="42" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="873" y="576" text-anchor="middle" font-size="11.5">Deepgram</text>
+  <text class="s" x="873" y="590" text-anchor="middle">Flux realtime STT</text>
+
+  <rect class="node" x="972" y="558" width="170" height="42" fill="#FEF3C7" stroke="#D97706"/>
+  <text class="t" x="1057" y="576" text-anchor="middle" font-size="11.5">ElevenLabs</text>
+  <text class="s" x="1057" y="590" text-anchor="middle">TTS &#183; voice cloning</text>
+
+  <rect class="node" x="788" y="608" width="354" height="34" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="s" x="965" y="629" text-anchor="middle" font-weight="700" fill="#1F2937">WhatsApp (Meta Cloud API) &#8212; inbound channel webhook</text>
+
+  <!-- ===== Edges ===== -->
+  <!-- SPA -> API -->
+  <path class="e" d="M185 96 C 184 140 182 180 181 224" stroke="#2563EB" marker-end="url(#a-blue)"/>
+  <text class="el" x="193" y="142">HTTPS /api/v1 (Vite proxy in dev)</text>
+  <!-- SPA -> voice worker -->
+  <path class="e" d="M310 78 C 520 104 660 150 726 224" stroke="#2563EB" marker-end="url(#a-blue)"/>
+  <text class="el" x="440" y="118">WS raw PCM  /ws/voice/{id}</text>
+  <!-- MCP clients -> MCP server -->
+  <path class="e" d="M570 96 C 542 140 496 182 466 224" stroke="#E11D48" marker-end="url(#a-rose)"/>
+  <text class="el" x="452" y="176" text-anchor="end">streamable HTTP :9003 &#183; platform JWT</text>
+  <!-- dialers -> gateway -->
+  <path class="e" d="M1020 96 C 1019 140 1017 180 1016 224" stroke="#E11D48" marker-end="url(#a-rose)"/>
+  <text class="el" x="1008" y="150" text-anchor="end">signed webhook &#8594; per-call WS URL &#183; media WS</text>
+  <!-- ESL -> FreeSWITCH -->
+  <path class="e" d="M1138 348 C 1186 280 1172 150 1112 96" stroke="#475569" stroke-dasharray="5 4" marker-end="url(#a-gray)"/>
+  <text class="el" x="1194" y="228" text-anchor="end">ESL TCP :9004</text>
+  <text class="el" x="1194" y="242" text-anchor="end">(plaintext)</text>
+  <!-- API -> stores -->
+  <path class="e" d="M180 402 L180 470" stroke="#4F46E5" stroke-width="2.4" marker-end="url(#a-indigo)"/>
+  <text class="el" x="190" y="440">SQLAlchemy &#183; Motor &#183; asyncpg &#183; Redis</text>
+  <!-- runtime -> stores -->
+  <path class="e" d="M746 402 C 720 430 620 452 560 470" stroke="#0D9488" stroke-width="2.4" marker-end="url(#a-teal)"/>
+  <text class="el" x="600" y="436">pinned config &#183; transcripts &#183; usage &#183; RAG</text>
+  <!-- runtime -> providers -->
+  <path class="e" d="M1015 402 L 985 470" stroke="#D97706" stroke-width="2.4" marker-end="url(#a-amber)"/>
+  <text class="el" x="1005" y="440">streaming WSS / HTTPS</text>
+  <!-- API -> providers (admin-side) -->
+  <path class="e" d="M548 366 C 660 420 700 462 786 496" stroke="#D97706" stroke-dasharray="5 4" marker-end="url(#a-amber)"/>
+  <text class="el" x="562" y="416">server-side: embeddings &#183; voice sync &#183; dictionaries</text>
+
+  <!-- session handoff caption -->
+  <text class="el" x="40" y="668">Session handoff: the API mints voice:session:{id} in Redis; the runtime only consumes it &#8212; the worker never decides tenancy itself.</text>
+
+  <!-- legend -->
+  <g transform="translate(60, 694)">
+    <rect width="12" height="12" rx="3" fill="#DBEAFE" stroke="#2563EB"/><text class="s" x="18" y="10">client</text>
+    <rect x="78" width="12" height="12" rx="3" fill="#E0E7FF" stroke="#4F46E5"/><text class="s" x="96" y="10">control plane</text>
+    <rect x="196" width="12" height="12" rx="3" fill="#CCFBF1" stroke="#0D9488"/><text class="s" x="214" y="10">realtime voice</text>
+    <rect x="318" width="12" height="12" rx="3" fill="#EDE9FE" stroke="#7C3AED"/><text class="s" x="336" y="10">background worker</text>
+    <rect x="464" width="12" height="12" rx="3" fill="#DCFCE7" stroke="#16A34A"/><text class="s" x="482" y="10">data store</text>
+    <rect x="566" width="12" height="12" rx="3" fill="#FEF3C7" stroke="#D97706"/><text class="s" x="584" y="10">external AI provider</text>
+    <rect x="716" width="12" height="12" rx="3" fill="#FFE4E6" stroke="#E11D48"/><text class="s" x="734" y="10">external system / client</text>
+  </g>
+</svg>
