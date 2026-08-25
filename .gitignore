@@ -98,3 +98,4 @@ desktop.ini
 .devrun
 # Generated voice clone recordings
 storage/voice_clones/
+oyo/data/runtime_state.json
