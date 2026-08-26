@@ -28,6 +28,7 @@ from shared.db.mysql import get_db
 from shared.models import (
     BotLanguage,
     ChannelConfig,
+    PhoneNumber,
     SupportedLanguage,
     Tenant,
     TenantSetting,
@@ -145,7 +146,12 @@ def _get_bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
     bot = db.get(VoiceBot, bot_id)
     if bot is None or bot.is_deleted:
         raise NotFoundError("VoiceBot")
-    assert_tenant_access(user, bot.tenant_id)
+    try:
+        assert_tenant_access(user, bot.tenant_id)
+    except NotFoundError:
+        # Same message as a missing bot — a cross-tenant probe must not be
+        # able to tell whether the id exists.
+        raise NotFoundError("VoiceBot")
     return bot
 
 
@@ -296,6 +302,68 @@ def create_bot(
     return ok(_serialize_many(db, [bot])[0])
 
 
+@router.post("/bots/{bot_id}/clone", status_code=201)
+async def clone_bot(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Deep-clone a bot's configuration into a new Draft bot.
+
+    Configuration (languages, voice/STT/TTS/delivery settings, prompts and
+    versions, intents, workflows, bot-owned API connections, bot-scoped
+    knowledge, test-scenario definitions, runtime-context schema) is copied
+    under fresh ids; operational and customer data (conversations, releases,
+    analytics, channels, phone numbers, context records, test results) is not.
+    The clone is never callable until it is configured and published itself.
+    Tenancy comes from the source bot, never from the client.
+    """
+    from backend.core.bot_clone import (
+        clone_bot_deep,
+        copy_knowledge_plane,
+        delete_knowledge_documents,
+    )
+    from backend.core.deps import has_permission
+
+    if not has_permission(user, "bots.manage"):
+        from shared.errors import ForbiddenError
+
+        raise ForbiddenError()
+    src = _get_bot_checked(db, bot_id, user)
+
+    try:
+        clone, kb_id_map, summary = clone_bot_deep(db, src, user)
+        # Readiness is derived from the CLONED configuration (no channels, no
+        # test runs yet) — never copied from the source's checklist state.
+        refresh_readiness(db, clone)
+        record_audit(
+            db, user=user, action="Cloned VoiceBot", entity_type="voice_bot",
+            entity_id=clone.id, target_label=clone.name, tenant_id=src.tenant_id,
+            new_value={"sourceBotId": src.id, "clonedBotId": clone.id,
+                       "name": clone.name, **summary},
+            request=request,
+        )
+    except Exception:
+        db.rollback()  # all-or-nothing: no partial clone survives
+        raise
+
+    # The knowledge plane lives in PostgreSQL, so its copy cannot join the
+    # MySQL transaction: it is written first and compensated (deleted) if the
+    # MySQL commit fails, so neither database keeps a half-clone.
+    copied_documents: list[str] = []
+    try:
+        copied_documents = await copy_knowledge_plane(kb_id_map, user_id=user.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        await delete_knowledge_documents(copied_documents)
+        raise
+
+    db.refresh(clone)
+    return ok(_serialize_many(db, [clone])[0])
+
+
 class UpdateBotRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     use_case: str | None = Field(default=None, alias="useCase", max_length=200)
@@ -404,12 +472,45 @@ def delete_bot(
     bot = _get_bot_checked(db, bot_id, user)
     if hard:
         guard_hard_delete()
+
+    # Tear down the bot's live surfaces so it stops receiving traffic
+    # immediately: channels are archived + disabled (webhooks refuse them) and
+    # phone numbers return to the pool so other bots can claim them.
+    # Configuration children (prompts, intents, workflows, knowledge,
+    # scenarios) are retained under the soft-deleted bot on purpose — the
+    # archive contract is "configuration is retained".
+    channels = db.scalars(
+        select(ChannelConfig).where(
+            ChannelConfig.bot_id == bot.id, ChannelConfig.is_deleted.is_(False)
+        )
+    ).all()
+    for channel in channels:
+        channel.enabled = False
+        soft_delete(channel, user)
+    numbers = db.scalars(
+        select(PhoneNumber).where(
+            PhoneNumber.bot_id == bot.id, PhoneNumber.is_deleted.is_(False)
+        )
+    ).all()
+    for number in numbers:
+        number.bot_id = None
+        number.status = "available"
+        number.updated_by = user.id
+
     soft_delete(bot, user)
     record_audit(
         db, user=user, action="Archived VoiceBot", entity_type="voice_bot",
-        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id, request=request,
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        new_value={"channelsArchived": len(channels),
+                   "phoneNumbersReleased": len(numbers)},
+        request=request,
     )
     db.commit()
+    # The runtime resolves bot configs cache-first (300s TTL) — without this,
+    # a deleted bot could keep serving inbound calls until the TTL expires.
+    from shared.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok({"archived": True, "id": bot.id})
 
 

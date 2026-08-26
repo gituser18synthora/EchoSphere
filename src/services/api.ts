@@ -77,6 +77,8 @@ export const updateBot = (
   body: Partial<{ name: string; useCase: string; description: string; status: string; languages: string[]; voiceId: string | null; readiness: Record<string, boolean> }>,
 ) => http.patch<VoiceBot>(`/bots/${id}`, body);
 export const archiveBot = (id: string) => http.delete<{ archived: boolean }>(`/bots/${id}`);
+/** Deep-clone a bot's configuration into a new Draft bot (channels/numbers/data excluded). */
+export const cloneBot = (id: string): Promise<VoiceBot> => http.post(`/bots/${id}/clone`);
 
 export const getVoiceSettings = (botId: string): Promise<VoiceSettings> =>
   http.get(`/bots/${botId}/voice-settings`);
