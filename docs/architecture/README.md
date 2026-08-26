@@ -4,8 +4,10 @@ This folder holds the editable sources of `SYSTEM_ARCHITECTURE.pdf` / `SYSTEM_AR
 (both generated to the repo root).
 
 - `SYSTEM_ARCHITECTURE.html` — the master document (single source of truth for both outputs).
-- `diagrams/*.svg` — the eleven diagram sources (hand-authored, shared visual language).
+- `diagrams/*.svg` — the diagram sources (hand-authored, shared visual language).
   `diagrams/*.png` are 2× rasters generated from the SVGs for DOCX embedding.
+  `diagrams/00-complete-architecture.svg` is the single-image full-platform poster;
+  its render is also copied to the repo root as `ECHOSPHERE_ARCHITECTURE.png`.
 - `build/doc.css` — print stylesheet (A4, running headers, page counters, TOC leaders).
 - `build/render_pdf.mjs` — HTML → paginated PDF via paged.js + Playwright Chromium.
   Auto-builds the Table of Contents (with real page numbers) from `main h1/h2[id]`.

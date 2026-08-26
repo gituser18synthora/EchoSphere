@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { createBot, listBots, listLanguages, simulateAction } from "@/services/api";
+import { archiveBot, cloneBot, createBot, listBots, listLanguages, simulateAction, updateBot } from "@/services/api";
 import {
   Button, ConfirmModal, Field, Health, MenuButton, Modal, MultiSelect, StatusChip,
   CardSkeleton, EmptyState,
@@ -29,6 +29,7 @@ export default function Bots() {
   const [archiveTarget, setArchiveTarget] = useState<VoiceBot | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<VoiceBot | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cloningId, setCloningId] = useState<string | null>(null);
 
   const rows = useMemo(() => {
     let r = q.data ?? [];
@@ -48,9 +49,59 @@ export default function Bots() {
     after?.();
   };
 
+  /* Archive = the real DELETE (soft delete): the bot leaves the list and its
+     channels/phone numbers are torn down server-side. Restore lifts a
+     status-archived bot back to draft. On failure the modal stays open so the
+     action can be retried or cancelled. */
+  const confirmArchive = async () => {
+    const target = archiveTarget;
+    if (!target || busy) return;
+    const restoring = target.status === "archived";
+    setBusy(true);
+    try {
+      if (restoring) {
+        await updateBot(target.id, { status: "draft" });
+        toast(`${target.name} restored to draft`);
+      } else {
+        await archiveBot(target.id);
+        toast(`${target.name} archived — no new calls will be routed`);
+      }
+      setArchiveTarget(null);
+      q.reload();
+    } catch (e) {
+      toast(
+        e instanceof Error ? e.message : `Failed to ${restoring ? "restore" : "archive"} bot`,
+        "error",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clone = async (b: VoiceBot) => {
+    if (cloningId) return; // one clone at a time — repeat clicks must not fork duplicates
+    setCloningId(b.id);
+    try {
+      const created = await cloneBot(b.id);
+      toast(`“${b.name}” cloned as “${created.name}” — draft, channels not copied`);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to clone bot", "error");
+    } finally {
+      setCloningId(null);
+    }
+  };
+
   const botMenu = (b: VoiceBot) => [
     { label: "Open in Studio", icon: "edit" as const, onClick: () => navigate(`/t/bots/${b.id}/overview`) },
-    { label: "Clone bot", icon: "copy" as const, onClick: () => act(`“${b.name}” cloned as draft — knowledge links and prompts copied, channels reset`) },
+    ...(canManageBots
+      ? [{
+          label: cloningId === b.id ? "Cloning…" : "Clone bot",
+          icon: "copy" as const,
+          disabled: cloningId !== null,
+          onClick: () => clone(b),
+        }]
+      : []),
     { label: "View analytics", icon: "trend" as const, onClick: () => navigate(`/t/bots/${b.id}/analytics`) },
     "sep" as const,
     ...(b.status === "published" && b.liveVersion
@@ -59,7 +110,9 @@ export default function Bots() {
     ...(b.status === "draft" || b.status === "archived"
       ? []
       : [{ label: "Publish center", icon: "rocket" as const, onClick: () => navigate(`/t/bots/${b.id}/publish`) }]),
-    { label: b.status === "archived" ? "Restore" : "Archive", icon: "trash" as const, danger: b.status !== "archived", onClick: () => setArchiveTarget(b) },
+    ...(canManageBots
+      ? [{ label: b.status === "archived" ? "Restore" : "Archive", icon: "trash" as const, danger: b.status !== "archived", onClick: () => setArchiveTarget(b) }]
+      : []),
   ];
 
   return (
@@ -184,9 +237,9 @@ export default function Bots() {
         body={
           archiveTarget?.status === "archived"
             ? "The bot returns to draft state. Channels must be re-tested before publishing again."
-            : <>The bot stops receiving new calls immediately. Configuration, knowledge and version history are <b>retained</b> and it can be restored at any time. This is recorded in the audit log.</>
+            : <>The bot stops receiving new calls immediately — its channels are disconnected and phone numbers return to the pool. Configuration, knowledge and version history are <b>retained</b> in the archive. This is recorded in the audit log.</>
         }
-        onConfirm={() => act(archiveTarget!.status === "archived" ? `${archiveTarget!.name} restored to draft` : `${archiveTarget!.name} archived — no new calls will be routed`, () => setArchiveTarget(null))}
+        onConfirm={confirmArchive}
       />
 
       <ConfirmModal

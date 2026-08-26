@@ -1,0 +1,453 @@
+<svg viewBox="0 0 1900 2400" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="m-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748B"/></marker>
+    <marker id="m-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2563EB"/></marker>
+    <marker id="m-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#0D9488"/></marker>
+    <marker id="m-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4F46E5"/></marker>
+    <marker id="m-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#D97706"/></marker>
+    <marker id="m-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#E11D48"/></marker>
+    <marker id="m-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#16A34A"/></marker>
+    <style>
+      .cl { rx: 16; stroke-dasharray: 7 5; stroke-width: 1.6; }
+      .clabel { font-size: 15px; font-weight: 700; letter-spacing: 1.8px; }
+      .node { rx: 10; stroke-width: 1.8; }
+      .chip { rx: 9; stroke-width: 1.3; }
+      .t { font-size: 15.5px; font-weight: 700; fill: #1F2937; }
+      .tt { font-size: 13px; font-weight: 700; fill: #1F2937; }
+      .s { font-size: 11px; fill: #55607A; }
+      .e { fill: none; stroke-width: 2; }
+      .el { font-size: 11.5px; fill: #334155; paint-order: stroke; stroke: #FFFFFF; stroke-width: 4px; font-weight: 700; }
+      .badge { font-size: 11px; font-weight: 800; fill: #FFFFFF; }
+      .port { font-size: 10.5px; font-weight: 700; }
+      .kv { font-size: 11px; fill: #55607A; }
+      .kt { font-size: 12.5px; font-weight: 700; fill: #1F2937; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1900" height="2400" fill="#FFFFFF"/>
+
+  <!-- ===================== title ===================== -->
+  <text x="60" y="64" font-size="34" font-weight="800" fill="#17307A">EchoSphere &#8212; Complete System Architecture</text>
+  <text x="60" y="94" font-size="14.5" fill="#55607A">Multi-tenant voice-AI platform &#183; verified from source at ea4750c24 (25 Aug 2026) &#183; two Python planes over one shared library + React console &#183; ~150k LOC app code</text>
+  <line x1="60" y1="112" x2="1840" y2="112" stroke="#1D4ED8" stroke-width="3"/>
+
+  <!-- ===================== Row A: entry points ===================== -->
+  <rect class="node" x="60" y="140" width="420" height="78" fill="#DBEAFE" stroke="#2563EB"/>
+  <text class="t" x="270" y="170" text-anchor="middle">Web Console &#8212; React 18 SPA</text>
+  <text class="s" x="270" y="188" text-anchor="middle">super-admin console + tenant Studio &#183; Vite dev :5199 &#183; 40 pages</text>
+  <text class="s" x="270" y="203" text-anchor="middle">strict TS contract (159 types) &#183; role/permission-gated affordances</text>
+
+  <rect class="node" x="520" y="140" width="340" height="78" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="t" x="690" y="170" text-anchor="middle">MCP Clients</text>
+  <text class="s" x="690" y="188" text-anchor="middle">external LLM agents &#183; streamable HTTP</text>
+  <text class="s" x="690" y="203" text-anchor="middle">platform JWT &#183; 60 req/min/tenant</text>
+
+  <rect class="node" x="900" y="140" width="520" height="78" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="t" x="1160" y="170" text-anchor="middle">PSTN Callers &#8212; Vaani dialer (eDAS) &#183; FreeSWITCH PBX</text>
+  <text class="s" x="1160" y="188" text-anchor="middle">signed webhook (HMAC + replay SETNX) &#8594; per-call minted media WS URL</text>
+  <text class="s" x="1160" y="203" text-anchor="middle">media: Vaani JSON 8 kHz &#183; FS mod_audio_fork 16 kHz / mod_audio_stream 8 kHz</text>
+
+  <rect class="node" x="1460" y="140" width="380" height="78" fill="#FFE4E6" stroke="#E11D48"/>
+  <text class="t" x="1650" y="170" text-anchor="middle">WhatsApp (Meta Cloud API)</text>
+  <text class="s" x="1650" y="188" text-anchor="middle">per-channel inbound webhook, HMAC-verified</text>
+  <text class="s" x="1650" y="203" text-anchor="middle">(messaging pipeline itself not implemented)</text>
+
+  <!-- entry edges -->
+  <path class="e" d="M200 218 L 200 300" stroke="#2563EB" marker-end="url(#m-blue)"/>
+  <circle cx="200" cy="252" r="11" fill="#2563EB"/><text class="badge" x="200" y="256" text-anchor="middle">1</text>
+  <text class="el" x="216" y="256">HTTPS /api/v1</text>
+
+  <path class="e" d="M420 218 C 700 260 950 270 1080 300" stroke="#2563EB" marker-end="url(#m-blue)"/>
+  <circle cx="700" cy="254" r="11" fill="#2563EB"/><text class="badge" x="700" y="258" text-anchor="middle">2</text>
+  <text class="el" x="716" y="258">WS raw PCM &#8594; :9002 (Studio live voice test)</text>
+
+  <path class="e" d="M620 218 C 560 260 520 270 480 300" stroke="#E11D48" marker-end="url(#m-rose)"/>
+  <circle cx="545" cy="256" r="11" fill="#E11D48"/><text class="badge" x="545" y="260" text-anchor="middle">3</text>
+  <text class="el" x="480" y="244" text-anchor="end">MCP :9003</text>
+
+  <path class="e" d="M1300 218 C 1360 250 1400 264 1440 300" stroke="#E11D48" marker-end="url(#m-rose)"/>
+  <circle cx="1372" cy="252" r="11" fill="#E11D48"/><text class="badge" x="1372" y="256" text-anchor="middle">4</text>
+  <text class="el" x="1390" y="256">webhook + media WS &#8594; :9011</text>
+
+  <path class="e" d="M1650 218 C 1560 268 800 240 480 306" stroke="#E11D48" stroke-dasharray="6 5" marker-end="url(#m-rose)"/>
+  <circle cx="860" cy="234" r="11" fill="#E11D48"/><text class="badge" x="860" y="238" text-anchor="middle">5</text>
+  <text class="el" x="878" y="238">channel webhook &#8594; API :9001</text>
+
+  <!-- ===================== Row B: the two planes ===================== -->
+  <!-- Control plane -->
+  <rect class="cl" x="60" y="300" width="860" height="700" fill="#F3F4FE" stroke="#4F46E5"/>
+  <text class="clabel" x="84" y="330" fill="#4F46E5">CONTROL PLANE &#8212; backend/ (28.4k LOC)</text>
+
+  <rect class="node" x="84" y="348" width="812" height="96" fill="#E0E7FF" stroke="#4F46E5"/>
+  <text class="t" x="490" y="376" text-anchor="middle">Platform API &#8212; FastAPI &#183; 33 routers &#183; 208 endpoints</text>
+  <text class="s" x="490" y="394" text-anchor="middle">every endpoint auth-guarded &#183; {success, data, meta} envelope &#183; 8 exception handlers &#183; camelCase serializers (1,055 lines)</text>
+  <text class="s" x="490" y="409" text-anchor="middle">unauthenticated surface: /auth/login + signed webhooks only &#183; docs at /api/docs</text>
+  <rect x="450" y="418" width="80" height="18" rx="9" fill="#4F46E5"/>
+  <text class="port" x="490" y="431" text-anchor="middle" fill="#FFFFFF">HTTP :9001</text>
+
+  <g>
+    <rect class="chip" x="84" y="466" width="194" height="128" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="181" y="490" text-anchor="middle">Identity &amp; tenancy</text>
+    <text class="s" x="181" y="508" text-anchor="middle">auth &#183; users/roles &#183; tenants</text>
+    <text class="s" x="181" y="522" text-anchor="middle">onboarding (one txn) &#183; billing</text>
+    <text class="s" x="181" y="536" text-anchor="middle">subscriptions &#183; invoices</text>
+    <text class="s" x="181" y="556" text-anchor="middle" font-style="italic">3 roles &#183; 47 permissions</text>
+    <text class="s" x="181" y="570" text-anchor="middle" font-style="italic">JWT HS256 &#183; bcrypt</text>
+
+    <rect class="chip" x="290" y="466" width="194" height="128" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="387" y="490" text-anchor="middle">Bot Studio</text>
+    <text class="s" x="387" y="508" text-anchor="middle">bots &#183; voice settings &#183; prompts</text>
+    <text class="s" x="387" y="522" text-anchor="middle">(+versions) &#183; intents/entities</text>
+    <text class="s" x="387" y="536" text-anchor="middle">workflows &#183; channels &#183; testing</text>
+    <text class="s" x="387" y="550" text-anchor="middle">releases &#183; knowledge &#183; clones</text>
+    <text class="s" x="387" y="570" text-anchor="middle" font-style="italic">readiness r1&#8211;r7 derived</text>
+
+    <rect class="chip" x="496" y="466" width="194" height="128" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="593" y="490" text-anchor="middle">Operations</text>
+    <text class="s" x="593" y="508" text-anchor="middle">conversations + recordings</text>
+    <text class="s" x="593" y="522" text-anchor="middle">analytics &#183; usage &#183; exports</text>
+    <text class="s" x="593" y="536" text-anchor="middle">reports (CSV/XLSX/PDF)</text>
+    <text class="s" x="593" y="550" text-anchor="middle">audit trail (147 call sites)</text>
+    <text class="s" x="593" y="570" text-anchor="middle" font-style="italic">costs.view field stripping</text>
+
+    <rect class="chip" x="702" y="466" width="194" height="128" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="799" y="490" text-anchor="middle">Governance</text>
+    <text class="s" x="799" y="508" text-anchor="middle">master data (12 types) &#183; plans</text>
+    <text class="s" x="799" y="522" text-anchor="middle">provider catalog + pricing</text>
+    <text class="s" x="799" y="536" text-anchor="middle">guardrail profiles &#183; compliance</text>
+    <text class="s" x="799" y="550" text-anchor="middle">chunk review &#183; health probes</text>
+    <text class="s" x="799" y="570" text-anchor="middle" font-style="italic">super-admin only</text>
+  </g>
+
+  <g>
+    <rect class="chip" x="84" y="616" width="400" height="96" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="284" y="640" text-anchor="middle">core/ &#8212; cross-cutting machinery</text>
+    <text class="s" x="284" y="658" text-anchor="middle">deps.py: get_current_user &#183; role/permission guards &#183; resolve_tenant_id</text>
+    <text class="s" x="284" y="672" text-anchor="middle">assert_tenant_access (cross-tenant &#8594; 404) &#183; security.py &#183; audit.py</text>
+    <text class="s" x="284" y="686" text-anchor="middle">provider_catalog validation &#183; service_health live probes</text>
+
+    <rect class="chip" x="496" y="616" width="400" height="96" fill="#FFFFFF" stroke="#4F46E5"/>
+    <text class="tt" x="696" y="640" text-anchor="middle">Studio test console (server side)</text>
+    <text class="s" x="696" y="658" text-anchor="middle">/testing/chat runs the REAL router + workflow engine + guardrails</text>
+    <text class="s" x="696" y="672" text-anchor="middle">+ compliance wordings &#183; runtime simulator with mock tools</text>
+    <text class="s" x="696" y="686" text-anchor="middle">(one of 4 sanctioned-rule breaches: imports voice_runtime)</text>
+  </g>
+
+  <g>
+    <rect class="node" x="84" y="736" width="400" height="86" fill="#E0E7FF" stroke="#4F46E5"/>
+    <text class="tt" x="284" y="762" text-anchor="middle">MCP Server  :9003</text>
+    <text class="s" x="284" y="780" text-anchor="middle">4 read-only knowledge tools &#183; identity from verified JWT only</text>
+    <text class="s" x="284" y="794" text-anchor="middle">rate limit + 20 s tool timeout &#183; every call audited</text>
+
+    <rect class="node" x="496" y="736" width="400" height="86" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text class="tt" x="696" y="762" text-anchor="middle">Ingestion Worker (embedded by default)</text>
+    <text class="s" x="696" y="780" text-anchor="middle">polls PG ingestion_jobs every 2 s &#183; FOR UPDATE SKIP LOCKED</text>
+    <text class="s" x="696" y="794" text-anchor="middle">parse &#8594; chunk &#8594; embed &#8594; index &#8594; verify probe &#183; 3 attempts</text>
+  </g>
+
+  <text class="s" x="84" y="850" font-style="italic">Boot (lifespan): optional migrations &#183; Mongo connect + indexes &#183; idempotent base seed (ON by default) &#183; embedded worker task</text>
+  <text class="s" x="84" y="868" font-style="italic">No service layer &#8212; routers own business logic, aggregates and audit calls. Soft delete everywhere; hard delete env-gated.</text>
+
+  <rect class="chip" x="84" y="890" width="812" height="88" fill="#FFF7ED" stroke="#D97706"/>
+  <text class="tt" x="490" y="914" text-anchor="middle" fill="#B45D09">Publish pipeline &#8212; the config lifecycle</text>
+  <text class="s" x="490" y="932" text-anchor="middle">draft &#8594; review &#8594; approved &#8594; published &#8594; rolled_back &#183; publish re-computes a 6-item checklist from real state and hard-blocks on gaps</text>
+  <text class="s" x="490" y="946" text-anchor="middle">on publish/rollback: bot version fields stamped + Redis botcfg:* invalidated &#8212; new calls see the release, live calls keep their pinned snapshot</text>
+  <text class="s" x="490" y="960" text-anchor="middle">voice / WhatsApp / SMS channels activate only on a published bot &#183; phone numbers assigned per bot route real traffic</text>
+
+  <!-- Realtime plane -->
+  <rect class="cl" x="980" y="300" width="860" height="700" fill="#ECFBF8" stroke="#0D9488"/>
+  <text class="clabel" x="1004" y="330" fill="#0D9488">REALTIME VOICE PLANE &#8212; voice_runtime/ (14.7k LOC)</text>
+
+  <rect class="node" x="1004" y="348" width="812" height="96" fill="#CCFBF1" stroke="#0D9488"/>
+  <text class="t" x="1410" y="374" text-anchor="middle">One FastAPI app &#183; two processes</text>
+  <text class="s" x="1410" y="392" text-anchor="middle">voice worker :9002 (browser sessions) &#183; telephony gateway :9011 (public bind, runtime preloaded for dialer handshakes)</text>
+  <text class="s" x="1410" y="407" text-anchor="middle">sessions minted ONLY by the control plane / signed webhook &#8594; consumed from Redis &#183; tenant mismatch &#8658; WS close 4403</text>
+  <rect x="1330" y="416" width="76" height="18" rx="9" fill="#0D9488"/><text class="port" x="1368" y="429" text-anchor="middle" fill="#FFFFFF">WS :9002</text>
+  <rect x="1416" y="416" width="76" height="18" rx="9" fill="#0D9488"/><text class="port" x="1454" y="429" text-anchor="middle" fill="#FFFFFF">WS :9011</text>
+
+  <rect class="chip" x="1004" y="466" width="812" height="104" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="tt" x="1410" y="490" text-anchor="middle">Pipecat 1.5 pipeline &#8212; one per call, config pinned at start</text>
+  <text class="s" x="1410" y="512" text-anchor="middle">transport.input &#8594; CallerAudioGate (dBFS floor) &#8594; Silero VAD &#8594; STT (Sarvam WS &#183; Deepgram Flux &#183; segmented REST)</text>
+  <text class="s" x="1410" y="527" text-anchor="middle">&#8594; UserTurnProcessor (word-confirmed barge-in &#183; adaptive endpoints 0.35/0.12 s &#183; Flux owns EOT) &#8594; ConversationBrain</text>
+  <text class="s" x="1410" y="542" text-anchor="middle">&#8594; StreamingTTSRouter (Sarvam/ElevenLabs WS &#183; fallback on transient errors &#183; 4 s first-audio watchdog) &#8594; transport.output</text>
+  <text class="s" x="1410" y="557" text-anchor="middle">+ stereo AudioBufferProcessor after output &#8212; the recording is exactly what was played</text>
+
+  <rect class="chip" x="1004" y="592" width="812" height="120" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="tt" x="1410" y="616" text-anchor="middle" fill="#B45D09">ConversationBrain &#8212; per-turn orchestration (brain.py 4,482 &#183; call_policy.py 2,452)</text>
+  <text class="s" x="1410" y="636" text-anchor="middle">transcript quality gate &#8594; deterministic router (hangup/DNC/emergency &#183; intent match-strength) &#8594; guardrail input check</text>
+  <text class="s" x="1410" y="651" text-anchor="middle">&#8594; Goal Engine decision (gpt-4o-mini &#183; 1.2 s / 200 tok &#183; scope rules strip unauthorized tools/slots) &#8594; route:</text>
+  <text class="s" x="1410" y="666" text-anchor="middle">workflow step (LangGraph &#8594; PG checkpoints) &#183; RAG retrieve (speculative prefetch) &#183; SSRF-guarded tool call &#183; direct/streamed reply</text>
+  <text class="s" x="1410" y="681" text-anchor="middle">&#8594; sentence-held guardrail check (violating sentence never spoken) &#183; naturalness planner &#183; per-turn hi/en voice switching</text>
+  <text class="s" x="1410" y="700" text-anchor="middle" font-style="italic">collections domain policy: identity confirm &#183; txn-reference capture &#183; strict recovery ladder</text>
+
+  <g>
+    <rect class="chip" x="1004" y="734" width="400" height="88" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="tt" x="1204" y="758" text-anchor="middle">Telephony serializers</text>
+    <text class="s" x="1204" y="776" text-anchor="middle">Vaani (media/clear/transfer/stop) &#183; FS fork &amp; stream</text>
+    <text class="s" x="1204" y="790" text-anchor="middle">killAudio on barge-in &#183; first-packet ramp (~160 ms saved)</text>
+    <text class="s" x="1204" y="804" text-anchor="middle">idempotent chunk/stream/stop handling</text>
+
+    <rect class="chip" x="1416" y="734" width="400" height="88" fill="#E2E8F0" stroke="#475569"/>
+    <text class="tt" x="1616" y="758" text-anchor="middle">FreeSWITCH ESL control &#8212; TCP :9004</text>
+    <text class="s" x="1616" y="776" text-anchor="middle">forward-only transfer + hangup state machines</text>
+    <text class="s" x="1616" y="790" text-anchor="middle">normalize_disconnect verdicts &#183; uuid_kill on bot end</text>
+    <text class="s" x="1616" y="804" text-anchor="middle">stands down once transferred</text>
+  </g>
+
+  <g>
+    <rect class="chip" x="1004" y="838" width="400" height="88" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text class="tt" x="1204" y="862" text-anchor="middle">Post-Call Worker (embedded)</text>
+    <text class="s" x="1204" y="880" text-anchor="middle">claims conversation_memories rows (optimistic, 3 s poll)</text>
+    <text class="s" x="1204" y="894" text-anchor="middle">LLM summary + outcome + deterministic next-best-action</text>
+    <text class="s" x="1204" y="908" text-anchor="middle">&#8594; next call: memory greeting + language continuity</text>
+
+    <rect class="chip" x="1416" y="838" width="400" height="88" fill="#FFFFFF" stroke="#0D9488"/>
+    <text class="tt" x="1616" y="862" text-anchor="middle">Single-shot finalize (idempotent)</text>
+    <text class="s" x="1616" y="880" text-anchor="middle">Mongo transcript + events &#183; MySQL conversation row</text>
+    <text class="s" x="1616" y="894" text-anchor="middle">usage_events with deterministic request_ids (re-run = no-op)</text>
+    <text class="s" x="1616" y="908" text-anchor="middle">stereo WAV closed &#183; guardrail ledger persisted</text>
+  </g>
+
+  <rect class="chip" x="1004" y="942" width="812" height="42" fill="#FFFFFF" stroke="#0D9488"/>
+  <text class="s" x="1410" y="960" text-anchor="middle"><tspan font-weight="700" fill="#1F2937">Latency budgets (constants in code):</tspan> decision 1.2 s / 200 tok &#183; LLM first token 3 s &#183; TTS first audio 4 s &#183; endpoint 0.35 / 0.12 s</text>
+  <text class="s" x="1410" y="975" text-anchor="middle">pause-flush 0.6 s &#183; barge-in &#8805;2 words or 1 s VAD &#183; speculative decision + KB prefetch &#183; per-turn latency attribution</text>
+
+  <!-- plane-to-plane / shared edges -->
+  <path class="e" d="M920 700 L 980 700" stroke="#94A3B8" stroke-dasharray="4 4" marker-end="url(#m-gray)"/>
+  <path class="e" d="M980 690 L 920 690" stroke="#94A3B8" stroke-dasharray="4 4" marker-end="url(#m-gray)"/>
+  <text class="el" x="950" y="676" text-anchor="middle">no direct</text>
+  <text class="el" x="950" y="722" text-anchor="middle">imports</text>
+
+  <!-- ===================== Row C: shared library ===================== -->
+  <path class="e" d="M490 1000 L 490 1044" stroke="#4F46E5" stroke-width="3" marker-end="url(#m-indigo)"/>
+  <path class="e" d="M1410 1000 L 1410 1044" stroke="#0D9488" stroke-width="3" marker-end="url(#m-teal)"/>
+  <circle cx="950" cy="1022" r="11" fill="#475569"/><text class="badge" x="950" y="1026" text-anchor="middle">6</text>
+  <text class="el" x="968" y="1026">both planes import ONLY shared/</text>
+
+  <rect class="cl" x="60" y="1044" width="1780" height="330" fill="#F4F6FA" stroke="#475569"/>
+  <text class="clabel" x="84" y="1074" fill="#475569">SHARED LIBRARY &#8212; shared/ (28.1k LOC): the single meeting point of both planes</text>
+
+  <g>
+    <rect class="chip" x="84" y="1092" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="296" y="1114" text-anchor="middle">models/ &#8212; 60 MySQL tables</text>
+    <text class="s" x="296" y="1132" text-anchor="middle">auth &#183; tenancy &#183; bots &#183; content &#183; context &#183; billing &#183; ops</text>
+    <text class="s" x="296" y="1146" text-anchor="middle">guardrails &#183; compliance &#183; memory &#183; master data</text>
+
+    <rect class="chip" x="524" y="1092" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="736" y="1114" text-anchor="middle">orchestration/ (6.7k)</text>
+    <text class="s" x="736" y="1132" text-anchor="middle">goal engine &#183; decision schema &#183; deterministic router</text>
+    <text class="s" x="736" y="1146" text-anchor="middle">LangGraph workflow interpreter &#183; naturalness &#183; prompt compiler</text>
+
+    <rect class="chip" x="964" y="1092" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1176" y="1114" text-anchor="middle">knowledge/ (7.1k) &#8212; RAG</text>
+    <text class="s" x="1176" y="1132" text-anchor="middle">parsers (+OCR) &#183; chunking &#183; embeddings &#183; hybrid retriever</text>
+    <text class="s" x="1176" y="1146" text-anchor="middle">tenant/bot authorization &#183; chunk review &#183; injection scan</text>
+
+    <rect class="chip" x="1404" y="1092" width="412" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1610" y="1114" text-anchor="middle">providers/ factory</text>
+    <text class="s" x="1610" y="1132" text-anchor="middle">STT: whisper &#183; deepgram &#183; sarvam &#183; assemblyai &#183; mock</text>
+    <text class="s" x="1610" y="1146" text-anchor="middle">TTS: sarvam/11L WS + REST &#183; LLM: openai/anthropic/google</text>
+
+    <rect class="chip" x="84" y="1186" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="296" y="1208" text-anchor="middle">billing/ &#8212; metering &amp; pricing</text>
+    <text class="s" x="296" y="1226" text-anchor="middle">idempotent usage_events (unique request_id) &#183; price snapshots</text>
+    <text class="s" x="296" y="1240" text-anchor="middle">native-currency FX &#8594; USD &#183; never fabricates a rate &#183; mock unbilled</text>
+
+    <rect class="chip" x="524" y="1186" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="736" y="1208" text-anchor="middle">guardrails/ + compliance/</text>
+    <text class="s" x="736" y="1226" text-anchor="middle">mandatory floor (PII &#183; secrets &#183; unsafe tools &#183; injection) FAILS CLOSED</text>
+    <text class="s" x="736" y="1240" text-anchor="middle">versioned policies: calling windows &#183; contact limits &#183; exact wordings</text>
+
+    <rect class="chip" x="964" y="1186" width="424" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1176" y="1208" text-anchor="middle">bot_config + voice_sessions</text>
+    <text class="s" x="1176" y="1226" text-anchor="middle">number&#8594;tenant&#8594;bot&#8594;release&#8594;providers&#8594;voices&#8594;intents&#8594;KBs</text>
+    <text class="s" x="1176" y="1240" text-anchor="middle">Redis snapshot TTL 300 s, invalidated on publish &#183; session handoff</text>
+
+    <rect class="chip" x="1404" y="1186" width="412" height="78" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1610" y="1208" text-anchor="middle">telephony webhooks + safe_http</text>
+    <text class="s" x="1610" y="1226" text-anchor="middle">HMAC verify &#183; replay SETNX &#183; DID routing &#183; compliance gate</text>
+    <text class="s" x="1610" y="1240" text-anchor="middle">SSRF guard: public-IP DNS check &#183; no redirects &#183; response caps</text>
+  </g>
+  <text class="s" x="84" y="1292" font-style="italic">also: config.py (.env &#8594; Settings, secret references env:/secret://, fail-fast per service) &#183; secrets.py &#183; logging_utils (mandatory log redaction) &#183; readiness.py &#183; turn_detection.py &#183; runtime_context.py &#183; post_call/ (analyzer &#183; NBA &#183; recall)</text>
+  <text class="s" x="84" y="1310" font-style="italic">import rule: backend &#8594; shared &#8592; voice_runtime (4 documented breaches) &#183; caveat: shared/errors.py imports FastAPI, so the web stack reaches every process</text>
+  <text class="s" x="84" y="1348" font-weight="700" fill="#1F2937">Frontend contract: src/services/api.ts (186 typed functions) mirrors backend/serializers.py by hand &#8212; single envelope-aware fetch wrapper, 401 &#8658; token cleared + redirect to /login.</text>
+
+  <!-- ===================== Row D: data stores ===================== -->
+  <path class="e" d="M950 1374 L 950 1416" stroke="#16A34A" stroke-width="3" marker-end="url(#m-green)"/>
+  <circle cx="950" cy="1394" r="11" fill="#16A34A"/><text class="badge" x="950" y="1398" text-anchor="middle">7</text>
+  <text class="el" x="968" y="1398">persistence (single host, ports from .env)</text>
+
+  <rect class="cl" x="60" y="1416" width="1780" height="330" fill="#F0FBF3" stroke="#16A34A"/>
+  <text class="clabel" x="84" y="1446" fill="#16A34A">DATA STORES</text>
+
+  <g>
+    <rect class="node" x="84" y="1464" width="360" height="262" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="264" y="1490" text-anchor="middle">MySQL :3306</text>
+    <text class="s" x="264" y="1508" text-anchor="middle">source of truth &#183; 60 tables &#183; 31 Alembic revisions</text>
+    <line x1="104" y1="1518" x2="424" y2="1518" stroke="#16A34A" stroke-width="0.8"/>
+    <text class="kt" x="104" y="1540">Identity &amp; tenancy</text>
+    <text class="kv" x="104" y="1556">users &#183; roles &#183; tenants &#183; plans &#183; subscriptions</text>
+    <text class="kt" x="104" y="1578">Bot studio config</text>
+    <text class="kv" x="104" y="1594">bots &#183; settings &#183; prompts &#183; intents &#183; workflows &#183; channels</text>
+    <text class="kv" x="104" y="1608">knowledge_sources &#183; phone_numbers &#183; context schemas</text>
+    <text class="kt" x="104" y="1630">Operations &amp; billing</text>
+    <text class="kv" x="104" y="1646">conversation_sessions &#183; audit_logs &#183; usage_events</text>
+    <text class="kv" x="104" y="1660">provider_pricing &#183; currencies &#183; releases &#183; memories</text>
+    <text class="kt" x="104" y="1682">Governance</text>
+    <text class="kv" x="104" y="1698">guardrail profiles/triggers &#183; compliance policies</text>
+    <text class="kv" x="104" y="1712">provider catalog &#183; AI profiles &#183; master data</text>
+
+    <rect class="node" x="464" y="1464" width="340" height="262" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="634" y="1490" text-anchor="middle">PostgreSQL :5432</text>
+    <text class="s" x="634" y="1508" text-anchor="middle">knowledge plane &#183; 2 async Alembic revisions</text>
+    <line x1="484" y1="1518" x2="784" y2="1518" stroke="#16A34A" stroke-width="0.8"/>
+    <text class="kt" x="484" y="1540">pgvector</text>
+    <text class="kv" x="484" y="1556">knowledge_documents (hash dedupe)</text>
+    <text class="kv" x="484" y="1570">knowledge_chunks &#8212; Vector(1536)</text>
+    <text class="kv" x="484" y="1584">HNSW cosine + GIN tsvector indexes</text>
+    <text class="kv" x="484" y="1598">ingestion_jobs &#8212; SKIP LOCKED queue</text>
+    <text class="kt" x="484" y="1622">LangGraph checkpoints</text>
+    <text class="kv" x="484" y="1638">workflow state survives worker restart</text>
+    <text class="kt" x="484" y="1662">Cross-DB seam</text>
+    <text class="kv" x="484" y="1678">kb_id &#8594; MySQL id (logical only; drift</text>
+    <text class="kv" x="484" y="1692">audited by knowledge-verify CLI)</text>
+
+    <rect class="node" x="824" y="1464" width="320" height="262" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="984" y="1490" text-anchor="middle">MongoDB :27017</text>
+    <text class="s" x="984" y="1508" text-anchor="middle">Motor async &#183; 2 collections</text>
+    <line x1="844" y1="1518" x2="1124" y2="1518" stroke="#16A34A" stroke-width="0.8"/>
+    <text class="kt" x="844" y="1540">conversation_transcripts</text>
+    <text class="kv" x="844" y="1556">per-turn nested docs &#183; unique session_id</text>
+    <text class="kv" x="844" y="1570">recording descriptor &#183; transfer/hangup</text>
+    <text class="kt" x="844" y="1594">voice_events</text>
+    <text class="kv" x="844" y="1610">turn &#183; barge-in &#183; guardrail &#183; lifecycle</text>
+    <text class="kv" x="844" y="1636" font-style="italic">indexes created at API startup only;</text>
+    <text class="kv" x="844" y="1650" font-style="italic">no migration tooling</text>
+
+    <rect class="node" x="1164" y="1464" width="320" height="262" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="1324" y="1490" text-anchor="middle">Redis :6379</text>
+    <text class="s" x="1324" y="1508" text-anchor="middle">ephemeral &#183; every consumer fails open</text>
+    <line x1="1184" y1="1518" x2="1464" y2="1518" stroke="#16A34A" stroke-width="0.8"/>
+    <text class="kv" x="1184" y="1540"><tspan class="kt">voice:session:{id}</tspan> handoff (TTL 900 s)</text>
+    <text class="kv" x="1184" y="1560"><tspan class="kt">botcfg:*</tspan> pinned-config cache (300 s)</text>
+    <text class="kv" x="1184" y="1580"><tspan class="kt">webhook:seen:*</tspan> replay protection</text>
+    <text class="kv" x="1184" y="1600"><tspan class="kt">ccl:*</tspan> daily contact limits</text>
+    <text class="kv" x="1184" y="1620"><tspan class="kt">mcp:rate:*</tspan> per-tenant buckets</text>
+    <text class="kv" x="1184" y="1640">tool idempotency &#183; chat-console state</text>
+    <text class="kv" x="1184" y="1666" font-style="italic">no queues here &#8212; work rides durable</text>
+    <text class="kv" x="1184" y="1680" font-style="italic">rows in MySQL/PG</text>
+
+    <rect class="node" x="1504" y="1464" width="312" height="262" fill="#DCFCE7" stroke="#16A34A"/>
+    <text class="t" x="1660" y="1490" text-anchor="middle">Local filesystem</text>
+    <text class="s" x="1660" y="1508" text-anchor="middle">no object-storage layer</text>
+    <line x1="1524" y1="1518" x2="1796" y2="1518" stroke="#16A34A" stroke-width="0.8"/>
+    <text class="kv" x="1524" y="1540"><tspan class="kt">storage/knowledge/</tspan> uploads</text>
+    <text class="kv" x="1524" y="1560"><tspan class="kt">storage/recordings/</tspan> stereo WAVs</text>
+    <text class="kv" x="1524" y="1574">(~1.5 GB, no retention job)</text>
+    <text class="kv" x="1524" y="1594"><tspan class="kt">storage/voice_clones/</tspan> samples</text>
+    <text class="kv" x="1524" y="1614"><tspan class="kt">.devrun/</tspan> dev.sh pids + logs</text>
+  </g>
+
+  <!-- ===================== Row E: providers ===================== -->
+  <path class="e" d="M950 1746 L 950 1788" stroke="#D97706" stroke-width="3" marker-end="url(#m-amber)"/>
+  <circle cx="950" cy="1766" r="11" fill="#D97706"/><text class="badge" x="950" y="1770" text-anchor="middle">8</text>
+  <text class="el" x="968" y="1770">egress: streaming WSS / HTTPS (keys are env: references; governance matrix gates use)</text>
+
+  <rect class="cl" x="60" y="1788" width="1780" height="192" fill="#FEF8EA" stroke="#D97706"/>
+  <text class="clabel" x="84" y="1818" fill="#B45D09">EXTERNAL PROVIDERS &amp; SYSTEMS</text>
+  <g>
+    <rect class="chip" x="84" y="1836" width="330" height="120" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="tt" x="249" y="1860" text-anchor="middle">OpenAI</text>
+    <text class="s" x="249" y="1878" text-anchor="middle">gpt-4o-mini &#8212; orchestration + replies</text>
+    <text class="s" x="249" y="1892" text-anchor="middle">text-embedding-3-small (1536-d)</text>
+    <text class="s" x="249" y="1906" text-anchor="middle">Whisper STT &#183; GPT-vision OCR fallback</text>
+    <text class="s" x="249" y="1926" text-anchor="middle" font-style="italic">the only governed LLM/embedding vendor</text>
+
+    <rect class="chip" x="434" y="1836" width="330" height="120" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="tt" x="599" y="1860" text-anchor="middle">Sarvam AI &#8212; platform default</text>
+    <text class="s" x="599" y="1878" text-anchor="middle">saaras:v3 streaming STT (hi/en focus)</text>
+    <text class="s" x="599" y="1892" text-anchor="middle">bulbul:v3 streaming TTS &#183; voices</text>
+    <text class="s" x="599" y="1906" text-anchor="middle">pronunciation dictionaries (shared quota)</text>
+
+    <rect class="chip" x="784" y="1836" width="330" height="120" fill="#FEF3C7" stroke="#D97706"/>
+    <text class="tt" x="949" y="1860" text-anchor="middle">Deepgram &#183; ElevenLabs</text>
+    <text class="s" x="949" y="1878" text-anchor="middle">Flux realtime STT &#8212; authoritative end-of-turn</text>
+    <text class="s" x="949" y="1892" text-anchor="middle">11L multi-stream WS TTS &#183; instant voice</text>
+    <text class="s" x="949" y="1906" text-anchor="middle">cloning &#8594; tenant-owned voice profiles</text>
+
+    <rect class="chip" x="1134" y="1836" width="330" height="120" fill="#FFE4E6" stroke="#E11D48"/>
+    <text class="tt" x="1299" y="1860" text-anchor="middle">Telephony &#8212; Vaani &#183; FreeSWITCH host</text>
+    <text class="s" x="1299" y="1878" text-anchor="middle">dialer webhook + media WS &#183; ESL :9004 control</text>
+    <text class="s" x="1299" y="1892" text-anchor="middle">free_sweetch/ Lua+helper deployed to the PBX</text>
+    <text class="s" x="1299" y="1906" text-anchor="middle">(hostname hardcoded &#8212; must match .env)</text>
+    <text class="s" x="1299" y="1926" text-anchor="middle" font-style="italic">declared thin: Twilio &#183; Telnyx &#183; Plivo &#183; Exotel</text>
+
+    <rect class="chip" x="1484" y="1836" width="332" height="120" fill="#FFFFFF" stroke="#D97706"/>
+    <text class="tt" x="1650" y="1860" text-anchor="middle">Tenant systems (tool calls)</text>
+    <text class="s" x="1650" y="1878" text-anchor="middle">api_connections &#8594; SSRF-guarded fetch_json</text>
+    <text class="s" x="1650" y="1892" text-anchor="middle">secret:// references &#183; idempotent execution</text>
+    <text class="s" x="1650" y="1906" text-anchor="middle">runtime-context sources (customer data)</text>
+    <text class="s" x="1650" y="1926" text-anchor="middle" font-style="italic">absent: email/SMTP &#183; object storage &#183; payments</text>
+  </g>
+
+  <!-- ===================== Row F: cross-cutting ===================== -->
+  <rect class="cl" x="60" y="2012" width="1780" height="300" fill="#F4F6FA" stroke="#475569"/>
+  <text class="clabel" x="84" y="2042" fill="#475569">CROSS-CUTTING GUARANTEES &amp; OPERATIONAL REALITY</text>
+  <g>
+    <rect class="chip" x="84" y="2062" width="424" height="108" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="296" y="2086" text-anchor="middle">Identity &amp; multi-tenancy</text>
+    <text class="s" x="296" y="2104" text-anchor="middle">JWT HS256 (12 h) &#183; role + permissions re-read from DB per request</text>
+    <text class="s" x="296" y="2118" text-anchor="middle">password_changed_at revokes older tokens &#183; tenant identity never</text>
+    <text class="s" x="296" y="2132" text-anchor="middle">from the client &#183; cross-tenant by-id &#8658; 404 (existence hidden)</text>
+    <text class="s" x="296" y="2146" text-anchor="middle">row-level scoping on shared infra &#183; costs.view financial gate</text>
+
+    <rect class="chip" x="524" y="2062" width="424" height="108" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="736" y="2086" text-anchor="middle">Safety &amp; compliance posture</text>
+    <text class="s" x="736" y="2104" text-anchor="middle">guardrails fail CLOSED to a mandatory floor &#183; compliance policies</text>
+    <text class="s" x="736" y="2118" text-anchor="middle">and Redis controls fail OPEN (documented trade) &#183; sentence-hold</text>
+    <text class="s" x="736" y="2132" text-anchor="middle">output blocking &#183; tools denied in any turn a guardrail fired</text>
+    <text class="s" x="736" y="2146" text-anchor="middle">call admission: outbound-block &#183; calling windows &#183; contact limits</text>
+
+    <rect class="chip" x="964" y="2062" width="424" height="108" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1176" y="2086" text-anchor="middle">Money &amp; audit</text>
+    <text class="s" x="1176" y="2104" text-anchor="middle">every billable op &#8594; one idempotent usage_event with a pricing</text>
+    <text class="s" x="1176" y="2118" text-anchor="middle">snapshot &#183; insert-only price history &#183; INR-native FX &#8594; USD</text>
+    <text class="s" x="1176" y="2132" text-anchor="middle">mock providers never billed &#183; 147 audit call sites, masked values,</text>
+    <text class="s" x="1176" y="2146" text-anchor="middle">same-transaction writes &#183; per-call cost breakdown APIs</text>
+
+    <rect class="chip" x="1404" y="2062" width="412" height="108" fill="#FFFFFF" stroke="#475569"/>
+    <text class="tt" x="1610" y="2086" text-anchor="middle">Deployment reality (in-repo)</text>
+    <text class="s" x="1610" y="2104" text-anchor="middle">scripts/dev.sh supervises 6 processes on ONE Linux host</text>
+    <text class="s" x="1610" y="2118" text-anchor="middle">no containers &#183; no CI &#183; no TLS &#183; no reverse proxy &#183; binds 0.0.0.0</text>
+    <text class="s" x="1610" y="2132" text-anchor="middle">stores locally installed &#183; migrations: cli migrate / pg-migrate</text>
+    <text class="s" x="1610" y="2146" text-anchor="middle">seed-on-boot ON &#183; workers embedded &#183; scale limits per-process</text>
+  </g>
+  <g>
+    <rect class="chip" x="84" y="2186" width="864" height="104" fill="#FFF1F2" stroke="#E11D48"/>
+    <text class="tt" x="516" y="2210" text-anchor="middle" fill="#E11D48">Top verified risks (of 40 in the register, &#167;24 of the reference document)</text>
+    <text class="s" x="516" y="2230" text-anchor="middle">no API rate limiting or login lockout &#183; JWT + session in localStorage &#183; per-process voice admission guards</text>
+    <text class="s" x="516" y="2244" text-anchor="middle">real call recordings tracked in git &#183; compliance fail-open vs guardrail fail-closed asymmetry</text>
+    <text class="s" x="516" y="2258" text-anchor="middle">dead transport-serializer branches &#183; mod_audio_stream transfer-flag bug &#183; MySQL&#8596;PG knowledge drift (manual audit)</text>
+    <text class="s" x="516" y="2278" text-anchor="middle" font-style="italic">remediation priorities: Now / Next / Later in &#167;25</text>
+
+    <rect class="chip" x="968" y="2186" width="848" height="104" fill="#EFF6FF" stroke="#2563EB"/>
+    <text class="tt" x="1392" y="2210" text-anchor="middle" fill="#1D4ED8">Numbered flows</text>
+    <text class="s" x="1392" y="2230" text-anchor="middle">1 SPA REST &#183; 2 SPA live-voice WS &#183; 3 MCP tools &#183; 4 dialer webhook + media &#183; 5 WhatsApp webhook</text>
+    <text class="s" x="1392" y="2244" text-anchor="middle">6 planes &#8594; shared library &#183; 7 shared &#8594; four stores + disk &#183; 8 runtime/API &#8594; external providers</text>
+    <text class="s" x="1392" y="2258" text-anchor="middle">session handoff: API mints voice:session:{id} in Redis &#8594; runtime consumes; config pinned per call</text>
+    <text class="s" x="1392" y="2278" text-anchor="middle" font-style="italic">detail views: 11 companion diagrams in docs/architecture/diagrams/</text>
+  </g>
+
+  <!-- footer -->
+  <text x="60" y="2354" font-size="12" fill="#8892A6">EchoSphere System Architecture &#8212; complete overview &#183; sources: docs/architecture/ (SYSTEM_ARCHITECTURE.pdf/.docx, 11 detail diagrams) &#183; every statement verified against the implementation</text>
+  <g transform="translate(60, 2372)">
+    <rect width="14" height="14" rx="4" fill="#DBEAFE" stroke="#2563EB"/><text class="s" x="20" y="11.5">client</text>
+    <rect x="86" width="14" height="14" rx="4" fill="#E0E7FF" stroke="#4F46E5"/><text class="s" x="106" y="11.5">control plane</text>
+    <rect x="212" width="14" height="14" rx="4" fill="#CCFBF1" stroke="#0D9488"/><text class="s" x="232" y="11.5">realtime voice</text>
+    <rect x="340" width="14" height="14" rx="4" fill="#EDE9FE" stroke="#7C3AED"/><text class="s" x="360" y="11.5">background worker</text>
+    <rect x="500" width="14" height="14" rx="4" fill="#F4F6FA" stroke="#475569"/><text class="s" x="520" y="11.5">shared / cross-cutting</text>
+    <rect x="672" width="14" height="14" rx="4" fill="#DCFCE7" stroke="#16A34A"/><text class="s" x="692" y="11.5">data store</text>
+    <rect x="780" width="14" height="14" rx="4" fill="#FEF3C7" stroke="#D97706"/><text class="s" x="800" y="11.5">external AI provider</text>
+    <rect x="940" width="14" height="14" rx="4" fill="#FFE4E6" stroke="#E11D48"/><text class="s" x="960" y="11.5">external system / risk</text>
+  </g>
+</svg>
