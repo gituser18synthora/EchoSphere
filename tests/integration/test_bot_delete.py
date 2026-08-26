@@ -427,8 +427,9 @@ class TestDeleteFlow:
                 PhoneNumber.number == workspace["number"]))
             assert row.bot_id is None
             assert row.status == "available"
-            # Still the tenant's number — released, not confiscated.
-            assert row.tenant_id == workspace["tenant_id"]
+            # A released number returns to the global pool so any tenant may
+            # claim it next; no stale tenant reservation remains.
+            assert row.tenant_id is None
             assert row.is_deleted is False
         finally:
             session.close()

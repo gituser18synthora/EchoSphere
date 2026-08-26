@@ -25,6 +25,7 @@ _DIGITS = f"{int(_SUFFIX, 16) % 10**7:07d}"
 NUMBER_A = f"+9198{_DIGITS}1"
 NUMBER_B = f"+9198{_DIGITS}2"
 NUMBER_C = f"+9198{_DIGITS}3"
+NUMBER_D = f"+9198{_DIGITS}4"
 
 
 @pytest.fixture(scope="module")
@@ -192,6 +193,22 @@ def test_edit_number_itself(client, super_admin):
     updated = _data(client.patch(f"{API}/phone-numbers/{row['id']}", headers=super_admin,
                                  json={"number": NUMBER_C}))
     assert updated["number"] == NUMBER_C
+
+
+def test_clearing_bot_assignment_also_clears_tenant(
+    client, super_admin, test_bot,
+):
+    row = _create(client, super_admin, NUMBER_D,
+                  tenantId="tn-001", botId=test_bot["id"])
+    assert row["tenant"] is not None and row["bot"] is not None
+
+    released = _data(client.patch(
+        f"{API}/phone-numbers/{row['id']}", headers=super_admin,
+        json={"botId": None},
+    ))
+    assert released["tenant"] is None
+    assert released["bot"] is None
+    assert released["status"] == "available"
 
 
 def test_edit_rejects_invalid_e164(client, super_admin):

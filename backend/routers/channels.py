@@ -313,13 +313,20 @@ def _binding(db: Session, bot: VoiceBot) -> dict:
 
 
 def _release_phone_number(db: Session, bot: VoiceBot, config: dict | None) -> None:
-    """Unassign the channel's phone number if it is assigned to this bot."""
+    """Return this bot's channel number to the global available pool.
+
+    A tenant owns a number only while one of its bots owns the corresponding
+    voice channel.  Keeping ``tenant_id`` after clearing ``bot_id`` strands an
+    otherwise available number in the old tenant and prevents another tenant
+    from claiming it.
+    """
     number = (config or {}).get("phoneNumber")
     if not number:
         return
     row = _find_phone_number(db, number)
     if row is not None and row.bot_id == bot.id:
         row.bot_id = None
+        row.tenant_id = None
         row.status = "available"
 
 

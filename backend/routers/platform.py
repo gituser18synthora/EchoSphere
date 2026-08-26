@@ -603,6 +603,10 @@ def update_phone_number(
     if "tenant_id" in provided or "bot_id" in provided:
         new_tenant = body.tenant_id if "tenant_id" in provided else row.tenant_id
         new_bot = body.bot_id if "bot_id" in provided else row.bot_id
+        # Removing the current bot returns the number to the global pool.  Do
+        # not leave an implicit tenant reservation behind after a bot release.
+        if "bot_id" in provided and body.bot_id is None and row.bot_id is not None:
+            new_tenant = None
         if new_tenant is None:
             new_bot = None  # clearing the tenant releases the bot too
         if (new_tenant, new_bot) != (row.tenant_id, row.bot_id):
