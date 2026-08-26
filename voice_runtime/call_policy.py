@@ -1368,10 +1368,18 @@ class CollectionCallPolicy:
             plan.force_llm = True
             plan.action = "record_dispute"
             # Dispute recorded → offer verification callback or agent; close
-            # once they answered that one question.
-            if signal in ("affirm", "refusal", "callback") and \
-                    self.phase in (ACCOUNT_DISPUTE, CLOSING):
-                plan.close_after_reply = signal != "affirm" or not self._bot_offered_agent
+            # once they answered that one question.  A refusal which RAISES
+            # the dispute ("I never took this loan") cannot also answer an
+            # offer the bot has not spoken yet; wait until the previous bot
+            # reply actually contained the agent/callback choice.
+            # An affirmative to that offer already took the deterministic
+            # handoff return at the top of this method.
+            if (
+                self._bot_offered_agent
+                and signal in ("refusal", "callback")
+                and self.phase in (ACCOUNT_DISPUTE, CLOSING)
+            ):
+                plan.close_after_reply = True
                 self.phase = CLOSING
         elif self.pending_amount_type is not None and self.verified \
                 and not workflow_active:

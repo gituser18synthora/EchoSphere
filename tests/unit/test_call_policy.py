@@ -184,6 +184,42 @@ class TestAccountDispute:
         assert "Do not push payment" in plan.instruction
         assert "OPEN ISSUES" in plan.instruction
 
+    def test_first_dispute_turn_waits_for_answer_to_callback_or_agent_offer(self):
+        """A loan denial is not also an answer to the choice it triggers.
+
+        Live regression: the router labelled "I never took this loan" as a
+        refusal.  The dispute branch then treated that same refusal as if the
+        customer had declined the callback/agent question which the bot had
+        not spoken yet, queued EndWorkerFrame behind the question, and hung up
+        as soon as its audio drained.
+        """
+        policy = make_policy(verified=True)
+        policy.observe_bot("क्या आप आज पूरा भुगतान कर सकते हैं?")
+        text = "पर मैंने तो कोई लोन लिया ही नहीं है।"
+        policy.observe_user(text, "refusal")
+
+        plan = policy.plan_turn(text, "refusal")
+
+        assert plan.action == "record_dispute"
+        assert not plan.close_after_reply
+        assert policy.phase == ACCOUNT_DISPUTE
+
+    def test_dispute_closes_only_after_customer_declines_spoken_options(self):
+        policy = make_policy(verified=True)
+        first = "पर मैंने तो कोई लोन लिया ही नहीं है।"
+        policy.observe_user(first, "refusal")
+        assert not policy.plan_turn(first, "refusal").close_after_reply
+
+        policy.observe_bot(
+            "क्या आप verification callback चाहेंगे या मैं आपको एजेंट से जोड़ दूँ?"
+        )
+        answer = "नहीं, मुझे दोनों में से कुछ नहीं चाहिए।"
+        policy.observe_user(answer, "refusal")
+        plan = policy.plan_turn(answer, "refusal")
+
+        assert plan.close_after_reply
+        assert policy.phase == CLOSING
+
     def test_dispute_write_back(self):
         policy = make_policy(verified=True)
         policy.observe_user("मैंने लोन नहीं लिया", "wrong_person")
