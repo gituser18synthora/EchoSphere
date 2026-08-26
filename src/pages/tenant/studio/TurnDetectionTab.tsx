@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Callout, CardSkeleton, ConfirmModal, ErrorState, Toggle } from "@/components/ui";
+import type { CSSProperties } from "react";
+import { Button, Callout, CardSkeleton, ConfirmModal, ErrorState, Modal, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useAsync } from "@/hooks/useAsync";
 import { getTurnDetectionSettings, saveTurnDetectionSettings } from "@/services/api";
 import { useApp } from "@/state/AppContext";
+import {
+  buildTurnDetectionExport,
+  parseTurnDetectionImport,
+} from "./turnDetectionTransfer";
+import type { TurnDetectionImportResult } from "./turnDetectionTransfer";
 import type { IconName } from "@/components/Icon";
 import type {
   TurnDetectionConfig,
@@ -146,6 +152,16 @@ const STATE_CHIP: Record<ValueState, { cls: string; label: string }> = {
   custom: { cls: "chip chip-brand", label: "Custom" },
 };
 
+const MONO_TEXT: CSSProperties = {
+  fontFamily: "var(--font-mono, ui-monospace, monospace)",
+  fontSize: 12.5,
+  lineHeight: 1.5,
+  resize: "vertical",
+};
+
+const fmtFieldValue = (field: TurnDetectionField, value: number): string =>
+  field.valueType === "boolean" ? (value ? "On" : "Off") : fmt(value);
+
 export default function TurnDetectionTab() {
   const { toast } = useApp();
   const settingsQ = useAsync(getTurnDetectionSettings, []);
@@ -160,6 +176,14 @@ export default function TurnDetectionTab() {
   /** Last custom overrides seen, so switching mode away and back within one
       editing session never silently destroys unsaved custom values. */
   const stashRef = useRef<TurnDetectionOverrides | null>(null);
+  /** Copy/Import: JSON shown when the clipboard is unavailable, and the
+      paste → validate → preview → apply state of the import modal. */
+  const [exportFallback, setExportFallback] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importResult, setImportResult] = useState<TurnDetectionImportResult | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settingsQ.data) {
@@ -270,6 +294,65 @@ export default function TurnDetectionTab() {
     }
   };
 
+  /** Portable export of what is currently on screen — mode plus sparse
+      overrides only, never tenant, bot or database identifiers. */
+  const copyConfiguration = async () => {
+    const text = buildTurnDetectionExport(config, draft.mode, compactOverrides(draft.overrides));
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(dirty
+        ? "Configuration copied — includes your unsaved changes"
+        : "Turn detection configuration copied to clipboard");
+    } catch {
+      setExportFallback(text);
+    }
+  };
+
+  const openImport = () => {
+    setImportText("");
+    setImportResult(null);
+    setApplyError(null);
+    setImportOpen(true);
+  };
+
+  /** Apply goes through the normal save API, so the backend re-validates the
+      whole document and refreshes the runtime snapshot cache; a rejected
+      import leaves the stored configuration untouched. */
+  const applyImport = async () => {
+    const document = importResult?.document;
+    if (!document) return;
+    setApplying(true);
+    setApplyError(null);
+    try {
+      const saved = await saveTurnDetectionSettings(document.mode, document.overrides);
+      setDraft({ mode: saved.mode, overrides: cloneOverrides(saved.overrides) });
+      stashRef.current = null;
+      setEditText({});
+      setServerErrors([]);
+      setImportOpen(false);
+      toast("Imported configuration applied — new voice sessions will use it");
+      settingsQ.reload();
+    } catch (error) {
+      setApplyError(error instanceof Error ? error.message : "Could not apply the imported configuration.");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const previewDocument = importResult?.document ?? null;
+  const previewChanges = previewDocument
+    ? config.transports.map((item) => ({
+      transport: item,
+      rows: config.fields.flatMap((field) => {
+        const current = config.effective[item.id]?.[field.group]?.[field.key] ?? field.default[item.id];
+        const imported = fieldValue(field, item.id, previewDocument);
+        return current === imported ? [] : [{ field, current, imported }];
+      }),
+    }))
+    : [];
+  const previewChangeCount = previewChanges.reduce((sum, item) => sum + item.rows.length, 0);
+  const previewMode = previewDocument ? config.modes.find((mode) => mode.id === previewDocument.mode) : undefined;
+
   const activeTransport = config.transports.find((item) => item.id === transport)!;
   const modifiedInSection = (sectionId: string): number =>
     config.fields.filter(
@@ -300,12 +383,32 @@ export default function TurnDetectionTab() {
             active calls keep their settings and no lookups happen inside the live audio path.
           </p>
         </div>
-        <div className="col gap-4" style={{ alignItems: "flex-end" }}>
-          <span className="t-label">Active configuration</span>
-          <span className={config.mode === "system_default" ? "chip chip-neutral" : config.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
-            <Icon name={MODE_ICONS[config.mode]} size={12} />
-            {savedMode?.label ?? config.mode}
-          </span>
+        <div className="col gap-10" style={{ alignItems: "flex-end" }}>
+          <div className="col gap-4" style={{ alignItems: "flex-end" }}>
+            <span className="t-label">Active configuration</span>
+            <span className={config.mode === "system_default" ? "chip chip-neutral" : config.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
+              <Icon name={MODE_ICONS[config.mode]} size={12} />
+              {savedMode?.label ?? config.mode}
+            </span>
+          </div>
+          <div className="row gap-8 wrap" style={{ justifyContent: "flex-end" }}>
+            <Button
+              size="sm"
+              icon="copy"
+              title="Copy the configuration shown on this page as portable JSON — no tenant or bot identifiers"
+              onClick={() => void copyConfiguration()}
+            >
+              Copy Configuration
+            </Button>
+            <Button
+              size="sm"
+              icon="upload"
+              title="Paste a configuration copied from another bot or workspace, preview it and apply it"
+              onClick={openImport}
+            >
+              Import Configuration
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -555,6 +658,147 @@ export default function TurnDetectionTab() {
         body={"Every override on both transports will be removed and the platform's system defaults will apply. This takes effect when you save."}
         confirmLabel="Reset All"
       />
+
+      {/* ── Copy fallback: shown only when the clipboard is unavailable ── */}
+      <Modal
+        open={exportFallback !== null}
+        onClose={() => setExportFallback(null)}
+        title="Copy Configuration"
+        sub="Clipboard access was blocked by the browser — copy the JSON below manually."
+        footer={<Button variant="ghost" onClick={() => setExportFallback(null)}>Close</Button>}
+      >
+        <textarea
+          className="input"
+          aria-label="Exported configuration JSON"
+          readOnly
+          rows={12}
+          style={MONO_TEXT}
+          value={exportFallback ?? ""}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </Modal>
+
+      {/* ── Import: paste → validate → preview → apply ── */}
+      <Modal
+        open={importOpen}
+        onClose={() => !applying && setImportOpen(false)}
+        title="Import Configuration"
+        sub="Paste a Turn Detection configuration copied from any bot in any workspace."
+        wide
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setImportOpen(false)} disabled={applying}>Cancel</Button>
+            <Button
+              variant="primary"
+              icon="check"
+              busy={applying}
+              disabled={!previewDocument || applying}
+              title={previewDocument ? "Save the previewed configuration for this workspace" : "Validate the pasted JSON first"}
+              onClick={() => void applyImport()}
+            >
+              Apply Configuration
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          <p className="t-sub" style={{ margin: 0 }}>
+            Turn detection is tenant-wide, so applying updates every bot in this workspace.
+            Nothing is saved until you click Apply Configuration, and an invalid document is
+            never applied — current settings stay unchanged.
+          </p>
+          {dirty && (
+            <Callout tone="warning" title="Unsaved changes on this page">
+              Applying an imported configuration replaces the unsaved edits on this page.
+            </Callout>
+          )}
+          <textarea
+            className="input"
+            aria-label="Configuration JSON"
+            rows={9}
+            style={MONO_TEXT}
+            placeholder={`{\n  "kind": "echosphere.turn-detection",\n  "schemaVersion": ${config.schemaVersion},\n  "mode": "custom",\n  "overrides": { … }\n}`}
+            value={importText}
+            onChange={(event) => {
+              setImportText(event.target.value);
+              setImportResult(null);
+              setApplyError(null);
+            }}
+          />
+          <div className="row gap-8 wrap">
+            <Button
+              icon="search"
+              disabled={!importText.trim() || applying}
+              onClick={() => setImportResult(parseTurnDetectionImport(config, importText))}
+            >
+              Validate &amp; Preview
+            </Button>
+            {previewDocument && (
+              <span className="chip chip-good"><Icon name="check-circle" size={12} /> Valid configuration</span>
+            )}
+          </div>
+          {importResult && importResult.errors.length > 0 && (
+            <Callout
+              tone="critical"
+              title={`Configuration is invalid — ${importResult.errors.length} ${importResult.errors.length === 1 ? "issue" : "issues"}`}
+            >
+              {importResult.errors.map((error) => <div key={error}>{error}</div>)}
+            </Callout>
+          )}
+          {importResult?.warnings.map((warning) => (
+            <Callout key={warning} tone="warning">{warning}</Callout>
+          ))}
+          {previewDocument && (
+            <section className="card">
+              <div className="card-header">
+                <div className="col gap-2">
+                  <span className="card-title">Preview</span>
+                  <span className="t-micro">Effective values after applying, compared with this workspace's current saved settings.</span>
+                </div>
+                <span className={previewDocument.mode === "system_default" ? "chip chip-neutral" : previewDocument.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
+                  <Icon name={MODE_ICONS[previewDocument.mode]} size={12} />
+                  {previewMode?.label ?? previewDocument.mode}
+                </span>
+              </div>
+              <div className="col gap-12" style={{ padding: 16 }}>
+                {previewDocument.mode !== config.mode && (
+                  <span className="t-sub">
+                    Mode changes from <strong>{savedMode?.label ?? config.mode}</strong> to{" "}
+                    <strong>{previewMode?.label ?? previewDocument.mode}</strong>.
+                  </span>
+                )}
+                {previewChangeCount === 0 ? (
+                  <span className="t-sub">All effective values match the current configuration.</span>
+                ) : previewChanges.map(({ transport: item, rows }) => (
+                  <div className="col gap-6" key={item.id}>
+                    <span className="t-strong row gap-6" style={{ fontSize: 13 }}>
+                      <Icon name={TRANSPORT_ICONS[item.id]} size={14} />
+                      {item.label}
+                      <span className="t-micro">
+                        {rows.length ? `${rows.length} ${rows.length === 1 ? "value" : "values"} will change` : "no changes"}
+                      </span>
+                    </span>
+                    {rows.map(({ field, current, imported }) => (
+                      <div className="row-between gap-8" key={`${field.group}.${field.key}`} style={{ fontSize: 12.5 }}>
+                        <span>{field.label}</span>
+                        <span className="t-num">
+                          {fmtFieldValue(field, current)} → <strong>{fmtFieldValue(field, imported)}</strong>
+                          {field.valueType !== "boolean" && ` ${field.unit}`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {applyError && (
+            <Callout tone="critical" title="Could not apply configuration">
+              {applyError} Existing settings were left unchanged.
+            </Callout>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

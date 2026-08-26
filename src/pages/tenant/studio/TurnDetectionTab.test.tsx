@@ -177,4 +177,100 @@ describe("TurnDetectionTab", () => {
     fireEvent.blur(input);
     expect(screen.queryByText(/Extreme low value/)).not.toBeInTheDocument();
   });
+
+  it("Copy Configuration puts a portable document on the clipboard — no tenant or bot ids", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Copy Configuration" }));
+    const copied = JSON.parse(await navigator.clipboard.readText());
+    expect(copied).toEqual({
+      kind: "echosphere.turn-detection",
+      schemaVersion: 1,
+      mode: "custom",
+      overrides: {
+        browser: {
+          turn_detection: { confidence: 0.8 },
+          noise_gate: { noise_margin_db: 12 },
+        },
+      },
+    });
+  });
+
+  it("import rejects invalid JSON and keeps Apply disabled", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Import Configuration" }));
+    fireEvent.change(screen.getByLabelText("Configuration JSON"), { target: { value: "{ not json" } });
+    await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
+    expect(screen.getByText(/Not valid JSON/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply Configuration" })).toBeDisabled();
+    expect(api.saveTurnDetectionSettings).not.toHaveBeenCalled();
+  });
+
+  it("import lists schema violations and never applies an invalid configuration", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Import Configuration" }));
+    const pasted = JSON.stringify({
+      kind: "echosphere.turn-detection",
+      schemaVersion: 1,
+      mode: "custom",
+      overrides: { browser: { turn_detection: { confidence: 5, bogus: 1 } } },
+    });
+    fireEvent.change(screen.getByLabelText("Configuration JSON"), { target: { value: pasted } });
+    await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
+    expect(screen.getByText("Browser · VAD confidence: must be between 0.3 and 0.95 ratio.")).toBeInTheDocument();
+    expect(screen.getByText("Browser: unknown parameter 'turn_detection.bogus'.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply Configuration" })).toBeDisabled();
+    expect(api.saveTurnDetectionSettings).not.toHaveBeenCalled();
+  });
+
+  it("valid import shows a preview of changing values and applies via the save API", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Import Configuration" }));
+    const pasted = JSON.stringify({
+      kind: "echosphere.turn-detection",
+      schemaVersion: 1,
+      mode: "custom",
+      overrides: { telephony: { turn_detection: { confidence: 0.75 } } },
+    });
+    fireEvent.change(screen.getByLabelText("Configuration JSON"), { target: { value: pasted } });
+    await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
+    expect(screen.getByText("Valid configuration")).toBeInTheDocument();
+    // Browser loses its two saved overrides; telephony confidence becomes 0.75.
+    const dialog = screen.getByRole("dialog", { name: "Import Configuration" });
+    expect(within(dialog).getByText("2 values will change")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 value will change")).toBeInTheDocument();
+    const rows = within(dialog).getAllByText("VAD confidence").map((el) => el.closest("div")!);
+    expect(rows[0]).toHaveTextContent("0.8 → 0.7 ratio");
+    expect(rows[1]).toHaveTextContent("0.6 → 0.75 ratio");
+    await user.click(screen.getByRole("button", { name: "Apply Configuration" }));
+    await waitFor(() => expect(api.saveTurnDetectionSettings).toHaveBeenCalledWith(
+      "custom",
+      { telephony: { turn_detection: { confidence: 0.75 } } },
+    ));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Import Configuration" })).not.toBeInTheDocument());
+  });
+
+  it("a failed apply keeps the modal open and reports that settings are unchanged", async () => {
+    vi.mocked(api.saveTurnDetectionSettings).mockRejectedValue(new Error("Turn detection configuration is invalid."));
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Import Configuration" }));
+    fireEvent.change(screen.getByLabelText("Configuration JSON"), {
+      target: { value: JSON.stringify({ mode: "recommended" }) },
+    });
+    await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
+    await user.click(screen.getByRole("button", { name: "Apply Configuration" }));
+    expect(await screen.findByText("Could not apply configuration")).toBeInTheDocument();
+    expect(screen.getByText(/Existing settings were left unchanged/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Import Configuration" })).toBeInTheDocument();
+  });
 });
