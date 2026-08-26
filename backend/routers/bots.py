@@ -494,6 +494,7 @@ def delete_bot(
     ).all()
     for number in numbers:
         number.bot_id = None
+        number.tenant_id = None
         number.status = "available"
         number.updated_by = user.id
 

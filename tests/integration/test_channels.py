@@ -22,6 +22,7 @@ API = "/api/v1"
 _SUFFIX = uuid.uuid4().hex[:8]
 # A per-run number so voice tests never claim a demo-data or concurrent-run number.
 _TEST_NUMBER = "+1999" + str(int(_SUFFIX, 16))[:7].zfill(7)
+_TEST_NUMBER_2 = "+1998" + str(int(_SUFFIX, 16))[:7].zfill(7)
 
 
 @pytest.fixture(scope="module")
@@ -144,8 +145,9 @@ def _purge_bot(bot_id: str) -> None:
         for table in ("channel_configs", "voice_bot_settings", "voice_bot_readiness",
                       "bot_languages", "workflows", "phone_numbers", "prompts"):
             conn.execute(sa_text(f"DELETE FROM `{table}` WHERE bot_id = :b"), {"b": bot_id})
-        # released numbers have bot_id NULL, so clear this run's number by value too
-        conn.execute(sa_text("DELETE FROM phone_numbers WHERE number = :n"), {"n": _TEST_NUMBER})
+        # released numbers have bot_id NULL, so clear this run's numbers by value too
+        conn.execute(sa_text("DELETE FROM phone_numbers WHERE number IN (:n1, :n2)"),
+                     {"n1": _TEST_NUMBER, "n2": _TEST_NUMBER_2})
         conn.execute(sa_text("DELETE FROM voice_bots WHERE id = :b"), {"b": bot_id})
 
 
@@ -400,10 +402,62 @@ def test_reconfigure_voice_after_archive(client, tenant_admin, test_bot):
                      json={"config": config}))
     _data(client.delete(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin))
 
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import PhoneNumber
+
+    session = get_sessionmaker()()
+    try:
+        released = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER))
+        assert released is not None
+        assert released.bot_id is None
+        assert released.tenant_id is None
+        assert released.status == "available"
+    finally:
+        session.close()
+
     response = client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
                           json={"config": config})
     assert response.status_code == 200, response.json()
     assert _data(response)["config"]["phoneNumber"] == _TEST_NUMBER
+
+
+def test_changing_voice_number_releases_old_number_globally(
+    client, tenant_admin, test_bot,
+):
+    """Removing a number from a bot must clear both bot and tenant ownership."""
+    bot_id = test_bot["id"]
+    original = {"phoneNumber": _TEST_NUMBER, "telephonyProvider": "freeswitch"}
+    replacement = {"phoneNumber": _TEST_NUMBER_2, "telephonyProvider": "freeswitch"}
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": original}))
+    _data(client.put(f"{API}/bots/{bot_id}/channels/voice", headers=tenant_admin,
+                     json={"config": replacement}))
+
+    from sqlalchemy import select
+
+    from shared.db.mysql import get_sessionmaker
+    from shared.models import PhoneNumber
+
+    session = get_sessionmaker()()
+    try:
+        released = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER))
+        assert released is not None
+        assert released.bot_id is None
+        assert released.tenant_id is None
+        assert released.status == "available"
+
+        claimed = session.scalar(select(PhoneNumber).where(
+            PhoneNumber.number == _TEST_NUMBER_2))
+        assert claimed is not None
+        assert claimed.bot_id == bot_id
+        assert claimed.tenant_id == "tn-001"
+        assert claimed.status == "assigned"
+    finally:
+        session.close()
 
 
 # ── Audit ───────────────────────────────────────────────────────────────────

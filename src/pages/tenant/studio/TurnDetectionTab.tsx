@@ -33,6 +33,17 @@ const TRANSPORT_ICONS: Record<TurnDetectionTransport, IconName> = {
   browser: "mic",
   telephony: "phone",
 };
+/** Purely presentational anchors for the schema-driven sections; unknown
+    section ids fall back to a generic sliders glyph. */
+const SECTION_ICONS: Record<string, IconName> = {
+  speech_detection: "activity",
+  end_of_turn: "clock",
+  interruption: "zap",
+  timing_debounce: "history",
+  noise_suppression: "volume",
+  speech_buffering: "layers",
+  echo_protection: "shield",
+};
 
 const cloneOverrides = (value: TurnDetectionOverrides): TurnDetectionOverrides =>
   JSON.parse(JSON.stringify(value ?? {})) as TurnDetectionOverrides;
@@ -180,6 +191,7 @@ export default function TurnDetectionTab() {
       paste → validate → preview → apply state of the import modal. */
   const [exportFallback, setExportFallback] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [importView, setImportView] = useState<"paste" | "preview">("paste");
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<TurnDetectionImportResult | null>(null);
   const [applying, setApplying] = useState(false);
@@ -244,6 +256,31 @@ export default function TurnDetectionTab() {
     groupValues[field.key] = normalized;
     setDraft({ mode: "custom", overrides: compactOverrides(base) });
     setServerErrors([]);
+  };
+
+  const dropEditText = (key: string) =>
+    setEditText((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+
+  /** Remove this field's override so it falls back to the system default;
+      every other visible value is preserved as a custom override. */
+  const resetFieldToDefault = (field: TurnDetectionField) => {
+    const base = draft.mode === "custom" ? cloneOverrides(draft.overrides) : materializeEffective(config, draft);
+    delete base[transport]?.[field.group]?.[field.key];
+    setDraft({ mode: "custom", overrides: compactOverrides(base) });
+    dropEditText(`${transport}.${field.group}.${field.key}`);
+    setServerErrors([]);
+  };
+
+  const quickSetRecommended = (field: TurnDetectionField) => {
+    commitField(field, field.valueType === "boolean"
+      ? Boolean(field.recommended[transport])
+      : field.recommended[transport]);
+    dropEditText(`${transport}.${field.group}.${field.key}`);
   };
 
   const resetSection = (sectionId: string) => {
@@ -312,7 +349,35 @@ export default function TurnDetectionTab() {
     setImportText("");
     setImportResult(null);
     setApplyError(null);
+    setImportView("paste");
     setImportOpen(true);
+  };
+
+  /** Validate the pasted text; a valid document moves the modal to the
+      preview step, an invalid one stays on the paste step with the errors. */
+  const runValidation = (text: string) => {
+    const result = parseTurnDetectionImport(config, text);
+    setImportResult(result);
+    setApplyError(null);
+    if (result.document) setImportView("preview");
+  };
+
+  /** One-click path for the common case: read the clipboard, fill the text
+      area and validate immediately — a valid copy lands straight on preview. */
+  const pasteFromClipboard = async () => {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      toast("Clipboard access was blocked — paste into the text area instead", "error");
+      return;
+    }
+    if (!text.trim()) {
+      toast("Clipboard is empty — use Copy Configuration on the source bot first", "error");
+      return;
+    }
+    setImportText(text);
+    runValidation(text);
   };
 
   /** Apply goes through the normal save API, so the backend re-validates the
@@ -352,6 +417,7 @@ export default function TurnDetectionTab() {
     : [];
   const previewChangeCount = previewChanges.reduce((sum, item) => sum + item.rows.length, 0);
   const previewMode = previewDocument ? config.modes.find((mode) => mode.id === previewDocument.mode) : undefined;
+  const sectionLabel = (id: string): string => config.sections.find((section) => section.id === id)?.label ?? id;
 
   const activeTransport = config.transports.find((item) => item.id === transport)!;
   const modifiedInSection = (sectionId: string): number =>
@@ -366,11 +432,18 @@ export default function TurnDetectionTab() {
     <div className="col gap-16 td-page">
       {/* ── Header ── */}
       <div className="row-between gap-12 wrap" style={{ alignItems: "flex-start" }}>
-        <div className="col gap-4" style={{ maxWidth: 780 }}>
+        <div className="col gap-4" style={{ maxWidth: 760 }}>
           <div className="row gap-8 wrap">
             <h2 className="t-title" style={{ fontSize: 18, margin: 0 }}>Turn Detection</h2>
             <span className="chip chip-neutral" title="These settings are shared by every bot in this workspace">
               <Icon name="building" size={12} /> Tenant-wide
+            </span>
+            <span
+              className={config.mode === "system_default" ? "chip chip-neutral" : config.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}
+              title="Active configuration — the saved mode used by new voice sessions"
+            >
+              <Icon name={MODE_ICONS[config.mode]} size={12} />
+              {savedMode?.label ?? config.mode}
             </span>
           </div>
           <p className="t-sub" style={{ margin: 0 }}>
@@ -383,32 +456,23 @@ export default function TurnDetectionTab() {
             active calls keep their settings and no lookups happen inside the live audio path.
           </p>
         </div>
-        <div className="col gap-10" style={{ alignItems: "flex-end" }}>
-          <div className="col gap-4" style={{ alignItems: "flex-end" }}>
-            <span className="t-label">Active configuration</span>
-            <span className={config.mode === "system_default" ? "chip chip-neutral" : config.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
-              <Icon name={MODE_ICONS[config.mode]} size={12} />
-              {savedMode?.label ?? config.mode}
-            </span>
-          </div>
-          <div className="row gap-8 wrap" style={{ justifyContent: "flex-end" }}>
-            <Button
-              size="sm"
-              icon="copy"
-              title="Copy the configuration shown on this page as portable JSON — no tenant or bot identifiers"
-              onClick={() => void copyConfiguration()}
-            >
-              Copy Configuration
-            </Button>
-            <Button
-              size="sm"
-              icon="upload"
-              title="Paste a configuration copied from another bot or workspace, preview it and apply it"
-              onClick={openImport}
-            >
-              Import Configuration
-            </Button>
-          </div>
+        <div className="row gap-8 wrap" style={{ justifyContent: "flex-end", marginLeft: "auto" }}>
+          <Button
+            size="sm"
+            icon="copy"
+            title="Copy the configuration shown on this page as portable JSON — no tenant or bot identifiers"
+            onClick={() => void copyConfiguration()}
+          >
+            Copy Configuration
+          </Button>
+          <Button
+            size="sm"
+            icon="upload"
+            title="Paste a configuration copied from another bot or workspace, preview it and apply it"
+            onClick={openImport}
+          >
+            Import Configuration
+          </Button>
         </div>
       </div>
 
@@ -443,8 +507,8 @@ export default function TurnDetectionTab() {
         </div>
       </section>
 
-      {/* ── Transport switcher ── */}
-      <div className="col gap-6">
+      {/* ── Transport switcher — stays visible while scrolling the sections ── */}
+      <div className="td-transport-bar">
         <div className="row gap-8 wrap" role="tablist" aria-label="Audio transport">
           {config.transports.map((item) => {
             const modified = modifiedInTransport(item.id);
@@ -465,7 +529,7 @@ export default function TurnDetectionTab() {
             );
           })}
         </div>
-        <p className="t-micro" style={{ margin: 0 }}>{activeTransport.description}</p>
+        <span className="t-micro">{activeTransport.description}</span>
       </div>
 
       {/* ── Sections ── */}
@@ -478,7 +542,10 @@ export default function TurnDetectionTab() {
           <section className="card" key={section.id}>
             <div className="card-header">
               <div className="col gap-2">
-                <span className="card-title">{section.label}</span>
+                <span className="card-title row gap-6">
+                  <Icon name={SECTION_ICONS[section.id] ?? "sliders"} size={14} />
+                  {section.label}
+                </span>
                 <span className="t-micro">{section.description}</span>
               </div>
               <div className="row gap-8">
@@ -510,7 +577,7 @@ export default function TurnDetectionTab() {
                 const typedInvalid = text !== undefined && text !== ""
                   && (!Number.isFinite(Number(text)) || Number(text) < field.min || Number(text) > field.max);
                 return (
-                  <div className="td-field" key={`${field.group}.${field.key}`}>
+                  <div className={`td-field${state === "default" ? "" : " td-field-modified"}`} key={`${field.group}.${field.key}`}>
                     <div className="row-between gap-8">
                       <span className="field-label" title={`Internal key: ${field.group}.${field.key}`}>
                         {field.label}
@@ -525,24 +592,31 @@ export default function TurnDetectionTab() {
                       </div>
                     ) : (
                       <div className="td-control mt-4">
-                        <input
-                          aria-label={`${field.label} slider`}
-                          className="td-range"
-                          type="range"
-                          min={field.min}
-                          max={field.max}
-                          step={field.step}
-                          value={value}
-                          onChange={(event) => {
-                            setEditText((prev) => {
-                              if (!(textKey in prev)) return prev;
-                              const next = { ...prev };
-                              delete next[textKey];
-                              return next;
-                            });
-                            commitField(field, Number(event.target.value));
-                          }}
-                        />
+                        <div className="td-range-wrap">
+                          <input
+                            aria-label={`${field.label} slider`}
+                            className="td-range"
+                            type="range"
+                            min={field.min}
+                            max={field.max}
+                            step={field.step}
+                            value={value}
+                            onChange={(event) => {
+                              dropEditText(textKey);
+                              commitField(field, Number(event.target.value));
+                            }}
+                          />
+                          <span
+                            className="td-tick td-tick-default"
+                            style={{ left: `${((field.default[transport] - field.min) / (field.max - field.min)) * 100}%` }}
+                            title={`Default ${fmt(field.default[transport])} ${field.unit}`}
+                          />
+                          <span
+                            className="td-tick td-tick-rec"
+                            style={{ left: `${((field.recommended[transport] - field.min) / (field.max - field.min)) * 100}%` }}
+                            title={`Recommended ${fmt(field.recommended[transport])} ${field.unit}`}
+                          />
+                        </div>
                         <div className="td-num">
                           <input
                             aria-label={`${field.label} value`}
@@ -569,10 +643,32 @@ export default function TurnDetectionTab() {
                         </div>
                       </div>
                     )}
-                    <span className="t-micro t-num">
-                      {field.valueType === "boolean"
-                        ? `Default ${field.default[transport] ? "On" : "Off"} · Recommended ${field.recommended[transport] ? "On" : "Off"}`
-                        : `Range ${fmt(field.min)}–${fmt(field.max)} ${field.unit} · Default ${fmt(field.default[transport])} · Recommended ${fmt(field.recommended[transport])}`}
+                    <span className="td-meta t-micro t-num">
+                      {field.valueType !== "boolean" && (
+                        <>
+                          <span>Range {fmt(field.min)}–{fmt(field.max)} {field.unit}</span>
+                          <span aria-hidden="true">·</span>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="td-meta-btn"
+                        disabled={value === field.default[transport]}
+                        title={`Reset ${field.label} to the ${activeTransport.label} default`}
+                        onClick={() => resetFieldToDefault(field)}
+                      >
+                        Default {fmtFieldValue(field, field.default[transport])}
+                      </button>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        className="td-meta-btn"
+                        disabled={value === field.recommended[transport]}
+                        title={`Set ${field.label} to the recommended ${activeTransport.label} value`}
+                        onClick={() => quickSetRecommended(field)}
+                      >
+                        Recommended {fmtFieldValue(field, field.recommended[transport])}
+                      </button>
                     </span>
                     {typedInvalid && (
                       <span className="field-error">
@@ -668,7 +764,7 @@ export default function TurnDetectionTab() {
         footer={<Button variant="ghost" onClick={() => setExportFallback(null)}>Close</Button>}
       >
         <textarea
-          className="input"
+          className="textarea"
           aria-label="Exported configuration JSON"
           readOnly
           rows={12}
@@ -678,126 +774,187 @@ export default function TurnDetectionTab() {
         />
       </Modal>
 
-      {/* ── Import: paste → validate → preview → apply ── */}
+      {/* ── Import: paste step, then a full-width preview step ── */}
       <Modal
         open={importOpen}
         onClose={() => !applying && setImportOpen(false)}
         title="Import Configuration"
         sub="Paste a Turn Detection configuration copied from any bot in any workspace."
         wide
-        footer={
+        footer={importView === "paste" ? (
           <>
+            <Button variant="ghost" onClick={() => setImportOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              icon="search"
+              disabled={!importText.trim()}
+              onClick={() => runValidation(importText)}
+            >
+              Validate &amp; Preview
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              icon="edit"
+              disabled={applying}
+              title="Return to the pasted JSON"
+              onClick={() => setImportView("paste")}
+            >
+              Edit JSON
+            </Button>
             <Button variant="ghost" onClick={() => setImportOpen(false)} disabled={applying}>Cancel</Button>
             <Button
               variant="primary"
               icon="check"
               busy={applying}
-              disabled={!previewDocument || applying}
-              title={previewDocument ? "Save the previewed configuration for this workspace" : "Validate the pasted JSON first"}
+              disabled={applying}
+              title="Save the previewed configuration for this workspace"
               onClick={() => void applyImport()}
             >
               Apply Configuration
             </Button>
           </>
-        }
+        )}
       >
-        <div className="col gap-12">
-          <p className="t-sub" style={{ margin: 0 }}>
-            Turn detection is tenant-wide, so applying updates every bot in this workspace.
-            Nothing is saved until you click Apply Configuration, and an invalid document is
-            never applied — current settings stay unchanged.
-          </p>
-          {dirty && (
-            <Callout tone="warning" title="Unsaved changes on this page">
-              Applying an imported configuration replaces the unsaved edits on this page.
-            </Callout>
-          )}
-          <textarea
-            className="input"
-            aria-label="Configuration JSON"
-            rows={9}
-            style={MONO_TEXT}
-            placeholder={`{\n  "kind": "echosphere.turn-detection",\n  "schemaVersion": ${config.schemaVersion},\n  "mode": "custom",\n  "overrides": { … }\n}`}
-            value={importText}
-            onChange={(event) => {
-              setImportText(event.target.value);
-              setImportResult(null);
-              setApplyError(null);
-            }}
-          />
-          <div className="row gap-8 wrap">
-            <Button
-              icon="search"
-              disabled={!importText.trim() || applying}
-              onClick={() => setImportResult(parseTurnDetectionImport(config, importText))}
-            >
-              Validate &amp; Preview
-            </Button>
-            {previewDocument && (
-              <span className="chip chip-good"><Icon name="check-circle" size={12} /> Valid configuration</span>
+        {importView === "paste" ? (
+          <div className="col gap-12">
+            <div className="col gap-4">
+              <span className="t-micro row gap-6">
+                <Icon name="building" size={12} style={{ flexShrink: 0 }} />
+                Turn detection is tenant-wide — applying updates every bot in this workspace.
+              </span>
+              <span className="t-micro row gap-6">
+                <Icon name="shield" size={12} style={{ flexShrink: 0 }} />
+                Nothing is saved until you apply, and an invalid document is never applied — current settings stay unchanged.
+              </span>
+            </div>
+            {dirty && (
+              <Callout tone="warning" title="Unsaved changes on this page">
+                Applying an imported configuration replaces the unsaved edits on this page.
+              </Callout>
+            )}
+            <div className="col gap-6">
+              <div className="row-between gap-8 wrap">
+                <span className="field-label">Configuration JSON</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="copy"
+                  title="Read the copied configuration from the clipboard and preview it"
+                  onClick={() => void pasteFromClipboard()}
+                >
+                  Paste from Clipboard
+                </Button>
+              </div>
+              <textarea
+                className="textarea"
+                aria-invalid={(importResult && importResult.errors.length > 0) || undefined}
+                aria-label="Configuration JSON"
+                rows={11}
+                style={MONO_TEXT}
+                placeholder={`{\n  "kind": "echosphere.turn-detection",\n  "schemaVersion": ${config.schemaVersion},\n  "mode": "custom",\n  "overrides": { … }\n}`}
+                value={importText}
+                onChange={(event) => {
+                  setImportText(event.target.value);
+                  setImportResult(null);
+                  setApplyError(null);
+                }}
+              />
+            </div>
+            {importResult && importResult.errors.length > 0 && (
+              <Callout
+                tone="critical"
+                title={`Configuration is invalid — ${importResult.errors.length} ${importResult.errors.length === 1 ? "issue" : "issues"}`}
+              >
+                {importResult.errors.map((error) => <div key={error}>{error}</div>)}
+              </Callout>
             )}
           </div>
-          {importResult && importResult.errors.length > 0 && (
-            <Callout
-              tone="critical"
-              title={`Configuration is invalid — ${importResult.errors.length} ${importResult.errors.length === 1 ? "issue" : "issues"}`}
-            >
-              {importResult.errors.map((error) => <div key={error}>{error}</div>)}
-            </Callout>
-          )}
-          {importResult?.warnings.map((warning) => (
-            <Callout key={warning} tone="warning">{warning}</Callout>
-          ))}
-          {previewDocument && (
-            <section className="card">
-              <div className="card-header">
-                <div className="col gap-2">
-                  <span className="card-title">Preview</span>
-                  <span className="t-micro">Effective values after applying, compared with this workspace's current saved settings.</span>
-                </div>
-                <span className={previewDocument.mode === "system_default" ? "chip chip-neutral" : previewDocument.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
-                  <Icon name={MODE_ICONS[previewDocument.mode]} size={12} />
-                  {previewMode?.label ?? previewDocument.mode}
-                </span>
+        ) : previewDocument && (
+          <div className="col gap-12">
+            <div className="row gap-8 wrap">
+              <span className="chip chip-good"><Icon name="check-circle" size={12} /> Valid configuration</span>
+              <span className={previewDocument.mode === "system_default" ? "chip chip-neutral" : previewDocument.mode === "recommended" ? "chip chip-info" : "chip chip-brand"}>
+                <Icon name={MODE_ICONS[previewDocument.mode]} size={12} />
+                {previewMode?.label ?? previewDocument.mode} mode
+              </span>
+              <span className="chip chip-neutral">
+                {previewChangeCount === 0 ? "No value changes" : `${previewChangeCount} ${previewChangeCount === 1 ? "value" : "values"} will change`}
+              </span>
+            </div>
+            {importResult?.warnings.map((warning) => (
+              <Callout key={warning} tone="warning">{warning}</Callout>
+            ))}
+            {previewDocument.mode !== config.mode && (
+              <span className="t-sub" style={{ fontSize: 13 }}>
+                Mode changes from <strong>{savedMode?.label ?? config.mode}</strong> to{" "}
+                <strong>{previewMode?.label ?? previewDocument.mode}</strong>.
+              </span>
+            )}
+            <span className="t-micro">
+              Effective values after applying, compared with this workspace's current saved settings.
+              Values not listed stay as they are.
+            </span>
+            {previewChangeCount === 0 ? (
+              <div className="td-import-empty">
+                <Icon name="check-circle" size={18} />
+                <span className="t-sub">All effective values match the current configuration — applying only updates the stored mode.</span>
               </div>
-              <div className="col gap-12" style={{ padding: 16 }}>
-                {previewDocument.mode !== config.mode && (
-                  <span className="t-sub">
-                    Mode changes from <strong>{savedMode?.label ?? config.mode}</strong> to{" "}
-                    <strong>{previewMode?.label ?? previewDocument.mode}</strong>.
+            ) : previewChanges.map(({ transport: item, rows }) => (
+              <section className="card" key={item.id}>
+                <div className="card-header">
+                  <span className="card-title row gap-6">
+                    <Icon name={TRANSPORT_ICONS[item.id]} size={14} />
+                    {item.label}
                   </span>
-                )}
-                {previewChangeCount === 0 ? (
-                  <span className="t-sub">All effective values match the current configuration.</span>
-                ) : previewChanges.map(({ transport: item, rows }) => (
-                  <div className="col gap-6" key={item.id}>
-                    <span className="t-strong row gap-6" style={{ fontSize: 13 }}>
-                      <Icon name={TRANSPORT_ICONS[item.id]} size={14} />
-                      {item.label}
-                      <span className="t-micro">
-                        {rows.length ? `${rows.length} ${rows.length === 1 ? "value" : "values"} will change` : "no changes"}
-                      </span>
-                    </span>
-                    {rows.map(({ field, current, imported }) => (
-                      <div className="row-between gap-8" key={`${field.group}.${field.key}`} style={{ fontSize: 12.5 }}>
-                        <span>{field.label}</span>
-                        <span className="t-num">
-                          {fmtFieldValue(field, current)} → <strong>{fmtFieldValue(field, imported)}</strong>
-                          {field.valueType !== "boolean" && ` ${field.unit}`}
-                        </span>
-                      </div>
-                    ))}
+                  <span className={rows.length ? "chip chip-brand" : "chip chip-neutral"}>
+                    {rows.length ? `${rows.length} ${rows.length === 1 ? "change" : "changes"}` : "No changes"}
+                  </span>
+                </div>
+                {rows.length > 0 && (
+                  <div className="table-wrap">
+                    <table className="table td-import-table">
+                      <thead>
+                        <tr>
+                          <th>Setting</th>
+                          <th className="num">Current</th>
+                          <th className="num">New value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(({ field, current, imported }) => (
+                          <tr key={`${field.group}.${field.key}`}>
+                            <td>
+                              <div className="col gap-2">
+                                <span>{field.label}</span>
+                                <span className="t-micro">{sectionLabel(field.section)}</span>
+                              </div>
+                            </td>
+                            <td className="num t-num td-import-current">
+                              {fmtFieldValue(field, current)}
+                              {field.valueType !== "boolean" && <span className="td-import-unit"> {field.unit}</span>}
+                            </td>
+                            <td className="num t-num td-import-new">
+                              {fmtFieldValue(field, imported)}
+                              {field.valueType !== "boolean" && <span className="td-import-unit"> {field.unit}</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                ))}
-              </div>
-            </section>
-          )}
-          {applyError && (
-            <Callout tone="critical" title="Could not apply configuration">
-              {applyError} Existing settings were left unchanged.
-            </Callout>
-          )}
-        </div>
+                )}
+              </section>
+            ))}
+            {applyError && (
+              <Callout tone="critical" title="Could not apply configuration">
+                {applyError} Existing settings were left unchanged.
+              </Callout>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );

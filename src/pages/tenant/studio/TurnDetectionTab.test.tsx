@@ -81,11 +81,32 @@ describe("TurnDetectionTab", () => {
     const user = userEvent.setup();
     render(<TurnDetectionTab />);
     expect(await screen.findByLabelText("VAD confidence value")).toHaveValue(0.8);
-    expect(screen.getByText("Range 0.3–0.95 ratio · Default 0.7 · Recommended 0.65")).toBeInTheDocument();
+    expect(screen.getByText("Range 0.3–0.95 ratio")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Default 0.7" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recommended 0.65" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Telephony" }));
     expect(screen.getByLabelText("VAD confidence value")).toHaveValue(0.6);
-    expect(screen.getByText("Range 0.3–0.95 ratio · Default 0.6 · Recommended 0.58")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Default 0.6" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recommended 0.58" })).toBeInTheDocument();
     expect(screen.getByText("PSTN and SIP calls.")).toBeInTheDocument();
+  });
+
+  it("Default and Recommended quick-set buttons update the draft, and Default drops the override", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Recommended 0.65" }));
+    expect(screen.getByLabelText("VAD confidence value")).toHaveValue(0.65);
+    await user.click(screen.getByRole("button", { name: "Default 0.7" }));
+    expect(screen.getByLabelText("VAD confidence value")).toHaveValue(0.7);
+    expect(screen.getByRole("button", { name: "Default 0.7" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    // The confidence override is removed rather than stored as an explicit
+    // default-equal value, so the saved document stays sparse.
+    await waitFor(() => expect(api.saveTurnDetectionSettings).toHaveBeenCalledWith(
+      "custom",
+      { browser: { noise_gate: { noise_margin_db: 12 } } },
+    ));
   });
 
   it("saves the data-driven Recommended profile marker without copied values", async () => {
@@ -197,7 +218,7 @@ describe("TurnDetectionTab", () => {
     });
   });
 
-  it("import rejects invalid JSON and keeps Apply disabled", async () => {
+  it("import rejects invalid JSON, stays on the paste step and offers no Apply", async () => {
     const user = userEvent.setup();
     render(<TurnDetectionTab />);
     await screen.findByText("Speech Detection");
@@ -205,7 +226,7 @@ describe("TurnDetectionTab", () => {
     fireEvent.change(screen.getByLabelText("Configuration JSON"), { target: { value: "{ not json" } });
     await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
     expect(screen.getByText(/Not valid JSON/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Apply Configuration" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Apply Configuration" })).not.toBeInTheDocument();
     expect(api.saveTurnDetectionSettings).not.toHaveBeenCalled();
   });
 
@@ -224,11 +245,11 @@ describe("TurnDetectionTab", () => {
     await user.click(screen.getByRole("button", { name: "Validate & Preview" }));
     expect(screen.getByText("Browser · VAD confidence: must be between 0.3 and 0.95 ratio.")).toBeInTheDocument();
     expect(screen.getByText("Browser: unknown parameter 'turn_detection.bogus'.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Apply Configuration" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Apply Configuration" })).not.toBeInTheDocument();
     expect(api.saveTurnDetectionSettings).not.toHaveBeenCalled();
   });
 
-  it("valid import shows a preview of changing values and applies via the save API", async () => {
+  it("valid import shows a diff-table preview and applies via the save API", async () => {
     const user = userEvent.setup();
     render(<TurnDetectionTab />);
     await screen.findByText("Speech Detection");
@@ -244,11 +265,14 @@ describe("TurnDetectionTab", () => {
     expect(screen.getByText("Valid configuration")).toBeInTheDocument();
     // Browser loses its two saved overrides; telephony confidence becomes 0.75.
     const dialog = screen.getByRole("dialog", { name: "Import Configuration" });
-    expect(within(dialog).getByText("2 values will change")).toBeInTheDocument();
-    expect(within(dialog).getByText("1 value will change")).toBeInTheDocument();
-    const rows = within(dialog).getAllByText("VAD confidence").map((el) => el.closest("div")!);
-    expect(rows[0]).toHaveTextContent("0.8 → 0.7 ratio");
-    expect(rows[1]).toHaveTextContent("0.6 → 0.75 ratio");
+    expect(within(dialog).getByText("3 values will change")).toBeInTheDocument();
+    expect(within(dialog).getByText("2 changes")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 change")).toBeInTheDocument();
+    const rows = within(dialog).getAllByText("VAD confidence").map((el) => el.closest("tr")!);
+    expect(rows[0]).toHaveTextContent("0.8 ratio");
+    expect(rows[0]).toHaveTextContent("0.7 ratio");
+    expect(rows[1]).toHaveTextContent("0.6 ratio");
+    expect(rows[1]).toHaveTextContent("0.75 ratio");
     await user.click(screen.getByRole("button", { name: "Apply Configuration" }));
     await waitFor(() => expect(api.saveTurnDetectionSettings).toHaveBeenCalledWith(
       "custom",
@@ -256,6 +280,26 @@ describe("TurnDetectionTab", () => {
     ));
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Import Configuration" })).not.toBeInTheDocument());
+  });
+
+  it("Paste from Clipboard validates the copied document straight to preview, and Edit JSON returns", async () => {
+    const user = userEvent.setup();
+    await navigator.clipboard.writeText(JSON.stringify({
+      kind: "echosphere.turn-detection",
+      schemaVersion: 1,
+      mode: "recommended",
+      overrides: {},
+    }));
+    render(<TurnDetectionTab />);
+    await screen.findByText("Speech Detection");
+    await user.click(screen.getByRole("button", { name: "Import Configuration" }));
+    await user.click(screen.getByRole("button", { name: "Paste from Clipboard" }));
+    expect(await screen.findByText("Valid configuration")).toBeInTheDocument();
+    expect(screen.getByText("Recommended mode")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit JSON" }));
+    const textarea = screen.getByLabelText("Configuration JSON") as HTMLTextAreaElement;
+    expect(textarea.value).toContain('"mode":"recommended"');
+    expect(screen.getByRole("button", { name: "Validate & Preview" })).toBeEnabled();
   });
 
   it("a failed apply keeps the modal open and reports that settings are unchanged", async () => {
