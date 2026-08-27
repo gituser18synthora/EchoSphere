@@ -714,6 +714,41 @@ async def chat_test(
                     language_check=script_supports_language,
                 ):
                     reply = grounded_reply
+            elif result.get("responseMode") == "fixed" and reply:
+                # Live voice adapts a tenant-authored fixed step only when the
+                # caller has switched away from the bot's authoring language.
+                # Keep the browser/text tester in parity: without this branch
+                # a Devanagari workflow stayed Hindi after the tester reported
+                # language=en-IN, even though the same call worked in voice.
+                from shared.orchestration.response_modes import validate_grounded_reply
+                from voice_runtime.transcript_gate import script_supports_language
+
+                if not script_supports_language(reply, conversation_language):
+                    authored_reply = reply
+                    pending_question = str(result.get("nodePrompt") or "").strip()
+                    try:
+                        adapted_reply = await _testing_llm_reply(
+                            db, bot, body, conversation_language,
+                            verified_context=verified_context,
+                            extra_system=(
+                                "\n\n# Translate the scripted workflow step\n"
+                                "Return only the scripted step below in the "
+                                "caller's current language. Preserve every fact, "
+                                "amount, option and question. Do not answer the "
+                                "question, add advice, summarize, omit content or "
+                                "use markdown.\n"
+                                f"Script: {authored_reply}"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — authored fallback stands
+                        adapted_reply = None
+                    if adapted_reply and validate_grounded_reply(
+                        authored_reply, adapted_reply, conversation_language,
+                        require_question=bool(pending_question),
+                        must_include=result.get("responseMustInclude") or (),
+                        language_check=script_supports_language,
+                    ):
+                        reply = adapted_reply
             workflow_detail = {
                 "name": name,
                 "source": result["source"],

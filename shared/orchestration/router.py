@@ -104,8 +104,11 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     # Financial / medical hardship — cannot pay.
     ("hardship", re.compile(
         r"(?:paisa|paise|money|funds|पैसा|पैसे)\s*(?:hi\s+|ही\s+)?"
-        r"(?:bhi\s+|भी\s+)?(?:nahi|nahin|नहीं|नही)"
-        r"|no money|can ?not (?:pay|afford)|can'?t (?:pay|afford)"
+        r"(?:bhi\s+|भी\s+)?"
+        r"(?:(?:abhi|filhaal)\s+|(?:अभी|फिलहाल|फ़िलहाल)\s+)?"
+        r"(?:nahi|nahin|नहीं|नही)"
+        r"|no money|i (?:do not|don't|cannot|can't) have (?:any )?money"
+        r"|i have no money|can ?not (?:pay|afford)|can'?t (?:pay|afford)"
         r"|afford nahi|(?:payment|पेमेंट|pay|पे|bhugtan|भुगतान)\s+"
         r"(?:nahi|nahin|नहीं|नही)\s+(?:kar|कर|de|दे|ho|हो)"
         r"|(?:nahi|nahin|नहीं|नही)\s+(?:de|दे|bhar|भर)\s+"
@@ -121,7 +124,7 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
     # Busy now / call me later.
     ("callback", re.compile(
-        r"call ?back|baad (?:mein|me|में)|बाद में"
+        r"call ?back|call (?:me )?later|baad (?:mein|me|में)|बाद में"
         r"|(?:kal|parso|कल|परसों)\s+(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
         # "शाम को कॉल करना", "subah call karo" — a time + an imperative call.
         r"|(?:shaam|sham|subah|dopahar|शाम|सुबह|दोपहर)\s*(?:ko|को)?\s*"
@@ -146,6 +149,8 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("refusal", re.compile(
         r"(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|"
         r"करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)"
+        r"|(?:nahi|nahin|नहीं|नही)(?:\s+\w+){0,2}\s+"
+        r"(?:kar|कर)\s+(?:raha|rahi|रहा|रही|riha|रिहा)"
         r"|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)"
         r"|^\W*(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*"
         r"(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)"
@@ -171,7 +176,7 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("affirm", re.compile(
         r"^\W*(?:(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
         r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
-        r"हाँ|हां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
+        r"हाँ|हां|हा|हनां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
         r"ओके(?: जी)?|अच्छा)\W*){1,4}"
         r"(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
         r"shukriya|धन्यवाद|शुक्रिया)?\W*$",
