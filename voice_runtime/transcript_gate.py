@@ -147,7 +147,7 @@ _SCRIPT_PATTERNS = {
 # language_unsupported flow must keep handling) or a hallucinated sentence.
 _TRANSLITERATABLE_BLOCKS = (0x0980, 0x0A00, 0x0A80, 0x0B00)  # bn, pa, gu, or
 _DEVANAGARI_BASE = 0x0900
-_TRANSLITERATE_MAX_WORDS = 3
+_TRANSLITERATE_MAX_WORDS = 6
 
 
 def transliterate_to_devanagari(text: str) -> str:

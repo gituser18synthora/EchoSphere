@@ -271,11 +271,13 @@ class TestUserSignalClassifier:
     def test_financial_hardship_hindi_and_hinglish(self):
         for text in (
             "पर मेरे पास पैसे नहीं हैं।",
+            "नहीं यार, मेरे पास पैसे अभी नहीं हैं।",
             "mere paas paise nahi hain",
             "main abhi payment nahi kar sakta",
             "पेमेंट नहीं कर पाऊंगा",
             "salary nahi aayi hai",
             "I have no money right now",
+            "I do not have money right now",
             "मैं बीमार हूँ, अस्पताल में हूँ",
         ):
             assert self._signal(text) == "hardship", text
@@ -302,6 +304,7 @@ class TestUserSignalClassifier:
 
     def test_callback_and_busy(self):
         for text in ("abhi busy hun, baad mein call karna", "kal karunga call",
+                     "Please call me later",
                      "मीटिंग में हूँ", "abhi baat nahi kar sakta"):
             assert self._signal(text) == "callback", text
 

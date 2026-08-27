@@ -152,6 +152,15 @@ class TestZeroLlmFastPaths:
         fast = events(brain, "deterministic_fast_path")
         assert fast and fast[-1]["rule"] == "payment_commitment"
 
+    async def test_clear_payment_hardship_skips_the_decision_call(self):
+        llm = _AgenticLLMStub([])
+        brain = make_agentic_brain(context=snapshot(), llm=llm, verified=True)
+        await turn(brain, "नहीं यार, मेरे पास पैसे अभी नहीं हैं।")
+        assert decision_calls(llm) == []
+        assert brain._policy.hardship_raised
+        fast = events(brain, "deterministic_fast_path")
+        assert fast and fast[-1]["rule"] == "payment_hardship"
+
     async def test_fast_path_turns_never_start_a_decision_prefetch(self):
         llm = _AgenticLLMStub([])
         brain = make_agentic_brain(

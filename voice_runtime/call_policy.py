@@ -1238,12 +1238,12 @@ class CollectionCallPolicy:
         if signal == "agent_request" and words <= self._FAST_PATH_AGENT_MAX_WORDS:
             return "agent_requested"
 
-        # Clear payment willingness/unwillingness while the recovery
+        # Clear payment willingness/unwillingness or inability while the recovery
         # discussion is waiting for exactly that answer. Identity must be
         # confirmed and nothing else open — any blocker means the reply is a
         # judgement call.
         if (
-            signal in ("payment_intent", "refusal")
+            signal in ("payment_intent", "refusal", "hardship")
             and self.verified
             and not self.wrong_party
             and not self.blockers()
@@ -1253,6 +1253,8 @@ class CollectionCallPolicy:
         ):
             if signal == "refusal":
                 return "payment_refusal"
+            if signal == "hardship":
+                return "payment_hardship"
             if self._CLEAR_COMMITMENT.search(stripped):
                 return "payment_commitment"
         return None

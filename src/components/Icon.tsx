@@ -117,6 +117,36 @@ const paths: Record<string, ReactNode> = {
       <path d="M15.5 15.5 21 21" />
     </>
   ),
+  "zoom-in": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M15.5 15.5 21 21M10.5 8v5M8 10.5h5" />
+    </>
+  ),
+  "zoom-out": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M15.5 15.5 21 21M8 10.5h5" />
+    </>
+  ),
+  maximize: <path d="M9 3H3v6M15 3h6v6M9 21H3v-6M15 21h6v-6" />,
+  grip: (
+    <>
+      <circle cx="9" cy="5.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="5.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="18.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="18.5" r="1.1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.4 9.2a2.7 2.7 0 0 1 5.2 1c0 1.8-2.6 2.2-2.6 3.8" />
+      <circle cx="12" cy="17.2" r="0.8" fill="currentColor" stroke="none" />
+    </>
+  ),
   "chevron-down": <path d="M6 9l6 6 6-6" />,
   "chevron-up": <path d="M6 15l6-6 6 6" />,
   "chevron-right": <path d="M9 6l6 6-6 6" />,

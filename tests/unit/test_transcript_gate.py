@@ -236,6 +236,26 @@ class TestCorroboratedWeakEvidence:
 
 
 class TestUnsupportedLanguage:
+    def test_telephony_hindi_miswritten_in_gujarati_is_recovered(self):
+        verdict = assess_transcript(
+            "હા હા.",
+            q(language="gu-IN", language_probability=0.643,
+              audio_seconds=1.216, snr_db=25.3),
+        )
+        assert verdict.accepted
+        assert verdict.reason == "transliterated_short_reply"
+        assert verdict.normalized_text == "हा हा."
+
+    def test_telephony_hindi_refusal_miswritten_in_gurmukhi_is_recovered(self):
+        verdict = assess_transcript(
+            "ਨਹੀਂ ਮਾਮ ਨਹੀਂ ਕਰ ਰਿਹਾ।",
+            q(language="pa-IN", language_probability=0.983,
+              audio_seconds=2.176, snr_db=37.9),
+        )
+        assert verdict.accepted
+        assert verdict.reason == "transliterated_short_reply"
+        assert verdict.normalized_text == "नहीं माम नहीं कर रिहा।"
+
     def test_foreign_script_hallucinations_rejected(self):
         cases = {
             "ta": "ஒரு கேள்வி உள்ளது",
