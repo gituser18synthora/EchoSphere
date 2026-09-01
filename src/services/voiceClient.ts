@@ -157,6 +157,9 @@ export class VoiceClient {
   /* Barge-in gate: audio frames that were already in flight when the server
      interrupted are dropped until the next reply actually starts speaking. */
   private suppressAudio = false;
+  /* Mic mute: zeroed chunks keep streaming so the runtime's VAD/turn clock
+     stays continuous — dropping frames looks like a network stall instead. */
+  private muted = false;
   sessionConfig: VoiceSessionConfig | null = null;
 
   constructor(callbacks: VoiceClientCallbacks = {}) {
@@ -184,6 +187,15 @@ export class VoiceClient {
   /** Stop and clear all queued bot audio (used on interruption). */
   stopPlayback(): void {
     this.playback?.stop();
+  }
+
+  /** Mute/unmute the caller's mic for the live session. */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+  }
+
+  get isMuted(): boolean {
+    return this.muted;
   }
 
   /** Tear the session down: socket, mic tracks, audio contexts. */
@@ -341,10 +353,12 @@ export class VoiceClient {
     merged.set(samples, this.pending.length);
     let offset = 0;
     while (merged.length - offset >= CHUNK_SAMPLES) {
-      const int16 = new Int16Array(CHUNK_SAMPLES);
-      for (let i = 0; i < CHUNK_SAMPLES; i++) {
-        const v = Math.max(-1, Math.min(1, merged[offset + i]));
-        int16[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      const int16 = new Int16Array(CHUNK_SAMPLES); // stays all-zero while muted
+      if (!this.muted) {
+        for (let i = 0; i < CHUNK_SAMPLES; i++) {
+          const v = Math.max(-1, Math.min(1, merged[offset + i]));
+          int16[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+        }
       }
       ws.send(int16.buffer);
       offset += CHUNK_SAMPLES;

@@ -1471,6 +1471,21 @@ class ConversationBrain(FrameProcessor):
             await self._schedule_finalize(0.0, ignore_open_turn=True)
             return
         if self._turn_active:
+            # A periodic Sarvam barge-in flush closes one STT segment while
+            # physical VAD speech is still active.  It is useful immediately
+            # for confirming the interruption, but it is NOT evidence that
+            # the caller has finished their utterance.  Treating a punctuated
+            # segment as a complete thought here previously dispatched a reply
+            # with ``user_speech_end_at == 0`` and talked over the rest of the
+            # caller's sentence.  Buffer it until a real VAD stop (or another
+            # physical start/stop cycle) closes the turn.
+            if getattr(frame, "_echosphere_mid_utterance", False):
+                await self._cancel_finalize()
+                self._recorder.add_event(
+                    "stt_mid_utterance_segment_buffered", text=text[:200]
+                )
+                self._start_decision_prefetch()
+                return
             # An open user turn with a final in hand means the VAD already
             # reported a stop (that flush is what produced this transcript) and
             # the caller is inside the pause window. If what they have said so

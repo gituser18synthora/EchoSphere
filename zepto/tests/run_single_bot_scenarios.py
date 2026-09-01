@@ -155,8 +155,8 @@ SUITES = {
         # One utterance answers all three incident enquiries -> none re-asked.
         ("MDND 02 multi-answer: one utterance answers all incident enquiries",
          [("mdnd wala issue hai", [(TR, "n_ask_issue_desc")]),
-          ("main customer ki location par pahunch gaya tha, maine call kiya "
-           "tha aur order guard ko de diya tha, phir bhi deduction hua",
+          ("haan maine call kiya tha aur uske location par bhi gaya tha, "
+           "order guard ko de diya tha, phir bhi deduction hua",
            [(SL, '"m_reached_location": "yes (reached the location)"'),
             (SL, '"m_called_customer": "yes (called the customer)"'),
             (SL, '"m_handover_recipient": "guard / security"'),

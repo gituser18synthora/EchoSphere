@@ -65,6 +65,46 @@ class TestFinalizedFlag:
         assert forwarded == [frame]
         assert frame.finalized is True
 
+    async def test_mid_speech_flush_is_marked_as_segment_not_utterance(
+        self, monkeypatch
+    ):
+        forwarded = []
+
+        async def _base_push(self, frame, direction=None):
+            forwarded.append(frame)
+
+        monkeypatch.setattr(SarvamSTTService, "push_frame", _base_push)
+        service = EndpointedSarvamSTTService.__new__(EndpointedSarvamSTTService)
+        service._physical_speech_active = True
+
+        frame = TranscriptionFrame(
+            "हाँ मैंने कॉल किया था और लोकेशन पर भी गया था।", "caller", "t"
+        )
+        await service.push_frame(frame)
+
+        assert forwarded == [frame]
+        assert frame.finalized is True
+        assert frame._echosphere_mid_utterance is True
+
+    async def test_post_vad_stop_final_is_not_marked_mid_utterance(
+        self, monkeypatch
+    ):
+        forwarded = []
+
+        async def _base_push(self, frame, direction=None):
+            forwarded.append(frame)
+
+        monkeypatch.setattr(SarvamSTTService, "push_frame", _base_push)
+        service = EndpointedSarvamSTTService.__new__(EndpointedSarvamSTTService)
+        service._physical_speech_active = False
+
+        frame = TranscriptionFrame("गार्ड को दिया था।", "caller", "t")
+        await service.push_frame(frame)
+
+        assert forwarded == [frame]
+        assert frame.finalized is True
+        assert frame._echosphere_mid_utterance is False
+
     async def test_already_finalized_frame_is_left_alone(self, monkeypatch):
         async def _base_push(self, frame, direction=None):
             pass

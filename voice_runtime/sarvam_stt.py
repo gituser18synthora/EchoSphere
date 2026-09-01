@@ -129,6 +129,12 @@ class EndpointedSarvamSTTService(SarvamSTTService):
         self._missing_final_task: asyncio.Task | None = None
         self._utterance_generation = 0
         self._transcript_generation = -1
+        # Sarvam also emits a ``data`` transcript for the periodic flushes we
+        # request while a caller is talking over the bot.  That transcript is
+        # final for the flushed SEGMENT, but not for the caller's UTTERANCE.
+        # Keep the physical VAD state so the brain can distinguish that case
+        # from the final produced after VADUserStoppedSpeakingFrame.
+        self._physical_speech_active = False
         self._recorder = recorder
         self._stt_stopping = False
         self._reconnect_attempts = 0
@@ -148,6 +154,15 @@ class EndpointedSarvamSTTService(SarvamSTTService):
         self, frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
     ):
         if isinstance(frame, TranscriptionFrame):
+            # Pipecat's ``finalized`` bit still needs to be True: it tells the
+            # turn-stop strategy that Sarvam has answered the flush and avoids
+            # its fixed STT safety-net delay.  The private marker separately
+            # tells our brain not to END an open turn on a barge-in segment.
+            setattr(
+                frame,
+                "_echosphere_mid_utterance",
+                bool(getattr(self, "_physical_speech_active", False)),
+            )
             # A delivered transcript proves the connection is healthy again.
             self._reconnect_attempts = 0
             self._socket_send_failed = False
@@ -274,11 +289,13 @@ class EndpointedSarvamSTTService(SarvamSTTService):
             self._bot_speaking = False
             await self._stop_barge_in_flush()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._physical_speech_active = True
             self._utterance_generation += 1
             await self._stop_missing_final_retry()
             if self._bot_speaking:
                 self._start_barge_in_flush()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._physical_speech_active = False
             # The upstream service flushes on this frame itself; the periodic
             # loop has nothing further to do for this utterance.
             await self._stop_barge_in_flush()

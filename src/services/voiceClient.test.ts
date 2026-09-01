@@ -225,3 +225,30 @@ describe("VoiceClient message handling", () => {
     expect(() => client.handleMessage("{not json")).not.toThrow();
   });
 });
+
+describe("VoiceClient mic mute", () => {
+  it("keeps streaming zeroed chunks while muted, real audio after unmute", () => {
+    const client = new VoiceClient();
+    const sent: ArrayBuffer[] = [];
+    const internals = client as unknown as {
+      ws: { readyState: number; send: (b: ArrayBuffer) => void } | null;
+      pushSamples: (frame: Float32Array) => void;
+    };
+    internals.ws = { readyState: WebSocket.OPEN, send: (b) => sent.push(b) };
+    const frame = new Float32Array(512).fill(0.5); // exactly one 512-sample chunk
+
+    internals.pushSamples(frame);
+    expect(sent).toHaveLength(1);
+    expect(new Int16Array(sent[0]).some((v) => v !== 0)).toBe(true);
+
+    client.setMuted(true);
+    expect(client.isMuted).toBe(true);
+    internals.pushSamples(frame);
+    expect(sent).toHaveLength(2); // the stream never stops — silence, not a stall
+    expect(new Int16Array(sent[1]).every((v) => v === 0)).toBe(true);
+
+    client.setMuted(false);
+    internals.pushSamples(frame);
+    expect(new Int16Array(sent[2]).some((v) => v !== 0)).toBe(true);
+  });
+});

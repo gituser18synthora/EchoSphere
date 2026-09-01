@@ -18,6 +18,7 @@ vi.mock("@/services/api", () => ({
   testBotChat: vi.fn(),
   simulateTurn: vi.fn(),
   createVoiceSession: vi.fn(),
+  getChannel: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), user: { tenantId: "tn_x" }, hasPermission: () => true }),
@@ -71,12 +72,19 @@ describe("TestingTab — real runtime chat testing", () => {
     vi.clearAllMocks();
     vi.mocked(api.listScenarios).mockResolvedValue([]);
     vi.mocked(api.listPrompts).mockResolvedValue([]);
+    vi.mocked(api.getChannel).mockResolvedValue({
+      id: "ch_1", type: "voice", botId: "bot_x", status: "configured", enabled: true,
+      detail: "+918047133651 · freeswitch", workflow: "—", lastTest: null,
+      config: { phoneNumber: "+918047133651", telephonyProvider: "freeswitch" },
+    } as never);
     vi.mocked(api.testBotChat)
       .mockResolvedValueOnce(TURN_1 as never)
       .mockResolvedValueOnce(TURN_2 as never);
   });
 
   async function sendMessage(user: ReturnType<typeof userEvent.setup>, text: string) {
+    // The phone view is the default — text turns happen in the console.
+    await user.click(screen.getByRole("button", { name: "Test console" }));
     await user.type(screen.getByPlaceholderText(/I need to see a doctor/), text);
     await user.click(screen.getByRole("button", { name: "Send" }));
   }
@@ -166,6 +174,53 @@ describe("TestingTab — real runtime chat testing", () => {
 
     expect(await screen.findByText("Published hello")).toBeInTheDocument();
     expect(screen.queryByText("Draft hello")).not.toBeInTheDocument();
+  });
+
+  it("opens on the phone view by default, showing the channel's configured number and no debug console", async () => {
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    // No click — the phone view is the landing view of the Testing tab.
+    expect(screen.getByRole("button", { name: "Phone view" })).toHaveAttribute("aria-pressed", "true");
+    const number = await screen.findByTestId("phone-call-number");
+    expect(number).toHaveTextContent("+918047133651");
+    expect(api.getChannel).toHaveBeenCalledWith("bot_x", "voice");
+    expect(screen.getByText("via FreeSWITCH")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start call" })).toBeInTheDocument();
+    // The test console (with its trace/debug surfaces) is hidden, not unmounted.
+    expect(screen.getByText("Execution trace")).not.toBeVisible();
+    expect(screen.getByText("Regression suite")).not.toBeVisible();
+  });
+
+  it("phone view degrades to a no-number label when the channel is unavailable", async () => {
+    vi.mocked(api.getChannel).mockRejectedValue(new Error("Forbidden"));
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    const number = await screen.findByTestId("phone-call-number");
+    expect(number).toHaveTextContent("No voice number assigned");
+  });
+
+  it("switching between console and phone view keeps the chat session intact", async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+
+    await sendMessage(user, "i need a plan");
+    await screen.findByText(/How much can you pay per month/);
+
+    await user.click(screen.getByRole("button", { name: "Phone view" }));
+    expect(screen.getByTestId("phone-call-view")).toBeVisible();
+    // The phone view never shows the transcript — it lives only in the console.
+    expect(screen.getByText(/How much can you pay per month/)).not.toBeVisible();
+    expect(screen.getByTestId("phone-call-view")).not.toHaveTextContent(/How much can you pay/);
+    await user.click(screen.getByRole("button", { name: "Test console" }));
+
+    // The transcript survived the round trip…
+    expect(screen.getByText(/How much can you pay per month/)).toBeVisible();
+    // …and the next turn still reuses the same backend session id.
+    await sendMessage(user, "2500");
+    await screen.findByText(/Goodbye!/);
+    expect(api.testBotChat).toHaveBeenLastCalledWith(
+      "bot_x", "2500", "ct_abc123", expect.anything(), "hi-IN",
+    );
   });
 
   it("shows an MM:SS.xx timestamp on every simulator message", async () => {

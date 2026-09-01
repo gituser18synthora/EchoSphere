@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Prompt, SimulateTrace, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
+import { getChannel, listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
 import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
 import { Button, Callout, CardSkeleton, ErrorState, Field, StatusChip, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { JsonView } from "@/components/JsonView";
+import PhoneCallView from "./PhoneCallView";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
 import { formatChatTime, nowWithMicroseconds } from "@/services/chatTime";
@@ -30,6 +31,10 @@ const PROVIDER_NAMES: Record<string, string> = {
   sarvam: "Sarvam", elevenlabs: "ElevenLabs", openai: "OpenAI",
   azure: "Azure", google: "Google", mock: "Mock (dev)",
 };
+const TELEPHONY_NAMES: Record<string, string> = {
+  freeswitch: "FreeSWITCH", twilio: "Twilio", telnyx: "Telnyx",
+  plivo: "Plivo", exotel: "Exotel", vaani: "Vaani",
+};
 export function providerName(code?: string): string {
   if (!code) return "";
   return PROVIDER_NAMES[code.toLowerCase()] ?? code;
@@ -48,6 +53,13 @@ export function activeVoice(
 export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const scenariosQ = useAsync(() => listScenarios(bot.id), [bot.id]);
   const promptsQ = useAsync(() => listPrompts(bot.id), [bot.id]);
+  /* Dial-in number for the phone view — straight from the bot's voice
+     channel config. Missing channel / no channel-read permission simply
+     means no number is shown (never hardcoded). */
+  const voiceChannelQ = useAsync(
+    () => getChannel(bot.id, "voice").catch(() => null),
+    [bot.id],
+  );
   const navigate = useNavigate();
   const { toast, hasPermission } = useApp();
   const showCosts = flags.tenantCostVisibility && hasPermission("costs.view");
@@ -69,6 +81,11 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const [greetingAt, setGreetingAt] = useState(nowWithMicroseconds);
   const listRef = useRef<HTMLDivElement>(null);
 
+  /* Both views render over the same state and stay mounted (the inactive
+     one is just hidden), so switching never resets the running session.
+     The phone view is the default; the console is the drill-down. */
+  const [view, setView] = useState<"console" | "phone">("phone");
+
   /* ---------- Live voice session ---------- */
   const voiceRef = useRef<VoiceClient | null>(null);
   const awaitingVoiceGreetingRef = useRef(false);
@@ -77,6 +94,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const [voiceStatus, setVoiceStatus] = useState<"listening" | "bot_speaking">("listening");
   const [sessionConfig, setSessionConfig] = useState<VoiceSessionConfig | null>(null);
   const [liveLanguage, setLiveLanguage] = useState<string>("");
+  const [micMuted, setMicMuted] = useState(false);
 
   /* Tear the session down when leaving the tab */
   useEffect(() => () => { voiceRef.current?.stop(); voiceRef.current = null; }, []);
@@ -99,6 +117,13 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     setVoiceStatus("listening");
     setSessionConfig(null);
     setLiveLanguage("");
+    setMicMuted(false);
+  };
+
+  const toggleMute = () => {
+    const next = !micMuted;
+    setMicMuted(next);
+    voiceRef.current?.setMuted(next);
   };
 
   const startVoice = async () => {
@@ -164,6 +189,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       voiceRef.current = client;
       setVoiceActive(true);
       setVoiceStatus("listening");
+      setMicMuted(false);
       toast("Voice session live — speak into your microphone");
     } catch (e) {
       awaitingVoiceGreetingRef.current = false;
@@ -271,8 +297,46 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
     }
   };
 
+  const voiceChannel = voiceChannelQ.data;
+  const configuredNumber =
+    typeof voiceChannel?.config?.phoneNumber === "string" && voiceChannel.config.phoneNumber.trim()
+      ? voiceChannel.config.phoneNumber.trim()
+      : null;
+  const telephonyProvider =
+    typeof voiceChannel?.config?.telephonyProvider === "string"
+      ? TELEPHONY_NAMES[voiceChannel.config.telephonyProvider.toLowerCase()]
+        ?? voiceChannel.config.telephonyProvider
+      : undefined;
+
   return (
     <div className="col gap-16">
+      <div className="row">
+        <div className="segmented" role="group" aria-label="Testing view">
+          <button aria-pressed={view === "phone"} onClick={() => setView("phone")}>Phone view</button>
+          <button aria-pressed={view === "console"} onClick={() => setView("console")}>Test console</button>
+        </div>
+      </div>
+
+      {/* Phone view — a caller-style screen over the same live session.
+          Kept mounted (hidden) so switching views never drops state. */}
+      <div style={view === "phone" ? undefined : { display: "none" }}>
+        <PhoneCallView
+          bot={bot}
+          phoneNumber={configuredNumber}
+          numberLoading={voiceChannelQ.loading}
+          providerLabel={telephonyProvider}
+          callActive={voiceActive}
+          connecting={voiceConnecting}
+          botSpeaking={voiceStatus === "bot_speaking"}
+          languageLabel={languageName(liveLanguage) || undefined}
+          muted={micMuted}
+          onToggleMute={toggleMute}
+          onStartCall={() => void startVoice()}
+          onEndCall={stopVoice}
+        />
+      </div>
+
+      <div className="col gap-16" style={view === "console" ? undefined : { display: "none" }}>
       <div className="grid" style={{ gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "stretch" }}>
         {/* Simulator */}
         <div className="card col" style={{ height: 480 }}>
@@ -512,6 +576,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
           </div>
         )}
       </div>
+      </div>{/* /console view */}
     </div>
   );
 }
