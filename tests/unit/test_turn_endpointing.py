@@ -357,6 +357,38 @@ class TestAdaptiveEndpointing:
         assert handled == [], "a closed sentence fired on the short-reply window"
         assert await wait_for(handled)
 
+    async def test_mid_utterance_sarvam_flush_never_dispatches_open_turn(self):
+        """A barge-in flush may be punctuated but the caller still owns the floor."""
+        brain = make_brain(complete_endpoint=0.02)
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        partial = transcript(
+            "हाँ मैंने कॉल किया था और लोकेशन पर भी गया था।",
+            metrics={"audio_duration": 4.0, "processing_latency": 0.1},
+        )
+        partial._echosphere_mid_utterance = True
+
+        await brain.process_frame(partial, FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.08)
+
+        assert handled == []
+        assert brain._turn_active is True
+        assert "stt_mid_utterance_segment_buffered" in brain._recorder.event_kinds()
+
+        await brain.process_frame(
+            transcript(
+                "कस्टमर ने कहा मैं घर पर नहीं हूँ।",
+                metrics={"audio_duration": 3.0, "processing_latency": 0.1},
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await wait_for(handled)
+        assert handled == [
+            "हाँ मैंने कॉल किया था और लोकेशन पर भी गया था। "
+            "कस्टमर ने कहा मैं घर पर नहीं हूँ।"
+        ]
+
     async def test_early_endpoint_is_rolled_back_if_the_caller_continues(self):
         # The safety net for an optimistic endpoint: the reply in flight is
         # cancelled, the partial user turn rewound, and the COMBINED utterance
