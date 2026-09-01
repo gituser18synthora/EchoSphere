@@ -42,6 +42,7 @@ import re
 from dataclasses import dataclass
 
 from shared.orchestration.router import classify_user_signal, detect_hangup
+from shared.orchestration.spoken_numbers import pure_digit_payload
 from voice_runtime.endpointing import is_short_complete_reply
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,11 @@ _SCRIPT_PATTERNS = {
 _TRANSLITERATABLE_BLOCKS = (0x0980, 0x0A00, 0x0A80, 0x0B00)  # bn, pa, gu, or
 _DEVANAGARI_BASE = 0x0900
 _TRANSLITERATE_MAX_WORDS = 6
+
+# Identifier-context digit rescue (see assess_transcript): a misdetected
+# digit word is admitted only when the audio gate heard it clearly — a weak
+# segment stays rejected, so line noise can never inject digits into an id.
+_DIGIT_RESCUE_MIN_SNR_DB = 10.0
 
 
 def transliterate_to_devanagari(text: str) -> str:
@@ -452,12 +458,23 @@ def assess_transcript(
     text: str,
     quality: SegmentQuality | None = None,
     allowed_languages: frozenset[str] = ALLOWED_STT_LANGUAGES,
+    *,
+    numeric_context: bool = False,
 ) -> GateVerdict:
     """Decide whether one final STT segment is a real caller utterance.
 
     Rejections need positive evidence of noise or a foreign language; absent
     metadata the gate falls back to script analysis alone and otherwise
     accepts (fail open — dropping real speech is worse than answering noise).
+
+    ``numeric_context`` is set by the brain ONLY while an active workflow is
+    collecting a numeric identifier: a short segment whose every token is a
+    known digit word may then be admitted as its ASCII digits even when
+    auto-detection labelled it an unsupported language/script (Gujarati "સાત"
+    → "7"). The digit lexicon is strict, the audio-quality checks above still
+    apply, and anything carrying a non-number word stays subject to the
+    normal rules — so arbitrary unsupported-language sentences remain
+    rejected and the conversation language never follows a digit payload.
     """
     quality = quality or SegmentQuality()
     stripped = (text or "").strip()
@@ -481,10 +498,31 @@ def assess_transcript(
     ):
         return GateVerdict(False, "low_confidence", language)
 
+    def _digit_rescue() -> GateVerdict | None:
+        """Identifier dictation rescue for segments the gate would REJECT.
+
+        A clearly-heard segment made ONLY of digit-lexicon words is numeric
+        payload regardless of what language auto-detection guessed — while
+        (and only while) a workflow is collecting a numeric identifier.
+        Normalized to ASCII digits so no downstream script/language analysis
+        can misread it and it can never switch the conversation language.
+        """
+        if not numeric_context:
+            return None
+        if quality.snr_db is not None and quality.snr_db < _DIGIT_RESCUE_MIN_SNR_DB:
+            return None
+        digits = pure_digit_payload(stripped)
+        if not digits:
+            return None
+        return GateVerdict(True, "digit_payload", language, normalized_text=digits)
+
     # 3. Script evidence: hi/en/Hinglish is Devanagari and/or Latin, so text
     # dominated by any other script is a hallucination or misdetection.
     foreign_chars, foreign_share = _foreign_script_share(stripped, allowed_languages)
     if foreign_chars and foreign_share >= FOREIGN_SCRIPT_DOMINANCE:
+        rescued = _digit_rescue()
+        if rescued is not None:
+            return rescued
         # Short-utterance rescue: an auto-detect mislabel writes a real Hindi
         # interjection in the mislabeled language's script ("ਹਮ।", "ਓਕੇ ਜੀ।").
         # Recover it by offset transliteration instead of dropping the turn.
@@ -515,6 +553,9 @@ def assess_transcript(
     # not read as an allowed language; a confident label also outweighs bare
     # romanized text (translit/codemix modes write everything in Latin).
     if language is not None and language not in allowed_languages:
+        rescued = _digit_rescue()
+        if rescued is not None:
+            return rescued
         reads_allowed = any(
             script_supports_language(stripped, base) for base in allowed_languages
         )

@@ -6,6 +6,7 @@ masked before they are returned to logs or transcripts.
 """
 
 import re
+from functools import lru_cache
 from typing import Any
 
 # Built-in patterns per data_type. Deliberately conservative: false negatives
@@ -57,6 +58,72 @@ def _expects_digits(entity: dict[str, Any]) -> bool:
         return True
     pattern = entity.get("regexPattern") or entity.get("regex_pattern") or ""
     return bool(_DIGIT_PATTERN_HINT.search(str(pattern)))
+
+
+# Bounds used when configuration provides none: wide enough for any real
+# identifier, tight enough to keep buffers finite.
+_DEFAULT_MIN_DIGITS = 4
+_DEFAULT_MAX_DIGITS = 32
+# Varied probe digits so a pattern with value constraints still sees plausible
+# input (a run of one repeated digit can defeat e.g. "no all-same" rules).
+_LENGTH_PROBE = "98765432101234567890987654321012"
+
+
+@lru_cache(maxsize=256)
+def _pattern_length_bounds(pattern: str) -> tuple[int, int] | None:
+    """Digit-count bounds an authored pattern accepts, derived by PROBING.
+
+    Quantifier parsing breaks on alternations and lookarounds
+    ("([0-9]{10}|[0-9]{7})", "(?<![0-9])…"); probing the compiled pattern with
+    pure digit strings of every candidate length asks the pattern itself. A
+    length is acceptable only when the match consumes the WHOLE probe — a
+    12-digit probe that merely contains a 10-digit match means 12 is NOT a
+    valid identifier length. Patterns that need non-digit context (literal
+    prefixes like "BK\\d{6}") match no probe and fall back to wide defaults.
+    """
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    acceptable = [
+        length
+        for length in range(1, _DEFAULT_MAX_DIGITS + 1)
+        if (m := compiled.search(_LENGTH_PROBE[:length])) is not None
+        and m.end() - m.start() == length
+    ]
+    if not acceptable:
+        return None
+    return min(acceptable), max(acceptable)
+
+
+def identifier_length_bounds(entity: dict[str, Any]) -> tuple[int, int]:
+    """(min, max) digit-count an identifier entity accepts, from its config.
+
+    Derived from the authored regex when present (by probing — see
+    :func:`_pattern_length_bounds`), from the values in ``allowedValues`` when
+    they are digit strings, and from conservative per-type defaults otherwise.
+    Used to bound dictation buffers and to detect impossible (overflowing)
+    candidates — never to validate a value (the entity's own matcher stays
+    authoritative).
+    """
+    pattern = str(entity.get("regexPattern") or entity.get("regex_pattern") or "")
+    if pattern:
+        bounds = _pattern_length_bounds(pattern)
+        if bounds is not None:
+            return bounds
+    allowed = entity.get("allowedValues") or entity.get("allowed_values") or []
+    digit_values = [str(v) for v in allowed if str(v).isdigit()]
+    if digit_values:
+        lengths = [len(v) for v in digit_values]
+        return min(lengths), max(lengths)
+    data_type = entity.get("dataType") or entity.get("data_type") or "text"
+    if data_type == "phone":
+        return 8, 15  # E.164 bounds
+    if data_type == "card_last4":
+        return 4, 4
+    if data_type == "account_number":
+        return 9, 18
+    return _DEFAULT_MIN_DIGITS, _DEFAULT_MAX_DIGITS
 
 
 def _match_entity_text(text: str, entity: dict[str, Any]) -> tuple[str | None, str]:

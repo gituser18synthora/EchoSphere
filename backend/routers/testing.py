@@ -489,7 +489,9 @@ def _build_router(db: Session, bot: VoiceBot):
     ))
     return TurnRouter(
         intents=[{"name": i.name, "samples": i.samples or [], "route": i.route,
-                  "confidence_threshold": i.confidence_threshold} for i in intents],
+                  "confidence_threshold": i.confidence_threshold,
+                  "entities": i.entities or [],
+                  "optional_entities": i.optional_entities or []} for i in intents],
         has_knowledge_bases=has_kbs,
     )
 
@@ -712,6 +714,7 @@ async def chat_test(
                     require_question=bool(pending_question),
                     must_include=result.get("responseMustInclude") or (),
                     language_check=script_supports_language,
+                    verified_context=result.get("slots") or {},
                 ):
                     reply = grounded_reply
             elif result.get("responseMode") == "fixed" and reply:
@@ -747,6 +750,7 @@ async def chat_test(
                         require_question=bool(pending_question),
                         must_include=result.get("responseMustInclude") or (),
                         language_check=script_supports_language,
+                        verified_context=result.get("slots") or verified_context,
                     ):
                         reply = adapted_reply
             workflow_detail = {
@@ -1298,6 +1302,7 @@ async def simulate_turn(
                     require_question=bool(pending_question),
                     must_include=result.get("responseMustInclude") or (),
                     language_check=script_supports_language,
+                    verified_context=result.get("slots") or {},
                 ):
                     response_text = grounded_text
                     trace["route"] = "workflow_llm_grounded"

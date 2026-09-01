@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import extract, func, or_, select
 from sqlalchemy.orm import Session
@@ -578,6 +578,92 @@ def delete_tenant(
     )
     db.commit()
     return ok({"archived": True, "id": t.id})
+
+
+# ── Tenant export / import (Copy → Paste deployment) ─────────────────────────
+
+
+@router.get("/tenants/{tenant_id}/export")
+async def export_tenant_configuration(
+    tenant_id: str,
+    request: Request,
+    include_knowledge: bool = Query(True, alias="includeKnowledge"),
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Export the tenant's complete configuration (bots, prompts, voice,
+    workflows, tools, guardrail references, channels, knowledge, …) as a
+    portable id-preserving package for POST /tenants/import on another
+    environment. Secrets are exported as env:/secret:// references only."""
+    from backend.core.tenant_transfer import export_knowledge_plane, export_tenant
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or tenant.is_deleted:
+        raise NotFoundError("Tenant")
+    package = export_tenant(db, tenant)
+    if include_knowledge:
+        kb_ids = [k["id"] for k in package["resources"]["knowledge_sources"]]
+        package["knowledge_plane"] = await export_knowledge_plane(tenant.id, kb_ids)
+    record_audit(
+        db, user=user, action="Exported tenant configuration",
+        entity_type="tenant", entity_id=tenant.id, target_label=tenant.name,
+        tenant_id=tenant.id,
+        new_value={"includeKnowledge": include_knowledge,
+                   "bots": len(package["resources"]["bots"])},
+        request=request,
+    )
+    db.commit()
+    return ok(package)
+
+
+@router.post("/tenants/import")
+async def import_tenant_configuration(
+    request: Request,
+    package: dict = Body(...),
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Import a tenant package exported by GET /tenants/{id}/export,
+    PRESERVING every id (tenant, bots, workflows, tools, …). Idempotent:
+    creates what is missing, updates what already belongs to the same tenant,
+    and fails with 409 on any id owned by a different tenant/resource —
+    nothing is written on failure."""
+    from backend.core.bot_clone import delete_knowledge_documents
+    from backend.core.tenant_transfer import import_knowledge_plane, import_tenant
+
+    try:
+        report, kb_plane = import_tenant(db, package, user)
+        tenant_id = package["resources"]["tenant"]["id"]
+        record_audit(
+            db, user=user, action="Imported tenant configuration",
+            entity_type="tenant", entity_id=tenant_id,
+            target_label=package["resources"]["tenant"].get("name"),
+            tenant_id=tenant_id,
+            new_value={k: v for k, v in report.items() if k != "warnings"},
+            request=request,
+        )
+    except Exception:
+        db.rollback()  # all-or-nothing: no partially deployed tenant survives
+        raise
+
+    # The knowledge plane lives in PostgreSQL, so it cannot join the MySQL
+    # transaction: it is written first and compensated (created documents
+    # deleted) if the MySQL commit fails — same pattern as bot cloning.
+    created_documents: list[str] = []
+    try:
+        kb_ids = {k["id"] for k in package["resources"].get("knowledge_sources") or []}
+        created_documents = await import_knowledge_plane(
+            kb_plane, tenant_id=tenant_id, kb_ids=kb_ids, user_id=user.id,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        await delete_knowledge_documents(created_documents)
+        raise
+
+    report["tenantId"] = tenant_id
+    report["knowledgeDocuments"] = len(created_documents)
+    return ok(report)
 
 
 # ── Tenant settings ───────────────────────────────────────────────────────────

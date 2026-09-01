@@ -61,6 +61,39 @@ export const getTenantEffectiveGuardrails = (id: string): Promise<EffectiveGuard
   http.get(`/tenants/${id}/effective-guardrails`);
 export const archiveTenant = (id: string) => http.delete<{ archived: boolean }>(`/tenants/${id}`);
 
+/* Tenant Copy/Paste deployment. The exported package is the transfer
+   artifact: downloaded as one JSON file on the source environment and
+   re-uploaded verbatim on the target — every id (tenant, bots, workflows,
+   prompts, tools, channels, …) is preserved by the backend. */
+export interface TenantExportPackage {
+  kind: string;
+  schema_version: number;
+  exported_at?: string;
+  source?: { tenant_id?: string; name?: string };
+  shared?: Record<string, unknown>;
+  resources: {
+    tenant: { id: string; name?: string };
+    bots?: { id: string; name?: string }[];
+    [section: string]: unknown;
+  };
+  knowledge_plane?: { documents?: unknown[] } | null;
+}
+
+export interface TenantImportReport {
+  tenantId: string;
+  created: Record<string, number>;
+  updated: Record<string, number>;
+  reused: Record<string, number>;
+  remappedIds: Record<string, string>;
+  warnings: string[];
+  knowledgeDocuments: number;
+}
+
+export const exportTenantPackage = (id: string): Promise<TenantExportPackage> =>
+  http.get(`/tenants/${id}/export?includeKnowledge=true`);
+export const importTenantPackage = (pkg: TenantExportPackage): Promise<TenantImportReport> =>
+  http.post("/tenants/import", pkg);
+
 export const listSubscriptions = async (): Promise<Subscription[]> =>
   (await http.getPaged<Subscription>("/subscriptions?pageSize=200")).items;
 export const listInvoices = async (): Promise<Invoice[]> =>

@@ -77,6 +77,12 @@ class WorkflowState(TypedDict, total=False):
     # identifier, keyed by node id — a caller dictating "six zero … <pause>
     # one zero double one" accumulates across turns instead of failing.
     pending_digits: dict[str, str]
+    # Per-turn: set when the flow is paused at an ask node collecting a
+    # numeric identifier — {node, variable, entity, held_digits}. The brain
+    # uses it to run identifier-collection mode (tolerant inter-digit pause
+    # window, fragment buffering, batch-audio recovery) generically from the
+    # workflow's own awaited field schema.
+    awaiting_identifier: dict | None
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -739,6 +745,90 @@ def _ask_expects_digits(node: dict, variable: str) -> bool:
 # anything longer than this is no longer an identifier being dictated.
 _MAX_PENDING_DIGITS = 32
 
+# Explicit identifier restart — the buffered partial is discarded and the
+# caller re-dictates ("start again", "dobara", "phir se", "that was wrong",
+# "clear the number"). Only consulted at ask nodes that expect digits.
+_DIGITS_RESTART_RE = re.compile(
+    r"\b(start (again|over|afresh)|restart|from the (top|beginning)"
+    r"|that('s| was| is)? wrong|i said it wrong|wrong number"
+    r"|galat|galti|dobara|dubara|phir se|firse|fir se"
+    r"|clear (the )?(number|digits?|id|it)|scratch that)\b"
+    r"|फिर से|दोबारा|दुबारा|ग़लत|गलत|शुरू से",
+    re.I,
+)
+
+# "What did you note so far?" — answered from the actual pending buffer,
+# never with a claim that nothing was heard when digits are held.
+_DIGITS_READBACK_RE = re.compile(
+    r"\b(what ((did|have) you|do you have) "
+    r"(note|noted|got|written|captured|taken)( down| so far)?"
+    r"|read (it|that|the number) back|how many (digits?|numbers?)"
+    r"|kya note (kiya|kia)|kitne (ank|digits?|number))\b"
+    r"|क्या नोट किया|क्या लिखा|अब तक क्या|कितने अंक",
+    re.I,
+)
+
+
+def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) -> str:
+    """Speakable summary of the pending identifier buffer.
+
+    Sensitive identifiers (phone numbers, masked/PII entities) are never read
+    back in full — only the digit count and the last two digits.
+    """
+    if not digits:
+        return canned("wf_digits_none", lang)
+    entity = _ask_entity(node, variable)
+    sensitive = (
+        bool(entity.get("pii"))
+        or bool(entity.get("maskingEnabled") or entity.get("masking_enabled"))
+        or str(entity.get("dataType") or entity.get("data_type") or "") == "phone"
+    )
+    if sensitive:
+        key, spoken = "wf_digits_readback_masked", " ".join(digits[-2:])
+    else:
+        key, spoken = "wf_digits_readback", " ".join(digits)
+    return (
+        canned(key, lang)
+        .replace("{count}", str(len(digits)))
+        .replace("{digits}", spoken)
+    )
+
+
+def _apply_also_capture(node: dict, text: str, slots: dict,
+                        audit: list, node_id: str) -> None:
+    """Opt-in multi-answer capture for ask nodes (config ``alsoCapture``).
+
+    One caller utterance often answers several upcoming questions at once
+    ("haan call kiya tha aur guard ko de diya"). An ask node may declare
+    ``alsoCapture: [{"variable": ..., "entity": {...}}, ...]`` — after the
+    node's OWN slot is filled from an utterance, each listed entity matcher
+    runs against the same utterance and fills its slot when it matches, so
+    the later ask for that slot is skipped (slot_reused) instead of
+    mechanically re-asking what the caller already said. Matcher-based and
+    empty-slot-only by design: a free-text guess can never overwrite or
+    invent an answer, and an already-given answer is never replaced.
+    """
+    from shared.orchestration.entity_extractor import extract_entity
+
+    for spec in (_node_config(node).get("alsoCapture") or []):
+        if not isinstance(spec, dict):
+            continue
+        variable = str(spec.get("variable") or "").strip()
+        entity = spec.get("entity")
+        if not variable or not isinstance(entity, dict) or not entity:
+            continue
+        if str(slots.get(variable) or "").strip():
+            continue  # never overwrite an answer the caller already gave
+        extracted = extract_entity(text, {"name": variable, **entity})
+        if not extracted.get("matched"):
+            continue
+        value = str(extracted.get("value")
+                    or extracted.get("maskedValue") or "").strip()
+        if value:
+            slots[variable] = value
+            audit.append({"action": "also_captured", "node": node_id,
+                          "variable": variable})
+
 
 def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
     from shared.orchestration.entity_extractor import extract_entity
@@ -798,6 +888,45 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # QUESTION (its last interrogative sentence), or a generic short
         # re-prompt when the node text has no question to extract.
         return canned("wf_retry_prefix", lang) + _short_question(base, lang)
+
+    def _unmatched_reply(node: dict) -> str:
+        """Fixed, workflow-authored reply for fail-closed collection nodes.
+
+        Most workflows deliberately delegate an off-script turn to the LLM.
+        Identity/verification gates can opt out with ``unmatchedReply`` so an
+        unconsumed question or ambiguous answer can never be answered from
+        unverified context or drift into an authored catch-all branch.
+        """
+        value = _node_config(node).get("unmatchedReply")
+        return value.strip() if isinstance(value, str) else ""
+
+    def _intent_correction(node: dict, text: str) -> tuple[str, str, str] | None:
+        """Extract an explicitly configured identifier correction.
+
+        This is intentionally definition-driven rather than tied to orders:
+        an intent node may accept a corrected identifier and route it back to
+        its verification API without an extra ask/LLM turn. Invalid or stale
+        configuration is ignored safely.
+        """
+        correction = _node_config(node).get("identifierCorrection")
+        if not isinstance(correction, dict):
+            return None
+        variable = str(correction.get("variable") or "").strip()
+        target = str(correction.get("target") or "").strip()
+        if not variable or target not in nodes_by_id:
+            return None
+        correction_node = {
+            "id": f"{node.get('id') or 'intent'}__identifier_correction",
+            "config": {
+                "entity": correction.get("entity"),
+                "entityType": correction.get("entityType") or "text",
+                "pattern": correction.get("pattern"),
+                "allowedValues": correction.get("allowedValues"),
+                "synonyms": correction.get("synonyms"),
+            },
+        }
+        value = _extract_ask_value(correction_node, variable, text)
+        return (variable, value, target) if value is not None else None
 
     async def _step(state: WorkflowState) -> WorkflowState:
         # Generic engine strings follow the caller's conversation language —
@@ -876,24 +1005,66 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 # <pause> one zero double one" resolves as one value. The
                 # buffer is tried FIRST — a short continuation chunk ("1011")
                 # can look like a complete answer on its own.
+                from shared.orchestration.entity_extractor import (
+                    identifier_length_bounds,
+                )
                 from shared.orchestration.spoken_numbers import (
                     digits_dominant,
                     spoken_digit_sequence,
                 )
 
                 expects_digits = _ask_expects_digits(node, variable)
-                dictated = expects_digits and digits_dominant(text)
                 buffered = pending_digits.get(awaiting, "") if expects_digits else ""
+                handled = False
+                if expects_digits and buffered and _DIGITS_RESTART_RE.search(text):
+                    # Explicit restart: the partial is wrong — drop it. When
+                    # the same utterance re-dictates digits ("wrong — seven
+                    # zero…"), they seed the fresh buffer below.
+                    pending_digits.pop(awaiting, None)
+                    buffered = ""
+                    audit.append({"action": "identifier_reset",
+                                  "node": awaiting, "reason": "caller_restart"})
+                    if not spoken_digit_sequence(text):
+                        replies.append(canned("wf_digits_restart", lang))
+                        current = None  # stay awaiting, no retry burned
+                        handled = True
+                if (
+                    not handled
+                    and expects_digits
+                    and _DIGITS_READBACK_RE.search(text)
+                ):
+                    # "What did you note?" — answer from the ACTUAL pending
+                    # buffer (masked for sensitive fields), never a claim
+                    # that nothing was heard.
+                    replies.append(
+                        _digits_readback_reply(node, variable, buffered, lang)
+                    )
+                    audit.append({"action": "digits_readback", "node": awaiting,
+                                  "held_digits": len(buffered)})
+                    current = None  # stay awaiting, no retry burned
+                    handled = True
+                dictated = (
+                    not handled and expects_digits and digits_dominant(text)
+                )
                 fresh = spoken_digit_sequence(text) if dictated else ""
                 combined = (buffered + fresh)[:_MAX_PENDING_DIGITS]
+                max_digits = (
+                    identifier_length_bounds(_ask_entity(node, variable))[1]
+                    if expects_digits else _MAX_PENDING_DIGITS
+                )
                 value = None
                 accumulated = False
-                if buffered and fresh:
-                    value = _extract_ask_value(node, variable, combined)
-                    accumulated = value is not None
-                if value is None and not (guarded and _ask_is_free_text(node, variable)):
-                    value = _extract_ask_value(node, variable, text)
-                if value is not None:
+                if not handled:
+                    if buffered and fresh:
+                        value = _extract_ask_value(node, variable, combined)
+                        accumulated = value is not None
+                    if value is None and not (
+                        guarded and _ask_is_free_text(node, variable)
+                    ):
+                        value = _extract_ask_value(node, variable, text)
+                if handled:
+                    pass  # replied above; the ask stays open
+                elif value is not None:
                     slots[variable] = value
                     pending_digits.pop(awaiting, None)
                     node_retries.pop(awaiting, None)
@@ -902,15 +1073,39 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     if accumulated:
                         entry["accumulated_digits"] = len(combined)
                     audit.append(entry)
+                    _apply_also_capture(node, text, slots, audit, awaiting)
                     current, awaiting = _next_of(awaiting), None
+                elif dictated and fresh and len(combined) > max_digits:
+                    # Impossible buffer: longer than every length this
+                    # identifier can take, and no matcher accepted it. Keep a
+                    # separately-plausible fresh chunk as the new candidate,
+                    # drop the rest, explain once — and burn a retry so a
+                    # caller stuck in overflow escalates through the normal
+                    # ladder instead of looping forever.
+                    pending_digits.pop(awaiting, None)
+                    kept = fresh if len(fresh) <= max_digits else ""
+                    if kept:
+                        pending_digits[awaiting] = kept
+                    node_retries[awaiting] = node_retries.get(awaiting, 0) + 1
+                    audit.append({"action": "identifier_overflow",
+                                  "node": awaiting,
+                                  "dropped_digits": len(combined) - len(kept),
+                                  "held_digits": len(kept)})
+                    replies.append(canned("wf_digits_overflow", lang))
+                    current = None  # stay awaiting
                 elif dictated and fresh and combined != buffered:
                     # A partial identifier: hold what was heard, keep the ask
                     # open, and do not burn a retry — the caller is making
-                    # progress, not failing to answer.
+                    # progress, not failing to answer. The acknowledgement
+                    # reports how many digits are held; the brain paces how
+                    # often a partial turn reaches here at all.
                     pending_digits[awaiting] = combined
                     audit.append({"action": "digits_partial", "node": awaiting,
                                   "held_digits": len(combined)})
-                    replies.append(canned("wf_digits_partial", lang))
+                    replies.append(
+                        canned("wf_digits_partial_count", lang)
+                        .replace("{count}", str(len(combined)))
+                    )
                     current = None  # stay awaiting
                 elif signal is not None:
                     # The caller said something meaningful that the ask's
@@ -919,9 +1114,15 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # Do not burn a retry, advance, or speak a canned
                     # "didn't catch that"; the brain answers in context and
                     # the ask still accepts the next answer.
-                    audit.append({"action": "off_script", "node": awaiting,
-                                  "signal": signal})
-                    off_script = True
+                    fixed_reply = _unmatched_reply(node)
+                    if fixed_reply:
+                        audit.append({"action": "unmatched_fixed",
+                                      "node": awaiting, "signal": signal})
+                        replies.append(fixed_reply)
+                    else:
+                        audit.append({"action": "off_script", "node": awaiting,
+                                      "signal": signal})
+                        off_script = True
                     current = None  # stay awaiting
                 else:
                     retries = node_retries.get(awaiting, 0) + 1
@@ -947,12 +1148,35 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 chosen, why = _choose_intent_edge(
                     edge_meta_from.get(awaiting, []), text, signal
                 )
-                if chosen is None and why == "off_script":
+                # An explicitly supported answer (especially a human-agent
+                # request) wins over incidental digits in the same sentence.
+                # Treat digits as a correction only when no normal intent
+                # branch consumed the utterance.
+                correction = _intent_correction(node, text) if chosen is None else None
+                if correction is not None:
+                    variable, value, target = correction
+                    slots[variable] = value
+                    node_retries.pop(awaiting, None)
+                    audit.append({"action": "identifier_corrected",
+                                  "node": awaiting, "variable": variable,
+                                  "target": target})
+                    current, awaiting = target, None
+                    chosen, why = None, "identifier_correction"
+                fixed_reply = _unmatched_reply(node) if chosen is None else ""
+                if correction is None and chosen is None and fixed_reply:
+                    # Verification/identity gates may remain deterministic:
+                    # keep waiting, do not call the LLM, consume retry budget,
+                    # or follow an ambiguous catch-all edge.
+                    audit.append({"action": "unmatched_fixed", "node": awaiting,
+                                  "signal": signal, "reason": why})
+                    replies.append(fixed_reply)
+                    current = None
+                elif correction is None and chosen is None and why == "off_script":
                     audit.append({"action": "off_script", "node": awaiting,
                                   "signal": signal})
                     off_script = True
                     current = None  # stay awaiting
-                elif chosen is None:  # no signal, no literal match
+                elif correction is None and chosen is None:  # no signal, no literal match
                     retries = node_retries.get(awaiting, 0) + 1
                     node_retries[awaiting] = retries
                     if retries > 1:
@@ -979,7 +1203,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         current = None
                     else:
                         why = "else"
-                if chosen is not None:
+                if correction is None and chosen is not None:
                     audit.append({"action": "intent_branch", "node": awaiting,
                                   "edge": chosen.get("label") or chosen.get("id"),
                                   "matched": why, "signal": signal})
@@ -1020,6 +1244,49 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     audit.append({"action": "slot_reused", "node": current,
                                   "variable": variable})
                     current = _next_of(current)
+                elif entry_text and not _ask_is_free_text(node, variable):
+                    # The utterance that ROUTED into this workflow may already
+                    # contain the requested value (often a bare booking/order
+                    # ID). Consume it here instead of asking the caller to say
+                    # the same number again. A partial dictated identifier is
+                    # held exactly like a later answer and gets a short,
+                    # non-apologetic continuation prompt.
+                    entry_value = _extract_ask_value(node, variable, entry_text)
+                    if entry_value is not None:
+                        slots[variable] = entry_value
+                        audit.append({"action": "entry_slot_filled",
+                                      "node": current, "variable": variable})
+                        _apply_also_capture(node, entry_text, slots, audit,
+                                            current)
+                        entry_text = ""
+                        current = _next_of(current)
+                    else:
+                        from shared.orchestration.spoken_numbers import (
+                            digits_dominant,
+                            spoken_digit_sequence,
+                        )
+
+                        entry_digits = (
+                            spoken_digit_sequence(entry_text)
+                            if _ask_expects_digits(node, variable)
+                            and digits_dominant(entry_text)
+                            else ""
+                        )
+                        if entry_digits:
+                            held = entry_digits[:_MAX_PENDING_DIGITS]
+                            pending_digits[current] = held
+                            audit.append({"action": "digits_partial", "node": current,
+                                          "held_digits": len(held),
+                                          "from_entry": True})
+                            replies.append(
+                                canned("wf_digits_partial_count", lang)
+                                .replace("{count}", str(len(held)))
+                            )
+                            entry_text = ""
+                            awaiting, current = current, None
+                        else:
+                            _speak(node, _question(node, retrying=False, lang=lang))
+                            awaiting, current = current, None
                 else:
                     _speak(node, _question(node, retrying=False, lang=lang))
                     awaiting, current = current, None
@@ -1163,6 +1430,21 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                        fallback_label=False)
             if awaiting and awaiting in nodes_by_id else None
         )
+        awaiting_identifier = None
+        if awaiting and awaiting in nodes_by_id:
+            paused_node = nodes_by_id[awaiting]
+            if paused_node.get("kind") == "ask":
+                paused_variable = str(
+                    _node_config(paused_node).get("variable")
+                    or paused_node.get("id")
+                )
+                if _ask_expects_digits(paused_node, paused_variable):
+                    awaiting_identifier = {
+                        "node": awaiting,
+                        "variable": paused_variable,
+                        "entity": _ask_entity(paused_node, paused_variable),
+                        "held_digits": pending_digits.get(awaiting, ""),
+                    }
         return {
             **state,
             "slots": slots,
@@ -1176,6 +1458,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "off_script": off_script,
             "context_response": context_response,
             "awaiting_prompt": awaiting_prompt,
+            "awaiting_identifier": awaiting_identifier,
             "signal": signal,
             "signal_override": None,  # input-only; never survives the turn
             "status": status if not awaiting else "collecting",
@@ -1368,6 +1651,11 @@ class WorkflowEngine:
             "offScript": off_script,
             "contextResponse": bool(state.get("context_response")),
             "nodePrompt": state.get("awaiting_prompt"),
+            # Set while the flow is paused at an ask collecting a numeric
+            # identifier: {node, variable, entity, held_digits}. Drives the
+            # brain's identifier-collection mode; held digit VALUES stay
+            # in-memory only and are never logged.
+            "awaitingIdentifier": state.get("awaiting_identifier"),
             "signal": state.get("signal"),
             # How this turn's reply must be delivered (fixed | exact |
             # llm_grounded). Builders and legacy definitions produce no mode

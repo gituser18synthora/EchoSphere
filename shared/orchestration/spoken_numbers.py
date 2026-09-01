@@ -52,6 +52,13 @@ _HI_DEVANAGARI_DIGITS = {
     "एक": 1, "दो": 2, "तीन": 3, "चार": 4,
     "पाँच": 5, "पांच": 5, "छह": 6, "छे": 6, "छः": 6,
     "सात": 7, "आठ": 8, "नौ": 9,
+    # Sarvam sometimes transliterates English digit words into Devanagari
+    # during a Hindi turn ("Seven zero one" -> "सेवन जीरो वन"). These are
+    # still numeric payload, not a language switch. Spelling variants observed
+    # in live transcripts ("सेवेन ज़ीरो ज़ीरो वन ज़ीरो ज़ीरो टू") included.
+    "वन": 1, "टू": 2, "टु": 2, "थ्री": 3, "फोर": 4, "फ़ोर": 4,
+    "फाइव": 5, "फ़ाइव": 5, "सिक्स": 6, "सेवन": 7, "सेवेन": 7,
+    "एट": 8, "नाइन": 9, "नाईन": 9, "ज़ेरो": 0, "जेरो": 0,
 }
 
 # Single-digit words for the other platform-enabled Indian languages, keyed
@@ -345,14 +352,28 @@ def strip_numeric_payload(text: str) -> str:
 # normalization away from ordinary conversation).
 
 # Digit groups separated by spaces / common dictation separators fuse into one
-# run: "6 0 1-0 1 1" → "601011". Words between groups break the run.
-_DIGIT_RUN = re.compile(r"\d(?:[\s,.\-]*\d)*")
+# run: "6 0 1-0 1 1" → "601011". Sarvam can terminate one numeric chunk with
+# a Devanagari danda before emitting the remaining digits in the SAME final
+# ("7001। 0 0 1"); a danda between digits is therefore a dictation separator,
+# not a sentence boundary. A period is accepted only when followed by
+# whitespace, which preserves the equivalent STT shape ("7001. 0 0 1") but
+# does not reinterpret decimal/time-like "7.00". Colons and slashes are never
+# separators, so clock/date forms cannot silently become identifiers.
+_DIGIT_RUN = re.compile(
+    r"\d+(?:(?:[\s,\-]+|[।॥]\s*|\.\s+)\d+)*"
+)
 
 # Tokens that carry no content in a dictated number ("uh, six zero... umm").
 _DICTATION_FILLERS = frozenset({
     "uh", "um", "umm", "hmm", "hm", "ah", "aa", "haan", "han", "ji", "yes",
     "ok", "okay", "so", "it's", "its", "is", "the", "अच्छा", "हाँ", "हां",
     "जी", "तो",
+    # Identifier lead-ins are scaffolding around the dictated value, not
+    # evidence that the utterance is ordinary prose. Keeping them here lets
+    # a partial "mera order ID hai seven" enter multi-turn accumulation.
+    "my", "mera", "meri", "order", "id", "number", "num", "reference",
+    "hai", "hain", "मेरा", "मेरी", "ऑर्डर", "आईडी", "आई", "डी", "नंबर",
+    "रेफरेंस", "है", "हैं",
 })
 
 
@@ -364,7 +385,7 @@ def fuse_digit_runs(text: str) -> str:
     """
     normalized = normalize_script_digits(text or "")
     return _DIGIT_RUN.sub(
-        lambda m: re.sub(r"[\s,.\-]", "", m.group(0)), normalized
+        lambda m: re.sub(r"[\s,.\-।॥]", "", m.group(0)), normalized
     )
 
 
@@ -415,3 +436,28 @@ def spoken_digit_sequence(text: str) -> str:
     if not runs:
         return ""
     return max(runs, key=len)
+
+
+def pure_digit_payload(text: str) -> str:
+    """Digits of an utterance that consists ONLY of spoken-number tokens.
+
+    Stricter than :func:`digits_dominant` — no filler tokens are tolerated at
+    all, so this can safely admit a short segment past the transcript gate's
+    unsupported-script rejection while an identifier is being collected
+    (Gujarati "સાત" for a numeric ask → "7"). An utterance carrying ANY
+    non-number word returns "" and stays subject to the normal gate rules,
+    which is what keeps arbitrary unsupported-language sentences out.
+    """
+    saw_number = False
+    for token in (text or "").split():
+        word = _clean(token)
+        if not word:
+            continue
+        if word in _REPEAT_WORDS:
+            continue
+        if not is_number_word(word):
+            return ""
+        saw_number = True
+    if not saw_number:
+        return ""
+    return spoken_digit_sequence(text)

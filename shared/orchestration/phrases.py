@@ -99,6 +99,45 @@ _PHRASES: dict[str, dict[str, str]] = {
         "en": "Okay, I have noted the digits so far — please continue.",
         "hi": "जी, अब तक के अंक नोट कर लिए — कृपया आगे बताइए।",
     },
+    # Count-bearing variant ({count} substituted by the engine): a concise,
+    # informative acknowledgement after a genuinely long dictation pause.
+    "wf_digits_partial_count": {
+        "en": "I have noted {count} digits so far — please continue.",
+        "hi": "अब तक {count} अंक नोट कर लिए हैं — कृपया आगे बताइए।",
+    },
+    # Caller explicitly restarted the identifier ("start again", "phir se").
+    "wf_digits_restart": {
+        "en": "Okay, let's start over — please tell me the complete number again.",
+        "hi": "ठीक है, फिर से शुरू करते हैं — कृपया पूरा नंबर दोबारा बताइए।",
+    },
+    # Caller asked what was captured but nothing is buffered yet.
+    "wf_digits_none": {
+        "en": "I haven't noted any digits yet — please tell me the number.",
+        "hi": "अभी तक कोई अंक नोट नहीं हुआ है — कृपया नंबर बताइए।",
+    },
+    # Caller asked what was captured ({count}/{digits} substituted).
+    "wf_digits_readback": {
+        "en": "So far I have noted {count} digits: {digits}. Please continue, "
+              "or say 'start again' to restart.",
+        "hi": "अब तक {count} अंक नोट किए हैं: {digits}। कृपया आगे बताइए, या "
+              "'फिर से' बोलकर दोबारा शुरू कीजिए।",
+    },
+    # Masked variant for sensitive identifiers (phone numbers etc.).
+    "wf_digits_readback_masked": {
+        "en": "So far I have noted {count} digits, ending in {digits}. Please "
+              "continue, or say 'start again' to restart.",
+        "hi": "अब तक {count} अंक नोट किए हैं, आख़िर में {digits}। कृपया आगे "
+              "बताइए, या 'फिर से' बोलकर दोबारा शुरू कीजिए।",
+    },
+    # The buffered digits exceed every length this identifier can take: the
+    # impossible buffer is dropped (a separately-plausible fresh chunk is
+    # kept) and the caller is told once what to repeat.
+    "wf_digits_overflow": {
+        "en": "That has more digits than this number can have — let's start "
+              "over. Please tell me the complete number once again.",
+        "hi": "इसमें अंक ज़्यादा हो गए हैं — फिर से शुरू करते हैं। कृपया पूरा "
+              "नंबर एक बार फिर बताइए।",
+    },
     "wf_repeat": {
         "en": "Could you repeat that?",
         "hi": "कृपया दोबारा बोलिए?",

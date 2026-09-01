@@ -49,14 +49,19 @@ def layout(nodes):
     return nodes
 
 
-BID_ASK = {"entityType": "text", "pattern": r"(?:BK[-\s]?)?([0-9]{4,10})"}
+BID_ASK = {
+    "entityType": "text",
+    # OYO sample booking IDs are exactly six digits.  The digit boundaries
+    # prevent a partial match when telephony STT inserts or drops a digit.
+    "pattern": r"(?<![0-9])(?:BK[-\s]?)?([0-9]{6})(?![0-9])",
+}
 
 # ═════════════════════════════ BOT 1 — customer bot ══════════════════════════
 
 B1_NODES = layout([
     N("n_start", "start", "Call starts"),
     N("n_ask_booking", "ask", "Ask booking ID", {
-        "question": "I can help you with that. Could you please share your booking ID?",
+        "question": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
         "variable": "booking_id", **BID_ASK}),
     N("n_ask_name", "ask", "Ask guest name", {
         "question": "Thank you. For verification, may I know the guest name on this booking?",

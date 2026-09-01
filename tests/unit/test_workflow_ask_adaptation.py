@@ -118,11 +118,11 @@ def message_result(reply, done=True):
     }
 
 
-def make_brain(workflow_engine, llm) -> ConversationBrain:
+def make_brain(workflow_engine, llm, *, tts=None) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language="en-IN", languages=["en-IN", "hi-IN"],
-        stt={"provider": "sarvam"}, system_prompt="You are Test.",
+        stt={"provider": "sarvam"}, tts=tts or {}, system_prompt="You are Test.",
     )
     brain = ConversationBrain(
         config=config, llm=llm, recorder=_RecorderStub(),
@@ -205,6 +205,28 @@ class TestAwaitingAskAdaptation:
         events = dict(brain._recorder.events)
         assert events.get("workflow_reply_language_adapted", {}).get("mode") \
             == "constrained_translation"
+
+    async def test_adapted_ask_uses_selected_female_speaker_grammar(self):
+        # This is the exact failure shape seen in cv_f6c638d74ab2: the TTS
+        # voice was Shreya, but constrained workflow translation emitted
+        # masculine first-person Hindi.
+        masculine = (
+            "मैं इसमें मदद कर सकता हूँ। "
+            "क्या आप कृपया अपनी बुकिंग आईडी बता सकते हैं?"
+        )
+        llm = _LLMStub(generate_reply=masculine)
+        brain = make_brain(
+            _WorkflowStub(awaiting_ask_result()), llm,
+            tts={"voice_name": "Shreya", "voice_gender": "female"},
+        )
+
+        await brain._handle_turn("मुझे अपनी बुकिंग देखनी है")
+
+        assert "assistant_voice_gender = female" in llm.generate_calls[0]["system"]
+        assert brain._history[-1]["content"] == (
+            "मैं इसमें मदद कर सकती हूँ। "
+            "क्या आप कृपया अपनी बुकिंग आईडी बता सकते हैं?"
+        )
 
     async def test_invalid_adaptation_falls_back_to_authored_ask(self):
         llm = _LLMStub(generate_reply=FILLER_EN)

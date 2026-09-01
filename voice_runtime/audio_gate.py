@@ -162,6 +162,14 @@ class CallerAudioGate(FrameProcessor):
         # protection so the backchannel's own acoustic echo cannot open it.
         self._backchannel_active = False
         self._backchannel_ended_at: float | None = None
+        # Bounded post-gate PCM retention for identifier batch recovery
+        # (voice_runtime.identifier_capture). OFF by default — outside an
+        # identifier collection window no caller audio is retained at all.
+        self._retain_enabled = False
+        self._retain_max_seconds = 0.0
+        self._retained: list[bytes] = []
+        self._retained_bytes = 0
+        self._retained_rate = 0
         # Diagnostics only — no audio and no transcript text is ever retained.
         self._stats = {
             "opens": 0,
@@ -169,6 +177,43 @@ class CallerAudioGate(FrameProcessor):
             "passed_ms": 0.0,
             "echo_guard_ms": 0.0,
         }
+
+    # ── utterance retention (identifier batch recovery) ─────────────────
+    def enable_utterance_retention(self, max_seconds: float = 30.0) -> None:
+        """Keep the post-gate caller PCM (bounded) while an identifier is
+        being dictated, so ONE batch transcription can recover a value the
+        streaming STT mangled. Only audio that passed the gate is retained;
+        the cap keeps memory bounded (oldest audio drops first)."""
+        self._retain_enabled = True
+        self._retain_max_seconds = max(1.0, float(max_seconds))
+
+    def disable_utterance_retention(self) -> None:
+        self._retain_enabled = False
+        self.clear_retained_audio()
+
+    def clear_retained_audio(self) -> None:
+        self._retained.clear()
+        self._retained_bytes = 0
+
+    def take_retained_audio(self) -> tuple[bytes, int] | None:
+        """(pcm16 bytes, sample_rate) retained so far, clearing the buffer."""
+        if not self._retained or not self._retained_rate:
+            return None
+        audio, rate = b"".join(self._retained), self._retained_rate
+        self.clear_retained_audio()
+        return audio, rate
+
+    def _retain(self, audio: bytes, sample_rate: int) -> None:
+        if not self._retain_enabled or not audio or not sample_rate:
+            return
+        if sample_rate != self._retained_rate:
+            self.clear_retained_audio()
+            self._retained_rate = sample_rate
+        self._retained.append(bytes(audio))
+        self._retained_bytes += len(audio)
+        cap = int(self._retain_max_seconds * sample_rate * 2)
+        while self._retained_bytes > cap and len(self._retained) > 1:
+            self._retained_bytes -= len(self._retained.pop(0))
 
     # ── state helpers ────────────────────────────────────────────────────
     def begin_backchannel_window(self) -> None:
@@ -200,6 +245,18 @@ class CallerAudioGate(FrameProcessor):
         the gate is closed) — the backchannel controller's floor-holding
         evidence."""
         return self._segment_ms if self._open else 0.0
+
+    @property
+    def segments_started(self) -> int:
+        """How many distinct caller speech segments have opened the gate.
+
+        Independent of the VAD/word-gate turn machinery, so it still ticks
+        for speech bursts that never open a user turn (sub-word-gate digits
+        while the bot is speaking). The brain uses it as segment provenance:
+        a new burst since a buffered STT final proves a later prefix-matching
+        final is NEW speech, not a cumulative re-emission.
+        """
+        return int(self._stats["opens"])
 
     def _echo_guarded(self) -> bool:
         """Whether bot audio may still be bleeding into the caller stream."""
@@ -333,6 +390,7 @@ class CallerAudioGate(FrameProcessor):
                 self._below_ms = 0.0
                 self._close_segment()
             self._stats["passed_ms"] += duration_ms
+            self._retain(frame.audio, sample_rate)
             await self.push_frame(frame, direction)
             self._maybe_log_stats()
             return
@@ -347,6 +405,7 @@ class CallerAudioGate(FrameProcessor):
             self._begin_segment()
             self._accumulate_segment(level, duration_ms)
             for buffered in self._preroll:
+                self._retain(buffered, sample_rate)
                 await self.push_frame(
                     InputAudioRawFrame(
                         audio=buffered,
@@ -358,6 +417,7 @@ class CallerAudioGate(FrameProcessor):
             self._stats["passed_ms"] += self._preroll_ms_held + duration_ms
             self._preroll.clear()
             self._preroll_ms_held = 0.0
+            self._retain(frame.audio, sample_rate)
             await self.push_frame(frame, direction)
             self._maybe_log_stats()
             return

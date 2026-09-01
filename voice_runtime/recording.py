@@ -636,3 +636,127 @@ class CallRecordingWriter:
             except Exception:  # noqa: BLE001
                 logger.warning("call recording finalize failed for %s",
                                self._recorder.session_id, exc_info=True)
+
+
+class AlignedStereoRecorder:
+    """Wall-clock-aligned stereo call audio (caller left, bot right).
+
+    Replaces pipecat's AudioBufferProcessor for call recording. That
+    processor advances the timeline on the ARRIVAL clock of bot audio; output
+    transports that push TTS downstream faster than real time (the browser
+    WebSocket — the client buffers and paces playback itself) made every
+    reply burst inflate the timeline: both tracks were padded up to the burst
+    position, so recordings ran materially longer than the session and the
+    tracks drifted apart (observed: 113.8 s recording for an 86 s call).
+
+    Here the CALLER (microphone) stream is the master clock — it is captured
+    in real time on every transport. Bot audio queues as it arrives and is
+    laid onto the timeline no faster than the caller clock advances, starting
+    at the wall-clock position where its burst began (which is when the
+    client starts playing it). Real input gaps are silence-filled exactly
+    once, every aligned region is emitted exactly once (stop is idempotent),
+    and file writes run on a dedicated task so disk latency never touches the
+    audio path. The processor only observes frames — the audio sent to STT
+    and to the caller is byte-identical with or without it.
+
+    Framework-facing: subclasses FrameProcessor lazily (pipecat import kept
+    inside pipeline assembly) — see :func:`build_aligned_recorder`.
+    """
+
+    # Implemented in voice_runtime.pipeline via build_aligned_recorder, which
+    # binds this logic into a FrameProcessor. Kept here as the single home of
+    # the alignment algorithm so it is unit-testable without pipecat frames.
+
+    def __init__(self, *, sample_rate: int, chunk_seconds: float = 10.0,
+                 max_bot_backlog_seconds: float = 120.0) -> None:
+        self._rate = int(sample_rate)
+        self._chunk_bytes = int(self._rate * 2 * chunk_seconds)
+        self._bot_backlog_cap = int(self._rate * 2 * max_bot_backlog_seconds)
+        self._user = bytearray()
+        self._bot = bytearray()
+        self._bot_queue = bytearray()
+        self._last_user_at: float | None = None
+        self._stopped = False
+
+    @property
+    def sample_rate(self) -> int:
+        return self._rate
+
+    @staticmethod
+    def _interleave(left: bytes, right: bytes) -> bytes:
+        out = bytearray(len(left) * 2)
+        out[0::4] = left[0::2]
+        out[1::4] = left[1::2]
+        out[2::4] = right[0::2]
+        out[3::4] = right[1::2]
+        return bytes(out)
+
+    def add_user_audio(self, audio: bytes, *, now: float | None = None) -> bytes:
+        """Fold one caller frame in; returns a ready stereo chunk (or b"")."""
+        if self._stopped or not audio:
+            return b""
+        now = time.monotonic() if now is None else now
+        if self._last_user_at is not None:
+            # Real capture gap (muted mic, transport stall): silence, once.
+            elapsed = now - self._last_user_at
+            gap = elapsed - len(audio) / (self._rate * 2)
+            if gap > 0.2:
+                pad = int(gap * self._rate * 2)
+                self._user.extend(b"\x00" * (pad - pad % 2))
+        self._last_user_at = now
+        self._user.extend(audio)
+        self._place_bot_backlog()
+        return self._take_chunk()
+
+    def add_bot_audio(self, audio: bytes) -> bytes:
+        """Fold one bot frame in; returns a ready stereo chunk (or b"")."""
+        if self._stopped or not audio:
+            return b""
+        if not self._bot_queue and len(self._bot) < len(self._user):
+            # A new utterance starts NOW (current caller-clock position);
+            # the stretch before it was genuine silence on the bot track.
+            self._bot.extend(b"\x00" * (len(self._user) - len(self._bot)))
+        self._bot_queue.extend(audio)
+        if len(self._bot_queue) > self._bot_backlog_cap:
+            del self._bot_queue[: len(self._bot_queue) - self._bot_backlog_cap]
+        self._place_bot_backlog()
+        return self._take_chunk()
+
+    def _place_bot_backlog(self) -> None:
+        """Move queued bot audio onto the already-elapsed caller timeline."""
+        need = len(self._user) - len(self._bot)
+        if need <= 0 or not self._bot_queue:
+            return
+        take = min(need, len(self._bot_queue))
+        self._bot.extend(self._bot_queue[:take])
+        del self._bot_queue[:take]
+
+    def _align_bot_to_user(self) -> None:
+        self._place_bot_backlog()
+        need = len(self._user) - len(self._bot)
+        if need > 0:  # backlog exhausted → the remainder was real silence
+            self._bot.extend(b"\x00" * need)
+
+    def _take_chunk(self, *, force: bool = False) -> bytes:
+        if len(self._user) < self._chunk_bytes and not force:
+            return b""
+        self._align_bot_to_user()
+        n = min(len(self._user), len(self._bot))
+        if n <= 0:
+            return b""
+        chunk = self._interleave(bytes(self._user[:n]), bytes(self._bot[:n]))
+        del self._user[:n]
+        del self._bot[:n]
+        return chunk
+
+    def stop(self) -> bytes:
+        """Final chunk: place the remaining bot backlog (audio the caller was
+        still hearing when the call ended — bounded) and close. Idempotent."""
+        if self._stopped:
+            return b""
+        self._stopped = True
+        self._bot.extend(self._bot_queue)
+        self._bot_queue.clear()
+        if len(self._user) < len(self._bot):
+            self._user.extend(b"\x00" * (len(self._bot) - len(self._user)))
+        return self._take_chunk(force=True)

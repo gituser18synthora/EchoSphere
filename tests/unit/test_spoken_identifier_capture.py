@@ -11,6 +11,8 @@ spaced digit groups, chunked across turns. Covers:
 - Deepgram Flux adapter: numerals pass-through on the connection query
 """
 
+import re
+
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -41,6 +43,7 @@ from shared.orchestration.spoken_numbers import (
     "ఆరు సున్నా ఒకటి సున్నా ఒకటి ఒకటి",             # Telugu words
     "ਛੇ ਸਿਫ਼ਰ ਇੱਕ ਸਿਫ਼ਰ ਇੱਕ ਇੱਕ",                    # Punjabi words
     "چھ صفر ایک صفر ایک ایک",                        # Urdu words
+    "सिक्स जीरो वन जीरो वन वन",                     # English words transliterated by STT
     "٦٠١٠١١",                                        # Arabic-Indic digit chars
     "੬੦੧੦੧੧",                                        # Gurmukhi digit chars
 ])
@@ -52,6 +55,30 @@ def test_repeat_constructs():
     assert spoken_digit_sequence("nine triple two") == "9222"
     assert spoken_digit_sequence("double nine double one") == "9911"
     assert spoken_digit_sequence("डबल नौ डबल एक") == "9911"
+
+
+@pytest.mark.parametrize("utterance", [
+    "हाँ, मेरा ऑर्डर आई डी है 7001। 0 0 1",
+    "7001। 0 0 1",
+    "7001॥ 0 0 1",
+    "7001. 0 0 1",
+    "7 001 001",
+])
+def test_stt_chunk_punctuation_preserves_every_identifier_digit(utterance):
+    """Regression for cv_d5632106d170: the raw final was complete, but the
+    danda split it into runs and longest-run selection discarded trailing
+    001."""
+    assert spoken_digit_sequence(utterance) == "7001001"
+
+
+@pytest.mark.parametrize("utterance,forbidden", [
+    ("7:00", "700"),
+    ("07:00:01", "070001"),
+    ("31/08/2026", "31082026"),
+    ("7.001", "7001"),
+])
+def test_time_date_and_decimal_punctuation_is_not_fused(utterance, forbidden):
+    assert spoken_digit_sequence(utterance) != forbidden
 
 
 def test_script_digits_translate_generically():
@@ -81,6 +108,8 @@ def test_digits_dominant_guard():
     assert not digits_dominant("book a room for 2 guests")
     assert not digits_dominant("okay thanks")
     assert not digits_dominant("")
+    assert digits_dominant("हाँ, मेरा ऑर्डर आईडी है सेवन जी")
+    assert spoken_digit_sequence("हाँ, मेरा ऑर्डर आईडी है सेवन जी") == "7"
 
 
 # ── entity extraction ────────────────────────────────────────────────────────
@@ -132,6 +161,33 @@ def test_phone_type_pattern_accepts_spoken_digits():
                             {"name": "phone", "dataType": "phone"})
     assert result["matched"]
     assert result["maskedValue"] is not None
+
+
+HONASA_ORDER_REF = {
+    "name": "order_ref", "dataType": "text",
+    "regexPattern": r"(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])",
+}
+
+
+@pytest.mark.parametrize("utterance,expected", [
+    ("7001003", "7001003"),
+    ("my order is seven zero zero one zero zero three", "7001003"),
+    ("registered mobile is 9876501003", "9876501003"),
+    ("हाँ, मेरा ऑर्डर आई डी है 7001। 0 0 1", "7001001"),
+])
+def test_honasa_order_reference_accepts_only_supported_exact_lengths(
+    utterance, expected,
+):
+    result = extract_entity(utterance, HONASA_ORDER_REF)
+    assert result["matched"]
+    assert result["value"] == expected
+
+
+@pytest.mark.parametrize("utterance", [
+    "7001", "70010003", "987650100", "98765010031",
+])
+def test_honasa_order_reference_rejects_partial_or_extra_digits(utterance):
+    assert not extract_entity(utterance, HONASA_ORDER_REF)["matched"]
 
 
 # ── workflow ask-node accumulation ───────────────────────────────────────────
@@ -187,13 +243,37 @@ async def test_single_turn_spoken_id(engine):
 
 
 @pytest.mark.asyncio
+async def test_identifier_in_workflow_entry_is_consumed_without_reasking(engine):
+    result = await _turn(
+        engine, "my booking ID is six zero one zero double one", "s-entry",
+    )
+    assert result["slots"]["booking_id"] == "601011"
+    assert result["done"]
+    assert "share your booking ID" not in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_partial_identifier_in_workflow_entry_accumulates(engine):
+    partial = await _turn(
+        engine, "mera booking ID hai six zero one", "s-entry-partial",
+    )
+    assert not partial["done"]
+    assert "booking_id" not in partial["slots"]
+    assert re.search(r"noted (the digits|\d+ digits?)", partial["reply"])
+
+    finished = await _turn(engine, "zero double one", "s-entry-partial")
+    assert finished["slots"]["booking_id"] == "601011"
+    assert finished["done"]
+
+
+@pytest.mark.asyncio
 async def test_partial_id_accumulates_across_turns(engine):
     await _turn(engine, "hello", "s-two")
     partial = await _turn(engine, "six zero", "s-two")
     assert not partial["done"]
     assert "booking_id" not in partial["slots"]
     # Progress reply, not the canned "didn't catch that" retry.
-    assert "noted the digits" in partial["reply"]
+    assert re.search(r"noted (the digits|\d+ digits?)", partial["reply"])
     finished = await _turn(engine, "one zero double one", "s-two")
     assert finished["slots"]["booking_id"] == "601011"
     assert finished["done"]

@@ -128,7 +128,8 @@ def stage_bot(c: httpx.Client, state: dict):
                         "max_chunk_length": 150, "send_completion_event": True},
         "llmProvider": "openai", "llmModel": "gpt-4o-mini",
         "llmSettings": {"max_tokens": 150, "max_retries": 1, "temperature": 0.3,
-                        "timeout_seconds": 30, "time_context_enabled": True,
+                        "timeout_seconds": 30, "orchestration_timeout_seconds": 2.0,
+                        "time_context_enabled": True,
                         "max_output_characters": 360},
         "audioSettings": {"browser": {"codec": "linear16", "sampleRate": 16000},
                           "telephony": {"codec": "mulaw", "sampleRate": 8000}},
@@ -140,11 +141,11 @@ def stage_bot(c: httpx.Client, state: dict):
 
 ENTITIES = [
     {"name": "order_id", "kind": "regex", "dataType": "text",
-     "regexPattern": r"([0-9]{7,12})",
+     "regexPattern": r"(?<![0-9])([0-9]{7})(?![0-9])",
      "description": "Honasa order reference (7-digit) shared by the caller.",
      "example": "7001001"},
     {"name": "registered_phone", "kind": "regex", "dataType": "text",
-     "regexPattern": r"([0-9]{10})",
+     "regexPattern": r"(?<![0-9])([0-9]{10})(?![0-9])",
      "description": "Mobile number registered with the order (alternate lookup key).",
      "example": "9876501001", "pii": True},
     {"name": "product_name", "kind": "custom", "dataType": "text",
@@ -157,11 +158,16 @@ ENTITIES = [
 
 
 def stage_entities(c: httpx.Client, state: dict):
-    existing = {e["name"] for e in check(c.get("/entities", params={"tenantId": TENANT}),
-                                         "list entities")}
+    existing = {
+        e["name"]: e["id"]
+        for e in check(c.get("/entities", params={"tenantId": TENANT}),
+                       "list entities")
+    }
     for entity in ENTITIES:
         if entity["name"] in existing:
-            print(f"reuse entity {entity['name']}")
+            check(c.patch(f"/entities/{existing[entity['name']]}", json={
+                key: value for key, value in entity.items() if key != "name"
+            }), f"update entity {entity['name']}")
             continue
         check(c.post("/entities", json={**entity, "tenantId": TENANT}),
               f"entity {entity['name']}")

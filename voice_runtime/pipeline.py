@@ -23,14 +23,23 @@ configuration (ResolvedBotConfig):
   per-language voice mapping and fallback; EchoTTSService otherwise.
 """
 
+import asyncio
 import logging
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.audio.utils import create_stream_resampler
+from pipecat.frames.frames import (
+    CancelFrame,
+    EndFrame,
+    Frame,
+    InputAudioRawFrame,
+    OutputAudioRawFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
@@ -59,7 +68,11 @@ from voice_runtime.barge_in import WordConfirmedBargeInStrategy
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
-from voice_runtime.recording import CallRecordingWriter, SessionRecorder
+from voice_runtime.recording import (
+    AlignedStereoRecorder,
+    CallRecordingWriter,
+    SessionRecorder,
+)
 from voice_runtime.turn_metrics import TurnLatencyTracker, VADLatencyProbe
 
 logger = logging.getLogger(__name__)
@@ -372,6 +385,107 @@ def build_stt_service(
     )
 
 
+class AlignedRecordingProcessor(FrameProcessor):
+    """Feeds the wall-clock-aligned stereo recorder from pipeline frames.
+
+    Pure observer: every frame passes through untouched, so the audio sent to
+    STT and to the caller is byte-identical with or without recording. Ready
+    stereo chunks are handed to a dedicated writer task — disk latency never
+    sits on the audio path — and each aligned region is written exactly once
+    (``stop_recording`` is idempotent, covering both the EndFrame path and
+    the recorder-driven ``CallRecordingWriter.close()``).
+    """
+
+    def __init__(self, *, writer: CallRecordingWriter, sample_rate: int) -> None:
+        super().__init__()
+        self._writer = writer
+        self._aligner = AlignedStereoRecorder(sample_rate=sample_rate)
+        self._in_resampler = create_stream_resampler()
+        self._out_resampler = create_stream_resampler()
+        self._write_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._write_task = None
+        self._stopped = False
+
+    def _enqueue(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        if self._write_task is None:
+            self._write_task = self.create_task(self._write_loop())
+        self._write_queue.put_nowait(chunk)
+
+    async def _write_loop(self) -> None:
+        while True:
+            chunk = await self._write_queue.get()
+            try:
+                await self._writer.append(chunk, self._aligner.sample_rate, 2)
+            except Exception:  # noqa: BLE001 — recording must never break audio
+                logger.warning("aligned recording write failed", exc_info=True)
+            finally:
+                self._write_queue.task_done()
+
+    async def stop_recording(self) -> None:
+        """Flush the tail and drain pending writes. Idempotent."""
+        if self._stopped:
+            return
+        self._stopped = True
+        tail = self._aligner.stop()
+        if tail:
+            self._enqueue(tail)
+        if self._write_task is not None:
+            await self._write_queue.join()
+            await self.cancel_task(self._write_task)
+            self._write_task = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame) and frame.audio and not self._stopped:
+            resampled = await self._in_resampler.resample(
+                frame.audio, frame.sample_rate, self._aligner.sample_rate
+            )
+            self._enqueue(self._aligner.add_user_audio(resampled))
+        elif isinstance(frame, OutputAudioRawFrame) and frame.audio and not self._stopped:
+            resampled = await self._out_resampler.resample(
+                frame.audio, frame.sample_rate, self._aligner.sample_rate
+            )
+            self._enqueue(self._aligner.add_bot_audio(resampled))
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            await self.stop_recording()
+        await self.push_frame(frame, direction)
+
+
+def build_batch_transcriber(config: ResolvedBotConfig):
+    """One-shot batch STT for identifier recovery, or None when unsupported.
+
+    Provider-neutral: the same REST ``STTProvider.transcribe`` the segmented
+    pipeline uses, built lazily on FIRST use so no client or connection
+    exists unless a recovery actually runs. Any setup/availability failure
+    degrades to None-behavior (the caller treats a raised error as a failed,
+    never-retried recovery) — recovery is an optimization, not a dependency.
+    """
+    stt_conf = dict(config.stt or {})
+    provider = stt_conf.get("provider") or "sarvam"
+    holder: list = []
+
+    async def _transcribe(pcm: bytes, sample_rate: int, language: str) -> str:
+        if not holder:
+            holder.append(get_stt_provider(
+                ProviderConfig(
+                    provider=provider,
+                    model=stt_conf.get("model", ""),
+                    language=stt_conf.get("language") or config.language,
+                    api_key_reference=stt_conf.get("api_key_reference", ""),
+                    extra=stt_conf.get("extra", {}),
+                )
+            ))
+        result = await holder[0].transcribe(
+            pcm, sample_rate=sample_rate,
+            language=stt_conf.get("language") or language or config.language,
+        )
+        return result.text or ""
+
+    return _transcribe
+
+
 def build_tts_service(
     config: ResolvedBotConfig,
     *,
@@ -552,6 +666,11 @@ def build_voice_pipeline(
         previous_memory=previous_memory,
         guardrails=guardrails,
         naturalness=naturalness,
+        # Identifier batch recovery (voice_runtime.identifier_capture): at
+        # most one REST transcription of bounded retained audio, only when a
+        # streaming identifier came out invalid. Lazy — no client is built
+        # unless a recovery runs.
+        batch_transcriber=build_batch_transcriber(config),
     )
     processors = [transport.input()]
     if audio_gate is not None:
@@ -628,41 +747,21 @@ def build_voice_pipeline(
     processors += [brain, tts, transport.output()]
 
     if get_settings().voice_call_recording_enabled:
-        # Sits after transport.output() so it hears exactly what was played.
-        # Stereo WAV: caller on the left channel, bot on the right. buffer_size
-        # is compared against the PER-TRACK (mono) buffers — this flushes
-        # roughly every 10s of call time so long calls never pile up in memory.
-        audiobuffer = AudioBufferProcessor(
-            sample_rate=stt_sample_rate,
-            num_channels=2,
-            buffer_size=stt_sample_rate * 2 * 10,
-            auto_start_recording=True,
-        )
+        # Sits after transport.output() so it observes exactly the frames that
+        # were sent. Stereo WAV: caller on the left channel, bot on the right.
+        # The CALLER stream is the master clock (see AlignedStereoRecorder):
+        # pipecat's AudioBufferProcessor advanced the timeline on the arrival
+        # clock of bot audio, and transports that push TTS faster than real
+        # time inflated recordings well past the session's wall-clock length.
         recording_writer = CallRecordingWriter(recorder)
+        audiobuffer = AlignedRecordingProcessor(
+            writer=recording_writer, sample_rate=stt_sample_rate,
+        )
         recording_writer.audiobuffer = audiobuffer
         # The recorder drives the final flush at call end (writer.close) —
         # teardown does not reliably deliver Cancel/End frames to processors
         # sitting after the output transport.
         recorder.recording_writer = recording_writer
-
-        @audiobuffer.event_handler("on_audio_data")
-        async def _on_audio_data(_processor, audio: bytes, sample_rate: int, num_channels: int):
-            await recording_writer.append(audio, sample_rate, num_channels)
-
-        @audiobuffer.event_handler("on_recording_stopped")
-        async def _on_recording_stopped(_processor):
-            await recording_writer.finalize()
-
-        # Pipecat 1.5 runs event handlers as detached tasks by default; pin
-        # these two to synchronous dispatch so stop_recording() awaits the
-        # final audio write before the recorder wraps the WAV. Guarded: if the
-        # internal shape changes, the writer's lock still keeps writes ordered
-        # (worst case the unflushed tail is dropped, never a corrupt file).
-        for _event in ("on_audio_data", "on_recording_stopped"):
-            _entry = getattr(audiobuffer, "_event_handlers", {}).get(_event)
-            if _entry is not None and hasattr(_entry, "is_sync"):
-                _entry.is_sync = True
-
         processors.append(audiobuffer)
 
     worker = PipelineWorker(

@@ -6,7 +6,11 @@ barge-in — never racing ahead of the still-rendering TTS audio. Workflow
 queue. Dialer call-context variables become reference data in the system
 prompt."""
 
-from pipecat.frames.frames import BotStoppedSpeakingFrame, UserStartedSpeakingFrame
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    EndWorkerFrame,
+    UserStartedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
 
 from shared.bot_config import ResolvedBotConfig
@@ -115,7 +119,7 @@ class TestDeferredTransferControls:
             "reason": "workflow_handover", "transfer_queue": "billing",
         }]
 
-    async def test_workflow_done_without_handoff_queues_nothing(self):
+    async def test_workflow_done_ends_worker_after_goodbye(self):
         engine = _WorkflowStub({
             "reply": "Thank you, goodbye!", "done": True, "status": "done",
             "source": "definition", "workflowId": "wf_1", "trace": ["n7"],
@@ -127,6 +131,13 @@ class TestDeferredTransferControls:
             "yes", 0.0,
         )
         assert brain._pending_controls == []
+        endings = [f for f in brain._pushed if isinstance(f, EndWorkerFrame)]
+        assert len(endings) == 1
+        assert endings[0].reason == "workflow_completed"
+        assert brain._closing is True
+        assert ("call_completed_by_workflow", {
+            "workflow": "payment_plan_journey", "disposition": None,
+        }) in brain._recorder.events
 
 
 class TestCallContext:

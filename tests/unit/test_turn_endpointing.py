@@ -221,6 +221,19 @@ class TestCompletenessHeuristics:
         assert ends_with_continuation_cue("amount is 12,500")
         assert not utterance_looks_complete("mera account number 4521")
 
+    def test_identifier_lead_in_is_unfinished_despite_stt_punctuation(self):
+        # Sarvam punctuates a flushed fragment even when the caller merely
+        # introduced the identifier and is about to dictate its digits.
+        for text in (
+            "हाँ, ऑर्डर आईडी है।",
+            "मेरा बुकिंग आई डी है.",
+            "yes, my order ID is.",
+            "registered mobile number is.",
+            "claim no. is.",
+        ):
+            assert ends_with_continuation_cue(text), text
+            assert not utterance_looks_complete(text), text
+
     def test_terminal_punctuation_closes_a_sentence(self):
         assert utterance_looks_complete("मैं कल पेमेंट कर दूंगा.")
         assert utterance_looks_complete("I will pay tomorrow.")
