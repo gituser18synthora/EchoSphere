@@ -131,10 +131,10 @@ session:setVariable("voicebot_ws_url", ws_url)
 local api = freeswitch.API()
 local result = api:execute(
   "uuid_audio_fork",
-  -- Send caller/read L16 to EchoSphere at 16 kHz for Sarvam STT. The named bug
-  -- keeps this integration isolated. JSON playback remains 8 kHz.
+  -- Keep the narrowband PCMU/PCMA caller leg native at 8 kHz through
+  -- EchoSphere and streaming STT. JSON playback also remains 8 kHz.
   uuid .. " start " .. ws_url
-    .. " mono 16k echosphere {} true false 8000"
+    .. " mono 8k echosphere {} true false 8000"
 ) or ""
 if result:lower():find("error", 1, true)
   or result:lower():find("fail", 1, true)

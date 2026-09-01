@@ -30,6 +30,7 @@ from shared.providers.factory import (
 )
 from voice_runtime.telephony import (
     _RAMP_THRESHOLDS,
+    FreeSwitchAudioForkSerializer,
     FreeSwitchAudioStreamSerializer,
     VaaniFrameSerializer,
     build_media_serializer,
@@ -460,11 +461,29 @@ class TestFreeSwitchTelephony:
             FreeSwitchAudioStreamSerializer,
         )
 
+    def test_factory_selects_mod_audio_fork_serializer(self):
+        assert isinstance(
+            build_media_serializer("freeswitch", transport="audio_fork"),
+            FreeSwitchAudioForkSerializer,
+        )
+
+    async def test_audio_fork_passes_native_8k_wire_audio_without_conversion(self):
+        serializer = FreeSwitchAudioForkSerializer()
+        wire_audio = _pcm_tone(160, 800)
+
+        frame = await serializer.deserialize(wire_audio)
+
+        assert isinstance(frame, InputAudioRawFrame)
+        assert frame.audio == wire_audio
+        assert frame.sample_rate == 8000
+        assert frame.num_channels == 1
+        assert serializer._inbound_bytes == len(wire_audio)
+
     # NOTE: the adaptive input-gain / channel-auto-selection / mono-2x
     # detection behaviors this class once tested were removed when the
-    # integration moved to mod_audio_fork ("mono 16k": caller-only PCM at
-    # 16 kHz, no level correction needed). The mod_audio_stream serializer
-    # is now a fixed first-channel passthrough.
+    # integration moved to mod_audio_fork (caller-only PCM kept native at
+    # 8 kHz through EchoSphere and streaming STT). The mod_audio_stream
+    # serializer is a fixed first-channel passthrough.
 
     async def test_binary_caller_audio_uses_first_stream_little_endian(self):
         # Capture analysis 2026-07-29: BOTH streams are little-endian (real

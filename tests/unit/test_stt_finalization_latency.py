@@ -138,7 +138,9 @@ class TestRawPcmTransport:
         service._socket_client = _Socket()
         # Normally populated by STTService.start(StartFrame) before audio
         # arrives; avoid opening a real provider socket in this unit test.
-        service._sample_rate = 16000
+        # Telephony audio stays native at 8 kHz; the per-message rate must
+        # match the WebSocket connection setting used by Sarvam.
+        service._sample_rate = 8000
         frames = [frame async for frame in service.run_stt(b"\x01\x02\x03\x04")]
         assert frames == [None]
         assert sent == [{
@@ -146,7 +148,7 @@ class TestRawPcmTransport:
             # Sarvam selects raw PCM from the connection query. Its generated
             # per-message model supports this legacy envelope value only.
             "encoding": "audio/wav",
-            "sample_rate": 16000,
+            "sample_rate": 8000,
         }]
         service._socket_client = None
         await service.cleanup()

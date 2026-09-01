@@ -40,6 +40,7 @@ _VAANI_FRAME_BYTES = 320
 _FREESWITCH_MIN_CHUNK_BYTES = 3200
 _FREESWITCH_MAX_CHUNK_BYTES = 32_000
 _FREESWITCH_FRAME_BYTES = 320
+_FREESWITCH_FORK_SAMPLE_RATE = 8000
 # 100 KB of PCM is ~133.4 KB base64 — anything larger is a protocol violation.
 _VAANI_MAX_B64_CHARS = 140_000
 
@@ -355,8 +356,10 @@ class FreeSwitchAudioForkSerializer(
 ):
     """Bidirectional media wire format used by ``mod_audio_fork``.
 
-    The fork is started in ``mono 16k`` mode, so inbound binary frames are
-    already caller-only signed 16-bit L16 PCM and must not be deinterleaved.
+    The fork is started in ``mono 8k`` mode, so inbound binary frames are
+    caller-only signed 16-bit L16 PCM and must not be deinterleaved or
+    resampled. The runtime and streaming STT connection use the same native
+    8 kHz telephony rate.
     Bot audio is returned through the module's documented ``playAudio`` JSON
     envelope. ``killAudio`` clears both EchoSphere's pending audio and the
     module's current playback when Pipecat raises an interruption. A
@@ -429,19 +432,19 @@ class FreeSwitchAudioForkSerializer(
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
             self._note_inbound_media()
-            audio = bytes(data)
+            wire_audio = bytes(data)
             # L16 samples are two bytes. Ignore an incomplete trailing byte
             # rather than passing malformed PCM into VAD/STT.
-            audio = audio[:len(audio) - (len(audio) % 2)]
-            if not audio:
+            wire_audio = wire_audio[:len(wire_audio) - (len(wire_audio) % 2)]
+            if not wire_audio:
                 return None
-            samples = np.frombuffer(audio, dtype="<i2")
+            samples = np.frombuffer(wire_audio, dtype="<i2")
             peak = (
                 int(np.abs(samples.astype(np.int32)).max())
                 if samples.size else 0
             )
-            self._inbound_bytes += len(audio)
-            self._inbound_interval_bytes += len(audio)
+            self._inbound_bytes += len(wire_audio)
+            self._inbound_interval_bytes += len(wire_audio)
             self._inbound_interval_peak = max(
                 self._inbound_interval_peak, peak
             )
@@ -462,7 +465,9 @@ class FreeSwitchAudioForkSerializer(
                 self._inbound_interval_peak = 0
                 self._last_inbound_log = now
             return InputAudioRawFrame(
-                audio=audio, sample_rate=16000, num_channels=1
+                audio=wire_audio,
+                sample_rate=_FREESWITCH_FORK_SAMPLE_RATE,
+                num_channels=1,
             )
         if isinstance(data, str) and data and not self._warned_text_input:
             self._warned_text_input = True
