@@ -74,12 +74,16 @@ SCENARIOS = {
     "BOT_MDND": [
         # v2 — rebuilt from the reference recording (zepto-call.mp4).
         ("Reference call", 7, "v2-01 reference-call replay (Hinglish), mocked ticket"),
-        ("Multi-answer", 5, "v2-02 one utterance answers both enquiries, none re-asked"),
+        ("Multi-answer", 5, "v3-02 one utterance answers all incident enquiries, none re-asked"),
         ("Multi-answer", 3, "v2-03 partial answer -> only the missing question asked"),
         ("Verification", 7, "v2-04 summary rejected -> correction captured -> re-verified"),
         ("Happy path", 7, "v2-05 English caller end to end, live API fallback"),
         ("Call handling", 1, "v2-06 explicit human request -> support handover"),
         ("Knowledge", 1, "v2-07 'MDND kya hota hai' answered from the FAQ KB"),
+        ("Missing context", 2, "v3-08 all missing values supplied in one utterance"),
+        ("Missing context", 3, "v3-09 partial values -> only missing date asked"),
+        ("Multi-answer", 3, "v3-10 confirmation plus other-deduction answer skips repeat"),
+        ("Interruption", 2, "v3-11 interrupted combined answer remains captured"),
     ],
     "BOT_UNIFORM": [
         ("Happy path", 7, "01 Hinglish caller, kit received, mocked ticket"),

@@ -56,10 +56,11 @@ PAYMENT_PLAN = {
 }
 
 
-async def _turn(engine, text, session="sess-1", name="payment_plan_journey"):
+async def _turn(engine, text, session="sess-1", name="payment_plan_journey",
+                **kwargs):
     return await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_x", bot_id="bot_x",
-        workflow_name=name, user_text=text,
+        workflow_name=name, user_text=text, **kwargs,
     )
 
 
@@ -782,3 +783,117 @@ class TestAlsoCapture:
         assert r["slots"]["called"] == "no (did not call)"
         assert r["slots"]["recipient"] == "guard / security"
         assert r["status"] == "done"
+
+    async def test_correction_node_can_explicitly_overwrite_latest_answer(
+        self, engine, monkeypatch
+    ):
+        definition = {
+            "id": "wf_correction", "version": 1, "name": "Correction",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "recipient", "kind": "ask", "config": {
+                    "question": "Who received it?", "variable": "recipient",
+                    "entity": {"dataType": "text", "synonyms": {
+                        "customer": ["customer ko"], "guard": ["guard ko"],
+                    }},
+                }},
+                {"id": "correction", "kind": "ask", "config": {
+                    "question": "Any correction?", "variable": "correction",
+                    "entityType": "text", "alsoCapture": [{
+                        "variable": "recipient", "overwrite": True,
+                        "entity": {"dataType": "text", "synonyms": {
+                            "customer": ["customer ko de diya"],
+                            "guard": ["guard ko de diya"],
+                        }},
+                    }],
+                }},
+                {"id": "e", "kind": "end", "config": {"text": "Done"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "recipient"},
+                {"id": "e2", "from": "recipient", "to": "correction"},
+                {"id": "e3", "from": "correction", "to": "e"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+        await _turn(engine, "", session="ac-correct", name="correction")
+        await _turn(engine, "customer ko", session="ac-correct",
+                    name="correction")
+        result = await _turn(
+            engine, "actually guard ko de diya", session="ac-correct",
+            name="correction",
+        )
+        assert result["slots"]["recipient"] == "guard"
+
+    async def test_intent_answer_can_capture_an_upcoming_answer(
+        self, engine, monkeypatch
+    ):
+        definition = {
+            "id": "wf_intent_multi", "version": 1, "name": "Intent multi",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "verify", "kind": "intent", "config": {
+                    "prompt": "Is the summary correct?",
+                    "alsoCapture": [{
+                        "variable": "other_note",
+                        "entity": {"dataType": "text", "synonyms": {
+                            "correct": ["onboarding fee sahi hai"],
+                        }},
+                    }],
+                }},
+                {"id": "other", "kind": "ask", "config": {
+                    "question": "Any comment on the other deduction?",
+                    "variable": "other_note", "entityType": "text",
+                }},
+                {"id": "e", "kind": "end", "config": {"text": "Done"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "verify"},
+                {"id": "e2", "from": "verify", "to": "other",
+                 "label": "yes/haan/sahi hai"},
+                {"id": "e3", "from": "other", "to": "e"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+        await _turn(engine, "", session="ac-intent", name="intent_multi")
+        result = await _turn(
+            engine, "haan sahi hai, onboarding fee sahi hai",
+            session="ac-intent", name="intent_multi",
+        )
+        assert result["slots"]["other_note"] == "correct"
+        assert result["status"] == "done"
+        assert "Any comment" not in result["reply"]
+
+
+class TestContextPrefill:
+    async def test_explicit_context_prefill_skips_only_the_known_ask(
+        self, engine, monkeypatch
+    ):
+        definition = {
+            "id": "wf_prefill", "version": 1, "name": "Prefill",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "amount", "kind": "ask", "config": {
+                    "question": "Amount?", "variable": "amount",
+                    "entityType": "text", "prefillFromContext": "ticket_amount",
+                }},
+                {"id": "date", "kind": "ask", "config": {
+                    "question": "Date?", "variable": "date",
+                    "entityType": "text", "prefillFromContext": "ticket_date",
+                }},
+                {"id": "e", "kind": "end", "config": {"text": "Done"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "amount"},
+                {"id": "e2", "from": "amount", "to": "date"},
+                {"id": "e3", "from": "date", "to": "e"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+        result = await _turn(
+            engine, "", session="prefill-1", name="prefill",
+            context_values={"ticket_amount": "400 rupees"},
+        )
+        assert result["slots"]["amount"] == "400 rupees"
+        assert "Amount?" not in result["reply"]
+        assert "Date?" in result["reply"]

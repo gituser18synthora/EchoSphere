@@ -135,11 +135,13 @@ class TestValidateGroundedReply:
             directives=["Tell the caller the voucher was emailed."],
             script=self.SCRIPT,
             pending_question="Is there anything else I can help you with?",
+            workflow_values={"recipient": "guard", "called": "yes"},
         )
         assert "Tell the caller the voucher was emailed." in instruction
         assert self.SCRIPT in instruction
         assert "MUST end by asking" in instruction
         assert "Never claim an action succeeded" in instruction
+        assert "recipient: guard" in instruction
 
 
 # ── engine integration: modes flow from node config to the turn result ──────
