@@ -23,7 +23,8 @@ name) and the package's references are remapped to the live id; only when
 neither exists is the row created (with the exported id). A tenant import must
 never mutate platform-wide rows other tenants depend on.
 
-What is never exported: users, subscriptions/invoices/usage/billing,
+What is never exported: users (import provisions an invited tenant admin from
+admin_email when the tenant has none), subscriptions/invoices/usage/billing,
 conversations, recordings, releases, audit history, runtime-context records
 (customer data), voice-clone source audio, and phone-number assignments
 (environment-specific).
@@ -77,6 +78,7 @@ from shared.models import (
     Prompt,
     PromptVersion,
     PronunciationDictionary,
+    Role,
     RuntimeContextSchema,
     SupportedLanguage,
     Tenant,
@@ -687,6 +689,57 @@ def _upsert_readiness(db: Session, bot_id: str, items: list[dict],
             db.add(VoiceBotReadiness(**values))
 
 
+def _ensure_admin_user(db: Session, tenant: Tenant, report: _Report, user: User) -> None:
+    """User accounts are never part of a package (see module docstring), so a
+    freshly imported tenant would have nobody who can sign in — and the admin
+    UI's "reset tenant admin password" fails with "no tenant admin account".
+    Provision an invited tenant admin from the tenant's admin_email when the
+    tenant has no accounts at all; the password is unknowable until a Super
+    Admin sets it (Edit Tenant → Reset tenant admin password)."""
+    if not tenant.admin_email:
+        return
+    has_account = db.scalar(
+        select(User).where(User.tenant_id == tenant.id, User.is_deleted.is_(False))
+    )
+    if has_account is not None:
+        return
+    email = tenant.admin_email.lower()
+    # users.email is globally unique (soft-deleted rows included).
+    taken = db.scalar(select(User).where(User.email == email))
+    if taken is not None:
+        report.warnings.append(
+            f"tenant has no user accounts, but admin email '{email}' already "
+            f"belongs to another account — create a tenant admin manually."
+        )
+        return
+    role = db.scalar(select(Role).where(Role.code == "tenant_admin"))
+    if role is None:
+        report.warnings.append(
+            "tenant_admin role is missing — no admin account was created."
+        )
+        return
+    import secrets
+
+    from backend.core.security import hash_password
+
+    db.add(User(
+        id=new_id("usr"),
+        email=email,
+        name=tenant.contact_name or tenant.name,
+        password_hash=hash_password(secrets.token_urlsafe(24)),
+        role_id=role.id,
+        tenant_id=tenant.id,
+        status="invited",
+        created_by=user.id,
+    ))
+    db.flush()
+    report.count(report.created, "users")
+    report.warnings.append(
+        f"created invited tenant admin '{email}' — set their password via "
+        "Edit Tenant → Reset tenant admin password."
+    )
+
+
 def import_tenant(db: Session, package: dict, user: User) -> tuple[dict, dict]:
     """Upsert the whole package on the caller's session (flush only — the
     caller owns the transaction). Returns ``(report, kb_plane)`` where
@@ -730,6 +783,8 @@ def import_tenant(db: Session, package: dict, user: User) -> tuple[dict, dict]:
         db.add(tenant)
         report.count(report.created, "tenant")
     db.flush()
+
+    _ensure_admin_user(db, tenant, report, user)
 
     if resources.get("tenant_settings"):
         raw = dict(resources["tenant_settings"])
