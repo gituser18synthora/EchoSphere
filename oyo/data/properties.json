@@ -50,7 +50,7 @@
     "name": "Oh-Yo Townhouse 44 Salt Lake Kolkata",
     "city": "Kolkata",
     "occupancy": {"total_rooms": 28, "occupied_rooms": 12, "occupancy_pct": 43, "has_availability": true},
-    "status": {"operational_status": "maintenance", "hold_reasons": ["Water-supply repair on floors 2-3 until 2026-08-23"]},
+    "status": {"operational_status": "maintenance", "hold_reasons": ["Water-supply repair on floors 2-3 until 2026-09-23"]},
     "pricing": {"arr_7day": 3000, "complimentary_amount": 350},
     "alternates": ["P102", "P109"]
   },
@@ -59,7 +59,7 @@
     "name": "Oh-Yo 555 Banjara Hills Hyderabad",
     "city": "Hyderabad",
     "occupancy": {"total_rooms": 22, "occupied_rooms": 9, "occupancy_pct": 41, "has_availability": true},
-    "status": {"operational_status": "maintenance", "hold_reasons": ["Full-building electrical audit; all rooms blocked until 2026-08-26"]},
+    "status": {"operational_status": "maintenance", "hold_reasons": ["Full-building electrical audit; all rooms blocked until 2026-09-26"]},
     "pricing": {"arr_7day": 2500, "complimentary_amount": 300},
     "alternates": ["P109"]
   },

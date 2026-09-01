@@ -7,6 +7,7 @@ import {
   listGuardrailProfiles, listKnowledge, listReleases, listSubscriptions,
   listTeam, resetUserPassword, updateTenant,
 } from "@/services/api";
+import { downloadTenantPackage } from "@/services/tenantTransfer";
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
   Health, KpiCard, Modal, PasswordInput, StatusChip, Tabs, Timeline, Avatar,
@@ -37,7 +38,20 @@ export default function TenantDetail() {
   const { toast } = useApp();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const tenantQ = useAsync(() => getTenant(tenantId!), [tenantId]);
+
+  const exportTenantJson = async () => {
+    setExporting(true);
+    try {
+      const { filename } = await downloadTenantPackage(tenantId!);
+      toast(`${filename} downloaded — import it on the target environment to deploy this tenant with the same ids.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Tenant export failed.", "error");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (tenantQ.error) return <ErrorState message={tenantQ.error} onRetry={tenantQ.reload} />;
   if (tenantQ.loading) return <div className="grid grid-2"><CardSkeleton rows={6} /><CardSkeleton rows={6} /></div>;
@@ -63,6 +77,7 @@ export default function TenantDetail() {
           </div>
         </div>
         <div className="page-actions">
+          <Button icon="download" busy={exporting} onClick={exportTenantJson}>Export Tenant JSON</Button>
           <Button icon="edit" onClick={() => setEditOpen(true)}>Edit tenant</Button>
           <Button icon="mail" onClick={() => toast(`Invite sent to ${t.adminEmail}`, "info")}>Contact admin</Button>
           <Button variant="primary" icon="external" onClick={() => toast("Impersonation requires a second approver (four-eyes policy).", "info")}>

@@ -65,7 +65,20 @@ def layout(nodes):
     return nodes
 
 
-ORDER_REF_ASK = {"entityType": "text", "pattern": r"([0-9]{7,12})"}
+# Honasa test-data contract: an order ID is exactly seven digits and the
+# alternate registered-mobile lookup is exactly ten. Digit boundaries stop
+# an eight/nine/eleven-digit STT result from being accepted as a partial match.
+ORDER_REF_PATTERN = r"(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])"
+ORDER_REF_UNMATCHED = (
+    "I haven't verified an order yet. Please repeat the exact seven-digit "
+    "order ID slowly, one digit at a time, or share the ten-digit mobile "
+    "number registered with the order."
+)
+ORDER_REF_ASK = {
+    "entityType": "text",
+    "pattern": ORDER_REF_PATTERN,
+    "unmatchedReply": ORDER_REF_UNMATCHED,
+}
 
 YES = ("yes/yes please/sure/okay/ok/please do/go ahead/proceed/definitely/"
        "raise it/kar do/कर दो/haan/ji haan/हाँ/जी हाँ/ठीक है/ज़रूर/zaroor")
@@ -139,8 +152,9 @@ NODES = layout([
 
     # ── order lookup ─────────────────────────────────────────────────────────
     N("n_ask_order", "ask", "Ask order ID / phone", {
-        "question": ("Sure — could you please share your order ID, or the "
-                     "mobile number registered with the order?"),
+        "question": ("Sure — please share the exact seven-digit order ID "
+                     "slowly, one digit at a time, or the ten-digit mobile "
+                     "number registered with the order."),
         "variable": "order_ref", **ORDER_REF_ASK}),
     N("n_api_lookup", "api", "Order Lookup API", {
         "connection": "Honasa Order Lookup",
@@ -149,9 +163,10 @@ NODES = layout([
         "text": ("I'm sorry — I couldn't find an order with those details in "
                  "our system.")}),
     N("n_ask_order2", "ask", "Re-ask order ID / phone", {
-        "question": ("Could you please double-check and share the order ID "
-                     "from your confirmation message, or the mobile number "
-                     "registered with the order?"),
+        "question": ("Please double-check the confirmation message and "
+                     "repeat the exact seven-digit order ID slowly, one "
+                     "digit at a time, or share the ten-digit registered "
+                     "mobile number."),
         "variable": "order_ref2", **ORDER_REF_ASK}),
     N("n_api_lookup2", "api", "Order Lookup API (retry)", {
         "connection": "Honasa Order Lookup"}),
@@ -159,7 +174,19 @@ NODES = layout([
         "text": "I'm still unable to locate this order in our system."}),
     N("n_intent_agent_lookup", "intent", "Offer agent (lookup failed)", {
         "prompt": ("Would you like me to connect you to a support executive "
-                   "who can help find your order?")}),
+                   "who can help find your order?"),
+        "unmatchedReply": (
+            "I still haven't verified an order. Please share the exact "
+            "seven-digit order ID or the ten-digit registered mobile number, "
+            "or clearly say that you want a support executive."
+        ),
+        "identifierCorrection": {
+            "variable": "order_ref2",
+            "entityType": "text",
+            "pattern": ORDER_REF_PATTERN,
+            "target": "n_api_lookup2",
+        },
+    }),
 
     # ── requirement hub — grounded announce + choice ─────────────────────────
     N("n_hub", "intent", "What do you need?", {
@@ -382,7 +409,7 @@ EDGES = [
     E("n_msg_cant_locate", "n_intent_agent_lookup"),
     E("n_intent_agent_lookup", "n_api_escalate", YES + "/connect me/agent/executive"),
     E("n_intent_agent_lookup", "n_end_polite", NO + "/i'll check/i will check/call later"),
-    E("n_intent_agent_lookup", "n_api_escalate", "else"),
+    E("n_intent_agent_lookup", "n_ask_order2", "else"),
 
     # hubs
     *hub_edges("n_hub"),

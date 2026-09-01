@@ -130,8 +130,8 @@ def stage_bots(c: httpx.Client, state: dict):
 
 ENTITIES = [
     {"name": "booking_id", "kind": "regex", "dataType": "text",
-     "regexPattern": r"(?:BK[-\s]?)?([0-9]{4,10})",
-     "description": "OYO booking reference shared by the caller.",
+     "regexPattern": r"(?<![0-9])(?:BK[-\s]?)?([0-9]{6})(?![0-9])",
+     "description": "Six-digit OYO booking reference shared by the caller.",
      "example": "601001"},
     {"name": "guest_name", "kind": "custom", "dataType": "text",
      "description": "Guest name on the booking, used for caller verification (Flow 2).",

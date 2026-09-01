@@ -133,7 +133,11 @@ from shared.orchestration.response_modes import (
     grounded_delivery_instruction,
     validate_grounded_reply,
 )
-from shared.orchestration.spoken_numbers import meaningful_language_words
+from shared.orchestration.spoken_numbers import (
+    digits_dominant,
+    meaningful_language_words,
+    spoken_digit_sequence,
+)
 from shared.orchestration.time_context import (
     TIME_CONTEXT_SETTING,
     asks_current_datetime,
@@ -172,6 +176,10 @@ from voice_runtime.frames import (
     STTTurnResumedFrame,
     SwitchVoiceLanguageFrame,
     TTSFlushHintFrame,
+)
+from voice_runtime.identifier_capture import (
+    IdentifierCapture,
+    resolve_pause_window,
 )
 from voice_runtime.recording import SessionRecorder, TurnRecord
 from voice_runtime.stt_events import final_event_key, segment_audio_seconds
@@ -299,6 +307,16 @@ _DEFAULT_SHORT_REPLY_ENDPOINT = 0.12
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
 _CLARIFY_MERGE_WINDOW = 6.0
+# One physical speech start may surface as BOTH an InterruptionFrame and a
+# UserStartedSpeakingFrame moments apart; inside this window (with no stop in
+# between) the second frame is bookkeeping-deduplicated.
+_SPEECH_START_DEDUP_WINDOW = 1.2
+# One-shot identifier batch recovery must not stall the turn indefinitely.
+_IDENTIFIER_RECOVERY_TIMEOUT = 6.0
+# A provider re-emitting the SAME still-open audio segment cumulatively does
+# so within moments of the original final; past this, a prefix-extending
+# final is new speech (e.g. a caller repeating digits) and must append.
+_CUMULATIVE_REEMIT_WINDOW = 2.0
 # Idempotency: how many recently-seen final identities to remember. Providers
 # replay a final on reconnect or SDK callback retry; a replay must not extend
 # the current utterance with duplicated text or open a second turn.
@@ -433,6 +451,7 @@ class ConversationBrain(FrameProcessor):
         previous_memory=None,
         guardrails: GuardrailEngine | None = None,
         naturalness: SpeechNaturalnessPlanner | None = None,
+        batch_transcriber=None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -770,6 +789,29 @@ class ConversationBrain(FrameProcessor):
         # re-emitting a turn's transcript cumulatively ("<answered text> Hello")
         # is recognized and only the unanswered tail becomes a new turn.
         self._last_dispatched_turn: tuple[str, float] | None = None
+        # Segment provenance for cumulative-final detection: which physical
+        # speech start the newest BUFFERED final belongs to, and the provider
+        # identity it carried. A re-emission proves itself by sharing the
+        # provider turn identity or by arriving inside the same still-open
+        # speech segment — a bare token-prefix match never replaces buffered
+        # text on its own (repeated digits/words make that unsafe).
+        self._speech_start_serial = 0
+        self._last_buffered_final: dict | None = None
+        # One physical speech start = one barge-in: pipecat delivers both an
+        # InterruptionFrame and a UserStartedSpeakingFrame for the same event;
+        # the second must not record a duplicate barge_in or cancel twice.
+        self._speech_start_open = False
+        self._speech_start_at = 0.0
+        self._speech_start_kinds: set[str] = set()
+        # Identifier-collection mode (active while a workflow ask awaits a
+        # numeric identifier — see voice_runtime.identifier_capture).
+        self._identifier_capture: IdentifierCapture | None = None
+        self._identifier_pause_window = resolve_pause_window(
+            (config.stt or {}).get("settings") or {}
+        )
+        # Provider-neutral one-shot batch STT (async (pcm, rate, language) ->
+        # text) used ONLY when streaming left an identifier candidate invalid.
+        self._batch_transcriber = batch_transcriber
         # Hang-up in progress: nothing may produce speech after this is set.
         self._closing = False
         # A transfer control has been queued/sent for this call: the normal
@@ -901,12 +943,43 @@ class ConversationBrain(FrameProcessor):
             return
 
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            # One PHYSICAL speech start arrives as up to two frames of
+            # DIFFERENT types (InterruptionFrame + UserStartedSpeakingFrame
+            # within moments). The first one owns the barge-in bookkeeping;
+            # its complementary twin is suppressed so it can never log a
+            # second barge_in, cancel a fresh generation, or touch the
+            # identifier buffer twice. A frame of a type already seen in the
+            # episode is a NEW physical start (a caller resuming/interrupting
+            # again), as is anything after a stop or past the window.
+            now = time.monotonic()
+            frame_kind = type(frame).__name__
+            duplicate_start = (
+                self._speech_start_open
+                and now - self._speech_start_at <= _SPEECH_START_DEDUP_WINDOW
+                and frame_kind not in self._speech_start_kinds
+            )
+            if duplicate_start:
+                self._speech_start_kinds.add(frame_kind)
+            else:
+                self._speech_start_serial += 1
+                self._speech_start_kinds = {frame_kind}
+            self._speech_start_open = True
+            self._speech_start_at = now
             if isinstance(frame, UserStartedSpeakingFrame):
                 self._turn_active = True
             # The caller resumed speaking: whatever is buffered belongs to the
             # SAME utterance — hold it (cancel any scheduled finalization) so
             # the closed turn runs once, with the full text.
             await self._cancel_finalize()
+            if duplicate_start:
+                self._recorder.add_event(
+                    "barge_in_duplicate_suppressed",
+                    frame=type(frame).__name__,
+                )
+                await self.push_frame(frame, direction)
+                if isinstance(frame, UserStartedSpeakingFrame):
+                    self._start_backchannel_monitor()
+                return
             # Distinguish a real barge-in from a caller who was only pausing.
             # If a turn is in flight but NO audio of its reply has reached the
             # caller yet, they cannot be interrupting anything — they are
@@ -951,6 +1024,7 @@ class ConversationBrain(FrameProcessor):
             # for the tail of the utterance arrive DURING that window, so the
             # debounce only has work to do when one landed just now; otherwise
             # the utterance has settled and waiting again is pure dead time.
+            self._speech_start_open = False
             was_active, self._turn_active = self._turn_active, False
             await self._stop_backchannel_monitor()
             await self.push_frame(frame, direction)
@@ -1100,30 +1174,123 @@ class ConversationBrain(FrameProcessor):
                 return tail
         return text
 
-    def _append_segment(self, text: str) -> None:
+    def _final_provenance(self, frame: TranscriptionFrame | None) -> dict:
+        """What identifies the audio segment THIS final was produced from.
+
+        ``connection``/``turn_index`` come from the provider payload (Deepgram
+        Flux carries an explicit per-connection turn counter — the strongest
+        identity); ``serial`` is the count of physical speech starts observed
+        when the final arrived, so "a new utterance began since" is visible.
+        """
+        connection, turn_index = "", None
+        if frame is not None:
+            result = getattr(frame, "result", None)
+            data = result.get("data") if isinstance(result, dict) else None
+            payload = data if isinstance(data, dict) else (
+                result if isinstance(result, dict) else {}
+            )
+            connection = str(payload.get("request_id") or "")
+            turn_index = payload.get("turn_index")
+        gate = self._audio_gate
+        gate_serial = -1
+        if gate is not None:
+            try:
+                gate_serial = gate.segments_started
+            except Exception:  # noqa: BLE001 — provenance must never break a turn
+                gate_serial = -1
+        return {
+            "connection": connection,
+            "turn_index": turn_index,
+            # BOTH speech-start observers: the turn machinery (VAD/word gate)
+            # and the audio gate's own segment counter — the latter still
+            # ticks for bursts too short to open a user turn.
+            "serial": self._speech_start_serial,
+            "gate_serial": gate_serial,
+            "at": time.monotonic(),
+        }
+
+    def _proven_cumulative(self, provenance: dict) -> bool:
+        """Whether a prefix-extending final is a PROVEN cumulative re-emission
+        of the buffered text, rather than new speech that happens to repeat it.
+
+        Proof, in order of strength:
+        1. the provider says so — same connection AND same provider turn
+           identity as the buffered final (Flux ``turn_index``);
+        2. the same still-open audio segment produced both finals — no new
+           physical speech start since the buffered final, arriving within
+           the re-emission window.
+
+        A caller dictating repeated digits ("… zero" then "zero two") speaks
+        AGAIN first, which bumps the speech-start serial — so their genuinely
+        repeated words append instead of overwriting the buffer.
+        """
+        previous = self._last_buffered_final
+        if previous is None:
+            return False
+        same_connection = bool(
+            provenance["connection"]
+            and provenance["connection"] == previous["connection"]
+        )
+        if (
+            same_connection
+            and provenance["turn_index"] is not None
+            and provenance["turn_index"] == previous["turn_index"]
+        ):
+            return True
+        if self._identifier_capture is not None and digits_dominant(
+            " ".join(self._pending_segments)
+        ):
+            # While an identifier is being dictated, timing alone is never
+            # proof: repeated digits are the expected shape of real speech.
+            return False
+        return (
+            provenance["serial"] == previous["serial"]
+            and provenance["gate_serial"] == previous["gate_serial"]
+            and provenance["at"] - previous["at"] <= _CUMULATIVE_REEMIT_WINDOW
+            and (same_connection or not previous["connection"])
+        )
+
+    def _append_segment(
+        self, text: str, provenance: dict | None = None
+    ) -> None:
         """Overlap-aware segment buffering.
 
         A provider that re-emits the buffered utterance cumulatively (the new
         final begins with everything already buffered, plus new words)
         REPLACES the buffer instead of appending — joining would speak the
-        same words twice. Anything else appends: a caller genuinely repeating
-        themselves ("हाँ… हाँ") is real speech, and true provider replays are
-        already dropped upstream by the final-event identity.
+        same words twice. But a prefix match alone is NOT evidence: repeated
+        digits and repeated words make prefix-only matching unsafe ("… zero"
+        + "zero two" lost a genuinely spoken zero). Replacement requires the
+        provenance proof in :meth:`_proven_cumulative`; everything else
+        appends, and true provider replays are already dropped upstream by
+        the final-event identity.
         """
+        provenance = provenance or self._final_provenance(None)
         if self._pending_segments:
             joined = " ".join(self._pending_segments).strip()
             joined_folded = self._tokens_casefold(joined)
             new_folded = self._tokens_casefold(text)
-            if (
+            looks_cumulative = (
                 len(new_folded) > len(joined_folded)
                 and new_folded[: len(joined_folded)] == joined_folded
-            ):
-                self._pending_segments = [text]
+            )
+            if looks_cumulative:
+                if self._proven_cumulative(provenance):
+                    self._pending_segments = [text]
+                    self._last_buffered_final = provenance
+                    self._recorder.add_event(
+                        "stt_cumulative_final_merged", text=text[:200]
+                    )
+                    return
+                # Same words re-spoken (repeated digits, "हाँ… हाँ"): real
+                # speech — append, and make the choice auditable.
                 self._recorder.add_event(
-                    "stt_cumulative_final_merged", text=text[:200]
+                    "stt_segment_appended",
+                    looked_cumulative=True,
+                    words=len(new_folded),
                 )
-                return
         self._pending_segments.append(text)
+        self._last_buffered_final = provenance
 
     def _is_duplicate_final(self, frame: TranscriptionFrame, text: str) -> bool:
         # Identity is per SEGMENT, not per provider request id: Sarvam's
@@ -1197,11 +1364,27 @@ class ConversationBrain(FrameProcessor):
             frame, provider=(self._config.stt or {}).get("provider", "")
         )
         self._attach_local_evidence(quality, text)
-        verdict = assess_transcript(text, quality, self._allowed_stt_languages)
+        verdict = assess_transcript(
+            text, quality, self._allowed_stt_languages,
+            # Identifier-collection mode: a segment made only of digit words
+            # may be admitted (as ASCII digits) even under a misdetected
+            # language/script label — see transcript_gate.assess_transcript.
+            numeric_context=self._identifier_capture is not None,
+        )
         if not verdict.accepted:
             await self._reject_segment(text, quality, verdict)
             return
-        if verdict.normalized_text:
+        if verdict.reason == "digit_payload" and verdict.normalized_text:
+            # A high-quality digit word the auto-detector labelled as an
+            # unsupported language/script (Gujarati "સાત" while an order id
+            # is awaited) — normalized to its digits instead of dropped.
+            self._recorder.add_event(
+                "unsupported_script_digit_rescued",
+                language=quality.language,
+                digits=len(verdict.normalized_text),
+            )
+            text = verdict.normalized_text
+        elif verdict.normalized_text:
             # Short misdetected segment rescued by script transliteration
             # ("ਹਮ।" → "हम।"): the caller's turn proceeds in Devanagari
             # instead of being silently dropped as an unsupported script.
@@ -1225,24 +1408,52 @@ class ConversationBrain(FrameProcessor):
         if not text:
             return
         raw = getattr(frame, "language", None)
-        if raw is not None:
+        if raw is not None and verdict.reason != "digit_payload":
+            # A rescued digit payload carries a misdetected label by
+            # definition; numeric payloads never steer the conversation
+            # language (see _maybe_switch_language).
             self._pending_language = getattr(raw, "value", str(raw))
+        provenance = self._final_provenance(frame)
         # Hang-up is the highest-priority intent: act on the segment itself —
         # never buffer it behind end-of-turn, a workflow rung or the LLM.
         if detect_hangup(text):
-            self._append_segment(text)
+            self._append_segment(text, provenance)
             await self._begin_hangup(" ".join(self._pending_segments).strip())
             return
         # Consent revocation is equally deterministic and immediate: the
         # caller must never hear another pitch after "don't call me again".
         if detect_do_not_call(text):
-            self._append_segment(text)
+            self._append_segment(text, provenance)
             await self._begin_do_not_call(" ".join(self._pending_segments).strip())
             return
-        self._append_segment(text)
+        self._append_segment(text, provenance)
         live_signal = classify_user_signal(" ".join(self._pending_segments).strip())
         if is_serious_caller_state(live_signal):
             self._latest_caller_signal = live_signal or ""
+        capture = self._identifier_capture
+        if capture is not None and not (self._bot_speaking and not self._turn_active):
+            # Identifier-collection mode: pace digit fragments on the tolerant
+            # inter-digit window instead of the conversational endpoints —
+            # WITHOUT dispatching a turn (and a TTS acknowledgement) per
+            # fragment. An exactly-valid accumulated candidate dispatches NOW;
+            # an impossible (overflowing) one dispatches too, so the workflow
+            # can reset it. Segments arriving while the bot is audibly
+            # speaking keep the existing held-segment handling below.
+            buffered = " ".join(self._pending_segments).strip()
+            hold = capture.hold_delay(buffered)
+            if hold is not None:
+                if hold <= 0:
+                    await self._schedule_finalize(0.0, ignore_open_turn=True)
+                else:
+                    self._latency.count("identifier_partial_holds")
+                    self._recorder.add_event(
+                        "identifier_digits_partial",
+                        digits=len(capture.candidate(buffered)),
+                        window_s=round(hold, 2),
+                        prompt_suppressed=True,
+                    )
+                    await self._schedule_finalize(hold, ignore_open_turn=True)
+                return
         if self._authoritative_eot:
             # The provider's turn detector (Flux EndOfTurn) already decided
             # the caller is done: dispatch NOW. Debounce and adaptive
@@ -1436,6 +1647,11 @@ class ConversationBrain(FrameProcessor):
         text = (text_override or " ".join(self._pending_segments)).strip()
         if not text:
             return
+        if self._identifier_capture is not None and digits_dominant(text):
+            # A dictated identifier is consumed deterministically by the
+            # active workflow (see _handle_turn) — no Goal Engine request is
+            # spent on it, per fragment or at dispatch.
+            return
         if self._deterministic_fast_path(text) is not None:
             # This utterance resolves without a decision call; speculating
             # would only spend tokens the dispatched turn will never consume.
@@ -1593,6 +1809,68 @@ class ConversationBrain(FrameProcessor):
         })
         return f"{fragment} {text}".strip()
 
+    async def _maybe_recover_identifier(self, text: str) -> str:
+        """Provider-neutral batch recovery for a mangled streaming identifier.
+
+        Runs ONLY when identifier-collection mode is active, the dispatching
+        text is a dictation whose accumulated candidate does NOT validate,
+        bounded post-gate caller audio was retained, and no recovery has run
+        yet for this capture. At most ONE batch transcription — never an
+        extra API call when streaming already produced a valid identifier,
+        and never any remote call per audio frame. The recovered digits must
+        pass the same authoritative matcher before they replace the text; the
+        retained audio is consumed (cleared) either way.
+        """
+        capture = self._identifier_capture
+        if (
+            capture is None
+            or self._batch_transcriber is None
+            or capture.recovery_attempted
+            or not capture.is_dictation(text)
+        ):
+            return text
+        candidate = capture.candidate(text)
+        if not candidate or capture.matches(candidate):
+            return text  # streaming result is already usable
+        gate = self._audio_gate
+        take = getattr(gate, "take_retained_audio", None) if gate else None
+        retained = take() if take is not None else None
+        if not retained:
+            return text
+        capture.recovery_attempted = True
+        audio, rate = retained
+        self._recorder.add_event(
+            "identifier_batch_recovery_attempted",
+            audio_seconds=round(len(audio) / (rate * 2), 2),
+            sample_rate=rate,
+        )
+        try:
+            recovered_text = await asyncio.wait_for(
+                self._batch_transcriber(audio, rate, self._conversation_language),
+                timeout=_IDENTIFIER_RECOVERY_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001 — recovery must never break dispatch
+            logger.warning(
+                "turn[%s] identifier batch recovery failed",
+                self._recorder.session_id, exc_info=True,
+            )
+            self._recorder.add_event(
+                "identifier_batch_recovery_failed", reason="provider_error"
+            )
+            return text
+        digits = spoken_digit_sequence(recovered_text or "")
+        if digits and capture.matches(capture.held_digits + digits):
+            # The workflow combines its held digits with the turn text, so
+            # only the freshly recovered digits are dispatched.
+            self._recorder.add_event(
+                "identifier_batch_recovery_succeeded", digits=len(digits)
+            )
+            return digits
+        self._recorder.add_event(
+            "identifier_batch_recovery_failed", reason="no_valid_identifier"
+        )
+        return text
+
     async def _consume_pending_turn(self) -> None:
         await self._cancel_finalize()
         # The caller's turn is closing — no backchannel may start now.
@@ -1609,9 +1887,11 @@ class ConversationBrain(FrameProcessor):
             await self._rollback_open_turn()
         text = " ".join(self._pending_segments).strip()
         self._pending_segments.clear()
+        self._last_buffered_final = None
         if not text:
             return
         text = await self._merge_clarified_fragment(text)
+        text = await self._maybe_recover_identifier(text)
         pending_language, self._pending_language = self._pending_language, None
         await self._cancel_generation("new_turn")
         await self._maybe_switch_language(text, pending_language)
@@ -1817,8 +2097,10 @@ class ConversationBrain(FrameProcessor):
             return
         self._closing = True
         self._pending_segments.clear()
+        self._last_buffered_final = None
         self._pending_controls.clear()
         self._active_workflow = None
+        self._end_identifier_capture()
         self._clarify_rollback = None
         self._open_turn_text = self._open_turn_record = None
         self._discard_decision_prefetch("hangup")
@@ -1853,8 +2135,10 @@ class ConversationBrain(FrameProcessor):
         self._closing = True
         self._dnc = True
         self._pending_segments.clear()
+        self._last_buffered_final = None
         self._pending_controls.clear()
         self._active_workflow = None
+        self._end_identifier_capture()
         self._clarify_rollback = None
         self._open_turn_text = self._open_turn_record = None
         self._discard_decision_prefetch("do_not_call")
@@ -1908,6 +2192,30 @@ class ConversationBrain(FrameProcessor):
             completion_reason=reason or None,
         )
         await self.push_frame(EndWorkerFrame(reason="policy_completed"))
+
+    async def _close_workflow_completed(self, workflow_name: str) -> None:
+        """End the voice session after a workflow terminal node's farewell.
+
+        ``end`` means the authored call flow is complete, not merely that the
+        workflow has no next node.  The farewell has already been queued by
+        ``_handle_workflow``; placing ``EndWorkerFrame`` behind it lets the
+        output worker drain the speech before app teardown hangs up the PSTN
+        leg.  Handoffs use their separate transfer lifecycle and never enter
+        this path.
+        """
+        if self._closing or self._transfer_requested:
+            return
+        self._closing = True
+        disposition = self._policy.disposition() if self._policy else None
+        if self._policy is not None:
+            self._policy.mark_closed()
+        self._recorder.disposition = disposition
+        self._recorder.flush_event_soon(
+            "call_completed_by_workflow",
+            workflow=workflow_name,
+            disposition=disposition,
+        )
+        await self.push_frame(EndWorkerFrame(reason="workflow_completed"))
 
     def _queue_control(self, payload: dict) -> None:
         """Defer a telephony control event until bot speech completes."""
@@ -2104,6 +2412,8 @@ class ConversationBrain(FrameProcessor):
         # context and cached prompts are dropped with the session.
         self._history.clear()
         self._pending_segments.clear()
+        self._last_buffered_final = None
+        self._end_identifier_capture()
         self._call_context.clear()
         self._voice_context.clear()
         self._language_instruction_cache.clear()
@@ -2331,20 +2641,41 @@ class ConversationBrain(FrameProcessor):
         if decision.kind not in (
             RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
         ):
-            # Deterministic fast path: a turn the policy/parser resolves with
-            # high confidence against the CURRENT pending question (a clear
-            # yes/no identity answer, an explicit transaction reference, an
-            # accepted agent offer, a clear payment commitment/refusal) never
-            # pays the decision-LLM latency — the same deterministic handling
-            # the fallback path runs on consumes it directly. Ambiguous,
-            # compound or off-question turns return None here and are judged
-            # by the Goal Engine as before.
-            fast_path = self._deterministic_fast_path(text)
-            if fast_path is not None:
-                self._discard_decision_prefetch("deterministic_fast_path")
+            # An active deterministic workflow awaiting a matcher-backed
+            # identifier OUTRANKS Goal Engine scope guesses: a digit-dominant
+            # turn routes straight to the workflow — no decision request is
+            # spent on it, and no LLM classification can mark a dictated
+            # order/booking/phone number out_of_scope. Hang-up, DNC, safety
+            # and explicit transfer were all decided before this point and
+            # keep their higher priority.
+            if (
+                self._identifier_capture is not None
+                and self._active_workflow is not None
+                and decision.kind == RouteKind.WORKFLOW
+                and digits_dominant(text)
+            ):
+                fast_path = "identifier_capture"
+                self._discard_decision_prefetch("identifier_capture")
                 self._recorder.add_event(
                     "deterministic_fast_path", rule=fast_path,
                 )
+            else:
+                # Deterministic fast path: a turn the policy/parser resolves
+                # with high confidence against the CURRENT pending question (a
+                # clear yes/no identity answer, an explicit transaction
+                # reference, an accepted agent offer, a clear payment
+                # commitment/refusal) never pays the decision-LLM latency —
+                # the same deterministic handling the fallback path runs on
+                # consumes it directly. Ambiguous, compound or off-question
+                # turns return None here and are judged by the Goal Engine as
+                # before.
+                fast_path = self._deterministic_fast_path(text)
+            if fast_path is not None:
+                if fast_path != "identifier_capture":
+                    self._discard_decision_prefetch("deterministic_fast_path")
+                    self._recorder.add_event(
+                        "deterministic_fast_path", rule=fast_path,
+                    )
             else:
                 orchestrated = await self._take_decision(text)
             if orchestrated is not None:
@@ -3446,6 +3777,7 @@ class ConversationBrain(FrameProcessor):
                 self._runtime_context.prompt_section()
             )
         self._active_workflow = None if result["done"] else workflow_name
+        self._sync_identifier_capture(workflow_name, result)
         if result.get("offScript"):
             # The workflow did NOT consume this turn (hardship, complaint,
             # question — nothing the current node has an edge for). The
@@ -3510,7 +3842,11 @@ class ConversationBrain(FrameProcessor):
                     language=self._conversation_language,
                     mode="constrained_translation",
                 )
-                await self._say(adapted, authored=False)
+                # This remains an authored workflow ask even though an LLM
+                # translated it. Apply the selected voice's deterministic
+                # first-person grammar so a female voice cannot speak a
+                # masculine form when the constrained model misses the rule.
+                await self._say(adapted)
             else:
                 self._recorder.add_event(
                     "workflow_ask_adaptation_fallback",
@@ -3565,6 +3901,66 @@ class ConversationBrain(FrameProcessor):
             if result.get("handoffQueue"):
                 control["transfer_queue"] = str(result["handoffQueue"])
             self._queue_control(control)
+        elif result.get("status") == "done" and result.get("done"):
+            await self._close_workflow_completed(workflow_name)
+
+    def _sync_identifier_capture(self, workflow_name: str, result: dict) -> None:
+        """Enter/refresh/exit identifier-collection mode after a workflow turn.
+
+        Driven purely by the engine's ``awaitingIdentifier`` report — i.e. by
+        the workflow's currently awaited field schema, never by bot/tenant/
+        workflow identity. Post-gate audio retention follows the mode: it is
+        armed while an identifier is awaited and cleared on every consumed
+        turn (the retained window always covers only the CURRENT utterance
+        group), and fully disabled the moment the mode ends.
+        """
+        payload = result.get("awaitingIdentifier")
+        gate = self._audio_gate
+        if payload and self._active_workflow:
+            capture = self._identifier_capture
+            if (
+                capture is not None
+                and capture.workflow == workflow_name
+                and capture.node == str(payload.get("node") or "")
+            ):
+                capture.refresh(payload)
+            else:
+                capture = IdentifierCapture.from_awaiting(
+                    workflow_name, payload,
+                    pause_window=self._identifier_pause_window,
+                )
+                self._identifier_capture = capture
+                self._recorder.add_event(
+                    "identifier_capture_started",
+                    workflow=workflow_name,
+                    node=capture.node,
+                    variable=capture.variable,
+                    min_digits=capture.min_digits,
+                    max_digits=capture.max_digits,
+                    window_s=round(capture.pause_window, 2),
+                )
+            if gate is not None and hasattr(gate, "enable_utterance_retention"):
+                gate.enable_utterance_retention()
+                gate.clear_retained_audio()
+            return
+        capture = self._identifier_capture
+        if capture is not None:
+            validated = capture.variable in (result.get("slots") or {})
+            self._end_identifier_capture(validated=validated)
+
+    def _end_identifier_capture(self, *, validated: bool = False) -> None:
+        capture, self._identifier_capture = self._identifier_capture, None
+        gate = self._audio_gate
+        if gate is not None and hasattr(gate, "disable_utterance_retention"):
+            gate.disable_utterance_retention()
+        if capture is None:
+            return
+        self._recorder.add_event(
+            "identifier_validated" if validated else "identifier_capture_ended",
+            workflow=capture.workflow,
+            node=capture.node,
+            variable=capture.variable,
+        )
 
     async def _adapt_scripted_ask(self, script: str) -> str | None:
         """Constrained translation of an input-collecting workflow step.
@@ -3603,7 +3999,9 @@ class ConversationBrain(FrameProcessor):
 
         Unlike :meth:`_generate_reply`, this call carries NO conversation
         history, persona, or goal instructions — the model has nothing to
-        say except the step itself. Returns None on provider failure or
+        say except the step itself. The runtime-selected speaker identity is
+        still appended because grammatical gender is a delivery constraint,
+        not tenant-authored persona. Returns None on provider failure or
         timeout; callers speak the authored text instead.
         """
         if self._llm is None:
@@ -3612,7 +4010,12 @@ class ConversationBrain(FrameProcessor):
             result = await asyncio.wait_for(
                 self._llm.generate(
                     [{"role": "user", "content": script}],
-                    system=system,
+                    system=(
+                        system
+                        + voice_identity_instruction(active_voice_identity(
+                            self._config.tts, self._conversation_language,
+                        ))
+                    ),
                     temperature=0.0,
                     max_tokens=_ADAPTATION_MAX_TOKENS,
                 ),
@@ -3679,12 +4082,16 @@ class ConversationBrain(FrameProcessor):
                 require_question=bool(pending_question),
                 must_include=must_include,
                 language_check=script_supports_language,
+                verified_context=result.get("slots") or {},
             ):
                 self._recorder.add_event(
                     "workflow_reply_grounded",
                     workflow=workflow_name, mode="constrained",
                 )
-                await self._say(generated, authored=False)
+                # A constrained rewrite is still an authored workflow line;
+                # enforce the catalog-selected speaker grammar at delivery as
+                # a deterministic backstop to the model instruction.
+                await self._say(generated)
             else:
                 # Validation could not prove the ask/literals survived (or
                 # the provider failed): the authored text keeps the

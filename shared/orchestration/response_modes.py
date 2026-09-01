@@ -37,6 +37,31 @@ _KNOWN_MODES = (RESPONSE_MODE_FIXED, RESPONSE_MODE_EXACT, RESPONSE_MODE_GROUNDED
 _MARKDOWNISH = re.compile(r"(?:^|\n)\s*(?:[-*•#>]|\d+\.)\s|\*\*|__|```", re.M)
 _DIGIT_RUNS = re.compile(r"\d+")
 
+# Once a deterministic workflow has verified the caller's subject, generated
+# wording must never undo that state by rejecting the identifier or asking for
+# it again.  This is intentionally narrow: it is evaluated only when the
+# workflow result carries ``customer_verified=true`` and only catches explicit
+# identifier/lookup contradictions in English, Hinglish and Hindi.
+_VERIFIED_IDENTITY_CONTRADICTION = re.compile(
+    r"\b(?:invalid|not valid|incorrect|wrong)\b.{0,50}"
+    r"\b(?:order|booking|account|policy|claim|reference|id|number|phone)\b"
+    r"|\b(?:order|booking|account|policy|claim|reference|id|number|phone)\b"
+    r".{0,50}\b(?:invalid|not valid|incorrect|wrong)\b"
+    r"|\b(?:could(?:n't| not)|can(?:not|'t)|unable to|did(?:n't| not))\b"
+    r".{0,50}\b(?:find|locate|verify|validate|identify)\b"
+    r"|\b(?:please|kindly|could you|can you)\b.{0,70}"
+    r"\b(?:share|provide|repeat|say|tell me)\b.{0,50}"
+    r"\b(?:id|number|phone|reference)\b"
+    r"|(?:आईडी|आइडी|नंबर|फ़ोन|फोन|ऑर्डर|बुकिंग|रेफरेंस).{0,50}"
+    r"(?:अमान्य|गलत|सही नहीं)"
+    r"|(?:ढूँढ|ढूंढ|मिल|सत्यापित|वेरीफ)[^।?]{0,35}(?:नहीं|नही)"
+    r"|(?:कृपया|प्लीज).{0,60}(?:दोबारा|फिर से|शेयर|बताइए|बताएं|दीजिए)"
+    r".{0,45}(?:आईडी|आइडी|नंबर|फ़ोन|फोन|रेफरेंस)"
+    r"|\b(?:dobara|phir se|wapas)\b.{0,50}"
+    r"\b(?:id|number|phone|reference)\b",
+    re.I | re.S,
+)
+
 
 def node_response_mode(config: dict | None) -> str:
     """The node's declared delivery mode; anything unknown is ``fixed``."""
@@ -130,6 +155,7 @@ def validate_grounded_reply(
     require_question: bool = False,
     must_include=(),
     language_check=None,
+    verified_context: dict | None = None,
 ) -> bool:
     """Whether a grounded generation may be spoken instead of the script.
 
@@ -143,6 +169,8 @@ def validate_grounded_reply(
     - every ``must_include`` literal survives (case-insensitive) — authors
       should list only language-neutral literals (IDs, names, brand words),
       since a translated reply cannot carry an English phrase;
+    - after deterministic customer verification, generated wording cannot
+      reject the supplied identifier or ask the caller to provide it again;
     - the optional ``language_check(text, language)`` callable confirms the
       output is written in the conversation language.
     """
@@ -163,6 +191,12 @@ def validate_grounded_reply(
         str(item).casefold() in lowered
         for item in (must_include or ())
         if str(item or "").strip()
+    ):
+        return False
+    if (
+        isinstance(verified_context, dict)
+        and verified_context.get("customer_verified") is True
+        and _VERIFIED_IDENTITY_CONTRADICTION.search(generated)
     ):
         return False
     if language and callable(language_check):

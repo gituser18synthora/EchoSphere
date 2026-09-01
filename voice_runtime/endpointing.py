@@ -56,6 +56,20 @@ _TERMINAL_RE = re.compile(r"[।.!?]$")
 # pauses between groups, and cutting in there is the worst possible moment.
 _TRAILING_DIGITS_RE = re.compile(r"\d[\d\s,.-]*$")
 _TRAILING_COMMA_RE = re.compile(r"[,;:—–-]$")
+# STT providers commonly put terminal punctuation on every finalized segment,
+# including a caller's lead-in immediately before dictating an identifier:
+# "haan, order ID hai." / "हाँ, ऑर्डर आईडी है।".  The punctuation is not
+# evidence that the thought is complete in this shape — the value is still to
+# come, so honour the full natural-pause window instead of starting the bot.
+# Keep this suffix generic (ID/number rather than any tenant/domain label) so
+# booking, order, account, policy, claim and phone-number flows behave alike.
+_IDENTIFIER_LEAD_IN_RE = re.compile(
+    r"(?:^|\s)(?:"
+    r"i[\s.\-]*d|number|no\.?|"
+    r"आई\s*डी|आइ\s*डी|नंबर|नम्बर"
+    r")\s*(?:is|hai|he|है|हैं)\s*$",
+    re.IGNORECASE,
+)
 
 # Replies that are complete utterances on their own, matched against the WHOLE
 # transcript. This is deliberately NOT the router's signal lexicon: that one
@@ -102,6 +116,12 @@ def ends_with_continuation_cue(text: str) -> bool:
     if _TRAILING_COMMA_RE.search(stripped):
         return True
     if _TRAILING_DIGITS_RE.search(stripped):
+        return True
+    # Check semantic incompleteness BEFORE terminal punctuation gets its
+    # normal precedence: Sarvam may have supplied that full stop/danda merely
+    # because it flushed this audio segment at a brief caller pause.
+    without_terminal = _TERMINAL_RE.sub("", stripped).rstrip()
+    if _IDENTIFIER_LEAD_IN_RE.search(without_terminal):
         return True
     # Terminal punctuation overrides a trailing cue word ("...aur." is closed).
     if _TERMINAL_RE.search(stripped):

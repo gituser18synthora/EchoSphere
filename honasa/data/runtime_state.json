@@ -1,0 +1,16 @@
+{
+  "resolution_requests": [
+    {
+      "request_id": "RR-0864780B",
+      "order_id": "7001001",
+      "issue_type": "no_longer_needed",
+      "resolution": "return",
+      "details": "{return_note}",
+      "whatsapp_link_sent": true,
+      "whatsapp_number_masked": "XXXXXX1001",
+      "created_at": "2026-08-31T12:04:49+00:00"
+    }
+  ],
+  "tracking_links": [],
+  "escalations": []
+}

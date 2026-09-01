@@ -235,6 +235,96 @@ class TestIntentNode:
         assert routed["trace"] == ["b", "c", "e"]
         assert "Billing team" in routed["reply"] and routed["done"] is True
 
+    async def test_fixed_unmatched_reply_never_follows_else_or_calls_llm(
+        self, engine, monkeypatch,
+    ):
+        graph = {
+            **self.GRAPH,
+            "nodes": [
+                self.GRAPH["nodes"][0],
+                {"id": "b", "kind": "intent", "label": "Verify choice",
+                 "config": {
+                     "prompt": "Say billing or delivery.",
+                     "unmatchedReply": "No verified choice yet. Say billing or delivery.",
+                 }},
+                *self.GRAPH["nodes"][2:],
+            ],
+            "edges": [
+                *self.GRAPH["edges"],
+                {"id": "else", "from": "b", "to": "d", "label": "else"},
+            ],
+        }
+        _use_definition(monkeypatch, graph)
+        await _turn(engine, "hello", session="i-fixed", name="support_triage")
+
+        for _ in range(3):
+            result = await _turn(
+                engine, "what choice did I give?", session="i-fixed",
+                name="support_triage",
+            )
+            assert result["done"] is False
+            assert result["offScript"] is False
+            assert result["trace"] == ["b"]
+            assert result["reply"] == (
+                "No verified choice yet. Say billing or delivery."
+            )
+
+        routed = await _turn(
+            engine, "billing", session="i-fixed", name="support_triage",
+        )
+        assert routed["done"] is True
+        assert routed["trace"] == ["b", "c", "e"]
+
+    async def test_identifier_correction_routes_back_through_verification(
+        self, engine, monkeypatch,
+    ):
+        pattern = r"(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])"
+        graph = {
+            "id": "wf_correction", "version": 1, "name": "Correction flow",
+            "nodes": [
+                {"id": "start", "kind": "start", "label": "Start"},
+                {"id": "offer", "kind": "intent", "label": "Agent offer",
+                 "config": {
+                     "prompt": "Do you want an agent?",
+                     "unmatchedReply": "No order is verified.",
+                     "identifierCorrection": {
+                         "variable": "order_ref2", "entityType": "text",
+                         "pattern": pattern, "target": "verify",
+                     },
+                 }},
+                {"id": "verify", "kind": "message", "label": "Verify",
+                 "config": {"text": "Verification ran."}},
+                {"id": "handoff", "kind": "handover", "label": "Agent"},
+                {"id": "end", "kind": "end", "label": "End"},
+            ],
+            "edges": [
+                {"id": "e1", "from": "start", "to": "offer"},
+                {"id": "e2", "from": "offer", "to": "handoff",
+                 "label": "yes/agent"},
+                {"id": "e3", "from": "verify", "to": "end"},
+            ],
+        }
+        _use_definition(monkeypatch, graph)
+        await _turn(engine, "hello", session="i-correct", name="correction_flow")
+        result = await _turn(
+            engine, "sorry, it is seven zero zero one zero zero three",
+            session="i-correct", name="correction_flow",
+        )
+
+        assert result["done"] is True
+        assert result["offScript"] is False
+        assert result["slots"]["order_ref2"] == "7001003"
+        assert result["trace"] == ["offer", "verify", "end"]
+        assert "Verification ran" in result["reply"]
+
+        await _turn(engine, "hello", session="i-agent", name="correction_flow")
+        agent = await _turn(
+            engine, "yes, connect an agent; the ID is 7001003",
+            session="i-agent", name="correction_flow",
+        )
+        assert agent["status"] == "handoff"
+        assert "order_ref2" not in agent["slots"]
+
 
 class TestLoopGuard:
     LOOP = {
@@ -585,3 +675,110 @@ class TestDefinitionLookupCache:
         wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
         # One projection query + ONE full-row load, never one per version.
         assert counters["queries"] == 2
+
+
+MULTI_ANSWER = {
+    "id": "wf_multi", "version": 1, "name": "Multi answer journey",
+    # Canonical values are deliberately phrases that never occur verbatim in
+    # speech ("guard / security"): the extractor auto-adds every canonical as
+    # a surface, so a speakable canonical like "customer" would out-match
+    # shorter true surfaces inside utterances such as "customer ke guard ko".
+    "nodes": [
+        {"id": "m1", "kind": "start", "label": "Start", "x": 0, "y": 0},
+        {"id": "m2", "kind": "ask", "label": "Story", "x": 0, "y": 0,
+         "config": {"question": "What happened?",
+                    "variable": "story", "entityType": "text",
+                    "alsoCapture": [
+                        {"variable": "called",
+                         "entity": {"dataType": "text",
+                                    "synonyms": {"yes (called)": ["call kiya"],
+                                                 "no (did not call)": ["call nahi"]}}},
+                        {"variable": "recipient",
+                         "entity": {"dataType": "text",
+                                    "synonyms": {"guard / security": ["guard ko de diya"],
+                                                 "customer (direct)": ["customer ko de diya"]}}},
+                    ]}},
+        {"id": "m3", "kind": "ask", "label": "Called?", "x": 0, "y": 0,
+         "config": {"question": "Did you call the customer?",
+                    "variable": "called", "entityType": "text",
+                    "entity": {"dataType": "text",
+                               "synonyms": {"yes (called)": ["haan", "yes"],
+                                            "no (did not call)": ["nahi", "no"]}},
+                    "alsoCapture": [
+                        {"variable": "recipient",
+                         "entity": {"dataType": "text",
+                                    "synonyms": {"guard / security": ["guard ko"],
+                                                 "customer (direct)": ["customer ko"]}}},
+                    ]}},
+        {"id": "m4", "kind": "ask", "label": "Recipient", "x": 0, "y": 0,
+         "config": {"question": "Who received the order?",
+                    "variable": "recipient", "entityType": "text",
+                    "entity": {"dataType": "text",
+                               "synonyms": {"guard / security": ["guard"],
+                                            "customer (direct)": ["customer ko",
+                                                                  "customer ke haath"]}}}},
+        {"id": "m5", "kind": "end", "label": "End", "x": 0, "y": 0,
+         "config": {"text": "Noted, thank you."}},
+    ],
+    "edges": [
+        {"id": "me1", "from": "m1", "to": "m2"},
+        {"id": "me2", "from": "m2", "to": "m3"},
+        {"id": "me3", "from": "m3", "to": "m4"},
+        {"id": "me4", "from": "m4", "to": "m5"},
+    ],
+}
+
+
+class TestAlsoCapture:
+    """Opt-in multi-answer capture: one utterance answering several upcoming
+    asks fills their slots, and the flow continues at the next UNANSWERED
+    question instead of mechanically re-asking."""
+
+    async def test_narrative_fills_later_asks_and_skips_them(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, MULTI_ANSWER)
+        first = await _turn(engine, "", session="ac-1", name="multi_answer_journey")
+        assert "What happened" in first["reply"]
+        # One narrative answers the story AND both later questions.
+        r = await _turn(
+            engine,
+            "maine call kiya tha aur guard ko de diya tha order",
+            session="ac-1", name="multi_answer_journey",
+        )
+        assert r["slots"]["called"] == "yes (called)"
+        assert r["slots"]["recipient"] == "guard / security"
+        assert r["status"] == "done"          # both asks were skipped
+        assert "Noted" in r["reply"]
+
+    async def test_partial_answer_asks_only_the_missing_question(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, MULTI_ANSWER)
+        await _turn(engine, "", session="ac-2", name="multi_answer_journey")
+        # The narrative answers only the call question.
+        r = await _turn(engine, "maine call kiya tha bas",
+                        session="ac-2", name="multi_answer_journey")
+        assert r["slots"]["called"] == "yes (called)"
+        assert "recipient" not in r["slots"]
+        assert "Who received" in r["reply"]   # only the missing ask remains
+        r = await _turn(engine, "guard ko diya tha",
+                        session="ac-2", name="multi_answer_journey")
+        assert r["slots"]["recipient"] == "guard / security"
+        assert r["status"] == "done"
+
+    async def test_also_capture_never_overwrites_an_earlier_answer(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, MULTI_ANSWER)
+        await _turn(engine, "", session="ac-3", name="multi_answer_journey")
+        r = await _turn(engine, "call nahi ho paya tha",
+                        session="ac-3", name="multi_answer_journey")
+        assert r["slots"]["called"] == "no (did not call)"
+        # The recipient answer mentions "customer ko" via alsoCapture on m3 —
+        # but m3's own slot is already "no" and must stay untouched.
+        r = await _turn(engine, "customer ke guard ko diya",
+                        session="ac-3", name="multi_answer_journey")
+        assert r["slots"]["called"] == "no (did not call)"
+        assert r["slots"]["recipient"] == "guard / security"
+        assert r["status"] == "done"

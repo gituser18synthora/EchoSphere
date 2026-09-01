@@ -115,6 +115,19 @@ class TestWorkflowPriority:
         assert decision.intent == "booking_confirmation"
         assert decision.action == "oyo_booking_support_journey"
 
+    def test_hindi_delivery_variation_routes_with_configured_sample(self):
+        router = make_router(intents=[{
+            "name": "order_information",
+            "samples": ["मेरा डिलीवरी कहाँ है", "डिलीवरी कब होगी"],
+            "route": "workflow:honasa_order_support",
+            "confidence_threshold": 0.55,
+        }])
+
+        decision = router.decide("अह मेरा डिलीवरी कहाँ है आप बता सकते हो?")
+
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.action == "honasa_order_support"
+
     def test_configured_yes_beats_generic_smalltalk(self):
         router = make_router(
             intents=[{
@@ -127,6 +140,41 @@ class TestWorkflowPriority:
         decision = router.decide("Yes")
         assert decision.kind == RouteKind.WORKFLOW
         assert decision.action == "collection_call"
+
+    def test_bare_mixed_spoken_identifier_routes_to_unique_workflow(self):
+        router = make_router(intents=[{
+            "name": "order_information",
+            "samples": ["where is my order"],
+            "route": "workflow:order_support",
+            "confidence_threshold": 0.55,
+            "optional_entities": ["order_id", "registered_phone"],
+        }])
+
+        decision = router.decide("Seven 0 0 1 zero zero two")
+
+        assert decision.kind == RouteKind.WORKFLOW
+        assert decision.action == "order_support"
+        assert decision.intent == "order_information"
+        assert decision.reason == "identifier_workflow"
+
+    def test_identifier_route_requires_one_unambiguous_workflow(self):
+        router = make_router(intents=[
+            {"name": "order", "samples": [], "route": "workflow:orders",
+             "optional_entities": ["order_id"]},
+            {"name": "booking", "samples": [], "route": "workflow:bookings",
+             "optional_entities": ["booking_id"]},
+        ])
+
+        assert router.decide("7001002").kind != RouteKind.WORKFLOW
+
+    def test_amount_or_short_digit_does_not_start_identifier_workflow(self):
+        router = make_router(intents=[{
+            "name": "payment", "samples": [], "route": "workflow:payment",
+            "optional_entities": ["amount"],
+        }])
+
+        assert router.decide("2000").kind != RouteKind.WORKFLOW
+        assert router.decide("12").kind != RouteKind.WORKFLOW
 
 
 class TestExplicitIntentRoutes:

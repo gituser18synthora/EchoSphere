@@ -521,6 +521,22 @@ class TurnRouter:
             return RouteDecision(kind=RouteKind.INTENT, intent=name, confidence=confidence,
                                  reason="configured_intent")
 
+        # A caller may answer an identifier request with ONLY the value. If
+        # the semantic decision model is slow/unavailable, a bare/spoken ID
+        # has no sample phrase to match and used to fall into plain chat — the
+        # LLM then guessed whether it was valid instead of running the saved
+        # verification workflow. Identifier-bearing workflow intents provide
+        # enough tenant-authored evidence to route deterministically, but only
+        # when every matching intent points to the SAME workflow.
+        identifier_intent = self._match_identifier_workflow(stripped)
+        if identifier_intent is not None:
+            name, action = identifier_intent
+            return RouteDecision(
+                kind=RouteKind.WORKFLOW, intent=name, confidence=0.95,
+                action=action, reason="identifier_workflow",
+                signal=classify_user_signal(stripped),
+            )
+
         # 4. Unconfigured smalltalk never hits the knowledge base.
         if _SMALLTALK.match(stripped):
             return RouteDecision(kind=RouteKind.CHAT, reason="smalltalk", considered_kb=True)
@@ -579,3 +595,48 @@ class TurnRouter:
             if best is None or strength > best[2]:
                 best = (intent.get("name", "intent"), intent.get("route"), strength)
         return best
+
+    def _match_identifier_workflow(self, text: str) -> tuple[str, str] | None:
+        """Unique configured workflow for a caller-dictated identifier.
+
+        This is deliberately schema-light: intent entity NAMES are existing
+        author-controlled configuration. Values such as amounts/dates never
+        trigger it; only conventional identifier names do, and ambiguous
+        routes fail closed to the normal router path.
+        """
+        from shared.orchestration.spoken_numbers import (
+            digits_dominant,
+            spoken_digit_sequence,
+        )
+
+        if not digits_dominant(text):
+            return None
+        digits = spoken_digit_sequence(text)
+        if not 4 <= len(digits) <= 18:
+            return None
+
+        identifier_name = re.compile(
+            r"(?:^|_)(?:.*_?id|phone|mobile|reference|ref|account|policy|"
+            r"claim|number)(?:$|_)",
+            re.I,
+        )
+        candidates: list[tuple[str, str]] = []
+        for intent in self._intents:
+            route = str(intent.get("route") or "")
+            workflow_id = str(intent.get("workflow_id") or "")
+            action = route.split(":", 1)[1] if route.startswith("workflow:") else workflow_id
+            if not action:
+                continue
+            entities = (
+                list(intent.get("entities") or [])
+                + list(intent.get("optional_entities") or [])
+            )
+            if any(identifier_name.search(str(entity)) for entity in entities):
+                candidates.append((str(intent.get("name") or "intent"), action))
+        actions = {action for _, action in candidates}
+        if len(actions) != 1:
+            return None
+        action = next(iter(actions))
+        name = next(name for name, candidate_action in candidates
+                    if candidate_action == action)
+        return name, action

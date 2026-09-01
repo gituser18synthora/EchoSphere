@@ -101,7 +101,7 @@ closing CRM disposition.
 
 | Say | Expect |
 |---|---|
-| `confirm my booking` | "I can help you with that. Could you please share your booking ID?" |
+| `confirm my booking` | "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time." |
 | `601001` | "Thank you. For verification, may I know the guest name on this booking?" |
 | `Rahul Sharma` | "Great news — your booking is confirmed in our system. Would you like me to also confirm it directly with the property, hear your booking details, or get the booking voucher emailed to you?" |
 

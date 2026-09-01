@@ -79,6 +79,37 @@ class TestValidateGroundedReply:
             self.SCRIPT, "It has been sent.", must_include=["voucher"]
         )
 
+    @pytest.mark.parametrize("generated", [
+        ("It seems like the order ID you provided is not valid. "
+         "Could you please share the exact seven-digit order ID?"),
+        "I couldn't locate your booking. Could you repeat the reference number?",
+        "आपकी ऑर्डर आईडी सही नहीं है। कृपया इसे दोबारा बताइए।",
+        "Order ID dobara bataiye.",
+    ])
+    def test_verified_identity_cannot_be_undone_by_generation(self, generated):
+        assert not validate_grounded_reply(
+            "I've found your order. Would you like delivery details?",
+            generated,
+            require_question=True,
+            verified_context={"customer_verified": True, "order_id": "7001002"},
+        )
+
+    def test_same_wording_is_allowed_before_verification(self):
+        assert validate_grounded_reply(
+            "Please share your order ID.",
+            "Your order ID is not valid. Could you please share it again?",
+            require_question=True,
+            verified_context={"customer_verified": False},
+        )
+
+    def test_verified_success_wording_still_passes(self):
+        assert validate_grounded_reply(
+            "I've found your order. Would you like delivery details?",
+            "I've found your order. Would you like delivery details?",
+            require_question=True,
+            verified_context={"customer_verified": True, "order_id": "7001002"},
+        )
+
     def test_markdown_and_menus_rejected(self):
         assert not validate_grounded_reply(self.SCRIPT, "Here you go:\n- hotel\n- dates")
         assert not validate_grounded_reply(self.SCRIPT, "# Booking\nAll confirmed.")
