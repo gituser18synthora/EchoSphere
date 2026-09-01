@@ -494,15 +494,10 @@ async def _run_call(
     audio_conf = (config.audio_settings or {}).get(transport_kind) or {}
     if telephony_provider:
         tts_sample_rate = int(audio_conf.get("sampleRate", 8000))
-        # mod_audio_fork resamples the caller/read stream to 16 kHz. This also
-        # satisfies the Sarvam SDK's per-message audio contract. The legacy
-        # mod_audio_stream path remains 8 kHz.
-        stt_sample_rate = (
-            16000
-            if telephony_provider == "freeswitch"
-            and media_transport == "audio_fork"
-            else 8000
-        )
+        # Telephony input stays at its native 8 kHz rate end to end. In
+        # particular, the FreeSWITCH audio-fork serializer labels its raw PCM
+        # as 8 kHz and streaming STT receives the same rate without resampling.
+        stt_sample_rate = 8000
     else:
         tts_sample_rate = int(audio_conf.get("sampleRate", 24000))
         stt_sample_rate = 16000
