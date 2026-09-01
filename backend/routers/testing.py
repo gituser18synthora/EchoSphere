@@ -637,6 +637,7 @@ async def chat_test(
                     user_text=body.message,
                     language=conversation_language,
                     initial_slots=verified_context,
+                    context_values=runtime_ctx.prompt_values(),
                     reset_state=reset_subject,
                 )
             finally:
@@ -705,6 +706,7 @@ async def chat_test(
                             directives=result.get("responseDirectives") or (),
                             script=reply,
                             pending_question=pending_question or None,
+                            workflow_values=result.get("slots") or {},
                         ),
                     )
                 except Exception:  # noqa: BLE001 — authored reply stands
@@ -1255,6 +1257,7 @@ async def simulate_turn(
                 workflow_name=name, user_text=body.message,
                 language=body.language or None,
                 mock_tool_results=body.mock_tool_results or None,
+                context_values=runtime_ctx.prompt_values(),
             )
             workflow_detail = {
                 "name": name, "status": result["status"],
@@ -1294,6 +1297,7 @@ async def simulate_turn(
                         directives=result.get("responseDirectives") or (),
                         script=result["reply"],
                         pending_question=pending_question or None,
+                        workflow_values=result.get("slots") or {},
                     ),
                     body.messages, body.message,
                 )

@@ -304,6 +304,7 @@ def _connection(concern_code: str, name: str, label: str,
 CONNECTIONS = [
     _connection("mdnd", "Zepto Register MDND Concern",
                 "Mark Delivered but Not Delivered", {
+                    "m_issue_description": {"type": "string"},
                     "m_deduction_amount": {"type": "string"},
                     "m_order_last4": {"type": "string"},
                     "m_deduction_date": {"type": "string"},
@@ -311,6 +312,8 @@ CONNECTIONS = [
                     "m_reached_location": {"type": "string"},
                     "m_handover_recipient": {"type": "string"},
                     "m_cx_support_call": {"type": "string"},
+                    "m_other_deduction_note": {"type": "string"},
+                    "m_correction": {"type": "string"},
                 }),
     _connection("uniform_deduction", "Zepto Register Uniform Deduction Concern",
                 "Raincoat, T-shirt and Bag related deduction", {

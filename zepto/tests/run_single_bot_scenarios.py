@@ -50,8 +50,9 @@ PASS, FAIL = 0, 0
 FAILURES = []
 
 
-def turn(bot_id, session, message, history, mocks=None):
+def turn(bot_id, session, message, history, mocks=None, options=None):
     body = {"message": message, "sessionId": session, "messages": history}
+    body.update(options or {})
     if mocks:
         body["mockToolResults"] = mocks
     r = c.post(f"/bots/{bot_id}/testing/simulate", json=body)
@@ -66,9 +67,15 @@ def run(bot_id, name, turns, verbose=False):
     ok_all = True
     log = []
     for item in turns:
-        message, mocks, expect = (item if len(item) == 3 else
-                                  (item[0], None, item[1]))
-        d = turn(bot_id, session, message, history, mocks)
+        if len(item) == 4:
+            message, mocks, expect, options = item
+        elif len(item) == 3:
+            message, mocks, expect = item
+            options = None
+        else:
+            message, expect = item
+            mocks, options = None, None
+        d = turn(bot_id, session, message, history, mocks, options)
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": d.get("response") or ""})
         wf = d.get("workflow") or {}
@@ -129,7 +136,8 @@ SUITES = {
           ("maine deliver kiya tha product, maine call kiya tha, customer "
            "ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad "
            "deduction hua jo nahi hona chahiye tha",
-           [(SL, '"m_called_customer": "yes (called the customer)"'),
+           [(SL, '"m_reached_location": "yes (reached the location)"'),
+            (SL, '"m_called_customer": "yes (called the customer)"'),
             (TR, "n_msg_empathy"), (TR, "n_ask_handover"),
             (R, "परेशानी"), (R, "सौंपा"), (RN, "delivery से पहले")]),
           ("ye order maine customer ke guard ko handover kiya tha",
@@ -144,12 +152,13 @@ SUITES = {
           ("theek hai thank you",
            [(TR, "n_msg_close"), (ST, "done"), (DN, "true"), (R, "शुक्रिया")]),
           ]),
-        # One utterance answers BOTH enquiries -> neither question is asked.
-        ("MDND 02 multi-answer: one utterance answers both enquiries",
+        # One utterance answers all three incident enquiries -> none re-asked.
+        ("MDND 02 multi-answer: one utterance answers all incident enquiries",
          [("mdnd wala issue hai", [(TR, "n_ask_issue_desc")]),
-          ("maine call kiya tha aur order guard ko de diya tha, phir bhi "
-           "deduction hua",
-           [(SL, '"m_called_customer": "yes (called the customer)"'),
+          ("main customer ki location par pahunch gaya tha, maine call kiya "
+           "tha aur order guard ko de diya tha, phir bhi deduction hua",
+           [(SL, '"m_reached_location": "yes (reached the location)"'),
+            (SL, '"m_called_customer": "yes (called the customer)"'),
             (SL, '"m_handover_recipient": "guard / security"'),
             (TR, "n_hub_verify"), (R, "सही है"),
             (RN, "सौंपा"), (RN, "delivery से पहले")]),
@@ -161,8 +170,10 @@ SUITES = {
         # Partial answer -> ONLY the missing question is asked.
         ("MDND 03 partial answer: only the missing question is asked",
          [("mdnd ka issue hai", [(TR, "n_ask_issue_desc")]),
-          ("order guard ko de diya tha maine, phir bhi deduction aa gaya",
-           [(SL, '"m_handover_recipient": "guard / security"'),
+          ("location par pahunch kar order guard ko de diya tha maine, phir "
+           "bhi deduction aa gaya",
+           [(SL, '"m_reached_location": "yes (reached the location)"'),
+            (SL, '"m_handover_recipient": "guard / security"'),
             (TR, "n_ask_called"), (R, "call"), (RN, "सौंपा")]),
           ("haan call kiya tha",
            [(SL, '"m_called_customer": "yes (called the customer)"'),
@@ -171,22 +182,27 @@ SUITES = {
         # The partner rejects the summary -> correction captured -> re-verify.
         ("MDND 04 correction at the verification step",
          [("mdnd issue hai", [(TR, "n_ask_issue_desc")]),
-          ("bas deduction hua hai galat", [(TR, "n_ask_called")]),
-          ("haan kiya tha", [(TR, "n_ask_handover")]),
+          ("bas deduction hua hai galat", [(TR, "n_ask_reached")]),
+          ("haan location par pahunch gaya tha", [(TR, "n_ask_called")]),
+          ("haan call kiya tha", [(TR, "n_ask_handover")]),
           ("customer ko de diya tha",
            [(SL, '"m_handover_recipient": "customer (direct)"'),
             (TR, "n_hub_verify")]),
           ("nahi galat hai",
            [(TR, "n_ask_correction"), (R, "ठीक करके")]),
           ("actually order maine guard ko diya tha customer ko nahi",
-           [(SL, "guard ko diya"), (TR, "n_hub_verify"), (R, "सही है")]),
+           [(SL, '"m_handover_recipient": "guard / security"'),
+            (TR, "n_hub_verify"), (R, "सही है")]),
           ("haan ab sahi hai", [(TR, "n_ask_other")]),
           ]),
         ("MDND 05 English caller end to end, live API fallback",
          [("I have an MDND issue",
            [(RT, "workflow"), (TR, "n_ask_issue_desc")]),
-          ("I delivered the order but still got a deduction of 400 rupees",
-           [(SL, '"m_deduction_amount": "400"'), (TR, "n_ask_called")]),
+          ("I reached the customer location and delivered the order but "
+           "still got a deduction of 400 rupees",
+           [(SL, '"m_deduction_amount": "400"'),
+            (SL, '"m_reached_location": "yes (reached the location)"'),
+            (TR, "n_ask_called")]),
           ("yes I called the customer",
            [(SL, '"m_called_customer": "yes (called the customer)"'),
             (TR, "n_ask_handover")]),
@@ -204,6 +220,58 @@ SUITES = {
           ]),
         ("MDND 07 policy question routes to the FAQ KB",
          [("MDND kya hota hai?", [(RT, "knowledge")]),
+          ]),
+        ("MDND 08 no context: all supplied values captured together",
+         [("mdnd issue hai", None, [(TR, "n_ask_issue_desc")],
+           {"contextSource": "none"}),
+          ("deduction 400 rupees tha, order 9203 tha, 4 August ko hua; "
+           "main location par pahuncha, customer ko call kiya aur guard ko "
+           "de diya",
+           None,
+           [(SL, '"m_deduction_amount": "400"'),
+            (SL, '"m_order_last4": "9203"'),
+            (SL, '"m_deduction_date": "4 august"'),
+            (SL, '"m_reached_location": "yes (reached the location)"'),
+            (SL, '"m_called_customer": "yes (called the customer)"'),
+            (SL, '"m_handover_recipient": "guard / security"'),
+            (TR, "n_hub_verify")],
+           {"contextSource": "none"}),
+          ]),
+        ("MDND 09 no context partial: asks only missing date",
+         [("mdnd issue hai", None, [(TR, "n_ask_issue_desc")],
+           {"contextSource": "none"}),
+          ("400 rupees ka deduction hai, order 9203 hai; location par "
+           "pahuncha, call kiya aur guard ko diya",
+           None,
+           [(SL, '"m_deduction_amount": "400"'),
+            (SL, '"m_order_last4": "9203"'),
+            (TR, "n_ask_date"), (R, "date"),
+            (TN, "n_ask_reached"), (TN, "n_ask_called"),
+            (TN, "n_ask_handover")],
+           {"contextSource": "none"}),
+          ("4 August ko", None,
+           [(SL, '"m_deduction_date": "4 august"'), (TR, "n_hub_verify")],
+           {"contextSource": "none"}),
+          ]),
+        ("MDND 10 confirmation plus other deduction skips repeated ask",
+         [("mdnd issue hai", [(TR, "n_ask_issue_desc")]),
+          ("location par pahuncha, call kiya aur guard ko de diya",
+           [(TR, "n_hub_verify")]),
+          ("haan sab sahi hai aur onboarding fee bhi sahi deduct hui thi",
+           [(SL, '"m_other_deduction_note": "other deduction is correct'),
+            (RN, "दूसरा onboarding"), (TR, "n_api"), (TR, "n_pending"),
+            (TR, "n_hub_more")]),
+          ]),
+        ("MDND 11 interrupted combined answer remains captured",
+         [("mdnd issue hai", [(TR, "n_ask_issue_desc")]),
+          ("location par pahunch gaya tha, customer ko call kiya aur order "
+           "guard ko de diya",
+           None,
+           [(SL, '"m_reached_location": "yes (reached the location)"'),
+            (SL, '"m_called_customer": "yes (called the customer)"'),
+            (SL, '"m_handover_recipient": "guard / security"'),
+            (TR, "n_hub_verify")],
+           {"interrupted": True}),
           ]),
     ]),
     "UNIFORM": (STATE["BOT_UNIFORM"], [

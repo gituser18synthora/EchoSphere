@@ -160,6 +160,38 @@ MDND_CALLED_LOOKAHEAD = {
             "बात नहीं हुई"],
     },
 }
+MDND_REACHED_ENTITY = {
+    "dataType": "text",
+    "synonyms": {
+        "yes (reached the location)": [
+            "haan", "yes", "ji haan", "pahuncha tha", "pahucha tha",
+            "pahunch gaya tha", "location par gaya tha", "reached",
+            "हाँ", "जी हाँ", "पहुंचा था", "पहुँचा था", "लोकेशन पर गया था"],
+        "no (did not reach the location)": [
+            "nahi", "no", "nahi pahuncha", "location par nahi gaya",
+            "did not reach", "didn't reach", "नहीं", "नहीं पहुंचा",
+            "लोकेशन पर नहीं गया"],
+    },
+}
+MDND_REACHED_LOOKAHEAD = {
+    "dataType": "text",
+    "synonyms": {
+        "yes (reached the location)": [
+            "location par pahuncha", "location pe pahuncha",
+            "location tak pahuncha", "location par gaya tha",
+            "location par pahunch gaya", "location pe pahunch gaya",
+            "location par pahunch kar", "location pe pahunch kar",
+            "लोकेशन पर पहुंचा", "लोकेशन तक पहुंचा", "लोकेशन पर गया था",
+            "reached the customer location", "reached customer's location",
+            "ghar ke aage rakh diya", "घर के आगे रख दिया",
+            "wahan rakh diya", "वहाँ रख दिया"],
+        "no (did not reach the location)": [
+            "location par nahi pahuncha", "location pe nahi pahuncha",
+            "लोकेशन पर नहीं पहुंचा", "लोकेशन तक नहीं पहुंचा",
+            "did not reach the customer location",
+            "didn't reach the customer location"],
+    },
+}
 MDND_RECIPIENT_ENTITY = {
     "dataType": "text",
     "synonyms": {
@@ -224,13 +256,59 @@ MDND_DATE_LOOKAHEAD = {
         r"|(?<![\u0900-\u097F])(?:कल|परसों|आज)(?![\u0900-\u097F])"
         r"|pichhle hafte|पिछले हफ़्ते|पिछले हफ्ते|last week|yesterday"),
 }
+MDND_ORDER_ENTITY = {
+    "dataType": "number",
+    "regexPattern": r"(?<![0-9])[0-9]{4}(?![0-9])",
+}
+MDND_OTHER_NOTE_LOOKAHEAD = {
+    "dataType": "text",
+    "synonyms": {
+        "other deduction is correct / no concern": [
+            "onboarding fee sahi hai", "onboarding fee correct hai",
+            "onboarding fee correctly deduct", "onboarding sahi deduct",
+            "onboarding fee bhi sahi deduct",
+            "onboarding ka deduction sahi", "ऑनबोर्डिंग फी सही है",
+            "ऑनबोर्डिंग फी सही डिडक्ट", "other deduction is correct",
+            "dusra deduction sahi hai", "दूसरा डिडक्शन सही है"],
+        "other deduction also needs review": [
+            "onboarding fee galat hai", "onboarding deduction galat",
+            "onboarding ka bhi issue", "ऑनबोर्डिंग फी गलत है",
+            "ऑनबोर्डिंग का भी इशू", "other deduction is wrong",
+            "dusra deduction galat hai", "दूसरा डिडक्शन गलत है"],
+    },
+}
+MDND_CX_SUPPORT_LOOKAHEAD = {
+    "dataType": "text",
+    "synonyms": {
+        "yes (received CX support call)": [
+            "cx support se call aaya", "customer support se call aaya",
+            "support team ka call aaya", "सीएक्स सपोर्ट से कॉल आया",
+            "कस्टमर सपोर्ट से कॉल आया", "received a call from cx support"],
+        "no (no CX support call)": [
+            "cx support se call nahi aaya",
+            "customer support se call nahi aaya",
+            "support team ka call nahi aaya",
+            "सीएक्स सपोर्ट से कॉल नहीं आया",
+            "कस्टमर सपोर्ट से कॉल नहीं आया",
+            "did not get a call from cx support"],
+    },
+}
 
 MDND_NARRATIVE_ALSO = [
+    {"variable": "m_reached_location", "entity": MDND_REACHED_LOOKAHEAD},
     {"variable": "m_called_customer", "entity": MDND_CALLED_LOOKAHEAD},
     {"variable": "m_handover_recipient", "entity": MDND_RECIPIENT_LOOKAHEAD},
     {"variable": "m_deduction_amount", "entity": MDND_AMOUNT_LOOKAHEAD},
     {"variable": "m_order_last4", "entity": MDND_ORDER_LOOKAHEAD},
     {"variable": "m_deduction_date", "entity": MDND_DATE_LOOKAHEAD},
+    {"variable": "m_cx_support_call", "entity": MDND_CX_SUPPORT_LOOKAHEAD},
+    {"variable": "m_other_deduction_note",
+     "entity": MDND_OTHER_NOTE_LOOKAHEAD},
+]
+
+MDND_CORRECTION_ALSO = [
+    {**spec, "overwrite": True} for spec in MDND_NARRATIVE_ALSO
+    if spec["variable"] != "m_other_deduction_note"
 ]
 
 MDND_READOUT_DIRECTIVE = (
@@ -241,17 +319,19 @@ MDND_READOUT_DIRECTIVE = (
     "which one they want to clear first and what happened — for example "
     "'इनमें से जो पहले clear करना है वो बताइए — क्या हुआ था?'. Natural "
     "Hinglish, at most three short sentences plus the question. If the "
-    "context has NO ticket or deduction details, instead ask them to "
-    "describe what happened with the MDND deduction, including the amount, "
-    "the date, and the order's last four digits if they have them. Use the "
-    "partner's name at most once. Never invent any value.")
+    "context has no ticket or deduction details, simply ask them to describe "
+    "what happened; the structured flow will ask only the still-missing "
+    "amount, date or order last-four afterward. Use `partner_name` at most "
+    "once and never use an end-customer name as the caller's name. Never "
+    "invent any value.")
 MDND_VERIFY_DIRECTIVE = (
     "Summarize for confirmation in natural Hinglish, starting like 'record "
     "के हिसाब से …': the MDND deduction facts from the call context (order "
     "last-4, date, amount) plus what the partner told you in THIS "
-    "conversation — whether they called the customer, who received the "
-    "order, and any key detail from their story (including any correction "
-    "they just gave). You are CONFIRMING, not collecting: every enquiry is "
+    "conversation — whether they reached the customer's location, whether "
+    "they called the customer, who received the order, and any key detail "
+    "from their story (including any correction they just gave). You are "
+    "CONFIRMING, not collecting: every enquiry is "
     "already answered, so NEVER ask for any new information or re-ask an "
     "enquiry. The ONLY question in your reply must be the literal closing "
     "'क्या ये सब सही है?'. Two to three short sentences. Never add facts "
@@ -279,10 +359,10 @@ You are Kavya, a calm, patient support agent for Zepto — the quick-commerce de
 Walk the partner's MDND ticket the way the approved reference call does: read out the deductions already on the ticket, let the partner explain what happened, collect ONLY the enquiry answers their story has not already given, verify everything back once, note any comment on the ticket's other deduction, register the concern, and close with the note-taken assurance. The guided call flow owns the step order; you word the grounded steps and off-script moments naturally.
 
 # Ticket facts — the call context is authoritative
-The call context carries the partner's ticket facts: ticket id, the MDND deduction's amount, date and order-ID last four digits, and any other deduction on the ticket. NEVER re-ask a fact the context already has — read it back naturally instead. If a context fact is missing, ask for it once, plainly.
+The call context may carry the partner's ticket facts: ticket id, the MDND deduction's amount, date and order-ID last four digits, and any other deduction on the ticket. NEVER re-ask a fact the context already has — read it back naturally instead. If a required ticket fact is missing, ask only for that missing fact once, plainly.
 
 # The ONLY concern this line handles
-MDND (Mark Delivered but Not Delivered). The enquiries are: whether the partner called the customer before the delivery, and who received the order (customer, guard, or someone else), on top of the ticket facts above. A comment about the ticket's OTHER listed deduction is welcome and recorded as a note — but any unrelated topic or a new different concern goes to a support executive; never improvise another flow.
+MDND (Mark Delivered but Not Delivered). On top of the ticket facts above, establish whether the partner reached the customer's location, whether they called the customer before delivery, and who received the order (customer, guard, door/drop location, or someone else). If the partner voluntarily mentions a CX-support call, record that too without asking it again. A comment about the ticket's OTHER listed deduction is welcome and recorded as a note — but any unrelated topic or a new different concern goes to a support executive; never improvise another flow.
 
 # Approved facts — the ONLY claims you may make
 - Everything the partner tells you is noted on their ticket and the concern team reviews the case and connects with them shortly (within 24 to 48 hours when a ticket reference confirms it).
@@ -298,7 +378,7 @@ Partners speak casually — Hindi, Hinglish, or English — over noisy phone lin
 
 # Conduct rules
 - Follow the guided flow; never skip the verification summary, and never re-ask an answered question.
-- The partner's name: use it at most once or twice in the whole call — naturally at the opening or closing, or in one empathy moment. NEVER prefix every reply with the name. If the name is not in the context, speak without it; nothing breaks.
+- The caller is the delivery partner. Use `partner_name` at most once or twice in the whole call — naturally at the opening or closing, or in one empathy moment. Do not treat an end-customer name as the partner's name, and NEVER prefix every reply with a name. If `partner_name` is unavailable, speak without it; nothing breaks.
 - Empathy: when the partner describes the problem, acknowledge once ("मैं आपकी परेशानी समझ सकती हूँ") and move forward. If they are upset, stay calm; if abusive, stay professional and politely close if it continues.
 - Payments and credentials: never ask for or accept card numbers, CVV, OTPs, PINs, UPI IDs or bank passwords. Zepto never needs those on a support call.
 - Privacy: never read out the partner's full phone number or a full order ID — only the last 4 digits, as in the ticket.
@@ -324,34 +404,58 @@ def build_mdnd_workflow() -> tuple[list, list]:
             "responseMode": "llm_grounded",
             "responseDirective": MDND_READOUT_DIRECTIVE,
             "alsoCapture": MDND_NARRATIVE_ALSO}),
+        N("n_ask_amount", "ask", "Missing deduction amount", {
+            "question": "MDND का deduction amount कितना था?",
+            "variable": "m_deduction_amount",
+            "entity": MDND_AMOUNT_LOOKAHEAD,
+            "prefillFromContext": "mdnd_deduction_amount",
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
+        N("n_ask_order", "ask", "Missing order last four", {
+            "question": "Order ID के last 4 digits क्या हैं?",
+            "variable": "m_order_last4",
+            "entity": MDND_ORDER_ENTITY,
+            "prefillFromContext": "mdnd_order_last4",
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
+        N("n_ask_date", "ask", "Missing deduction date", {
+            "question": "यह MDND deduction किस date या week में हुआ था?",
+            "variable": "m_deduction_date",
+            "entity": MDND_DATE_LOOKAHEAD,
+            "prefillFromContext": "mdnd_deduction_date",
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
         N("n_msg_empathy", "message", "Empathy acknowledgement", {
             "text": "मैं आपकी परेशानी पूरी तरह समझ सकती हूँ।"}),
+        N("n_ask_reached", "ask", "Reached customer location?", {
+            "question": "क्या आप delivery के लिए customer की location पर पहुंचे थे?",
+            "variable": "m_reached_location",
+            "entity": MDND_REACHED_ENTITY,
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
         N("n_ask_called", "ask", "Called the customer?", {
             "question": ("क्या आपने delivery से पहले customer को call किया "
                          "था?"),
             "variable": "m_called_customer",
             "entity": MDND_CALLED_ENTITY,
-            "alsoCapture": [{"variable": "m_handover_recipient",
-                             "entity": MDND_RECIPIENT_LOOKAHEAD}]}),
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
         N("n_ask_handover", "ask", "Who received the order?", {
             "question": ("ये order आपने किसको सौंपा था — customer को, guard "
                          "को, या किसी और को?"),
             "variable": "m_handover_recipient",
             "entity": MDND_RECIPIENT_ENTITY,
-            "alsoCapture": [{"variable": "m_called_customer",
-                             "entity": MDND_CALLED_LOOKAHEAD}]}),
+            "alsoCapture": MDND_NARRATIVE_ALSO}),
         N("n_hub_verify", "intent", "Verification summary — sab sahi hai?", {
             "prompt": ("तो जो details आपने बताईं, वो मैंने note कर लीं। "
                        "क्या ये सब सही है?"),
             "responseMode": "llm_grounded",
             "responseDirective": MDND_VERIFY_DIRECTIVE,
             "responseMustInclude": ["क्या ये सब सही है"],
+            "alsoCapture": [{"variable": "m_other_deduction_note",
+                             "entity": MDND_OTHER_NOTE_LOOKAHEAD}],
             "unmatchedReply": ("बस confirm करना है — जो details मैंने अभी "
                                "बताईं, क्या ये सब सही है?")}),
         N("n_ask_correction", "ask", "Correction", {
             "question": ("ठीक है — कौन सी बात सही नहीं है? कृपया ठीक करके "
                          "बताइए।"),
-            "variable": "m_correction", "entityType": "text"}),
+            "variable": "m_correction", "entityType": "text",
+            "alsoCapture": MDND_CORRECTION_ALSO}),
         N("n_ask_other", "ask", "Other deduction on the ticket?", {
             "question": ("और अगर ticket पर कोई दूसरा deduction भी है, तो "
                          "क्या उसके बारे में भी कुछ बताना है?"),
@@ -362,14 +466,11 @@ def build_mdnd_workflow() -> tuple[list, list]:
             "connection": "Zepto Register MDND Concern",
             "text": REGISTER_HOLD}),
         N("n_confirmed", "message", "Noted (grounded)", {
-            "text": ("आपने जो बताया वो सब मैंने note कर लिया है। हमारी team "
-                     "आपके case को review करके आपसे जल्दी connect करेगी।"),
+            "text": "आपने MDND के बारे में जो बताया, वो note कर लिया है।",
             "responseMode": "llm_grounded",
             "responseDirective": MDND_CONFIRMED_DIRECTIVE}),
         N("n_pending", "message", "Noted (API unavailable)", {
-            "text": ("ठीक है — आपकी सारी details मैंने note कर ली हैं। हमारी "
-                     "team आपके case को review करके आपसे जल्दी connect "
-                     "करेगी।")}),
+            "text": "ठीक है — MDND की सारी details मैंने note कर ली हैं।"}),
         N("n_hub_more", "intent", "Koi aur issue?", {
             "prompt": "इसके अलावा payout में कोई और issue है?"}),
         N("n_msg_close", "message", "Scripted closing", {
@@ -384,8 +485,12 @@ def build_mdnd_workflow() -> tuple[list, list]:
     ])
     edges = [
         E("n_start", "n_ask_issue_desc"),
-        E("n_ask_issue_desc", "n_msg_empathy"),
-        E("n_msg_empathy", "n_ask_called"),
+        E("n_ask_issue_desc", "n_ask_amount"),
+        E("n_ask_amount", "n_ask_order"),
+        E("n_ask_order", "n_ask_date"),
+        E("n_ask_date", "n_msg_empathy"),
+        E("n_msg_empathy", "n_ask_reached"),
+        E("n_ask_reached", "n_ask_called"),
         E("n_ask_called", "n_ask_handover"),
         E("n_ask_handover", "n_hub_verify"),
         E("n_hub_verify", "n_ask_other", YES_VERIFY),
@@ -456,8 +561,10 @@ CONCERNS = [
         "other_concerns": ("Raincoat/T-shirt/Bag deduction, Onboarding Fee "
                            "deduction, RTO issue"),
         "collects": ("the partner's account of what happened; whether the "
+                     "partner reached the customer's location; whether the "
                      "customer was called before the delivery; who received "
-                     "the order (customer / guard / someone else); a "
+                     "the order (customer / guard / someone else); any "
+                     "volunteered CX-support-call detail; a "
                      "verification confirmation; any comment on the ticket's "
                      "other deduction"),
         "description": ("Dedicated inbound line for Zepto delivery partners "
@@ -470,12 +577,12 @@ CONCERNS = [
                         "once, notes any comment on the ticket's other "
                         "deduction, registers the concern and closes with "
                         "the note-taken assurance."),
-        "greeting_hi": ("नमस्ते! मैं {voice_speaker_name}, Zepto support से "
-                        "बोल रही हूँ — क्या मेरी बात delivery partner "
-                        "{customer_name} जी से हो रही है?"),
-        "greeting_en": ("Hello! This is {voice_speaker_name} from Zepto "
-                        "support — am I speaking with delivery partner "
-                        "{customer_name}?"),
+        "greeting_hi": ("नमस्ते {partner_name}! मैं {voice_speaker_name}, "
+                        "Zepto support से बोल रही हूँ — क्या मैं delivery "
+                        "partner से बात कर रही हूँ?"),
+        "greeting_en": ("Hello {partner_name}! This is {voice_speaker_name} "
+                        "from Zepto support — am I speaking with the delivery "
+                        "partner?"),
         "system_override": MDND_SYSTEM,
         "custom_builder": True,
         "questions": [],

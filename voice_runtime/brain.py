@@ -3762,6 +3762,10 @@ class ConversationBrain(FrameProcessor):
             user_text=text,
             language=self._conversation_language,
             initial_slots=initial_slots,
+            context_values=(
+                self._runtime_context.prompt_values()
+                if self._runtime_context is not None else self._call_context
+            ),
             reset_state=reset_state,
         )
         workflow_slots = result.get("slots") or {}
@@ -4065,6 +4069,7 @@ class ConversationBrain(FrameProcessor):
             directives=directives,
             script=reply,
             pending_question=pending_question or None,
+            workflow_values=result.get("slots") or {},
         )
         if pending_question or must_include:
             label = language_label(self._conversation_language)
@@ -4072,6 +4077,11 @@ class ConversationBrain(FrameProcessor):
                 "You word one step of a phone call flow for a voice "
                 "assistant. Rewrite the script below per the rules; output "
                 "ONLY the spoken reply."
+                + (
+                    self._runtime_context.prompt_section()
+                    if self._runtime_context is not None
+                    else self._call_context_instruction()
+                )
                 + self._verified_runtime_context_block
                 + instruction
                 + (f"\nRespond in natural spoken {label}." if label else "")

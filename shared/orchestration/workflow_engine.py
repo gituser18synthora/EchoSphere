@@ -83,6 +83,10 @@ class WorkflowState(TypedDict, total=False):
     # window, fragment buffering, batch-audio recovery) generically from the
     # workflow's own awaited field schema.
     awaiting_identifier: dict | None
+    # Runtime facts resolved once during call/session initialization.  An ask
+    # node must opt into a value with ``prefillFromContext``; the interpreter
+    # never performs a database or remote lookup while advancing the flow.
+    context_values: dict[str, object]
 
 
 # ── appointment booking: the reference slot-filling workflow ───────────────
@@ -805,8 +809,10 @@ def _apply_also_capture(node: dict, text: str, slots: dict,
     runs against the same utterance and fills its slot when it matches, so
     the later ask for that slot is skipped (slot_reused) instead of
     mechanically re-asking what the caller already said. Matcher-based and
-    empty-slot-only by design: a free-text guess can never overwrite or
-    invent an answer, and an already-given answer is never replaced.
+    empty-slot-only by default: a free-text guess can never overwrite or
+    invent an answer. A correction node may explicitly set ``overwrite:
+    true`` for a capture, implementing "latest clear answer wins" without
+    weakening ordinary multi-answer collection.
     """
     from shared.orchestration.entity_extractor import extract_entity
 
@@ -817,7 +823,9 @@ def _apply_also_capture(node: dict, text: str, slots: dict,
         entity = spec.get("entity")
         if not variable or not isinstance(entity, dict) or not entity:
             continue
-        if str(slots.get(variable) or "").strip():
+        overwrite = spec.get("overwrite") is True
+        previous = str(slots.get(variable) or "").strip()
+        if previous and not overwrite:
             continue  # never overwrite an answer the caller already gave
         extracted = extract_entity(text, {"name": variable, **entity})
         if not extracted.get("matched"):
@@ -826,7 +834,8 @@ def _apply_also_capture(node: dict, text: str, slots: dict,
                     or extracted.get("maskedValue") or "").strip()
         if value:
             slots[variable] = value
-            audit.append({"action": "also_captured", "node": node_id,
+            audit.append({"action": ("also_updated" if previous else
+                                      "also_captured"), "node": node_id,
                           "variable": variable})
 
 
@@ -933,6 +942,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # workflow-authored node text is spoken as authored.
         lang = state.get("language") or ""
         slots = dict(state.get("slots") or {})
+        context_values = dict(state.get("context_values") or {})
         node_retries = dict(state.get("node_retries") or {})
         pending_digits = dict(state.get("pending_digits") or {})
         audit = list(state.get("audit") or [])
@@ -1204,6 +1214,11 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     else:
                         why = "else"
                 if correction is None and chosen is not None:
+                    # An intent answer can also carry an upcoming answer
+                    # (for example "haan, summary sahi hai aur onboarding
+                    # deduction bhi sahi tha"). Capture it before walking to
+                    # the next node so that completed ask is skipped.
+                    _apply_also_capture(node, text, slots, audit, awaiting)
                     audit.append({"action": "intent_branch", "node": awaiting,
                                   "edge": chosen.get("label") or chosen.get("id"),
                                   "matched": why, "signal": signal})
@@ -1237,10 +1252,23 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 config = _node_config(node)
                 variable = str(config.get("variable") or node.get("id"))
                 existing = slots.get(variable)
+                context_key = str(config.get("prefillFromContext") or "").strip()
+                if (
+                    (existing is None or not str(existing).strip())
+                    and context_key
+                    and context_key in context_values
+                    and context_values[context_key] is not None
+                    and str(context_values[context_key]).strip()
+                ):
+                    existing = context_values[context_key]
+                    slots[variable] = existing
+                    audit.append({"action": "slot_prefilled", "node": current,
+                                  "variable": variable,
+                                  "context_key": context_key})
                 if existing is not None and str(existing).strip() != "":
-                    # A related journey in this same verified session already
-                    # collected the value. Reuse it without asking the caller
-                    # again; downstream APIs still revalidate it.
+                    # A related journey or the node's explicitly selected
+                    # call-context fact already supplied the value. Reuse it
+                    # without asking again; downstream APIs still revalidate.
                     audit.append({"action": "slot_reused", "node": current,
                                   "variable": variable})
                     current = _next_of(current)
@@ -1561,6 +1589,7 @@ class WorkflowEngine:
         mock_tool_results: dict | None = None,
         signal: str | None = None,
         initial_slots: dict | None = None,
+        context_values: dict | None = None,
         reset_state: bool = False,
     ) -> dict:
         """Advance one turn and return the full execution detail.
@@ -1610,6 +1639,8 @@ class WorkflowEngine:
             "mock_tool_results": mock_tool_results,
             "signal_override": signal,
         }
+        if context_values is not None:
+            invocation["context_values"] = dict(context_values)
         if initial_slots is not None:
             invocation["slots"] = dict(initial_slots)
         if reset_state:
