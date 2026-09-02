@@ -118,11 +118,24 @@ def voice_identity_state(identity: VoiceIdentity) -> dict[str, str]:
     return state
 
 
-def voice_identity_instruction(identity: VoiceIdentity) -> str:
+def voice_identity_instruction(
+    identity: VoiceIdentity, locale: str | None = None
+) -> str:
     """System-prompt suffix enforcing the selected speaker's own grammar.
 
     No provider/voice name maps to a gender here; the database catalog is the
     sole source of that metadata.  Caller gender never affects this rule.
+
+    ``locale`` is the language the generated text must use.  Hindi morphology
+    examples are useful when Hindi/Hinglish is the target, but they are a
+    strong competing language signal for small models when the target is
+    English (the model can copy the examples instead of translating the
+    workflow line).  Keep the examples target-language scoped; callers may
+    switch language on any turn without the speaker-gender rule switching the
+    response back to Hindi.
+
+    A missing locale preserves the original generic instruction for callers
+    that do not yet have a resolved response language.
     """
     if not identity.name and identity.gender == "neutral":
         return ""
@@ -142,7 +155,14 @@ def voice_identity_instruction(identity: VoiceIdentity) -> str:
             "- This is the bot speaker's gender only. Never infer it from, or "
             "change it to match, the caller's gender.",
         ])
-        if identity.gender == "female":
+        target_base = re.split(r"[-_]", str(locale or ""), maxsplit=1)[0].lower()
+        if locale and target_base != "hi":
+            lines.append(
+                f"- The required response language is {locale}. Do not switch "
+                "languages or introduce foreign-language words merely to "
+                "express the speaker's gender."
+            )
+        elif identity.gender == "female":
             lines.append(
                 "- Hindi/Hinglish self-reference must use feminine forms such "
                 "as ‘मैं समझ सकती हूँ’, ‘मैं करती हूँ’, ‘मैं बताती हूँ’, "

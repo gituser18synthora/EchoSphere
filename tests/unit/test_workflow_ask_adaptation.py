@@ -25,6 +25,8 @@ from voice_runtime.brain import ConversationBrain, validate_scripted_adaptation
 
 ASK_EN = "I can help you with that. Could you please share your booking ID?"
 ASK_HI = "क्या आप कृपया अपनी बुकिंग आईडी बता सकते हैं?"
+MDND_ASK_HI = "क्या आपने delivery से पहले customer को call किया था?"
+MDND_ASK_EN = "Did you call the customer before the delivery?"
 FILLER_EN = "Please wait, I am checking that for you."
 
 
@@ -227,6 +229,37 @@ class TestAwaitingAskAdaptation:
             "मैं इसमें मदद कर सकती हूँ। "
             "क्या आप कृपया अपनी बुकिंग आईडी बता सकते हैं?"
         )
+
+    async def test_hindi_workflow_ask_adapts_to_english_without_hindi_bias(self):
+        """Regression for cv_9f9ef085d1d9.
+
+        The caller switched to English while a Hindi-authored workflow was
+        active.  Hindi gender examples appended after the translation command
+        made the model answer in Hindi, validation rejected it, and the
+        original Hindi question was spoken.  English adaptation must receive
+        locale-safe speaker instructions.
+        """
+        llm = _LLMStub(generate_reply=MDND_ASK_EN)
+        brain = make_brain(
+            _WorkflowStub(awaiting_ask_result(
+                reply=MDND_ASK_HI, node_prompt=MDND_ASK_HI,
+            )),
+            llm,
+            tts={"voice_name": "Shubh", "voice_gender": "male"},
+        )
+        brain._config.language = "hi-IN"
+        brain._conversation_language = "en-IN"
+
+        await brain._handle_turn("Yes, I called.")
+
+        system = llm.generate_calls[0]["system"]
+        assert "natural spoken English" in system
+        assert "required response language is en-IN" in system
+        assert "मैं समझ सकता हूँ" not in system
+        assert brain._history[-1]["content"] == MDND_ASK_EN
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_reply_language_adapted", {}).get("mode") \
+            == "constrained_translation"
 
     async def test_invalid_adaptation_falls_back_to_authored_ask(self):
         llm = _LLMStub(generate_reply=FILLER_EN)
