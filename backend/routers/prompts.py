@@ -645,7 +645,7 @@ async def test_prompt(
     )
     system = (
         resolve_placeholders(system, voice_context_values(voice_identity))
-        + voice_identity_instruction(voice_identity)
+        + voice_identity_instruction(voice_identity, body.language)
     )
     provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
     model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)

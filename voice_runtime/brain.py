@@ -63,6 +63,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from pipecat.frames.frames import (
@@ -131,6 +132,7 @@ from shared.orchestration.response_modes import (
     RESPONSE_MODE_FIXED,
     RESPONSE_MODE_GROUNDED,
     grounded_delivery_instruction,
+    language_label,
     validate_grounded_reply,
 )
 from shared.orchestration.spoken_numbers import (
@@ -313,6 +315,15 @@ _CLARIFY_MERGE_WINDOW = 6.0
 _SPEECH_START_DEDUP_WINDOW = 1.2
 # One-shot identifier batch recovery must not stall the turn indefinitely.
 _IDENTIFIER_RECOVERY_TIMEOUT = 6.0
+# Unsupported-language rescue: the streaming STT's auto-detector sometimes
+# labels ordinary Hindi speech as a neighbouring language and emits it in that
+# script ("ઘાટ કો સભા થતો" for "गार्ड को सौंप दिया"). The gate rightly refuses
+# such text, but dropping it loses a real caller turn. When bounded post-gate
+# audio is retained, ONE batch re-transcription in the conversation language
+# recovers it; the rescued text must pass the same gate before it is used.
+_LANGUAGE_RESCUE_RETENTION_SECONDS = 12.0
+_LANGUAGE_RESCUE_TIMEOUT = 4.0
+_LANGUAGE_RESCUE_MIN_AUDIO_SECONDS = 0.3
 # A provider re-emitting the SAME still-open audio segment cumulatively does
 # so within moments of the original final; past this, a prefix-extending
 # final is new speech (e.g. a caller repeating digits) and must append.
@@ -370,18 +381,8 @@ _MIN_SWITCH_WORDS = 2
 # Unsupported languages still require repetition before the client is warned:
 # a single mislabel must not surface a false "caller speaks Tamil" notice.
 _UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
-_LANGUAGE_LABELS = {
-    "hi": "Hindi", "en": "English", "bn": "Bengali", "ta": "Tamil",
-    "te": "Telugu", "mr": "Marathi", "gu": "Gujarati", "kn": "Kannada",
-    "ml": "Malayalam", "pa": "Punjabi", "or": "Odia", "ur": "Urdu",
-}
-
-
-def language_label(locale: str | None) -> str:
-    """Readable language name for a platform locale ("hi-IN" → "Hindi")."""
-    if not locale:
-        return ""
-    return _LANGUAGE_LABELS.get(locale.split("-")[0].lower(), locale)
+# `language_label` (locale → "Hindi"/"English") is shared with the response
+# mode instructions and imported above; it stays re-exported from this module.
 
 
 def turn_time_iso(timestamp: float) -> str:
@@ -680,6 +681,11 @@ class ConversationBrain(FrameProcessor):
         self._language_instruction_cache: dict[str, str] = {}
         self._generation: asyncio.Task | None = None
         self._active_workflow: str | None = None
+        # Whether ANY workflow has consumed a turn on this call. The router's
+        # opening-confirmation entry ("yes, I am speaking" → the tenant's
+        # confirmation intent's workflow) is permitted only before that: a
+        # "theek hai" after the flow closed must never restart it.
+        self._workflow_ever_routed = False
         self._last_bot_reply: str = ""
         self._conversation_language: str = config.language
         # Language continuity: the previous call's dominant customer language
@@ -812,6 +818,17 @@ class ConversationBrain(FrameProcessor):
         # Provider-neutral one-shot batch STT (async (pcm, rate, language) ->
         # text) used ONLY when streaming left an identifier candidate invalid.
         self._batch_transcriber = batch_transcriber
+        # Bounded in-memory retention of post-gate caller audio (never
+        # persisted) so a segment the auto-detector mislabelled as an
+        # unsupported language can be re-transcribed once in the conversation
+        # language instead of being dropped. Only when a batch transcriber
+        # exists — without one the audio could never be used.
+        if (
+            batch_transcriber is not None
+            and audio_gate is not None
+            and hasattr(audio_gate, "enable_utterance_retention")
+        ):
+            audio_gate.enable_utterance_retention(_LANGUAGE_RESCUE_RETENTION_SECONDS)
         # Hang-up in progress: nothing may produce speech after this is set.
         self._closing = False
         # A transfer control has been queued/sent for this call: the normal
@@ -1372,8 +1389,11 @@ class ConversationBrain(FrameProcessor):
             numeric_context=self._identifier_capture is not None,
         )
         if not verdict.accepted:
-            await self._reject_segment(text, quality, verdict)
-            return
+            rescued = await self._retranscribe_unsupported(text, quality, verdict)
+            if rescued is None:
+                await self._reject_segment(text, quality, verdict)
+                return
+            text, quality, verdict = rescued
         if verdict.reason == "digit_payload" and verdict.normalized_text:
             # A high-quality digit word the auto-detector labelled as an
             # unsupported language/script (Gujarati "સાત" while an order id
@@ -1540,6 +1560,83 @@ class ConversationBrain(FrameProcessor):
             await self._schedule_finalize(min(endpoint, self._finalize_grace))
         else:
             await self._schedule_finalize()
+
+    async def _retranscribe_unsupported(self, text: str, quality, verdict):
+        """Recover a caller turn the auto-detector emitted in the wrong language.
+
+        Runs ONLY for an ``unsupported_language`` / ``unsupported_script``
+        rejection, outside identifier mode, when no other segment of the same
+        utterance is already buffered (so the retained audio is exactly this
+        utterance) and bounded post-gate audio was retained. One batch
+        transcription in the conversation language; the result must pass the
+        SAME transcript gate. Returns ``(text, quality, verdict)`` for the
+        rescued segment, or None so the caller rejects the original.
+        """
+        base_reason = (verdict.reason or "").split(":")[0]
+        if base_reason not in ("unsupported_language", "unsupported_script"):
+            return None
+        if (
+            self._batch_transcriber is None
+            or self._identifier_capture is not None
+            or self._pending_segments
+        ):
+            return None
+        gate = self._audio_gate
+        take = getattr(gate, "take_retained_audio", None) if gate else None
+        retained = take() if take is not None else None
+        if not retained:
+            return None
+        audio, rate = retained
+        seconds = len(audio) / (rate * 2) if rate else 0.0
+        if seconds < _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS:
+            return None
+        language = self._conversation_language
+        self._recorder.add_event(
+            "unsupported_language_retranscribe_attempted",
+            detected=quality.language,
+            language=language,
+            audio_seconds=round(seconds, 2),
+        )
+        try:
+            recovered = await asyncio.wait_for(
+                self._batch_transcriber(audio, rate, language),
+                timeout=_LANGUAGE_RESCUE_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001 — rescue must never break a call
+            logger.warning(
+                "turn[%s] unsupported-language re-transcription failed",
+                self._recorder.session_id, exc_info=True,
+            )
+            self._recorder.add_event(
+                "unsupported_language_retranscribe_failed", reason="provider_error"
+            )
+            return None
+        recovered = (recovered or "").strip()
+        if not recovered:
+            self._recorder.add_event(
+                "unsupported_language_retranscribe_failed", reason="empty"
+            )
+            return None
+        rescued_quality = replace(
+            quality, language=language, language_probability=None,
+        )
+        rescued_verdict = assess_transcript(
+            recovered, rescued_quality, self._allowed_stt_languages,
+        )
+        if not rescued_verdict.accepted:
+            self._recorder.add_event(
+                "unsupported_language_retranscribe_failed",
+                reason=f"gate:{rescued_verdict.reason}",
+            )
+            return None
+        self._recorder.add_event(
+            "unsupported_language_retranscribed",
+            detected=quality.language,
+            language=language,
+            original=text[:120],
+            recovered=recovered[:200],
+        )
+        return recovered, rescued_quality, rescued_verdict
 
     async def _reject_segment(self, text: str, quality, verdict) -> None:
         """Drop one gated-out STT segment, keeping an audit trail.
@@ -2573,7 +2670,20 @@ class ConversationBrain(FrameProcessor):
             "text": text,
             "at": turn_time_iso(turn_timestamp),
         })
-        decision = self._router.decide(text, active_workflow=self._active_workflow)
+        gate = self._audio_gate
+        if (
+            self._identifier_capture is None
+            and gate is not None
+            and hasattr(gate, "clear_retained_audio")
+        ):
+            # Language-rescue retention covers only speech AFTER the last
+            # dispatched turn (identifier mode manages its own window).
+            gate.clear_retained_audio()
+        decision = self._router.decide(
+            text,
+            active_workflow=self._active_workflow,
+            allow_affirm_entry=not self._workflow_ever_routed,
+        )
         if (
             decision.kind == RouteKind.KNOWLEDGE
             and self._runtime_context is not None
@@ -3440,6 +3550,25 @@ class ConversationBrain(FrameProcessor):
             return decision
         name = classification.intent
         if name is None:
+            entry = self._router.affirm_entry
+            if (
+                entry is not None
+                and classification.signal == "affirm"
+                and not self._workflow_ever_routed
+                and self._active_workflow is None
+                and decision.kind in (RouteKind.CHAT, RouteKind.CLARIFY)
+            ):
+                # The model understood the turn as a confirmation of the
+                # bot's opening question ("Yes baby, I am speaking" — an STT
+                # slip the deterministic matcher could not read) but named no
+                # business intent. The tenant's configured confirmation
+                # intent says which workflow that starts.
+                entry_name, action = entry
+                return RouteDecision(
+                    kind=RouteKind.WORKFLOW, intent=entry_name,
+                    confidence=classification.confidence, action=action,
+                    reason="llm_affirm_entry_workflow", signal="affirm",
+                )
             return decision
         if classification.below_threshold:
             # Confidence gate: an intent matched but not confidently enough
@@ -3796,6 +3925,7 @@ class ConversationBrain(FrameProcessor):
                 self._runtime_context.prompt_section()
             )
         self._active_workflow = None if result["done"] else workflow_name
+        self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)
         if result.get("offScript"):
             # The workflow did NOT consume this turn (hardship, complaint,
@@ -3970,7 +4100,14 @@ class ConversationBrain(FrameProcessor):
     def _end_identifier_capture(self, *, validated: bool = False) -> None:
         capture, self._identifier_capture = self._identifier_capture, None
         gate = self._audio_gate
-        if gate is not None and hasattr(gate, "disable_utterance_retention"):
+        if gate is not None and self._batch_transcriber is not None and hasattr(
+            gate, "enable_utterance_retention"
+        ):
+            # Back to the bounded language-rescue window: the identifier
+            # dictation audio itself is discarded.
+            gate.enable_utterance_retention(_LANGUAGE_RESCUE_RETENTION_SECONDS)
+            gate.clear_retained_audio()
+        elif gate is not None and hasattr(gate, "disable_utterance_retention"):
             gate.disable_utterance_retention()
         if capture is None:
             return
@@ -4025,15 +4162,18 @@ class ConversationBrain(FrameProcessor):
         """
         if self._llm is None:
             return None
+        identity = active_voice_identity(
+            self._config.tts, self._conversation_language,
+        )
         try:
             result = await asyncio.wait_for(
                 self._llm.generate(
                     [{"role": "user", "content": script}],
                     system=(
                         system
-                        + voice_identity_instruction(active_voice_identity(
-                            self._config.tts, self._conversation_language,
-                        ))
+                        + voice_identity_instruction(
+                            identity, self._conversation_language,
+                        )
                     ),
                     temperature=0.0,
                     max_tokens=_ADAPTATION_MAX_TOKENS,
@@ -4080,11 +4220,17 @@ class ConversationBrain(FrameProcessor):
         directives = list(result.get("responseDirectives") or [])
         must_include = list(result.get("responseMustInclude") or [])
         pending_question = str(result.get("nodePrompt") or "").strip()
+        # The caller's current language is named INSIDE the instruction (before
+        # the authored goals/script/question) — a trailing "respond in X" line
+        # alone did not stop the model copying a Hindi pending question
+        # verbatim for an English caller, which failed validation and forced
+        # the Hindi fallback mid-workflow.
         instruction = grounded_delivery_instruction(
             directives=directives,
             script=reply,
             pending_question=pending_question or None,
             workflow_values=result.get("slots") or {},
+            response_language=self._conversation_language,
         )
         if pending_question or must_include:
             label = language_label(self._conversation_language)
@@ -4198,7 +4344,8 @@ class ConversationBrain(FrameProcessor):
             "role, or facts above."
         )
         instruction += voice_identity_instruction(
-            active_voice_identity(self._config.tts, self._conversation_language)
+            active_voice_identity(self._config.tts, self._conversation_language),
+            self._conversation_language,
         )
         self._language_instruction_cache[self._conversation_language] = instruction
         return instruction

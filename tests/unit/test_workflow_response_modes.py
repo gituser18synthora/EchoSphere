@@ -142,6 +142,35 @@ class TestValidateGroundedReply:
         assert "MUST end by asking" in instruction
         assert "Never claim an action succeeded" in instruction
         assert "recipient: guard" in instruction
+        # No language given → the language-neutral wording is unchanged.
+        assert "conversation language is" not in instruction
+        assert "asking exactly this" in instruction
+
+    def test_instruction_names_the_callers_language_before_the_script(self):
+        """Regression for cv_cc0a08046e2f: a Hindi-authored grounded ask was
+        copied verbatim for an English caller because the only language cue
+        was a trailing "respond in English" line while the pending-question
+        clause demanded "exactly this"."""
+        hindi_ask = "ये order आपने किसको सौंपा था — customer को, guard को, या किसी और को?"
+        instruction = grounded_delivery_instruction(
+            directives=["Ask only for the actual handover recipient."],
+            script=hindi_ask,
+            pending_question=hindi_ask,
+            response_language="en-IN",
+        )
+        preface = instruction.index("conversation language is English")
+        assert preface < instruction.index("Response goals from the flow")
+        assert preface < instruction.index(hindi_ask)
+        assert "never copy their original-language wording" in instruction
+        assert "expressed in natural spoken English" in instruction
+        assert "asking exactly this" not in instruction
+        # Hindi callers get the Hindi label; unknown locales fall back to the code.
+        assert "conversation language is Hindi" in grounded_delivery_instruction(
+            script="x", response_language="hi-IN",
+        )
+        assert "conversation language is xx-XX" in grounded_delivery_instruction(
+            script="x", response_language="xx-XX",
+        )
 
 
 # ── engine integration: modes flow from node config to the turn result ──────

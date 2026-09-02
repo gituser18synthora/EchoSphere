@@ -276,6 +276,41 @@ class TestGroundedConstrained:
         events = dict(brain._recorder.events)
         assert events.get("workflow_grounded_fallback", {}).get("reason") == "provider"
 
+    async def test_english_caller_gets_hindi_authored_ask_in_english(self):
+        """Regression for cv_cc0a08046e2f (Zepto MDND handover step).
+
+        The caller switched to English mid-workflow; the node is
+        ``llm_grounded`` with a Hindi authored question. The instruction must
+        name English BEFORE the authored text and must not demand the Hindi
+        question "exactly", so a valid English rewrite is spoken instead of
+        falling back to Hindi (which then pulled the caller back to Hindi).
+        """
+        hindi_ask = "ये order आपने किसको सौंपा था — customer को, guard को, या किसी और को?"
+        english = "Who did you hand the order over to — the customer, the guard, or someone else?"
+        llm = _LLMStub(generate_reply=english)
+        brain = make_brain(
+            _WorkflowStub(wf_result(
+                hindi_ask, mode="llm_grounded",
+                directives=["Ask only for the actual handover recipient. "
+                            "Natural Hinglish, one short question only."],
+                node_prompt=hindi_ask, done=False,
+            )),
+            llm, language="en-IN",
+        )
+
+        await brain._handle_turn("Yes, I called and customer told me leave my product.")
+
+        assert len(llm.generate_calls) == 1
+        system = llm.generate_calls[0]["system"]
+        assert system.index("conversation language is English") < system.index(hindi_ask)
+        assert "expressed in natural spoken English" in system
+        assert "asking exactly this" not in system
+        assert system.rstrip().endswith("Respond in natural spoken English.") or \
+            "Respond in natural spoken English." in system
+        assert brain._history[-1]["content"] == english
+        events = dict(brain._recorder.events)
+        assert events.get("workflow_reply_grounded", {}).get("mode") == "constrained"
+
     async def test_hindi_caller_gets_hindi_or_the_authored_text(self):
         """A Hindi-language turn accepts a Devanagari grounded reply; a
         wrong-language one fails the check and speaks the authored text."""

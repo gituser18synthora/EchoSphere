@@ -31,6 +31,23 @@ RESPONSE_MODE_GROUNDED = "llm_grounded"
 
 _KNOWN_MODES = (RESPONSE_MODE_FIXED, RESPONSE_MODE_EXACT, RESPONSE_MODE_GROUNDED)
 
+# Readable names for the platform locales a caller can switch between. Used
+# wherever a generation instruction must NAME the response language — a bare
+# locale code ("en-IN") is a much weaker signal to a small model than the
+# word "English".
+_LANGUAGE_LABELS = {
+    "hi": "Hindi", "en": "English", "bn": "Bengali", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "gu": "Gujarati", "kn": "Kannada",
+    "ml": "Malayalam", "pa": "Punjabi", "or": "Odia", "ur": "Urdu",
+}
+
+
+def language_label(locale: str | None) -> str:
+    """Readable language name for a platform locale ("hi-IN" → "Hindi")."""
+    if not locale:
+        return ""
+    return _LANGUAGE_LABELS.get(locale.split("-")[0].lower(), locale)
+
 # Output that looks like UI formatting rather than speech. Voice replies are
 # plain sentences: any line-start bullet/heading/numbered-list marker or
 # markdown emphasis fails validation and the authored text is spoken instead.
@@ -93,6 +110,7 @@ def grounded_delivery_instruction(
     script: str = "",
     pending_question: str | None = None,
     workflow_values: dict | None = None,
+    response_language: str | None = None,
 ) -> str:
     """System-prompt suffix for one grounded workflow reply.
 
@@ -100,12 +118,33 @@ def grounded_delivery_instruction(
     script as the factual reference; the verified caller context and tool
     results are already present in the surrounding system prompt. It never
     grants the model authority over outcomes.
+
+    ``response_language`` is the caller's CURRENT conversation locale. Tenant
+    workflows are authored in one language (often Hindi) while the caller may
+    have switched (e.g. to English) mid-flow. Naming the language up front,
+    before the authored goals/script/question, and asking for the pending
+    question "in <language>" rather than "exactly this" keeps a small model
+    from copying the authored-language text verbatim — which then fails the
+    language validation and forces the authored (wrong-language) fallback.
+    Omitting it keeps the language-neutral instruction for callers that have
+    no resolved conversation language.
     """
+    label = language_label(response_language)
     lines = [
         "\n\n# Deliver the call flow's outcome (THIS turn)",
         "The structured call flow has already decided what happened this "
         "turn — your only job is the natural spoken wording of it.",
     ]
+    if label:
+        lines.append(
+            f"The caller's current conversation language is {label}. Deliver "
+            f"this step in natural spoken {label} only. The response goals, "
+            "the authored script and the pending question below may be "
+            "written in another language: convey their exact meaning in "
+            f"{label} — never copy their original-language wording, and "
+            "never switch language to match them. Names, brand terms, IDs, "
+            "numbers, amounts and dates stay as they are."
+        )
     goals = [str(d).strip() for d in (directives or ()) if str(d or "").strip()]
     if goals:
         lines.append("Response goals from the flow:")
@@ -148,14 +187,25 @@ def grounded_delivery_instruction(
         "does not make."
     )
     if pending_question and str(pending_question).strip():
-        lines.append(
-            "The flow is WAITING for the caller's answer to this question: "
-            f'"{str(pending_question).strip()}". Your reply MUST end by '
-            "asking exactly this — the same request with the same options, "
-            "in the caller's language. Never answer it on the caller's "
-            "behalf and never replace it with acknowledgements or progress "
-            "filler such as 'please wait'."
-        )
+        question = str(pending_question).strip()
+        if label:
+            lines.append(
+                "The flow is WAITING for the caller's answer to this "
+                f'question: "{question}". Your reply MUST end by asking this '
+                "same question — the same request with the same options — "
+                f"expressed in natural spoken {label}. Never answer it on the "
+                "caller's behalf and never replace it with acknowledgements "
+                "or progress filler such as 'please wait'."
+            )
+        else:
+            lines.append(
+                "The flow is WAITING for the caller's answer to this "
+                f'question: "{question}". Your reply MUST end by '
+                "asking exactly this — the same request with the same "
+                "options, in the caller's language. Never answer it on the "
+                "caller's behalf and never replace it with acknowledgements "
+                "or progress filler such as 'please wait'."
+            )
     return "\n".join(lines)
 
 

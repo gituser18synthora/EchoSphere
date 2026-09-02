@@ -130,6 +130,27 @@ def test_runtime_instruction_overrides_authored_gender_examples():
     assert "overrides contrary gender forms" in female
 
 
+def test_english_identity_instruction_does_not_inject_hindi_examples():
+    instruction = voice_identity_instruction(
+        VoiceIdentity("Catalog Male", "male"), "en-IN"
+    )
+
+    assert "`assistant_voice_gender = male`" in instruction
+    assert "required response language is en-IN" in instruction
+    assert "Do not switch languages" in instruction
+    assert "मैं" not in instruction
+    assert "समझ सकता" not in instruction
+
+
+def test_hindi_identity_instruction_keeps_gender_examples():
+    instruction = voice_identity_instruction(
+        VoiceIdentity("Catalog Female", "female"), "hi-IN"
+    )
+
+    assert "मैं समझ सकती हूँ" in instruction
+    assert "never use masculine" in instruction
+
+
 def test_goal_engine_state_uses_the_same_catalog_identity():
     assert voice_identity_state(VoiceIdentity("Catalog Female", "female")) == {
         "assistant_voice_name": "Catalog Female",

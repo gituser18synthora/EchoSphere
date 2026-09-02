@@ -199,6 +199,46 @@ def classify_user_signal(text: str) -> str | None:
     return None
 
 
+# ── opening affirmation ──────────────────────────────────────────────────────
+# A caller confirming the bot's opening question rarely says a bare "yes":
+# "Yes, I am speaking", "हाँ हाँ, मैं बोल रहा हूँ", "haan ji boliye". The bare
+# `affirm` signal above deliberately rejects those (a trailing clause may
+# carry a different meaning), and sample matching scores a lone "yes" inside a
+# five-word sentence far below any intent threshold — so the confirmation fell
+# to plain chat and the configured workflow never started.
+_LEADING_AFFIRM = re.compile(
+    r"^\W*(?:haan|han|haanji|hanji|ji|yes|yeah|yep|ok|okay|theek|thik|bilkul|"
+    r"zaroor|jarur|sure|correct|right|"
+    r"हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा)"
+    # Not `\b`: Devanagari vowel signs/candrabindu are combining marks, which
+    # `\w` excludes, so a word boundary never forms after "हाँ". Require the
+    # token to END here instead (space, punctuation or end of text).
+    r"(?![\wऀ-ॿ])",
+    re.I,
+)
+_AFFIRM_CONTRADICTION = re.compile(
+    r"\b(?:no|nope|not|nahi|nahin|nai|mat|never|don't|dont|can't|cannot|"
+    r"wrong|galat|bye|goodbye|alvida|rakhta|rakhti|rakho|baad mein|later)\b"
+    r"|नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में",
+    re.I,
+)
+_LEADING_AFFIRM_MAX_TOKENS = 10
+
+
+def leading_affirmation(text: str) -> bool:
+    """Whether a short utterance OPENS with a confirmation and carries no
+    contrary meaning ("Yes, I am speaking" → True; "yes but I want an agent",
+    "haan nahi", a question, or a long explanation → False)."""
+    stripped = (text or "").strip()
+    if not stripped or not _LEADING_AFFIRM.search(stripped):
+        return False
+    if len(match_tokens(stripped)) > _LEADING_AFFIRM_MAX_TOKENS:
+        return False
+    if _AFFIRM_CONTRADICTION.search(stripped):
+        return False
+    return classify_user_signal(stripped) in (None, "affirm")
+
+
 _SMALLTALK = re.compile(
     r"^\s*(hi|hii+|hello|hey|good (morning|afternoon|evening)|namaste|"
     r"thanks?( you)?( so much)?|thank you|ok(ay)?|yes|yeah|no|nope|sure|great|"
@@ -435,8 +475,46 @@ class TurnRouter:
         ) if kb_keywords else None
         self._has_kbs = has_knowledge_bases
         self._workflows = workflows or {}
+        self._affirm_entry = self._derive_affirm_entry()
 
-    def decide(self, text: str, *, active_workflow: str | None = None) -> RouteDecision:
+    @property
+    def affirm_entry(self) -> tuple[str, str] | None:
+        """(intent name, workflow action) a plain confirmation of the bot's
+        opening question routes to, or None. Derived ONLY from tenant config:
+        an intent that lists a bare confirmation ("haan", "yes", "theek hai")
+        among its samples is, by the author's own declaration, the opening
+        confirmation intent. Nothing bot- or tenant-specific lives here."""
+        return self._affirm_entry
+
+    def _derive_affirm_entry(self) -> tuple[str, str] | None:
+        candidates: dict[str, str] = {}
+        for intent in self._intents:
+            route = str(intent.get("route") or "")
+            if route.startswith("workflow:"):
+                action = route.split(":", 1)[1]
+            elif intent.get("workflow_id"):
+                action = str(intent["workflow_id"])
+            else:
+                continue
+            if not action:
+                continue
+            samples = intent.get("samples") or []
+            if any(classify_user_signal(str(s)) == "affirm" for s in samples):
+                candidates.setdefault(action, str(intent.get("name") or ""))
+        if len(candidates) != 1:
+            # No opening-confirmation intent, or two of them pointing at
+            # DIFFERENT workflows — a guess here would start the wrong flow.
+            return None
+        action, name = next(iter(candidates.items()))
+        return name, action
+
+    def decide(
+        self,
+        text: str,
+        *,
+        active_workflow: str | None = None,
+        allow_affirm_entry: bool = True,
+    ) -> RouteDecision:
         stripped = (text or "").strip()
         if not stripped:
             return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.3, reason="empty_input")
@@ -535,6 +613,19 @@ class TurnRouter:
                 kind=RouteKind.WORKFLOW, intent=name, confidence=0.95,
                 action=action, reason="identifier_workflow",
                 signal=classify_user_signal(stripped),
+            )
+
+        # 3b. Confirmation of the bot's opening question. The tenant declared
+        # which workflow a plain "yes/haan" starts (see affirm_entry); natural
+        # confirmations ("Yes, I am speaking", "हाँ हाँ, मैं बोल रहा हूँ")
+        # score too low for sample matching yet mean exactly that. The brain
+        # withdraws permission once any workflow has run on the call, so a
+        # closing "theek hai" can never restart the flow.
+        if allow_affirm_entry and self._affirm_entry and leading_affirmation(stripped):
+            name, action = self._affirm_entry
+            return RouteDecision(
+                kind=RouteKind.WORKFLOW, intent=name, confidence=0.6, action=action,
+                reason="affirm_entry_workflow", signal="affirm",
             )
 
         # 4. Unconfigured smalltalk never hits the knowledge base.

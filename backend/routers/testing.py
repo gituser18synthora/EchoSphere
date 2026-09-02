@@ -388,7 +388,7 @@ def _testing_system_prompt(
             vbs.empathy if vbs and vbs.empathy is not None else 50,
             vbs.energy if vbs and vbs.energy is not None else 50,
         )
-        + voice_identity_instruction(identity)
+        + voice_identity_instruction(identity, language)
         + time_context
     )
     if customer_facts:
@@ -707,6 +707,7 @@ async def chat_test(
                             script=reply,
                             pending_question=pending_question or None,
                             workflow_values=result.get("slots") or {},
+                            response_language=conversation_language,
                         ),
                     )
                 except Exception:  # noqa: BLE001 — authored reply stands
@@ -1085,7 +1086,7 @@ async def simulate_turn(
             (vbs.empathy if vbs and vbs.empathy is not None else 50),
             (vbs.energy if vbs and vbs.energy is not None else 50),
         )
-        + voice_identity_instruction(voice_identity)
+        + voice_identity_instruction(voice_identity, simulation_language)
         + context_block
     )
     trace.update({
@@ -1298,6 +1299,7 @@ async def simulate_turn(
                         script=result["reply"],
                         pending_question=pending_question or None,
                         workflow_values=result.get("slots") or {},
+                        response_language=body.language or None,
                     ),
                     body.messages, body.message,
                 )
