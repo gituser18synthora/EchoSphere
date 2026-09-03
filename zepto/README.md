@@ -10,7 +10,7 @@ channels enabled, Hindi greetings live-verified:
 
 | Bot | ID | Workflow | Number |
 |---|---|---|---|
-| Zepto MDND Support | `bot_59a84478f155` | `wf_7e4cf166c7bd` (7 enquiries) | +918047133651 |
+| Zepto MDND Support | `bot_59a84478f155` | `wf_7e4cf166c7bd` (flow v3, see below) | +918047133651 |
 | Zepto Raincoat T-shirt Bag Support | `bot_75ce66eb9e63` | `wf_dfa638b8dcc4` (4) | +918047133652 |
 | Zepto Onboarding Fee Deduction Support | `bot_faf32177a32e` | `wf_469fbdafb2b9` (4) | +918047133653 |
 | Zepto RTO Issue Support | `bot_57b55721e7c1` | `wf_eef67b5bfbe2` (4 + conditional) | +918047133654 |
@@ -138,3 +138,48 @@ platform test scenarios (readiness r7).
 - Re-raising the SAME concern twice in one call reuses the first pass's
   answers (platform slot-reuse) — a second DIFFERENT concern works via the
   anything-else hub. Known, accepted for this scope.
+
+## MDND flow v3 (2026-09-03) — `zepto/setup/08_mdnd_flow_v3.py`
+
+Applied to the dedicated MDND bot only (workflow rebuilt from
+`06_single_bots.build_mdnd_workflow()`, a new published system-prompt
+version, and `goalPolicy.summaryFields`). Greeting and ticket readout are
+unchanged. After the partner's narrative the flow collects exactly four
+facts and skips every one the story already answered:
+
+1. **Reached the customer's location + called the customer** — asked in ONE
+   natural question when both are unknown (`n_ask_reached_called`); condition
+   nodes fall back to the single question when one half is already known.
+   Both values are extracted independently ("dono/both", "pahuncha par call
+   nahi kiya", bare yes/no → the reached half only, call asked separately).
+2. **Who received the order** (`m_handover_recipient`): guard / security,
+   customer (direct), mother, father, brother, relative (other), left at door,
+   someone else, or not handed over. Guard-name follow-up only when the guard
+   received it and no name was captured.
+3. **CX-support call about this delivery** (`n_ask_cx`, `m_cx_support_call`) —
+   new.
+4. **Verification** — grounded summary ending in "क्या ये सब सही है?". A
+   rejection that carries the fix ("nahi, customer ko nahi — guard ko diya
+   tha") is applied at the hub and re-verified (the "which part?" ask has
+   `skipIfCorrectedThisTurn`); a field named as wrong without a value
+   ("cx wala galat hai") is CLEARED (`alsoCapture … clear: true`) and only
+   that question is asked again; the correction edge re-walks the enquiry
+   chain, so filled answers are never re-asked and nothing restarts.
+
+**Structured call summary** (`goalPolicy.summaryFields`, stored on the
+post-call memory row as `structured_fields`, exposed as `structuredFields` on
+the conversation detail API and shown in the Conversations drawer):
+
+```json
+{"call_customer": "Yes/No", "reach_customer_location": "Yes/No",
+ "hand_over_product": "Yes/No",
+ "hand_over_to": "customer|security_guard|mother|father|brother|relative|doorstep|someone_else",
+ "call_cx": "Yes/No"}
+```
+
+Values come from the FINAL workflow slots (so corrections are reflected);
+the post-call analyst may fill only a field the flow never collected, and
+only with an allowed value. `/testing/simulate` returns the same derivation
+per turn as `workflow.structuredSummary`. Suite:
+`env/bin/python zepto/tests/run_single_bot_scenarios.py MDND` (21/21;
+optional scenario filters, e.g. `MDND "MDND 15"`).

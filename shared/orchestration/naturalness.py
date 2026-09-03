@@ -49,32 +49,63 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "gender_agreement": True,
     "micro_pauses": True,
     "self_correction": False,
+    # Latency fillers: a short, voice-gender-matched breath played from
+    # pre-rendered audio when the reply has not started speaking
+    # ``latency_filler_delay_ms`` after the caller stopped talking, cut the
+    # instant real reply audio arrives (voice_runtime.latency_filler).
+    "latency_fillers": True,
+    # Sentence breaths: in pause mode, a rare soft breath before a long or
+    # verification sentence INSIDE a reply — never after every sentence.
+    "sentence_breaths": True,
     # Tunables (probabilities are per-opportunity, 0..1)
     "thinking_filler_probability": 0.25,
-    "acknowledgement_probability": 0.4,
+    # Dispatch-time acknowledgement ("जी…", "ठीक है…", "हम्म…") spoken right
+    # after the caller stops; a hard no-consecutive-turns rule sits on top.
+    "acknowledgement_probability": 0.5,
     "tool_ack_probability": 0.9,
     "backchannel_probability": 0.35,
     "micro_pause_probability": 0.45,
     "self_correction_probability": 0.01,
+    # Per eligible sentence; with the ≤1-per-reply cap this lands a breath in
+    # roughly every third reply that has a long sentence (live tuning
+    # 2026-09-03: 0.2 gave one or two per call, too sparse to register).
+    "sentence_breath_probability": 0.35,
     "min_long_turn_for_backchannel_ms": 4000,
     "min_gap_between_backchannels_ms": 8000,
     "max_backchannels_per_call": 4,
+    "latency_filler_delay_ms": 1500,
 }
 
 _BOOL_KEYS = (
     "enabled", "thinking_fillers", "acknowledgements", "backchannels",
     "prosody_variation", "gender_agreement", "micro_pauses", "self_correction",
+    "latency_fillers", "sentence_breaths",
 )
 _PROBABILITY_KEYS = (
     "thinking_filler_probability", "acknowledgement_probability",
     "tool_ack_probability", "backchannel_probability",
     "micro_pause_probability", "self_correction_probability",
+    "sentence_breath_probability",
 )
 _INT_KEYS = {
     "min_long_turn_for_backchannel_ms": (1000, 60_000),
     "min_gap_between_backchannels_ms": (2000, 120_000),
     "max_backchannels_per_call": (0, 20),
+    # Quiet time after the caller stops before a filler may play. Below 500 ms
+    # it would fire on ordinary fast turns; above 5 s it never masks anything.
+    "latency_filler_delay_ms": (500, 5000),
 }
+
+# The first caller reply after the greeting carries the call's highest
+# response latency (cold decision/LLM/knowledge paths, first prompt compile):
+# a spoken "Ji…/Okay…" masks more dead air there than on any later turn, so
+# its preface odds are raised by this factor (capped at certainty).
+_FIRST_REPLY_PREFACE_BOOST = 1.5
+
+# A reply sentence this long (or a critical one) may be preceded by one soft
+# breath in pause mode — the beat a person takes before a longer explanation
+# or a verification read-back.
+_LONG_SENTENCE_WORDS = 10
 
 
 def validate_human_speech(value: object) -> list[str]:
@@ -289,11 +320,20 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         "acknowledgement": ("Achha...", "Ji...", "Theek hai...", "Haan ji...",
                             "Ji, main samajh raha hoon...", "Samajh gaya...",
                             "Theek hai, samajh gaya.", "Koi baat nahi..."),
+        # Dispatch-time acknowledgements (plan_early_ack): one short token,
+        # chosen by what the caller just did. "हाँ…" is deliberately absent —
+        # after a statement it reads as agreement, not as listening.
+        "ack_answer": ("जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…", "जी, ठीक है…"),
+        "ack_question": ("हम्म…", "जी…", "अच्छा…"),
+        "ack_lookup": ("एक सेकंड…", "जी, एक सेकंड…", "हम्म… देख रहा हूँ…",
+                       "एक सेकंड, देख रहा हूँ…"),
+        "ack_neutral": ("जी…", "हम्म…"),
         "checking": (
             "Ek minute, main check karta hoon...",
             "Achha... ek minute, main check karta hoon.",
             "Ji, ek second... main dekh raha hoon.",
-            "Ek moment, main abhi dekhta hoon...",
+            "Ek minute, main abhi dekhta hoon...",
+            "जी... एक मिनट दीजिए, मैं details देख रहा हूँ।",
         ),
         "critical_checking": (
             "Ek minute, main verify karta hoon.",
@@ -312,6 +352,10 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
     "en": {
         "thinking": ("Hmm...", "Okay...", "Right...", "Let me see..."),
         "acknowledgement": ("Okay...", "Right...", "I see...", "Got it..."),
+        "ack_answer": ("Okay…", "Right…", "Got it…", "Alright…"),
+        "ack_question": ("Hmm…", "Right…", "Let me see…"),
+        "ack_lookup": ("One second…", "Let me check…", "Hmm… one moment…"),
+        "ack_neutral": ("Okay…", "Hmm…"),
         "checking": (
             "One moment, let me check...",
             "Okay... give me a second, let me look that up.",
@@ -404,6 +448,26 @@ _ACK_SIGNALS = frozenset({"affirm", "already_paid", "payment_intent", "callback"
 _QUESTION_END = re.compile(r"[?？]\s*$")
 _WORD_RE = re.compile(r"\S+")
 
+# Dispatch-time acknowledgement contexts → pools. Languages without the
+# dedicated ``ack_*`` pools reuse their existing short pools.
+EARLY_ACK_CONTEXTS = ("answer", "question", "lookup", "neutral")
+_EARLY_ACK_POOLS = {
+    "answer": "ack_answer", "question": "ack_question",
+    "lookup": "ack_lookup", "neutral": "ack_neutral",
+}
+_EARLY_ACK_FALLBACK = {
+    "ack_answer": "acknowledgement", "ack_question": "thinking",
+    "ack_lookup": "thinking", "ack_neutral": "backchannel",
+}
+# A preface that OPENS with an acknowledgement word would stack onto a
+# dispatch-time "जी…" ("जी… … Achha, ek minute…"). Token followed by
+# whitespace/punctuation, so Devanagari matras never split a word.
+_LEADING_ACK_RE = re.compile(
+    r"^\W*(?:achha|acha|ji|haan|hmm+|theek hai|ok(?:ay)?|right|got it|"
+    r"जी|अच्छा|हाँ|हम्म|ठीक है)(?=[\s,.…!;:]|$)",
+    re.IGNORECASE,
+)
+
 
 def normalize_spoken_variant(text: str) -> str:
     """Comparison form for cross-pool no-repeat tracking.
@@ -460,6 +524,8 @@ class SegmentDelivery:
     speed_scale: float | None = None    # multiplier on the bot's base speed
     critical: bool = False
     critical_reason: str = ""
+    # One soft breath before this sentence (pause mode; rare; ≤1 per turn).
+    breath_before: bool = False
     emphasis: str = "none"             # none | moderate
     pitch_scale: float | None = None
     energy_scale: float | None = None
@@ -495,6 +561,8 @@ class SpeechNaturalnessPlanner:
         # calls in one campaign must not sound like the same recorded script.
         self._recent_spoken: deque[str] = deque(maxlen=3)
         self._last_preface_turn: int | None = None
+        self._last_early_ack_turn: int | None = None
+        self._last_early_ack_reason = ""
         self._last_backchannel_monotonic: float | None = None
         self._backchannels_played = 0
         self._last_backchannel_suppression_reason = ""
@@ -528,6 +596,16 @@ class SpeechNaturalnessPlanner:
         return int(self._config["min_gap_between_backchannels_ms"])
 
     @property
+    def latency_fillers_enabled(self) -> bool:
+        """Pre-rendered gap fillers ride the master switch like every other
+        naturalness dimension."""
+        return self.enabled and bool(self._config["latency_fillers"])
+
+    @property
+    def latency_filler_delay_ms(self) -> int:
+        return int(self._config["latency_filler_delay_ms"])
+
+    @property
     def configuration_level(self) -> str:
         """Highest override level represented in this resolved config."""
         levels = set(self._config_sources.values())
@@ -557,8 +635,10 @@ class SpeechNaturalnessPlanner:
         return male != female
 
     def _pick(self, language: str, pool_key: str,
-              identity: VoiceIdentity | None) -> str:
-        pool = _POOLS.get(language, {}).get(pool_key) or ()
+              identity: VoiceIdentity | None, *,
+              exclude_leading_ack: bool = False) -> str:
+        pools = _POOLS.get(language, {})
+        pool = pools.get(pool_key) or pools.get(_EARLY_ACK_FALLBACK.get(pool_key, "")) or ()
         if not pool:
             return ""
         gender = identity.gender if identity else "neutral"
@@ -566,6 +646,12 @@ class SpeechNaturalnessPlanner:
             entry for entry in pool
             if gender in ("male", "female") or not self._is_gendered(entry)
         ]
+        if exclude_leading_ack:
+            # Never stack: a dispatch-time "जी…" already opened the turn.
+            # A pool made only of ack-led variants keeps them rather than
+            # losing a tool preface that masks real dead air.
+            unstacked = [e for e in candidates if not _LEADING_ACK_RE.match(e)]
+            candidates = unstacked or candidates
         if not candidates:
             return ""
         recent = self._recent.setdefault(f"{language}:{pool_key}", deque(maxlen=3))
@@ -591,13 +677,22 @@ class SpeechNaturalnessPlanner:
                   signal: str = "", route_kind: str = "llm",
                   turn_index: int = 0, critical: bool = False,
                   critical_reason: str = "",
-                  allow_safe_tool_preface: bool = False) -> TurnSpeechPlan:
+                  allow_safe_tool_preface: bool = False,
+                  early_ack_spoken: bool = False) -> TurnSpeechPlan:
         """Plan delivery for the upcoming assistant turn.
 
         ``route_kind``: "tool" (a backend lookup runs before the reply),
         "kb" (knowledge retrieval), "llm" (generated reply), or "direct"
         (deterministic/scripted reply text).
         ``signal`` is the platform caller signal from the decision layer.
+
+        Only TOOL routes receive a preface here ("ek minute, check karta
+        hoon…", spoken before the lookup runs — it masks real dead air and
+        names what is happening). Acknowledgements and thinking beats are
+        planned at DISPATCH instead (:meth:`plan_early_ack`), a second or
+        more before any reply text exists; glued to the front of the reply
+        they arrived too late to bridge anything and doubled as a delay.
+        ``early_ack_spoken`` keeps a tool preface from stacking onto one.
         """
         plan = TurnSpeechPlan()
         cfg = self._config
@@ -613,6 +708,7 @@ class SpeechNaturalnessPlanner:
             "critical_content": bool(critical),
             "configuration_level": self.configuration_level,
             "streaming_self_correction": "disabled_safe_boundary_unavailable",
+            "early_ack": bool(early_ack_spoken),
         }
         plan.critical = bool(critical)
         plan.critical_reason = critical_reason if critical else ""
@@ -637,7 +733,10 @@ class SpeechNaturalnessPlanner:
                 and allow_safe_tool_preface
                 and self._rng.random() < cfg["tool_ack_probability"]
             ):
-                preface = self._pick(lang, "critical_checking", identity)
+                preface = self._pick(
+                    lang, "critical_checking", identity,
+                    exclude_leading_ack=early_ack_spoken,
+                )
                 if preface:
                     plan.preface = preface
                     plan.preface_kind = "checking"
@@ -653,58 +752,26 @@ class SpeechNaturalnessPlanner:
             return plan
 
         serious = signal in _SERIOUS_SIGNALS
-        roll = self._rng.random()
         suppression = ""
 
         pool_key = ""
-        if route_kind == "tool":
+        if route_kind != "tool":
+            # The acknowledgement for this turn was decided at dispatch
+            # (plan_early_ack) and has already been heard, or deliberately
+            # withheld; nothing is glued to the front of the reply.
+            suppression = "dispatch_ack_path"
+        elif self._rng.random() < cfg["tool_ack_probability"]:
             # A lookup is about to run: a spoken "let me check" both sounds
             # human and masks tool latency. Serious contexts get the calmer
             # empathetic form first.
-            if roll < cfg["tool_ack_probability"]:
-                pool_key = "empathy" if serious else "checking"
-            else:
-                suppression = "roll"
-        elif serious:
-            # Distressed/annoyed caller: at most a brief empathetic
-            # acknowledgement; never playful hesitation.
-            if cfg["acknowledgements"] and roll < cfg["acknowledgement_probability"]:
-                pool_key = "empathy"
-            else:
-                suppression = "serious_signal"
+            pool_key = "empathy" if serious else "checking"
         else:
-            # Acknowledgements are NOT gated on a platform signal being
-            # present: the decision layer can time out (signal == ""), and a
-            # statement deserves a "Ji..."/"Okay..." regardless of which
-            # understanding path classified it. A recognized ack signal keeps
-            # full probability; an unclassified statement gets a reduced one.
-            ack_probability = cfg["acknowledgement_probability"] * (
-                1.0 if signal in _ACK_SIGNALS else 0.6 if signal in ("", "question") else 0.0
-            )
-            if signal == "question":
-                # Questions read better with a beat of thought than a flat ack.
-                ack_probability = 0.0
-            think_ok = cfg["thinking_fillers"] and route_kind in ("llm", "kb")
-            if cfg["acknowledgements"] and roll < ack_probability:
-                pool_key = "acknowledgement"
-            elif think_ok and roll < cfg["thinking_filler_probability"]:
-                pool_key = "thinking"
-            else:
-                suppression = "roll"
-
-        # Anti-repetition: a preface on the immediately previous turn makes
-        # another one much less likely (tool acks exempt — dead air is worse).
-        if (
-            pool_key
-            and route_kind != "tool"
-            and self._last_preface_turn == turn_index - 1
-            and self._rng.random() > 0.35
-        ):
-            pool_key = ""
-            suppression = "anti_repetition"
+            suppression = "roll"
 
         if pool_key:
-            preface = self._pick(lang, pool_key, identity)
+            preface = self._pick(
+                lang, pool_key, identity, exclude_leading_ack=early_ack_spoken,
+            )
             if preface:
                 plan.preface = preface
                 plan.preface_kind = pool_key
@@ -725,16 +792,93 @@ class SpeechNaturalnessPlanner:
         )
         return plan
 
+    # -- dispatch-time acknowledgement -------------------------------------
+
+    def plan_early_ack(self, *, language: str, identity: VoiceIdentity | None = None,
+                       context: str = "answer", turn_index: int = 0,
+                       serious: bool = False, critical: bool = False) -> str:
+        """One short spoken acknowledgement for the turn just dispatched.
+
+        Spoken by the brain the moment the caller's turn closes — about a
+        second after they stop — while the decision layer and the model are
+        still working, and always SEPARATE from the reply. ``context`` is
+        what the caller just did, derived deterministically from their words:
+
+        * ``answer``   — a statement or an answer: "जी…", "ठीक है…", "अच्छा…"
+        * ``question`` — a question: a beat of thought ("हम्म…"), never
+          "ठीक है" (which would sound like an answer)
+        * ``lookup``   — a knowledge question a retrieval will answer:
+          "एक सेकंड…", "देख रहा हूँ…"
+        * ``neutral``  — anything sensitive: a serious caller state
+          (complaint, refusal, hardship…) or dictated amounts/identifiers.
+          Only listening tokens ("जी…", "हम्म…") at half probability;
+          "ठीक है"/"अच्छा" after a refusal would read as acceptance.
+
+        Control: never on two consecutive turns (a hard rule — no call
+        opens every reply with "जी"), per-turn probability from
+        ``acknowledgement_probability`` (boosted on the first reply, the
+        slowest of the call), pool rotation with no-repeat, one token only
+        (never stacked), and nothing for greetings or unsupported languages.
+        Returns "" when no acknowledgement should be spoken;
+        :attr:`last_early_ack_reason` says why.
+        """
+        cfg = self._config
+        self._last_early_ack_reason = ""
+
+        def _withhold(reason: str) -> str:
+            self._last_early_ack_reason = reason
+            return ""
+
+        if not (self.enabled and cfg["acknowledgements"]):
+            return _withhold("disabled")
+        lang = base_language(language)
+        if lang not in _POOLS:
+            return _withhold(f"no_pool_language:{lang or '?'}")
+        if turn_index <= 0:
+            return _withhold("greeting_turn")
+        if self._last_early_ack_turn == turn_index - 1:
+            return _withhold("anti_repetition")
+        if context not in _EARLY_ACK_POOLS:
+            context = "answer"
+        if serious or critical:
+            context = "neutral"
+        if context == "question" and not cfg["thinking_fillers"]:
+            return _withhold("thinking_disabled")
+        probability = cfg["acknowledgement_probability"]
+        if context == "neutral":
+            probability *= 0.5
+        if turn_index == 1:
+            # First reply after the greeting: the slowest turn of the call
+            # gets the best odds of a spoken beat while the system thinks.
+            probability = min(1.0, probability * _FIRST_REPLY_PREFACE_BOOST)
+        if self._rng.random() >= probability:
+            return _withhold("roll")
+        token = self._pick(lang, _EARLY_ACK_POOLS[context], identity)
+        if not token:
+            return _withhold("no_pool_variant")
+        self._last_early_ack_turn = turn_index
+        self._last_early_ack_reason = ""
+        return token
+
+    @property
+    def last_early_ack_reason(self) -> str:
+        return self._last_early_ack_reason
+
     # -- segment-level planning (TTS router) -------------------------------
 
     def plan_segment(self, text: str, *, base_pause_ms: int,
-                     language: str = "") -> SegmentDelivery:
+                     language: str = "", first_in_turn: bool = False,
+                     breaths_so_far: int = 0) -> SegmentDelivery:
         """Per-sentence delivery: pause variation + subtle rate variation.
 
         Called by the TTS router for each aggregated sentence (pause mode).
         Critical segments get clear pacing and a slightly longer separating
-        pause; questions slow down a touch; everything else may receive a
-        small deterministic jitter so pacing never sounds metronomic.
+        pause; questions slow down a touch; short acknowledgements ride a
+        touch quicker; everything else may receive a small deterministic
+        jitter so pacing never sounds metronomic. ``first_in_turn`` /
+        ``breaths_so_far`` gate the rare in-reply breath (never before the
+        first sentence — the reply gap has its own filler — and at most one
+        per turn, only before a long or critical sentence).
         """
         delivery = SegmentDelivery()
         cfg = self._config
@@ -769,6 +913,10 @@ class SpeechNaturalnessPlanner:
                 delivery.speed_scale = 0.96
             elif is_question:
                 delivery.speed_scale = round(0.95 + self._rng.random() * 0.03, 3)
+            elif words <= 3:
+                # "जी।" / "ठीक है।": acknowledgements sit a touch quicker
+                # than questions, the way a person tosses one off.
+                delivery.speed_scale = round(1.02 + self._rng.random() * 0.03, 3)
             else:
                 delivery.speed_scale = round(0.97 + self._rng.random() * 0.06, 3)
 
@@ -782,6 +930,18 @@ class SpeechNaturalnessPlanner:
             elif self._rng.random() < cfg["micro_pause_probability"]:
                 jitter = self._rng.randint(-60, 140)
                 delivery.pause_after_ms = min(700, max(80, base_pause_ms + jitter))
+
+        if (
+            cfg["sentence_breaths"]
+            and base_pause_ms > 0
+            and not first_in_turn
+            and breaths_so_far < 1
+            and (words >= _LONG_SENTENCE_WORDS or delivery.critical)
+            and self._rng.random() < cfg["sentence_breath_probability"]
+        ):
+            # The beat a person takes before a longer explanation or a
+            # verification read-back. Subtle, rare, never after every line.
+            delivery.breath_before = True
         return delivery
 
     # -- self-correction ----------------------------------------------------

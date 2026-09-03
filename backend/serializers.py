@@ -743,13 +743,46 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
     }
 
 
-def serialize_conversation_memory(m) -> dict:
+def _ordered_structured_fields(
+    memory: dict, summary_fields: list[dict] | None
+) -> tuple[dict, dict]:
+    """Structured fields in the bot's CONFIGURED order, plus display labels.
+
+    The memory row is a MySQL JSON column, which normalises object keys (by
+    length, then alphabetically) — so the stored order is meaningless and the
+    review page showed "call cx" before "reach customer location". The bot's
+    goal_policy.summaryFields list is the authoritative order; fields the
+    config no longer declares keep their values and follow at the end.
+    """
+    stored = memory.get("structured_fields") or {}
+    labels: dict[str, str] = {}
+    ordered: dict = {}
+    for spec in summary_fields or []:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "").strip()
+        if not name:
+            continue
+        if name in stored:
+            ordered[name] = stored[name]
+        label = " ".join(str(spec.get("label") or "").split())
+        if label and name in stored:
+            labels[name] = label
+    for name, value in stored.items():
+        ordered.setdefault(name, value)
+    return ordered, labels
+
+
+def serialize_conversation_memory(m, summary_fields: list[dict] | None = None) -> dict:
     """Post-call intelligence for one conversation (camelCase, PII-free).
 
     Mirrors src/types/domain.ts ConversationAiSummary. The structured memory
-    JSON is already validated/bounded at persistence time.
+    JSON is already validated/bounded at persistence time. ``summary_fields``
+    is the bot's goal_policy.summaryFields (order + labels); without it the
+    fields come out in stored order and unlabelled.
     """
     memory = m.memory or {}
+    structured_fields, structured_labels = _ordered_structured_fields(memory, summary_fields)
     return {
         "status": m.status,
         "callOutcome": m.call_outcome,
@@ -772,6 +805,13 @@ def serialize_conversation_memory(m) -> dict:
         "resolvedItems": memory.get("resolved_items") or [],
         "unresolvedItems": memory.get("unresolved_items") or [],
         "missingSlots": memory.get("missing_slots") or [],
+        # Configured structured summary (goal_policy.summaryFields): stable
+        # keys, None where the call did not settle a field, plus provenance.
+        "structuredFields": structured_fields,
+        "structuredFieldSources": memory.get("structured_field_sources") or {},
+        # Human-readable field names from the same configuration ({} when
+        # the bot's fields carry no labels).
+        "structuredFieldLabels": structured_labels,
         "nextBestAction": (
             {
                 "action": (m.next_best_action or {}).get("action") or m.next_action,

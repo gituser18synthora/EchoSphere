@@ -201,7 +201,23 @@ def _ai_summary(db: Session, c: ConversationSession) -> dict | None:
     ).scalar_one_or_none()
     if memory is None:
         return None
-    return serialize_conversation_memory(memory)
+    return serialize_conversation_memory(memory, _summary_field_specs(db, c.bot_id))
+
+
+def _summary_field_specs(db: Session, bot_id: str) -> list[dict]:
+    """The bot's configured goal_policy.summaryFields (authoritative order and
+    labels for the structured summary); [] when the bot declares none."""
+    from shared.models import VoiceBotSetting
+
+    settings = db.execute(
+        select(VoiceBotSetting.goal_policy).where(VoiceBotSetting.bot_id == bot_id)
+    ).scalar_one_or_none()
+    if not isinstance(settings, dict):
+        return []
+    specs = settings.get("summaryFields")
+    if specs is None:
+        specs = settings.get("summary_fields")
+    return [s for s in (specs or []) if isinstance(s, dict)]
 
 
 def _cost_breakdown(

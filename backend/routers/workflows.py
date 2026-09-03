@@ -23,6 +23,23 @@ from backend.serializers import serialize_workflow
 router = APIRouter(tags=["Workflows"])
 
 
+def _latest_workflow(db: Session, bot_id: str) -> Workflow | None:
+    """The bot's newest workflow row.
+
+    Sorted by id only: ordering full rows makes MySQL sort the nodes/edges
+    JSON too, and a large authored graph (hundreds of KB) then fails with
+    error 1038 "Out of sort memory" — surfacing to the UI as a 503 on every
+    save. The single row is loaded by primary key afterwards.
+    """
+    latest_id = db.scalar(
+        select(Workflow.id)
+        .where(Workflow.bot_id == bot_id, Workflow.is_deleted.is_(False))
+        .order_by(Workflow.version.desc())
+        .limit(1)
+    )
+    return db.get(Workflow, latest_id) if latest_id else None
+
+
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
     bot = db.get(VoiceBot, bot_id)
     if bot is None or bot.is_deleted:
@@ -48,11 +65,7 @@ def get_bot_workflow(
     bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     bot = _bot_checked(db, bot_id, user)
-    w = db.scalar(
-        select(Workflow)
-        .where(Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False))
-        .order_by(Workflow.version.desc())
-    )
+    w = _latest_workflow(db, bot.id)
     if w is None:
         raise NotFoundError("Workflow")
     return ok(serialize_workflow(w, updated_by_name=_updated_by_name(db, w)))
@@ -185,11 +198,7 @@ def save_bot_workflow(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
-    w = db.scalar(
-        select(Workflow)
-        .where(Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False))
-        .order_by(Workflow.version.desc())
-    )
+    w = _latest_workflow(db, bot.id)
     if w is None:
         w = Workflow(
             id=new_id("wf"), tenant_id=bot.tenant_id, bot_id=bot.id,

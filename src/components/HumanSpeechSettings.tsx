@@ -20,13 +20,15 @@ interface Props {
 
 const BOOL_FIELDS: { key: HumanSpeechSettingKey; label: string; help: string }[] = [
   { key: "enabled", label: "Human speech layer", help: "Master switch for delivery-only natural conversation behavior." },
-  { key: "thinking_fillers", label: "Thinking fillers", help: "Allow occasional neutral thinking phrases on non-critical generated replies." },
-  { key: "acknowledgements", label: "Acknowledgements", help: "Allow brief contextual acknowledgements before non-critical replies." },
+  { key: "thinking_fillers", label: "Thinking fillers", help: "Allow a beat of thought (\"हम्म…\") right after the caller asks a question, while the answer is being worked out." },
+  { key: "acknowledgements", label: "Acknowledgements", help: "One short spoken acknowledgement (\"जी…\", \"ठीक है…\", \"एक सेकंड…\") right after the caller stops, matched to what they said; never on two turns in a row and never glued to the reply." },
   { key: "backchannels", label: "Backchannels", help: "Allow sparse, non-semantic acknowledgements while a caller is demonstrably still speaking." },
   { key: "prosody_variation", label: "Prosody variation", help: "Use safe provider-supported delivery variation with pause fallback." },
   { key: "gender_agreement", label: "Gender agreement", help: "Adapt authored first-person phrases to the active catalog voice identity." },
   { key: "micro_pauses", label: "Micro pauses", help: "Vary configured phrase gaps without adding blocking response delays." },
   { key: "self_correction", label: "Self-correction", help: "Enable rare direct-response correction. Streaming responses remain unchanged for safety." },
+  { key: "latency_fillers", label: "Latency fillers", help: "Play a short breath matched to the voice's gender when a reply has not started speaking within the delay below; it stops the instant real speech starts and never holds the reply back." },
+  { key: "sentence_breaths", label: "Sentence breaths", help: "In pause mode, allow a rare soft breath before a long or verification sentence inside a reply. At most one per reply, never after every sentence." },
 ];
 
 const NUMBER_FIELDS: {
@@ -38,14 +40,16 @@ const NUMBER_FIELDS: {
   help: string;
 }[] = [
   { key: "thinking_filler_probability", label: "Thinking filler probability", min: 0, max: 1, step: 0.01, help: "Per eligible turn." },
-  { key: "acknowledgement_probability", label: "Acknowledgement probability", min: 0, max: 1, step: 0.01, help: "Per eligible turn." },
+  { key: "acknowledgement_probability", label: "Acknowledgement probability", min: 0, max: 1, step: 0.01, help: "Per eligible turn; halved for sensitive turns (complaints, refusals, dictated numbers)." },
   { key: "tool_ack_probability", label: "Tool lookup acknowledgement probability", min: 0, max: 1, step: 0.01, help: "Only safe, unambiguous lookup prefaces are eligible." },
   { key: "backchannel_probability", label: "Backchannel probability", min: 0, max: 1, step: 0.01, help: "Per long-turn opportunity after safety gates." },
   { key: "micro_pause_probability", label: "Micro-pause probability", min: 0, max: 1, step: 0.01, help: "Per non-critical sentence boundary." },
   { key: "self_correction_probability", label: "Self-correction probability", min: 0, max: 1, step: 0.001, help: "Kept extremely low and used only when self-correction is explicitly enabled." },
+  { key: "sentence_breath_probability", label: "Sentence breath probability", min: 0, max: 1, step: 0.01, help: "Per eligible long or verification sentence (pause mode only)." },
   { key: "min_long_turn_for_backchannel_ms", label: "Minimum long-turn duration (ms)", min: 1000, max: 60000, step: 500, help: "Caller must hold the floor at least this long." },
   { key: "min_gap_between_backchannels_ms", label: "Minimum backchannel gap (ms)", min: 2000, max: 120000, step: 500, help: "Cooldown between backchannel opportunities." },
   { key: "max_backchannels_per_call", label: "Maximum backchannels per call", min: 0, max: 20, step: 1, help: "Hard per-call cap." },
+  { key: "latency_filler_delay_ms", label: "Latency filler delay (ms)", min: 500, max: 5000, step: 100, help: "Quiet time after the caller stops speaking before a filler plays. Replies that start sooner never get one." },
 ];
 
 export function validateHumanSpeechOverrides(
@@ -60,7 +64,8 @@ export function validateHumanSpeechOverrides(
       || !Number.isFinite(value)
       || value < field.min
       || value > field.max
-      || (field.step === 1 && !Number.isInteger(value))
+      // Whole-number steps are integer fields on the backend as well.
+      || (Number.isInteger(field.step) && !Number.isInteger(value))
     ) {
       errors.push(`${field.label} must be between ${field.min} and ${field.max}.`);
     }

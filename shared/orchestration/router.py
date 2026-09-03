@@ -122,6 +122,39 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"|berozgar|बेरोज़गार|बेरोजगार|majboori|majburi|मजबूरी|मज़बूरी",
         re.I,
     )),
+    # "Wait a moment / stay on the line" — a HOLD, not a callback. Checked
+    # before callback because "ek minute ruko" and "ek minute baad call karo"
+    # share the time phrase: explicit callback wording anywhere in the
+    # utterance (call back / later / baad mein / call karo) hands the turn to
+    # the callback pattern below instead.
+    ("hold", re.compile(
+        r"^(?!.*(?:call ?back|call (?:me )?later"
+        r"|(?<![\wऀ-ॿ])(?:baad (?:mein|me)|बाद में)"
+        r"|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)))"
+        r"(?=.*(?:"
+        # "ek minute ruko / do minute do / thoda time dijiye / paanch second wait"
+        r"(?:ek|do|एक|दो|one|two|a|paanch|panch|पाँच|पांच|thoda|थोड़ा|\d+)?\s*"
+        r"(?:minutes?|mins?|mint|seconds?|secs?|moment|मिनट|मिनिट|सेकंड|सेकेंड|पल)"
+        r"\s*(?:ruk|रुक|hold|wait|do(?![\w])|दो|dijiye|दीजिए|dena|देना|de(?![\w])|दे(?![\wऀ-ॿ]))"
+        # bare "ek minute" / "one minute" / "just a minute"
+        r"|^\W*(?:haan\s+|हाँ\s+|ji\s+|जी\s+|bas\s+|बस\s+|just\s+)?"
+        r"(?:ek|एक|one|1|do|दो|two|2|a)\s*(?:minute|min|mint|मिनट|मिनिट|second|sec|सेकंड|moment)\W*$"
+        # ruko / rukiye / ruk jao / thehro
+        r"|(?<![\wऀ-ॿ])(?:ruk(?:o|iye|iyega|na|\s+ja(?:o|iye|na)?)|रुको|रुकिए|रुकिये|रुकना|रुक\s*जा(?:ओ|इए|ना)?|thehr\w*|ठहर\w*)"
+        # hold / wait / hang on / line par raho
+        r"|\bhold(?:\s+on|\s+karo|\s+kijiye|\s+the\s+line)?\b|होल्ड|\bhang\s+on\b"
+        r"|\bwait(?:\s+(?:a\s+)?(?:minute|moment|second|sec|karo|kijiye|kar))?\b(?!ing)|वेट"
+        r"|(?:line|लाइन)\s*(?:par|pe|pr|पर|पे)"
+        # "rakhna mat / rakho mat / kat mat karo / mat kato / don't disconnect"
+        r"|(?:rakh|रख)(?:na|o|iye|ना|ो|िए)?\s*(?:mat|मत|nahi|nahin|नहीं|नही)"
+        r"|(?:kat+\w*|kaat\w*|cut|काट\w*|कट|band|बंद)\s*(?:mat|मत|na|ना|nahi|nahin|नहीं|नही)"
+        r"|(?:mat|मत)\s*(?:kat+\w*|kaat\w*|cut|काट\w*|कट|rakh\w*|रख\w*|band|बंद)"
+        r"|don'?t\s+(?:hang\s+up|disconnect|cut|go)|do\s+not\s+(?:hang\s+up|disconnect|cut)"
+        # "abhi aata hoon / abhi aaya" — stepping away for a moment
+        r"|(?:abhi|अभी)\s*(?:aata|aaya|aati|aayi|आता|आया|आती|आई)"
+        r"))",
+        re.I,
+    )),
     # Busy now / call me later.
     ("callback", re.compile(
         # Not `\b`: Devanagari vowel signs are combining marks outside `\w`,
@@ -192,7 +225,7 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 def classify_user_signal(text: str) -> str | None:
     """Semantic signal of an utterance: hardship, refusal, complaint,
-    clarify, callback, payment_intent, already_paid, wrong_person,
+    clarify, hold, callback, payment_intent, already_paid, wrong_person,
     agent_request, question, affirm — or None. Language-agnostic across
     Hindi/Hinglish/English; deliberately conservative (None over a guess)."""
     stripped = (text or "").strip()
@@ -266,7 +299,13 @@ _HANGUP_NEGATION = re.compile(
     r"(?:\bmat\b|\bna\b|\bnahin?\b|\bdon'?t\b|\bdo not\b|मत|ना|नहीं)\W*"
     r"(?:\w+\W+)?(?:kat+\w*|kaat\w*|cut|band|bandh|khat[ae]?m|rakh\w*|hang|"
     r"disconnect|काट\w*|कट|बंद|ख़?त्म|रख)"
-    r"|(?:kat+n[aei]|kaatn[aei]|काटना|कट करना)\W+(?:mat\b|मत)",
+    r"|(?:kat+n[aei]|kaatn[aei]|काटना|कट करना)\W+(?:mat\b|मत)"
+    # Verb → negation (→ auxiliary): "कट मत करो", "kat mat karo", "call kat
+    # mat karna", "phone cut na karo", "band mat karo", "rakho mat", "रखो मत".
+    # The negation must FOLLOW the verb directly ("kaat do" / "band karo" carry
+    # none), so genuine imperatives are untouched.
+    r"|(?:kat+\w*|kaat\w*|cut|band|bandh|काट\w*|कट|बंद|rakh\w*|रख\w*|"
+    r"disconnect|hang\s+up)\W+(?:mat|na|nahin?|मत|ना|नहीं|नही)(?![\wऀ-ॿ])",
     re.I,
 )
 

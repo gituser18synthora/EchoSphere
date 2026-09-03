@@ -27,6 +27,10 @@ from shared.post_call.schema import (
     PostCallAnalysis,
     parse_analysis,
 )
+from shared.post_call.structured import (
+    derive_structured_fields,
+    summary_fields_prompt_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +122,11 @@ def _policy_block(policy: BotGoalPolicy) -> str:
 def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
     actions = ", ".join(allowed_next_actions(policy))
     weekday = reference.strftime("%A")
+    structured_block = summary_fields_prompt_block(policy)
+    structured_json = (
+        '  "structured_fields": {<field name>: <allowed value or null>},\n'
+        if structured_block else ""
+    )
     return (
         "You are the POST-CALL analyst for a phone voice agent. The call has "
         "ended. From the transcript and the recorded platform facts, produce "
@@ -126,6 +135,7 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "Hindi, English or mixed Hinglish.\n\n"
         "# The bot whose call you are analyzing\n"
         + _policy_block(policy)
+        + (("\n\n" + structured_block) if structured_block else "")
         + f"\n\n# Time reference\nThe call happened on {reference.date().isoformat()} "
         f"({weekday}). Resolve every relative date the customer used "
         "(tomorrow, Monday, कल, परसों, अगले हफ़्ते…) to an ABSOLUTE ISO date "
@@ -153,7 +163,8 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         '  "unresolved_items": [<items still open, snake_case>],\n'
         '  "collected_slots": {<slot name>: <value the customer provided>},\n'
         '  "missing_slots": [<configured slots still missing>],\n'
-        '  "next_best_action": {"action": <one of: ' + actions + ">, "
+        + structured_json
+        + '  "next_best_action": {"action": <one of: ' + actions + ">, "
         '"reason": <short>, "priority": <low|medium|high|urgent>, '
         '"recommended_at": <ISO datetime or null>},\n'
         '  "follow_up_required": <bool>,\n'
@@ -257,6 +268,16 @@ def fallback_analysis(
         dominant_language=str(final_state.get("language") or ""),
         last_customer_language=str(final_state.get("language") or ""),
     )
+    if policy is not None and policy.summary_fields:
+        # The workflow slots are platform-recorded facts — safe to report even
+        # without an analysis; unknown fields stay None.
+        derived = derive_structured_fields(
+            policy, final_state.get("workflow_slots") or {}
+        )
+        analysis.structured_fields = derived
+        analysis.structured_field_sources = {
+            name: "workflow" for name, value in derived.items() if value is not None
+        }
     analysis.next_best_action = decide_next_best_action(
         analysis,
         policy=policy,

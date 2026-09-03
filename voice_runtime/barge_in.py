@@ -53,6 +53,8 @@ from pipecat.turns.user_start.base_user_turn_start_strategy import (
     BaseUserTurnStartStrategy,
 )
 
+from voice_runtime.announcements import speech_word_count
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,7 +124,9 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             self._vad_speech_since = None
         elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             if self._bot_speaking:
-                words = len((frame.text or "").split())
+                # A telephony recording notice is not the caller interrupting:
+                # only the words left after stripping it count toward the gate.
+                words = speech_word_count(frame.text or "")
                 if words >= self._min_words:
                     return await self._confirm(
                         f"transcript ({words} words >= {self._min_words})"

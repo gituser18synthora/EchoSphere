@@ -118,12 +118,15 @@ def _intents_validated(db: Session, bot: VoiceBot) -> bool:
 
 def _workflow_published(db: Session, bot: VoiceBot) -> bool:
     """The bot's latest workflow is approved and actually has a graph."""
-    w = db.scalar(
-        select(Workflow)
+    # Sort ids only (never the JSON graph columns — MySQL error 1038 on
+    # large workflows), then load the one row by primary key.
+    latest_id = db.scalar(
+        select(Workflow.id)
         .where(Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False))
         .order_by(Workflow.version.desc())
         .limit(1)
     )
+    w = db.get(Workflow, latest_id) if latest_id else None
     return w is not None and w.status == PUBLISHED_WORKFLOW_STATUS and bool(w.nodes)
 
 

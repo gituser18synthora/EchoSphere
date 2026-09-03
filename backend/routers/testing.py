@@ -927,6 +927,24 @@ def _simulate_prompt(db: Session, bot: VoiceBot, body: SimulateRequest) -> dict:
     }
 
 
+def _structured_summary_preview(vbs, bot, prompt_info, slots) -> dict:
+    """Structured summary fields derived from the current workflow slots."""
+    from shared.orchestration.goal_engine import compile_goal_policy
+    from shared.post_call.structured import derive_structured_fields
+
+    goal_config = dict((vbs.goal_policy if vbs is not None else None) or {})
+    if not goal_config.get("summaryFields") and not goal_config.get("summary_fields"):
+        return {}
+    try:
+        policy = compile_goal_policy(
+            goal_config, bot_name=bot.name,
+            system_prompt=str((prompt_info or {}).get("compiled") or ""),
+        )
+        return derive_structured_fields(policy, slots or {})
+    except Exception:  # noqa: BLE001 — a preview must never break a turn
+        return {}
+
+
 @router.post("/bots/{bot_id}/testing/simulate")
 async def simulate_turn(
     bot_id: str,
@@ -1265,6 +1283,12 @@ async def simulate_turn(
                 "nodeTrace": result["trace"], "slots": result["slots"],
                 "offScript": bool(result.get("offScript")), "done": result["done"],
                 "responseMode": result.get("responseMode"),
+                # What the post-call structured summary would report from
+                # the slots as they stand now (same derivation as the
+                # processor) — lets Testing verify Yes/No fields per turn.
+                "structuredSummary": _structured_summary_preview(
+                    vbs, bot, prompt_info, result["slots"]
+                ),
             }
             trace["route"] = "workflow"
             response_text = result["reply"]

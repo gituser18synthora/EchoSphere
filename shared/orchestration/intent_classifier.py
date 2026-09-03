@@ -48,7 +48,26 @@ _MAX_HISTORY_TURNS = 4
 # fallback produces the same vocabulary, so downstream code sees ONE language.
 PLATFORM_SIGNALS = (
     "complaint", "clarify", "already_paid", "wrong_person", "agent_request",
-    "hardship", "callback", "question", "refusal", "payment_intent", "affirm",
+    "hardship", "hold", "callback", "question", "refusal", "payment_intent",
+    "affirm",
+)
+
+# One-line meanings the LLM classifiers (hybrid pipeline + Goal Engine) are
+# taught for the platform signals. hold vs callback is spelled out because
+# "ek minute ruko" was being classified as a callback request, which sent
+# callers into the callback-time question and closed their call.
+PLATFORM_SIGNAL_MEANINGS = (
+    "complaint = the caller says the BOT is not listening/repeating itself; "
+    "clarify = the caller did not understand the bot; already_paid = claims a "
+    "required payment was already made; wrong_person = wrong number or 'that "
+    "is not me/my account'; agent_request = wants a human; hardship = says "
+    "they cannot pay/afford or has a crisis; hold = asks you to WAIT or stay "
+    "on the line for a moment right now ('ek minute ruko', 'hold on', 'wait a "
+    "minute', 'line par raho', 'kat mat karo', 'don't disconnect') — this is "
+    "NOT a callback; callback = busy now, wants to be called at ANOTHER time "
+    "('baad mein call karo', 'call me later', 'kal call karna'); question = "
+    "asks for information; refusal = declines what was asked; payment_intent "
+    "= commits to pay/do the asked action; affirm = a bare yes/agreement."
 )
 
 # Default entity slots for platform signals (tenant intents define their own).
@@ -236,15 +255,7 @@ class HybridIntentPipeline:
             "",
             "signal: the generic conversation signal, ONLY from: "
             + ", ".join(PLATFORM_SIGNALS) + " (null if none fits). "
-            "Meanings: complaint = the caller says the BOT is not "
-            "listening/repeating itself; clarify = the caller did not "
-            "understand the bot; already_paid = claims a required payment "
-            "was already made; wrong_person = wrong number or 'that is not "
-            "me/my account'; agent_request = wants a human; hardship = says "
-            "they cannot pay/afford or has a crisis; callback = busy now, "
-            "call later; question = asks for information; refusal = declines "
-            "what was asked; payment_intent = commits to pay/do the asked "
-            "action; affirm = a bare yes/agreement.",
+            "Meanings: " + PLATFORM_SIGNAL_MEANINGS,
             "",
             "entities: extract values LITERALLY from the utterance for the "
             "matched intent's entity keys"

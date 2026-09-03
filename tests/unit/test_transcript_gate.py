@@ -744,3 +744,54 @@ class TestWhisperQualityMetadata:
         assert "response_format" not in calls
         assert result.text == "hello there"
         assert result.confidence is None and result.no_speech_prob is None
+
+
+class TestRecordingAnnouncement:
+    """Telephony 'Call is now being recorded' notices are heard as caller
+    speech: alone they are rejected before buffering; fused with real speech
+    only the real part survives; ordinary speech mentioning recording is
+    untouched."""
+
+    ANNOUNCEMENTS = (
+        "Call is now being recorded.",
+        "call is now being recorded",
+        "This call is now being recorded.",
+        "This call may be recorded for quality purposes.",
+        "Your call will be recorded and monitored.",
+        "यह कॉल रिकॉर्ड की जा रही है।",
+        "yeh call record ho rahi hai",
+    )
+
+    def test_announcement_alone_is_rejected(self):
+        for text in self.ANNOUNCEMENTS:
+            verdict = assess_transcript(text, q(language="en-IN"))
+            assert not verdict.accepted and verdict.reason == "recording_announcement", text
+
+    def test_announcement_fused_with_speech_keeps_the_speech(self):
+        verdict = assess_transcript("Call is now being recorded. बताइए।", q(language="hi-IN"))
+        assert verdict.accepted
+        assert verdict.reason == "recording_announcement_stripped"
+        assert verdict.normalized_text == "बताइए"
+
+    def test_ordinary_speech_about_recording_is_untouched(self):
+        for text in (
+            "I recorded the video call yesterday",
+            "recording kyun ho rahi hai",
+            "call karo mujhe",
+            "haan bol raha hoon",
+        ):
+            verdict = assess_transcript(text, q())
+            assert verdict.accepted and verdict.normalized_text is None, text
+
+    def test_helpers(self):
+        from voice_runtime.announcements import (
+            is_recording_announcement,
+            speech_word_count,
+            strip_recording_announcement,
+        )
+        assert is_recording_announcement("Call is now being recorded.")
+        assert not is_recording_announcement("Call is now being recorded. ek minute ruko")
+        assert strip_recording_announcement("Call is now being recorded. ek minute ruko") == (
+            "ek minute ruko", True)
+        assert speech_word_count("This call is now being recorded.") == 0
+        assert speech_word_count("Call is now being recorded. haan bol raha hoon") == 4

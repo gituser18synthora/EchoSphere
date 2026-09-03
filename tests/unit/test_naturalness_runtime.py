@@ -16,9 +16,12 @@ from types import SimpleNamespace
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     TextFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 
@@ -147,7 +150,7 @@ def assistant_history(brain):
 # ── brain: streamed-reply preface ────────────────────────────────────────
 
 
-async def test_streamed_reply_preface_is_spoken_but_not_history():
+async def test_early_acknowledgement_is_spoken_at_dispatch_separate_from_reply():
     llm = _StreamingLLMStub(["Aapka sawaal ", "samajh gaya, batata hoon."])
     brain = make_brain(
         llm=llm,
@@ -160,19 +163,127 @@ async def test_streamed_reply_preface_is_spoken_but_not_history():
     )
     await settle_turn()
 
-    texts = [f.text for f in brain._pushed if isinstance(f, TextFrame)]
-    # First spoken text is the delivery preface, flushed immediately.
-    assert texts[0].endswith("... ") or texts[0].endswith("… "), texts
-    assert any(isinstance(f, TTSFlushHintFrame) for f in brain._pushed)
-    # The semantic reply follows and is what history keeps — no preface.
+    frames = brain._pushed
+    texts = [f.text for f in frames if isinstance(f, TextFrame)]
+    # The first thing spoken is one short acknowledgement, in its OWN
+    # response envelope, closed before the reply's envelope opens — never
+    # glued to the front of the reply.
+    assert texts[0].endswith("…"), texts
+    assert len(texts[0].split()) <= 3
+    first_text = next(i for i, f in enumerate(frames) if isinstance(f, TextFrame))
+    assert isinstance(frames[first_text - 1], LLMFullResponseStartFrame)
+    assert isinstance(frames[first_text + 1], LLMFullResponseEndFrame)
+    # It was spoken BEFORE the turn handler even ran (dispatch time).
+    ack_event = brain._recorder.event_kinds().index("early_ack_played")
+    assert ack_event < brain._recorder.event_kinds().index("orchestration_turn")
+    # The reply itself carries no preface and is what history keeps.
     reply = assistant_history(brain)[-1]
     assert reply == "Aapka sawaal samajh gaya, batata hoon."
-    assert not reply.startswith(texts[0].strip())
-    # Telemetry rode the orchestration_turn event.
+    assert texts[1:] and not texts[1].endswith("… ")
     event = dict(brain._recorder.events)["orchestration_turn"]
     assert event["human_speech_enabled"] is True
-    assert event["naturalness"]["filler_used"] is True
-    assert event["naturalness"]["preface_spoken"] is True
+    assert event["naturalness"]["filler_used"] is False        # nothing glued
+    assert event["naturalness"]["early_ack_spoken"] is True
+    await brain.cleanup()
+
+
+async def test_early_ack_audio_is_not_the_reply():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    async def _slow_turn(text):
+        await asyncio.sleep(0.5)
+
+    brain._handle_turn = _slow_turn
+    await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    assert brain._early_ack_pending is True
+    # Its audio must not close the latency measurement or count as the reply.
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._reply_audio_started is False
+    assert brain._latency.bot_started_at is None
+    assert brain._bot_speaking is True
+    await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._early_ack_pending is False
+    # The reply's own audio owns the marks.
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert brain._reply_audio_started is True
+    assert brain._latency.bot_started_at is not None
+    await brain.cleanup()
+
+
+async def test_caller_continuing_over_the_ack_merges_instead_of_barging_in():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    async def _slow_turn(text):
+        await asyncio.sleep(0.5)
+
+    brain._handle_turn = _slow_turn
+    await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    # The caller keeps talking over "जी…": a continuation of their thought,
+    # rewound and merged — not an interruption of a reply nobody heard yet.
+    await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    kinds = brain._recorder.event_kinds()
+    assert "barge_in" not in kinds
+    cancelled = [d for k, d in brain._recorder.events if k == "generation_cancelled"]
+    assert cancelled and cancelled[-1]["reason"] == "late_transcript_merge"
+    await brain.cleanup()
+
+
+async def test_early_ack_withheld_for_dictated_digits_and_disabled_layer():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+    handled = []
+
+    async def _handle(text):
+        handled.append(text)
+
+    brain._handle_turn = _handle
+    await brain.process_frame(transcript("sat zero zero ek do teen"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    assert handled and "early_ack_played" not in brain._recorder.event_kinds()
+    assert [f for f in brain._pushed if isinstance(f, TextFrame)] == []
+
+    off = make_brain(llm=_StreamingLLMStub(["Theek hai."]), naturalness=planner({"enabled": False}))
+    off._handle_turn = _handle
+    await off.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
+    await settle_turn()
+    assert "early_ack_played" not in off._recorder.event_kinds()
+    await brain.cleanup()
+    await off.cleanup()
+
+
+async def test_early_ack_context_follows_the_callers_words():
+    brain = make_brain(
+        llm=_StreamingLLMStub(["Theek hai."]),
+        naturalness=planner({"acknowledgement_probability": 1.0}),
+    )
+
+    async def _handle(text):
+        pass
+
+    brain._handle_turn = _handle
+    for text, expected in (
+        ("haan bol raha hoon", "answer"),
+        ("mera order kab aayega", "question"),
+        ("aapka office kahan hai?", "question"),
+    ):
+        brain._recorder.events.clear()
+        brain._naturalness._last_early_ack_turn = None   # isolate from anti-repetition
+        await brain.process_frame(transcript(text), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        played = [d for k, d in brain._recorder.events if k == "early_ack_played"]
+        assert played and played[0]["context"] == expected, (text, played)
+    await brain.cleanup()
 
 
 async def test_disabled_naturalness_changes_nothing():
@@ -318,11 +429,89 @@ class _ForcedPlanner(SpeechNaturalnessPlanner):
         super().__init__({}, rng=random.Random(1))
         self._forced = (pause_after_ms, speed_scale)
 
-    def plan_segment(self, text, *, base_pause_ms, language=""):
+    def plan_segment(self, text, *, base_pause_ms, language="", **kwargs):
         seg = super().plan_segment(text, base_pause_ms=base_pause_ms,
-                                   language=language)
+                                   language=language, **kwargs)
         seg.pause_after_ms, seg.speed_scale = self._forced
         return seg
+
+
+class _BreathPlanner(SpeechNaturalnessPlanner):
+    """Forces a breath before every sentence but the first (router test)."""
+
+    def __init__(self):
+        super().__init__({"sentence_breath_probability": 1.0}, rng=random.Random(1))
+
+    def plan_segment(self, text, *, base_pause_ms, language="", first_in_turn=False,
+                     breaths_so_far=0):
+        seg = super().plan_segment(text, base_pause_ms=base_pause_ms, language=language,
+                                   first_in_turn=first_in_turn, breaths_so_far=breaths_so_far)
+        seg.pause_after_ms = 150
+        seg.breath_before = not first_in_turn and breaths_so_far < 1
+        return seg
+
+
+class _ClipLibraryStub:
+    def __init__(self, clip):
+        self.clip_bytes = clip
+        self.requests = []
+
+    def clip(self, gender, sample_rate, *, kind="breath", max_ms=None, gain_db=0.0):
+        self.requests.append((gender, sample_rate, kind))
+        return self.clip_bytes
+
+
+class _RouterRecorder:
+    session_id = "s-router"
+
+    def __init__(self):
+        self.events = []
+
+    def add_event(self, kind, **data):
+        self.events.append((kind, data))
+
+
+async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence():
+    breath = b"\x05\x00" * 1600                      # 100 ms at 16 kHz
+    library = _ClipLibraryStub(breath)
+    recorder = _RouterRecorder()
+    router = make_router(pause_ms=150, naturalness=_BreathPlanner(),
+                         filler_library=library, recorder=recorder)
+    provider = FakeProvider()
+    engine = dict(ENGINE, voice_gender="female")
+    state = _Generation(engine=engine, provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya kaafi lamba hai aur isme bahut saari baatein hain.", "ctx"):
+        pass
+    async for _ in router.run_tts("Teesra vaakya bhi kaafi lamba hai aur isme bhi kaafi baatein hain.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+    assert state.active == "ctx~2"
+
+    # Planned pause, then the breath (gender-matched, trimmed), then a beat.
+    frames = audio_frames(router)
+    assert frames[-3].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
+    assert frames[-2].audio == breath
+    assert len(frames[-1].audio) == int(16000 * 60 / 1000) * 2
+    assert library.requests == [("female", 16000, "inhale")]
+    assert ("sentence_breath_played", {
+        "context": "ctx", "gender": "female", "breath_ms": 100.0,
+    }) in recorder.events
+    # Only ONE per turn: the third sentence gets its pause but no breath.
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~2", audio=b"\x01\x02" * 8,
+    ))
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~2"))
+    assert state.active == "ctx~3"
+    assert state.breaths == 1
+    assert library.requests == [("female", 16000, "inhale")]
+    assert audio_frames(router)[-1].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
 
 
 async def test_pause_mode_uses_planned_per_sentence_gap():

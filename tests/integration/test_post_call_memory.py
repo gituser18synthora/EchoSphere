@@ -7,6 +7,7 @@ model's prose.
 """
 
 import asyncio
+import dataclasses
 import json
 import uuid
 from datetime import datetime, timezone
@@ -320,6 +321,108 @@ class TestProcessing:
         )
         client.close()
         assert doc is not None and len(doc["turns"]) == 2
+
+
+MDND_SUMMARY_FIELDS = [
+    {"name": "call_customer", "type": "yes_no", "source": "m_called_customer"},
+    {"name": "reach_customer_location", "type": "yes_no",
+     "source": "m_reached_location"},
+    {"name": "hand_over_product", "type": "yes_no",
+     "source": "m_handover_recipient",
+     "values": {"not handed over": "No", "*": "Yes"}},
+    {"name": "hand_over_to", "type": "choice", "source": "m_handover_recipient",
+     "options": ["customer", "security_guard", "mother", "doorstep",
+                 "someone_else"],
+     "values": {"guard / security": "security_guard",
+                "customer (direct)": "customer", "left at door": "doorstep",
+                "someone else": "someone_else", "not handed over": ""}},
+    {"name": "call_cx", "type": "yes_no", "source": "m_cx_support_call"},
+]
+
+
+class TestStructuredSummary:
+    """goal_policy.summaryFields → structured_fields on the memory row and the
+    conversation detail API; workflow slots (corrections included) outrank
+    the analyst, who fills only what the flow never collected."""
+
+    async def _process(self, monkeypatch, payload):
+        from shared.post_call import processor
+
+        async def _fake_resolve(bot_id, require_published=False):
+            return dataclasses.replace(
+                _config(bot=bot_id),
+                goal_policy={"summaryFields": MDND_SUMMARY_FIELDS},
+            )
+
+        monkeypatch.setattr("shared.bot_config.resolve_bot_config", _fake_resolve)
+        monkeypatch.setattr(
+            processor, "build_analysis_llm",
+            lambda config: _AnalysisLLMStub(payload),
+        )
+        return await processor.run_pending_once(limit=20)
+
+    async def test_final_slots_drive_the_fields_and_reach_the_api(self, monkeypatch):
+        recorder = _recorder()
+        recorder.disposition = ""
+        # The corrected final state of the guided flow: the partner first
+        # said "customer", then corrected to the guard at verification.
+        recorder.workflow_slots = {
+            "m_reached_location": "yes (reached the location)",
+            "m_called_customer": "no (did not call)",
+            "m_handover_recipient": "guard / security",
+            "m_issue_description": "customer ne bola ghar ke aage rakh do",
+        }
+        await _finalize(recorder)
+        row = _memory_row(recorder.control_plane_id)
+        assert row.final_state["workflow_slots"]["m_handover_recipient"] == "guard / security"
+
+        payload = dict(GOOD_ANALYSIS)
+        payload.update({
+            "call_outcome": "concern_registered",
+            "customer_commitments": [],
+            # The analyst disagrees on a slot-backed field (ignored) and
+            # supplies the one the flow never asked (accepted, normalized).
+            "structured_fields": {"call_customer": "Yes", "call_cx": "no"},
+        })
+        await self._process(monkeypatch, payload)
+        row = _memory_row(recorder.control_plane_id)
+        assert row.status == "completed"
+        assert row.memory["structured_fields"] == {
+            "call_customer": "No",
+            "reach_customer_location": "Yes",
+            "hand_over_product": "Yes",
+            "hand_over_to": "security_guard",
+            "call_cx": "No",
+        }
+        assert row.memory["structured_field_sources"]["call_customer"] == "workflow"
+        assert row.memory["structured_field_sources"]["call_cx"] == "analysis"
+
+        await _release_mongo()
+        with TestClient(app) as client:
+            response = client.get(
+                f"/api/v1/conversations/{recorder.control_plane_id}",
+                headers=_bearer("priya.sharma@meridianhealth.com"),
+            )
+        assert response.status_code == 200, response.text
+        summary = response.json()["data"]["summary"]
+        assert summary["structuredFields"]["hand_over_to"] == "security_guard"
+        assert summary["structuredFields"]["call_customer"] == "No"
+        assert summary["structuredFieldSources"]["call_cx"] == "analysis"
+
+    async def test_unknown_fields_stay_null_with_stable_keys(self, monkeypatch):
+        recorder = _recorder()
+        recorder.workflow_slots = {"m_handover_recipient": "not handed over"}
+        await _finalize(recorder)
+        payload = dict(GOOD_ANALYSIS)
+        payload.update({"customer_commitments": [],
+                        "structured_fields": {"hand_over_to": "neighbour"}})
+        await self._process(monkeypatch, payload)
+        row = _memory_row(recorder.control_plane_id)
+        fields = row.memory["structured_fields"]
+        assert set(fields) == {f["name"] for f in MDND_SUMMARY_FIELDS}
+        assert fields["hand_over_product"] == "No"
+        assert fields["hand_over_to"] is None      # not applicable + invalid proposal
+        assert fields["call_customer"] is None
 
 
 class TestRecall:

@@ -504,3 +504,108 @@ class TestIntentMatchStrength:
         # "want to cancel" is present but buried — below the 0.7 bar the
         # deterministic router must not transfer; the LLM layer decides.
         assert decision.kind != RouteKind.HANDOFF
+
+
+class TestHoldSignal:
+    """'Wait a moment / stay on the line' is a HOLD — never a callback (which
+    sent Frankfinn callers into the callback-time question and closed the
+    call), and explicit callback wording still wins."""
+
+    def _signal(self, text):
+        from shared.orchestration.router import classify_user_signal
+        return classify_user_signal(text)
+
+    def test_hold_forms_hindi_hinglish_english(self):
+        for text in (
+            "हां, एक मिनट रुक जाओ",
+            "मुझे एक मिनट दो, कट मत करो",
+            "ek minute ruko",
+            "ek minute rukiye",
+            "do minute do",
+            "paanch minute ruko",
+            "hold on",
+            "please hold",
+            "wait a minute",
+            "line par raho",
+            "rakhna mat",
+            "phone kat mat karo",
+            "एक मिनट",
+            "रुको",
+            "रुकिए",
+            "रुक जाओ",
+            "लाइन पर रहिए",
+            "होल्ड करो",
+            "don't hang up, one second",
+        ):
+            assert self._signal(text) == "hold", text
+
+    def test_callback_forms_stay_callback(self):
+        for text in (
+            "ek minute baad call karo",
+            "baad mein call karo",
+            "kal call karna",
+            "call me later",
+            "main abhi busy hoon",
+            "shaam ko call karo",
+            "बाद में कॉल करना",
+        ):
+            assert self._signal(text) == "callback", text
+
+    def test_hold_versus_callback_distinction(self):
+        assert self._signal("ek minute ruko") == "hold"
+        assert self._signal("ek minute baad call karo") == "callback"
+        assert self._signal("paanch minute ruko") == "hold"
+        assert self._signal("paanch minute baad call karo") == "callback"
+
+    def test_neutral_utterances_are_not_hold(self):
+        for text in (
+            "haan",
+            "I am waiting for my salary",
+            "5 minute",
+            "mera naam Rohan hai",
+            "graduation complete ho gayi",
+            "अहमदाबाद में रहता हूँ",
+        ):
+            assert self._signal(text) != "hold", text
+
+
+class TestHangupNegationOrders:
+    """Negations in verb → negation (→ auxiliary) order must never hang up;
+    genuine imperatives must keep hanging up."""
+
+    def _hangup(self, text):
+        from shared.orchestration.router import detect_hangup
+        return detect_hangup(text)
+
+    def test_negated_forms_do_not_hang_up(self):
+        for text in (
+            "कट मत करो",
+            "kat mat karo",
+            "call kat mat karna",
+            "phone kat mat karo",
+            "फोन कट मत करो",
+            "phone cut na karo",
+            "call band mat karo",
+            "rakho mat",
+            "रखो मत",
+            "phone rakhna mat",
+            "मत काटो",
+            "काटना मत",
+            "don't hang up",
+            "please do not disconnect",
+        ):
+            assert self._hangup(text) is False, text
+
+    def test_genuine_hangup_forms_still_hang_up(self):
+        for text in (
+            "phone kaat do",
+            "call band karo",
+            "कॉल बंद करो",
+            "फोन कट करो",
+            "phone rakh do",
+            "cut kar do",
+            "hang up",
+            "disconnect the call",
+            "बस, कॉल खत्म करो",
+        ):
+            assert self._hangup(text) is True, text

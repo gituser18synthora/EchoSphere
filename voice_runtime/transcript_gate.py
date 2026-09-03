@@ -42,6 +42,7 @@ import re
 from dataclasses import dataclass
 
 from shared.orchestration.router import classify_user_signal, detect_hangup
+from voice_runtime.announcements import strip_recording_announcement
 from shared.orchestration.spoken_numbers import pure_digit_payload
 from voice_runtime.endpointing import is_short_complete_reply
 
@@ -480,6 +481,26 @@ def assess_transcript(
     stripped = (text or "").strip()
     if not stripped:
         return GateVerdict(False, "empty")
+
+    # Telephony recording notices ("Call is now being recorded") are played
+    # on the caller's leg and transcribed as caller speech. They are never a
+    # turn: a segment that is ONLY the notice is rejected; a notice fused
+    # with real speech ("… recorded. बताइए।") continues with the real part.
+    remainder, announced = strip_recording_announcement(stripped)
+    if announced:
+        if not remainder:
+            return GateVerdict(
+                False, "recording_announcement", base_language(quality.language)
+            )
+        inner = assess_transcript(
+            remainder, quality, allowed_languages, numeric_context=numeric_context
+        )
+        if not inner.accepted:
+            return inner
+        return GateVerdict(
+            True, "recording_announcement_stripped", inner.language,
+            normalized_text=inner.normalized_text or remainder,
+        )
 
     language = base_language(quality.language)
     short_reply = meaningful_short_reply(stripped)

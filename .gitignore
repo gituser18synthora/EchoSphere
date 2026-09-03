@@ -98,4 +98,6 @@ desktop.ini
 .devrun
 # Generated voice clone recordings
 storage/voice_clones/
+# Auditioning exports of the synthesized latency-filler breaths (scripts/export_filler_audio.py)
+storage/filler_audio/synthesized/
 oyo/data/runtime_state.json
