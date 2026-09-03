@@ -15,6 +15,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from typing import Any, TypedDict
 from urllib.parse import quote
 
@@ -602,42 +603,124 @@ def _edge_meta(edges: list[dict]) -> list[tuple[dict, list[str], set[str]]]:
     return meta
 
 
+# Combining marks — Devanagari vowel signs (matras), anusvara, candrabindu,
+# nukta and virama. Python's ``\w`` (and therefore ``\b``) excludes them, so
+# a regex word boundary "forms" in the middle of a Hindi word: "हाँ" matched
+# inside "कहाँ" and "बाद में" inside "अहमदाबाद में", sending a caller who said
+# their city to the callback close.
+_MARK_CATEGORIES = ("Mn", "Mc", "Me")
+
+
+def _is_word_char(ch: str) -> bool:
+    """Unicode-aware word character: letters, digits, underscore, combining
+    marks and the zero-width joiners used inside Indic conjuncts."""
+    return (
+        ch.isalnum()
+        or ch == "_"
+        or unicodedata.category(ch) in _MARK_CATEGORIES
+        or ch in "\u200c\u200d"
+    )
+
+
+def _token_in(token: str, lowered: str) -> bool:
+    """Whether the edge token occurs in the utterance starting at a word start.
+
+    Edge tokens are authored as stems on purpose ("complet" → complete /
+    completed, "chal rah" → chal raha / rahi), so the END of a match may sit
+    mid-word — but its START never may: "बाद में" inside "अहमदाबाद में" is not
+    the caller saying "later", and "हाँ" inside "कहाँ" is not a yes.
+    """
+    if not token:
+        return False
+    if not _is_word_char(token[0]):
+        return token in lowered
+    start = lowered.find(token)
+    while start != -1:
+        if start == 0 or not _is_word_char(lowered[start - 1]):
+            return True
+        start = lowered.find(token, start + 1)
+    return False
+
+
+def _best_token(tokens: list[str], lowered: str) -> str:
+    """Longest edge token present in the utterance ("" = none). Longer tokens
+    are more specific: "पैसे नहीं" (hardship) must beat "नहीं"."""
+    return max((t for t in tokens if _token_in(t, lowered)), key=len, default="")
+
+
 def _token_score(tokens: list[str], lowered: str) -> int:
-    """Longest edge token contained in the utterance (0 = none). Longer
-    tokens are more specific: "पैसे नहीं" (hardship) must beat "नहीं"."""
-    return max((len(t) for t in tokens if t and t in lowered), default=0)
+    """Length of the longest edge token present in the utterance (0 = none)."""
+    return len(_best_token(tokens, lowered))
 
 
-def _choose_intent_edge(
+def _choose_intent_edge_detailed(
     meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None
-) -> tuple[dict | None, str]:
+) -> tuple[dict | None, str, str]:
     """Pick the outgoing edge the utterance actually supports.
 
-    Returns (edge, reason); edge None means nothing matched and reason says
-    why: "off_script" (a signal the node has no edge for — do not advance,
-    let the brain answer it) or "no_match" (no signal, no literal match —
-    the caller may retry or take an authored else/fallback edge).
+    Returns (edge, reason, matched token); edge None means nothing matched
+    and reason says why: "off_script" (a signal the node has no edge for —
+    do not advance, let the brain answer it) or "no_match" (no signal, no
+    literal match — the caller may retry or take an authored else/fallback
+    edge). The matched token is "" for signal-only matches without a literal
+    hit.
     """
     lowered = (text or "").lower()
     if signal:
         wanted = (signal, *_COMPATIBLE_SIGNALS.get(signal, ()))
         supporting = [
-            (edge, _token_score(tokens, lowered))
+            (edge, _best_token(tokens, lowered))
             for edge, tokens, signals in meta
             if any(w in signals for w in wanted)
         ]
         if supporting:
-            return max(supporting, key=lambda pair: pair[1])[0], "signal"
+            edge, token = max(supporting, key=lambda pair: len(pair[1]))
+            return edge, "signal", token
         if signal not in _LITERAL_FALLBACK_SIGNALS:
-            return None, "off_script"
-    best, best_score = None, 0
+            return None, "off_script", ""
+    best, best_token = None, ""
     for edge, tokens, _signals in meta:
-        score = _token_score(tokens, lowered)
-        if score > best_score:
-            best, best_score = edge, score
+        token = _best_token(tokens, lowered)
+        if len(token) > len(best_token):
+            best, best_token = edge, token
     if best is not None:
-        return best, "token"
-    return None, "no_match"
+        return best, "token", best_token
+    return None, "no_match", ""
+
+
+def _choose_intent_edge(
+    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None
+) -> tuple[dict | None, str]:
+    """(edge, reason) form of :func:`_choose_intent_edge_detailed`."""
+    edge, why, _token = _choose_intent_edge_detailed(meta, text, signal)
+    return edge, why
+
+
+# ── answers to UPCOMING hubs ────────────────────────────────────────────────
+# Callers regularly answer a question the flow has not asked yet: the LLM's
+# off-script reply already asked it, or they volunteered it ("graduation
+# complete ho gayi" at the reason-of-call hub). Walking the authored
+# else-chain hub → else → hub and speaking each hub's prompt in turn re-asks
+# exactly what was just said — the repeat-question loop callers complain
+# about. When a hub cannot place an utterance, the engine looks down its
+# else-chain (intent hubs only, bounded) for a hub whose edge LITERALLY
+# matches; a match means the caller is ahead of the script, so the flow jumps
+# there. Generic yes/no answers never qualify — "haan" only answers the
+# question that was actually asked.
+_MAX_LOOKAHEAD_HUBS = 3
+_GENERIC_ANSWER_SIGNALS = ("affirm", "refusal")
+_GENERIC_ANSWER_TOKENS = frozenset((
+    "yep", "yup", "hmm", "han", "fine", "right", "correct", "sahi", "acha",
+    "achha", "accha", "theek", "thik", "ok ji", "okay ji", "अच्छा", "ओके",
+    "ठीक", "सही", "हम्म",
+))
+
+
+def _specific_answer_token(token: str) -> bool:
+    """A lookahead match must be a CONTENT answer, never a generic yes/no/ok."""
+    if not token or len(token) < 3 or token in _GENERIC_ANSWER_TOKENS:
+        return False
+    return classify_user_signal(token) not in _GENERIC_ANSWER_SIGNALS
 
 
 def _pick_edge_by_flag(out_edges: list[dict], result: bool) -> dict | None:
@@ -884,6 +967,48 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
     def _next_of(node_id: str) -> str | None:
         out = edges_from.get(node_id) or []
         return str(out[0].get("to")) if out else None
+
+    def _else_edge_of(node_id: str) -> dict | None:
+        """The node's authored else/fallback edge, if any."""
+        return next(
+            (e for e in edges_from.get(node_id, [])
+             if any(t in _ELSE_LABELS for t in _edge_tokens(e.get("label", "")))),
+            None,
+        )
+
+    def _lookahead_answer(
+        node_id: str, text: str, signal: str | None
+    ) -> tuple[list[dict], dict, str] | None:
+        """Does the utterance answer an UPCOMING intent hub on the else-chain?
+
+        Follows else edges hub → hub (intent nodes only, bounded) and returns
+        (else edges walked, matched edge, hub id) for the first hub whose
+        edge literally matches a specific content token — or None. Generic
+        yes/no answers and signal-only matches never jump: they only answer
+        the question that was actually asked.
+        """
+        if not text or signal in _GENERIC_ANSWER_SIGNALS:
+            return None
+        walked: list[dict] = []
+        seen = {node_id}
+        cursor = node_id
+        for _ in range(_MAX_LOOKAHEAD_HUBS):
+            else_edge = _else_edge_of(cursor)
+            if else_edge is None:
+                return None
+            hub_id = str(else_edge.get("to") or "")
+            hub = nodes_by_id.get(hub_id)
+            if hub_id in seen or hub is None or hub.get("kind") != "intent":
+                return None
+            seen.add(hub_id)
+            walked.append(else_edge)
+            chosen, why, token = _choose_intent_edge_detailed(
+                edge_meta_from.get(hub_id, []), text, signal
+            )
+            if chosen is not None and why == "token" and _specific_answer_token(token):
+                return walked, chosen, hub_id
+            cursor = hub_id
+        return None
 
     def _question(node: dict, retrying: bool, lang: str = "") -> str:
         base = _node_text(node, "question", "prompt", "text")
@@ -1173,6 +1298,38 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     current, awaiting = target, None
                     chosen, why = None, "identifier_correction"
                 fixed_reply = _unmatched_reply(node) if chosen is None else ""
+                if (
+                    correction is None and chosen is None and not fixed_reply
+                    and why == "no_match"
+                ):
+                    config = _node_config(node)
+                    if config.get("elseIsAnswer") is True:
+                        # The author declared this hub's else edge to be the
+                        # expected free-form answer (a city, a name…), not a
+                        # fallback: an unrecognised, signal-less utterance IS
+                        # the answer — take the edge now instead of spending
+                        # a retry on an LLM turn and re-asking next time.
+                        else_edge = _else_edge_of(awaiting)
+                        if else_edge is not None:
+                            capture = str(config.get("captureVariable") or "").strip()
+                            if capture and not str(slots.get(capture) or "").strip():
+                                slots[capture] = text
+                            audit.append({"action": "else_answer", "node": awaiting,
+                                          "variable": capture or None})
+                            chosen, why = else_edge, "else_answer"
+                    if chosen is None:
+                        lookahead = _lookahead_answer(awaiting, text, signal)
+                        if lookahead is not None:
+                            walked, chosen, hub_id = lookahead
+                            for walked_edge in walked:
+                                trace.append(str(walked_edge.get("to")))
+                            audit.append({
+                                "action": "intent_lookahead", "node": awaiting,
+                                "hub": hub_id,
+                                "edge": chosen.get("label") or chosen.get("id"),
+                                "skipped": [str(e.get("to")) for e in walked],
+                            })
+                            why = "lookahead"
                 if correction is None and chosen is None and fixed_reply:
                     # Verification/identity gates may remain deterministic:
                     # keep waiting, do not call the LLM, consume retry budget,
@@ -1340,6 +1497,29 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                           "node": current,
                                           "edge": chosen.get("label") or chosen.get("id"),
                                           "signal": entry_signal})
+                            current = str(chosen.get("to"))
+                            continue
+                    if not _unmatched_reply(node):
+                        # The entry utterance may answer a LATER hub outright
+                        # ("I am a graduate" after the LLM already asked the
+                        # qualification off-workflow) — jump there instead of
+                        # restarting the pitch. The first hub's own literal
+                        # edges are deliberately not consulted: a bare "haan"
+                        # answered the greeting, not this rung.
+                        lookahead = _lookahead_answer(current, text, entry_signal)
+                        if lookahead is not None:
+                            walked, chosen, hub_id = lookahead
+                            for walked_edge in walked:
+                                trace.append(str(walked_edge.get("to")))
+                            audit.append({
+                                "action": "intent_lookahead", "node": current,
+                                "hub": hub_id,
+                                "edge": chosen.get("label") or chosen.get("id"),
+                                "skipped": [str(e.get("to")) for e in walked],
+                                "from_entry": True,
+                            })
+                            _apply_also_capture(nodes_by_id[hub_id], text, slots,
+                                                audit, hub_id)
                             current = str(chosen.get("to"))
                             continue
                 prompt = _node_text(node, "prompt", "question", "text",

@@ -89,6 +89,19 @@ def remap_ids(value, id_map: dict[str, str]):
     return value
 
 
+def remap_route(route, id_map: dict[str, str]):
+    """Intent routes reference bot-owned records INSIDE a string —
+    ``"workflow:<id>"`` / ``"tool:<id>"`` — which exact-string
+    :func:`remap_ids` cannot see. Left unmapped, the clone's intents kept
+    pointing at the source bot's workflow id, which the runtime looks up
+    within the clone's own workflows and never finds: every configured
+    intent then ended the turn with the "workflow missing" reply."""
+    if not isinstance(route, str) or ":" not in route:
+        return route
+    prefix, _, ref = route.partition(":")
+    return f"{prefix}:{id_map.get(ref, ref)}"
+
+
 def unique_copy_name(db: Session, tenant_id: str, source_name: str,
                      *, max_length: int = 200) -> str:
     """"Name (copy)", then "Name (copy 2)", … — unique among the tenant's
@@ -257,6 +270,7 @@ def clone_bot_deep(
         dup.workflow_id = remap_ids(dup.workflow_id, id_map)
         dup.api_connection_id = remap_ids(dup.api_connection_id, id_map)
         dup.kb_ids = remap_ids(dup.kb_ids, id_map)
+        dup.route = remap_route(dup.route, id_map)
     for dup in api_clones:
         dup.allowed_intents = remap_ids(dup.allowed_intents, id_map)
         dup.allowed_workflows = remap_ids(dup.allowed_workflows, id_map)

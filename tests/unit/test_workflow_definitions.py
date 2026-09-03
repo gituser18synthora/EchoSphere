@@ -583,6 +583,242 @@ class TestLadderSignals:
         assert "क्या आप अभी payment करेंगे" in fresh["reply"]
 
 
+# ── edge tokens match at word starts only ───────────────────────────────────
+
+
+class TestEdgeTokenBoundaries:
+    """Python's \\w excludes Devanagari matras, so a regex word boundary forms
+    mid-word; plain substring matching was worse still. Edge tokens must
+    start at a real word start (stems may still end mid-word)."""
+
+    def test_stem_tokens_still_match_inflections(self):
+        assert wfe._token_in("complet", "i have completed my graduation")
+        assert wfe._token_in("chal rah", "graduation chal rahi hai")
+        assert wfe._token_in("ग्रेजुएशन कंप्लीट", "ग्रेजुएशन कंप्लीट हो चुकी है।")
+
+    def test_token_inside_a_longer_word_does_not_match(self):
+        assert not wfe._token_in("हाँ", "कहाँ है ये")            # "yes" in "where"
+        assert not wfe._token_in("बाद में", "अहमदाबाद में रहता हूँ")  # "later" in a city
+        assert not wfe._token_in("no", "i know")
+        assert wfe._token_in("no", "no thanks")
+        assert wfe._token_in("बाद में", "मैं बाद में करूंगा")
+
+    def test_choose_edge_reports_matched_token(self):
+        meta = wfe._edge_meta([
+            {"to": "grad", "label": "graduate/complet/ग्रेजुएशन कंप्लीट"},
+            {"to": "yes", "label": "haan/हाँ/ji"},
+            {"to": "next", "label": "else"},
+        ])
+        edge, why, token = wfe._choose_intent_edge_detailed(
+            meta, "कहाँ है? ग्रेजुएशन कंप्लीट हो गई", None
+        )
+        assert (edge["to"], why, token) == ("grad", "token", "ग्रेजुएशन कंप्लीट")
+        edge, why, token = wfe._choose_intent_edge_detailed(meta, "कहाँ है ये", None)
+        assert (edge, why, token) == (None, "no_match", "")
+
+
+# ── answers to upcoming hubs (else-chain lookahead) ─────────────────────────
+# Shape of the Frankfinn seminar bot: reason-of-call hub → (else) →
+# qualification hub → (else) → yes/no confirm hub → (else) → 12th hub.
+# The observed loop: the caller answered the qualification while the flow
+# still waited at the reason-of-call hub, the unmatched turn walked the else
+# edge and the qualification hub then asked what had just been answered.
+
+SEMINAR = {
+    "id": "wf_seminar", "version": 1, "name": "Seminar booking",
+    "nodes": [
+        {"id": "n_start", "kind": "start", "label": "Call starts"},
+        {"id": "n_hub_open", "kind": "intent", "label": "Reason of call",
+         "config": {"prompt": "Frankfinn ka FREE seminar hai. "
+                              "Kya main aapki eligibility check kar loon?"}},
+        {"id": "n_hub_qual", "kind": "intent", "label": "Qualification",
+         "config": {"prompt": "Aapki highest qualification kya hai — 12th pass, "
+                              "graduation chal rahi hai, ya complete?"}},
+        {"id": "n_hub_confirm", "kind": "intent", "label": "Graduation done?",
+         "config": {"prompt": "Kya aapki graduation complete ho chuki hai? "
+                              "Haan ya nahi."}},
+        {"id": "n_hub_12th", "kind": "intent", "label": "12th pass?",
+         "config": {"prompt": "Aur 12th pass ho chuki hai? Haan ya nahi."}},
+        {"id": "n_msg_grad", "kind": "message", "label": "Graduate track",
+         "config": {"text": "Aap eight-month course ke liye eligible hain."}},
+        {"id": "n_msg_ug", "kind": "message", "label": "Undergrad track",
+         "config": {"text": "Aap eleven-month course ke liye eligible hain."}},
+        {"id": "n_hub_area", "kind": "intent", "label": "Area",
+         "config": {"prompt": "Aap kis area mein rehte hain?",
+                    "elseIsAnswer": True, "captureVariable": "city"}},
+        {"id": "n_ask_callback", "kind": "ask", "label": "Callback time",
+         "config": {"question": "Kaunsa time sahi rahega?",
+                    "variable": "callback_time", "entityType": "text"}},
+        {"id": "n_msg_centre", "kind": "message", "label": "Centre",
+         "config": {"text": "Hamara Ahmedabad C G Road centre convenient rahega."}},
+        {"id": "n_end", "kind": "end", "label": "End",
+         "config": {"text": "Dhanyavaad."}},
+    ],
+    "edges": [
+        {"from": "n_start", "to": "n_hub_open"},
+        {"from": "n_hub_open", "to": "n_hub_qual", "label": "haan/हाँ/bataiye/बताओ"},
+        {"from": "n_hub_open", "to": "n_ask_callback",
+         "label": "busy/baad mein/बाद में"},
+        {"from": "n_hub_open", "to": "n_hub_qual", "label": "else"},
+        {"from": "n_hub_qual", "to": "n_msg_grad",
+         "label": "complet/graduate/ग्रेजुएशन कंप्लीट/btech/b.tech"},
+        {"from": "n_hub_qual", "to": "n_msg_ug", "label": "12th/pursuing/chal rah"},
+        {"from": "n_hub_qual", "to": "n_ask_callback", "label": "busy/baad mein/बाद में"},
+        {"from": "n_hub_qual", "to": "n_hub_confirm", "label": "else"},
+        {"from": "n_hub_confirm", "to": "n_msg_grad",
+         "label": "haan/हाँ/ji/जी/ho gaya/हो गया/complet"},
+        {"from": "n_hub_confirm", "to": "n_hub_12th", "label": "nahi/नहीं"},
+        {"from": "n_hub_confirm", "to": "n_hub_12th", "label": "else"},
+        {"from": "n_hub_12th", "to": "n_msg_ug", "label": "haan/हाँ/ji/pass"},
+        {"from": "n_hub_12th", "to": "n_end", "label": "else"},
+        {"from": "n_msg_grad", "to": "n_hub_area"},
+        {"from": "n_msg_ug", "to": "n_hub_area"},
+        {"from": "n_hub_area", "to": "n_ask_callback", "label": "busy/baad mein/बाद में"},
+        {"from": "n_hub_area", "to": "n_msg_centre", "label": "else"},
+        {"from": "n_msg_centre", "to": "n_end"},
+        {"from": "n_ask_callback", "to": "n_end"},
+    ],
+}
+
+
+async def _seminar_turn(engine, text, session):
+    return await engine.handle_turn_detailed(
+        session_id=session, tenant_id="tn_x", bot_id="bot_x",
+        workflow_name="wf_seminar", user_text=text, language="hi-IN",
+    )
+
+
+class TestUpcomingAnswerLookahead:
+    async def test_answer_to_next_hub_jumps_instead_of_reasking(
+        self, engine, monkeypatch
+    ):
+        """The caller answers the qualification while the flow waits at the
+        reason-of-call hub: the else-chain lookahead lands on the graduate
+        track — the qualification hub never re-asks what was just said."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan bol raha hoon", "sl-1")
+        result = await _seminar_turn(engine, "ग्रेजुएशन कंप्लीट हो चुकी है।", "sl-1")
+        assert result["trace"] == ["n_hub_open", "n_hub_qual", "n_msg_grad", "n_hub_area"]
+        assert result["offScript"] is False
+        assert "eight-month" in result["reply"]
+        assert "highest qualification" not in result["reply"]
+
+    async def test_lookahead_walks_several_hubs(self, engine, monkeypatch):
+        """Two hubs deep: "I have completed B.Tech" at the opening hub still
+        reaches the graduate track through qualification's else chain."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "sl-2")
+        result = await _seminar_turn(engine, "I have done my B.Tech", "sl-2")
+        assert result["trace"][:3] == ["n_hub_open", "n_hub_qual", "n_msg_grad"]
+
+    async def test_generic_yes_never_jumps(self, engine, monkeypatch):
+        """"haan" at the qualification hub matches the confirm hub's yes edge
+        literally — but a bare yes only answers the question actually asked,
+        so the turn stays off-script and the node is retained."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "sl-3")
+        await _seminar_turn(engine, "haan bataiye", "sl-3")  # → awaiting n_hub_qual
+        result = await _seminar_turn(engine, "हां।", "sl-3")
+        assert result["offScript"] is True
+        assert result["trace"] == ["n_hub_qual"]
+        # …and "ji" as the second miss takes the authored else edge normally.
+        second = await _seminar_turn(engine, "जी।", "sl-3")
+        assert second["trace"] == ["n_hub_qual", "n_hub_confirm"]
+        assert "graduation complete ho chuki" in second["reply"]
+
+    async def test_lookahead_does_not_cross_non_intent_nodes(
+        self, engine, monkeypatch
+    ):
+        """From the confirm hub the else chain reaches the 12th hub, whose
+        else edge leads to an end node — the walk stops there."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "sl-4")
+        await _seminar_turn(engine, "haan bataiye", "sl-4")
+        await _seminar_turn(engine, "kuch bhi", "sl-4")           # miss 1 → LLM
+        await _seminar_turn(engine, "kuch bhi", "sl-4")           # miss 2 → confirm hub
+        result = await _seminar_turn(engine, "mausam accha hai aaj", "sl-4")
+        assert result["offScript"] is True and result["trace"] == ["n_hub_confirm"]
+
+    async def test_entry_utterance_answering_a_later_hub_skips_the_pitch(
+        self, engine, monkeypatch
+    ):
+        """The LLM already asked the qualification off-workflow; the answer
+        then starts the workflow. It must not restart from the reason-of-call
+        pitch and re-ask — it lands on the graduate track directly."""
+        _use_definition(monkeypatch, SEMINAR)
+        result = await _seminar_turn(engine, "I am a graduate", "sl-5")
+        assert result["trace"] == ["n_start", "n_hub_open", "n_hub_qual",
+                                   "n_msg_grad", "n_hub_area"]
+        assert "eight-month" in result["reply"]
+
+    async def test_bare_confirmation_entry_still_hears_the_pitch(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, SEMINAR)
+        result = await _seminar_turn(engine, "haan ji", "sl-6")
+        assert result["trace"] == ["n_start", "n_hub_open"]
+        assert "eligibility check" in result["reply"]
+
+    async def test_city_containing_baad_mein_is_not_a_callback(
+        self, engine, monkeypatch
+    ):
+        """"अहमदाबाद में" must never route down the callback edge — and with
+        elseIsAnswer the city IS the answer on the first turn."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "sl-7")
+        await _seminar_turn(engine, "graduation complete", "sl-7")  # → n_hub_area
+        result = await _seminar_turn(engine, "मैं अहमदाबाद में रहता हूँ।", "sl-7")
+        assert result["trace"] == ["n_hub_area", "n_msg_centre", "n_end"]
+        assert result["slots"]["city"] == "मैं अहमदाबाद में रहता हूँ।"
+        assert "Ahmedabad C G Road" in result["reply"]
+        assert result["done"] is True
+
+
+class TestElseIsAnswer:
+    async def test_first_unmatched_turn_takes_else_when_declared(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "ea-1")
+        await _seminar_turn(engine, "12th pass", "ea-1")  # → awaiting n_hub_area
+        result = await _seminar_turn(engine, "Delhi", "ea-1")
+        assert result["offScript"] is False
+        assert result["trace"] == ["n_hub_area", "n_msg_centre", "n_end"]
+        assert result["slots"]["city"] == "Delhi"
+
+    async def test_signal_bearing_turn_still_goes_off_script(
+        self, engine, monkeypatch
+    ):
+        """A question at the hub is not "the answer" — the LLM answers it and
+        the hub keeps waiting for the city."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "ea-2")
+        await _seminar_turn(engine, "12th pass", "ea-2")
+        result = await _seminar_turn(engine, "centre kahan hai? kitne baje?", "ea-2")
+        assert result["offScript"] is True
+        assert result["trace"] == ["n_hub_area"]
+        assert "city" not in result["slots"]
+
+    async def test_authored_edges_still_win_over_else(self, engine, monkeypatch):
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "ea-3")
+        await _seminar_turn(engine, "12th pass", "ea-3")
+        result = await _seminar_turn(engine, "abhi busy hoon, baad mein", "ea-3")
+        assert result["trace"] == ["n_hub_area", "n_ask_callback"]
+        assert "city" not in result["slots"]
+
+    async def test_hub_without_the_flag_keeps_retry_then_else(
+        self, engine, monkeypatch
+    ):
+        """Regression guard: the opening hub has no elseIsAnswer, so a
+        signal-less miss that answers no later hub is still off-script first."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan", "ea-4")  # awaiting n_hub_open
+        result = await _seminar_turn(engine, "mausam accha hai", "ea-4")
+        assert result["offScript"] is True
+        assert result["trace"] == ["n_hub_open"]
+
+
 # ── definition lookup cache: one DB scan per TTL window ─────────────────────
 
 

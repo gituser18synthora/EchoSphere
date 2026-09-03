@@ -352,9 +352,21 @@ class TestUserSignalClassifier:
 
     def test_callback_and_busy(self):
         for text in ("abhi busy hun, baad mein call karna", "kal karunga call",
-                     "Please call me later",
+                     "Please call me later", "बाद में कॉल करना",
                      "मीटिंग में हूँ", "abhi baat nahi kar sakta"):
             assert self._signal(text) == "callback", text
+
+    def test_city_name_containing_baad_is_not_a_callback(self):
+        """"अहमदाबाद में" contains "बाद में" — Python's \\b forms a boundary
+        after the matra, so a caller naming their city used to be routed to
+        the callback close (observed live: Frankfinn seminar bot)."""
+        for text in ("मैं अहमदाबाद में रहता हूँ", "अभी तो अहमदाबाद में रहता हूँ।",
+                     "ahmedabaad mein rehta hoon", "बिल्कुल कर दो"):
+            assert self._signal(text) != "callback", text
+
+    def test_devanagari_haanji_is_an_affirmation(self):
+        assert self._signal("हांजी") == "affirm"
+        assert self._signal("हाँजी जी") == "affirm"
 
     def test_neutral_text_has_no_signal(self):
         assert self._signal("mausam accha hai aaj") is None

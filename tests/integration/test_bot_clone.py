@@ -226,6 +226,7 @@ def workspace():
             id=new_id("in"), tenant_id=tenant.id, bot_id=bot.id,
             name="Invoice status", samples=["where is my invoice"],
             entities=[entity.name], workflow_id=workflow.id,
+            route=f"workflow:{workflow.id}",
             api_connection_id=bot_api.id, kb_ids=[bot_kb.id, tenant_kb.id],
             avg_confidence_30d=0.91, test_pass=8, test_total=9,
         )
@@ -500,6 +501,9 @@ class TestCloneContents:
                 KnowledgeSource.is_deleted.is_(False)))
             # Bot-owned references point at the CLONED records…
             assert main.workflow_id == clone_wf.id != workspace["workflow_id"]
+            # …including the id embedded in the "workflow:<id>" route string,
+            # which the runtime resolves within the clone's own workflows.
+            assert main.route == f"workflow:{clone_wf.id}"
             assert main.api_connection_id == clone_api.id != workspace["bot_api_id"]
             assert main.kb_ids == [clone_kb.id, workspace["tenant_kb_id"]]
             # …while shared tenant resources stay associations.
