@@ -426,6 +426,8 @@ export const archiveChannel = (botId: string, type: string): Promise<{ archived:
 export const listChannelsSummary = (): Promise<{ type: string; live: number; testing: number; failed: number; configured: number }[]> =>
   http.get("/channels/summary");
 export const listScenarios = (botId: string): Promise<TestScenario[]> => http.get(`/bots/${botId}/scenarios`);
+export const createScenario = (botId: string, body: { name: string; suite?: string; steps?: number }): Promise<TestScenario> =>
+  http.post(`/bots/${botId}/scenarios`, body);
 
 /** One text turn through the REAL runtime stack (TurnRouter + WorkflowEngine). */
 export interface ChatTestResult {
@@ -479,8 +481,10 @@ export const runSuite = (botId: string): Promise<{ passed: number; failed: numbe
 export const listReleases = (botId: string): Promise<Release[]> => http.get(`/bots/${botId}/releases`);
 export const createRelease = (botId: string, body: { version: string; notes?: string; diff?: { area: string; change: string; kind: string }[] }) =>
   http.post<Release>(`/bots/${botId}/releases`, body);
-export const updateReleaseStage = (releaseId: string, stage: string) =>
-  http.patch<Release>(`/releases/${releaseId}`, { stage });
+/** `overrideReason` is honoured for super admins only: it publishes past a
+    failing checklist and is written to the audit log with the failed items. */
+export const updateReleaseStage = (releaseId: string, stage: string, extra?: { note?: string; overrideReason?: string }) =>
+  http.patch<Release>(`/releases/${releaseId}`, { stage, ...(extra ?? {}) });
 
 /* ---------- Conversations ---------- */
 /** `dateFrom`/`dateTo` bound `startedAt` inclusively. Send instants (ISO-8601)

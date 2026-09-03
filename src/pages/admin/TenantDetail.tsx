@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  getOnboardingOptions, getTenant, getTenantAnalytics,
+  createRelease, getOnboardingOptions, getTenant, getTenantAnalytics,
   getTenantEffectiveGuardrails, listAudit, listBots,
   listGuardrailProfiles, listKnowledge, listReleases, listSubscriptions,
-  listTeam, resetUserPassword, updateTenant,
+  listTeam, resetUserPassword, updateReleaseStage, updateTenant,
 } from "@/services/api";
+import { openRelease, suggestedVersion } from "@/services/releaseVersion";
 import { downloadTenantPackage } from "@/services/tenantTransfer";
 import {
   Button, Callout, CardSkeleton, ConfirmModal, EmptyState, ErrorState, Field,
@@ -623,34 +624,210 @@ function EffectiveGuardrailsPanel({ tenantId }: { tenantId: string }) {
   );
 }
 
+type BotReleases = { bot: VoiceBot; releases: Release[] };
+
+/** Super-admin publish desk: one row per bot with the action its pipeline
+    needs next (create → review → approve → publish), plus the tenant-wide
+    release history. Mirrors the tenant Publish tab, which super admins cannot
+    reach because /t routes are tenant-only. */
 function DeploymentsTab({ tenantId }: { tenantId: string }) {
-  const q = useAsync(async () => {
+  const { toast } = useApp();
+  const q = useAsync(async (): Promise<BotReleases[]> => {
     const bots = await listBots(tenantId);
-    const perBot = await Promise.all(
-      bots.slice(0, 6).map(async (b) => {
-        const rels = await listReleases(b.id);
-        return rels.map((r) => ({ release: r, botName: b.name }));
-      }),
-    );
-    return perBot.flat().sort((x, y) => (y.release.publishedAt ?? "").localeCompare(x.release.publishedAt ?? ""));
+    return Promise.all(bots.map(async (bot) => ({ bot, releases: await listReleases(bot.id) })));
   }, [tenantId]);
+  const [busyBot, setBusyBot] = useState<string | null>(null);
+  const [createFor, setCreateFor] = useState<BotReleases | null>(null);
+  const [version, setVersion] = useState("");
+  const [notes, setNotes] = useState("");
+  const [overrideFor, setOverrideFor] = useState<{ row: BotReleases; release: Release } | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+
+  const run = async (botId: string, fn: () => Promise<unknown>, okMsg: string) => {
+    setBusyBot(botId);
+    try {
+      await fn();
+      toast(okMsg);
+      q.reload();
+      return true;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Release update failed", "error");
+      return false;
+    } finally {
+      setBusyBot(null);
+    }
+  };
 
   if (q.loading) return <div className="card card-pad"><CardSkeleton rows={4} /></div>;
   if (q.error) return <ErrorState message={q.error} onRetry={q.reload} />;
-  if (!q.data || q.data.length === 0) {
-    return <div className="card"><EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." /></div>;
+  const rows = q.data ?? [];
+  if (rows.length === 0) {
+    return <div className="card"><EmptyState icon="rocket" title="No bots" body="Create a bot for this tenant to start a release." /></div>;
   }
+  const history = rows
+    .flatMap(({ bot, releases }) => releases.map((r) => ({ release: r, botName: bot.name })))
+    .sort((x, y) => (y.release.publishedAt ?? "").localeCompare(x.release.publishedAt ?? ""));
+
   return (
-    <div className="card card-pad">
-      <Timeline
-        items={q.data.map(({ release: r, botName }: { release: Release; botName: string }) => ({
-          icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
-          tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
-          title: <>{botName} <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
-          meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
-          body: r.notes,
-        }))}
-      />
+    <div className="col gap-16">
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Publish desk</span>
+          <span className="t-micro">{rows.filter((r) => r.bot.status === "published").length}/{rows.length} bots live</span>
+        </div>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr><th>Bot</th><th>Status</th><th>Live</th><th>Release in progress</th><th>Checklist</th><th></th></tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const { bot, releases } = row;
+                const current = openRelease(releases);
+                const failing = current ? current.checklist.filter((c) => !c.ok) : [];
+                const busy = busyBot === bot.id;
+                return (
+                  <tr key={bot.id}>
+                    <td><div className="t-strong">{bot.name}</div><div className="t-micro">{bot.id}</div></td>
+                    <td><StatusChip status={bot.status} /></td>
+                    <td className="t-num">{bot.liveVersion ?? "—"}</td>
+                    <td>
+                      {current ? (
+                        <span className="row gap-6"><code>{current.version}</code><StatusChip status={current.stage} /></span>
+                      ) : <span className="t-sub">none</span>}
+                    </td>
+                    <td>
+                      {current ? (
+                        failing.length === 0
+                          ? <span className="chip chip-good">all passing</span>
+                          : <span className="chip chip-warning" title={failing.map((c) => c.label).join(" · ")}>{failing.length} failing</span>
+                      ) : <span className="t-sub">—</span>}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {!current && (
+                        <Button size="sm" icon="plus" busy={busy}
+                          onClick={() => { setCreateFor(row); setVersion(suggestedVersion(bot, releases)); setNotes(""); }}>
+                          Create release
+                        </Button>
+                      )}
+                      {current?.stage === "draft" && (
+                        <Button size="sm" icon="eye" busy={busy}
+                          onClick={() => run(bot.id, () => updateReleaseStage(current.id, "review"), `${current.version} submitted for review`)}>
+                          Submit for review
+                        </Button>
+                      )}
+                      {current?.stage === "review" && (
+                        <Button size="sm" variant="primary" icon="check" busy={busy}
+                          onClick={() => run(bot.id, () => updateReleaseStage(current.id, "approved", { note: "Approved from the admin publish desk" }), `${current.version} approved — ready to publish`)}>
+                          Approve
+                        </Button>
+                      )}
+                      {current?.stage === "approved" && (
+                        failing.length > 0 ? (
+                          <Button size="sm" variant="primary" icon="rocket" busy={busy}
+                            onClick={() => { setOverrideFor({ row, release: current }); setOverrideReason(""); }}>
+                            Publish with override
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="primary" icon="rocket" busy={busy}
+                            onClick={() => run(bot.id, () => updateReleaseStage(current.id, "published"), `${current.version} published — new calls pick it up within 60s`)}>
+                            Publish
+                          </Button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><span className="card-title">Release history</span></div>
+        {history.length === 0 ? (
+          <EmptyState icon="rocket" title="No deployments" body="Publish history for this tenant's bots will appear here." />
+        ) : (
+          <div className="card-pad">
+            <Timeline
+              items={history.map(({ release: r, botName }) => ({
+                icon: r.stage === "published" ? "rocket" : r.stage === "rolled_back" ? "undo" : "clock",
+                tone: r.stage === "published" ? "good" : r.stage === "rolled_back" ? "critical" : "brand",
+                title: <>{botName} <code>{r.version}</code> — {r.stage.replace("_", " ")}</>,
+                meta: `${r.requestedBy}${r.approvedBy ? ` · approved by ${r.approvedBy}` : ""}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`,
+                body: r.notes,
+              }))}
+            />
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={createFor !== null}
+        onClose={() => setCreateFor(null)}
+        title={createFor ? `Create release for ${createFor.bot.name}` : "Create release"}
+        sub="Starts in review. The checklist is evaluated from current bot state."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateFor(null)}>Cancel</Button>
+            <Button variant="primary" icon="rocket" busy={busyBot !== null} disabled={!version.trim()}
+              onClick={async () => {
+                if (!createFor) return;
+                if (await run(createFor.bot.id, () => createRelease(createFor.bot.id, { version: version.trim(), notes: notes.trim() || undefined }), `Release ${version.trim()} created for ${createFor.bot.name}`)) {
+                  setCreateFor(null);
+                }
+              }}>
+              Create release
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          <Field label="Version" required hint="Semantic version, e.g. v0.1.0">
+            <input className="input" value={version} onChange={(e) => setVersion(e.target.value)} maxLength={20} />
+          </Field>
+          <Field label="Release notes">
+            <textarea className="textarea" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={overrideFor !== null}
+        onClose={() => setOverrideFor(null)}
+        title={overrideFor ? `Publish ${overrideFor.release.version} with override?` : "Publish with override"}
+        sub="The justification and the failing checklist items are written to the audit log."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setOverrideFor(null)}>Cancel</Button>
+            <Button variant="primary" icon="rocket" busy={busyBot !== null} disabled={overrideReason.trim().length < 10}
+              onClick={async () => {
+                if (!overrideFor) return;
+                const { row, release } = overrideFor;
+                if (await run(row.bot.id, () => updateReleaseStage(release.id, "published", { overrideReason: overrideReason.trim() }), `${release.version} published with override`)) {
+                  setOverrideFor(null);
+                }
+              }}>
+              Publish anyway
+            </Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          {overrideFor && (
+            <Callout tone="critical" title="Failing checks">
+              <ul style={{ margin: "4px 0 0 16px", fontSize: 13 }}>
+                {overrideFor.release.checklist.filter((c) => !c.ok).map((c) => <li key={c.id}>{c.label}{c.detail ? ` — ${c.detail}` : ""}</li>)}
+              </ul>
+            </Callout>
+          )}
+          <Field label="Justification" required hint="At least 10 characters">
+            <textarea className="textarea" rows={3} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} maxLength={2000}
+              placeholder="e.g. Imported tenant — regression suite is being authored; supervised pilot approved by the customer." />
+          </Field>
+        </div>
+      </Modal>
     </div>
   );
 }

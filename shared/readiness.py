@@ -177,7 +177,13 @@ def refresh_readiness(
     db: Session, bot: VoiceBot, keys: Iterable[str] | None = None
 ) -> dict[str, bool]:
     """Recompute the requested items and persist them onto the bot's
-    readiness rows. The caller owns the transaction (no commit here)."""
+    readiness rows. The caller owns the transaction (no commit here).
+
+    Sessions run with ``autoflush=False``, so a row the caller just added,
+    restored or re-statused is still only in memory here. Flush first so the
+    evaluators' SELECTs see the mutation they were called to reflect —
+    otherwise e.g. re-creating an archived channel leaves r6 stuck at False."""
+    db.flush()
     derived = evaluate_readiness(db, bot, keys)
     for item in bot.readiness_items:
         if item.item_key in derived:

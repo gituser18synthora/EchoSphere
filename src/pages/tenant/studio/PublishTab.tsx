@@ -1,18 +1,88 @@
 import { useState } from "react";
-import type { VoiceBot } from "@/types/domain";
+import { useNavigate } from "react-router-dom";
+import type { Release, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { listReleases, updateReleaseStage } from "@/services/api";
-import { Button, Callout, CardSkeleton, ConfirmModal, Drawer, ErrorState, StatusChip, Timeline } from "@/components/ui";
+import { createRelease, listReleases, updateReleaseStage } from "@/services/api";
+import { Button, Callout, CardSkeleton, ConfirmModal, Drawer, ErrorState, Field, Modal, StatusChip, Timeline } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { useApp } from "@/state/AppContext";
 import { flags } from "@/services/flags";
+import { openRelease, suggestedVersion } from "@/services/releaseVersion";
 
 const stages = ["draft", "review", "approved", "published"] as const;
 
+function CreateReleaseCard({ bot, releases, onCreated }: { bot: VoiceBot; releases: Release[]; onCreated: () => void }) {
+  const { toast } = useApp();
+  const navigate = useNavigate();
+  const [version, setVersion] = useState(() => suggestedVersion(bot, releases));
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pending = bot.readiness.filter((r) => !r.done);
+  const versionError = version.trim() ? undefined : "Version is required";
+
+  const submit = async () => {
+    if (versionError) return;
+    setBusy(true);
+    try {
+      await createRelease(bot.id, { version: version.trim(), notes: notes.trim() || undefined });
+      toast(`Release ${version.trim()} created — review the checklist, then approve and publish`);
+      onCreated();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create release", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="col gap-2">
+          <span className="card-title">{releases.length === 0 ? "Create the first release" : "Create the next release"}</span>
+          <span className="t-micro">Nothing reaches callers without an approved, versioned release.</span>
+        </div>
+        <span className="t-micro t-num">{bot.readiness.length - pending.length}/{bot.readiness.length} readiness checks done</span>
+      </div>
+      <div className="col gap-12" style={{ padding: 16 }}>
+        {pending.length > 0 && (
+          <Callout tone="warning" title={`${pending.length} readiness ${pending.length === 1 ? "item is" : "items are"} still open`}>
+            <div className="col gap-4 mt-4">
+              {pending.map((r) => (
+                <button key={r.id} type="button" className="row gap-6"
+                  style={{ fontSize: 13, textAlign: "left", background: "none", border: 0, padding: 0, cursor: "pointer", color: "var(--brand-600)", fontWeight: 550 }}
+                  onClick={() => navigate(`/t/bots/${bot.id}/${r.studioTab}`)}>
+                  <Icon name="alert" size={13} /> {r.label}
+                </button>
+              ))}
+            </div>
+            <div className="t-micro mt-8">You can create the release now; publishing stays blocked until the checklist passes.</div>
+          </Callout>
+        )}
+        <div className="grid grid-2 gap-12">
+          <Field label="Version" required error={versionError} hint="Semantic version, e.g. v0.1.0">
+            <input className="input" value={version} onChange={(e) => setVersion(e.target.value)} maxLength={20} placeholder="v0.1.0" />
+          </Field>
+          <Field label="Release notes" hint="What changed — shown in the release history and audit log">
+            <textarea className="textarea" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000}
+              placeholder="e.g. Initial go-live: FAQ journey, Hindi + English voices" />
+          </Field>
+        </div>
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <Button variant="primary" icon="rocket" busy={busy} disabled={Boolean(versionError)} onClick={submit}>Create release</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PublishTab({ bot }: { bot: VoiceBot }) {
   const q = useAsync(() => listReleases(bot.id), [bot.id]);
-  const { toast } = useApp();
+  const { toast, user } = useApp();
+  const isSuperAdmin = user?.role === "super_admin";
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [approvalNote, setApprovalNote] = useState("");
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
   const [rollbackOpen, setRollbackOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -20,21 +90,15 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
   if (q.loading) return <CardSkeleton rows={8} />;
 
   const releases = q.data ?? [];
-  const current = releases.find((r) => r.stage === "review" || r.stage === "draft" || r.stage === "approved");
+  const current = openRelease(releases);
   const published = releases.find((r) => r.stage === "published");
 
-  if (releases.length === 0) {
-    return (
-      <Callout tone="info" title="No releases yet">
-        Finish the readiness checklist on the Overview tab, then create the first release. Nothing reaches callers without an approved, versioned release.
-      </Callout>
-    );
-  }
+  const checklistFailing = Boolean(current && current.checklist.some((c) => !c.ok));
 
-  const transition = async (releaseId: string, stage: string, msg: string) => {
+  const transition = async (releaseId: string, stage: string, msg: string, extra?: { note?: string; overrideReason?: string }) => {
     setBusy(true);
     try {
-      await updateReleaseStage(releaseId, stage);
+      await updateReleaseStage(releaseId, stage, extra);
       toast(msg);
       q.reload();
       return true;
@@ -48,6 +112,11 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
 
   return (
     <div className="col gap-16">
+      {/* No release in flight → let the team start one (first or next) */}
+      {!current && (
+        <CreateReleaseCard key={releases.length} bot={bot} releases={releases} onCreated={q.reload} />
+      )}
+
       {/* Pipeline banner */}
       {current && (
         <div className="card card-pad">
@@ -67,10 +136,17 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
               {current.stage === "approved" && (
                 <>
                   {flags.scheduledPublish && <Button icon="calendar">Schedule</Button>}
-                  <Button variant="primary" icon="rocket" busy={busy}
-                    onClick={() => transition(current.id, "published", `${current.version} publishing — traffic shifts over the next 60s`)}>
-                    Publish now
-                  </Button>
+                  {checklistFailing && isSuperAdmin ? (
+                    <Button variant="primary" icon="rocket" busy={busy} onClick={() => setOverrideOpen(true)}>
+                      Publish with override
+                    </Button>
+                  ) : (
+                    <Button variant="primary" icon="rocket" busy={busy} disabled={checklistFailing}
+                      title={checklistFailing ? "Checklist items are failing — fix them or ask a super admin to override" : undefined}
+                      onClick={() => transition(current.id, "published", `${current.version} publishing — traffic shifts over the next 60s`)}>
+                      Publish now
+                    </Button>
+                  )}
                 </>
               )}
             </div>
@@ -127,7 +203,7 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
               ))}
               {current.checklist.some((c) => !c.ok) && (
                 <Callout tone="warning">
-                  Publishing is blocked while checklist items fail. An approver can override with a justification, which is recorded in the audit log.
+                  Publishing is blocked while checklist items fail. A super admin can override with a justification, which is recorded in the audit log.
                 </Callout>
               )}
             </div>
@@ -173,6 +249,7 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
       )}
 
       {/* History */}
+      {releases.length > 0 && (
       <div className="card">
         <div className="card-header"><span className="card-title">Release history</span></div>
         <div style={{ padding: "16px 20px" }}>
@@ -187,6 +264,7 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
           />
         </div>
       </div>
+      )}
 
       {/* Approval drawer */}
       {current && (
@@ -198,10 +276,10 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
           sub="Approval allows publishing but does not publish. Your decision and note are recorded in the audit log."
           footer={
             <>
-              <Button variant="secondary" icon="x" busy={busy} onClick={async () => { if (await transition(current.id, "draft", `${current.version} sent back to draft with your notes`)) setApprovalOpen(false); }}>
+              <Button variant="secondary" icon="x" busy={busy} onClick={async () => { if (await transition(current.id, "draft", `${current.version} sent back to draft with your notes`, { note: approvalNote.trim() || undefined })) setApprovalOpen(false); }}>
                 Request changes
               </Button>
-              <Button variant="primary" icon="check" busy={busy} onClick={async () => { if (await transition(current.id, "approved", `${current.version} approved — ready to publish`)) setApprovalOpen(false); }}>
+              <Button variant="primary" icon="check" busy={busy} disabled={!approvalNote.trim()} onClick={async () => { if (await transition(current.id, "approved", `${current.version} approved — ready to publish`, { note: approvalNote.trim() })) setApprovalOpen(false); }}>
                 Approve release
               </Button>
             </>
@@ -210,7 +288,7 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
           <div className="col gap-16">
             {current.checklist.some((c) => !c.ok) && (
               <Callout tone="critical" title={`${current.checklist.filter((c) => !c.ok).length} checklist items failing`}>
-                Approving now is an override. Add a justification below — it becomes part of the immutable audit record.
+                You can approve now, but publishing stays blocked until these pass (or a super admin overrides with a justification).
               </Callout>
             )}
             <div>
@@ -226,10 +304,46 @@ export default function PublishTab({ bot }: { bot: VoiceBot }) {
             </div>
             <label className="field">
               <span className="field-label">Approval note (required)</span>
-              <textarea className="textarea" placeholder="e.g. Verified wait-time variable in staging; stale-source re-sync scheduled before publish window." />
+              <textarea className="textarea" value={approvalNote} onChange={(e) => setApprovalNote(e.target.value)} maxLength={2000}
+                placeholder="e.g. Verified wait-time variable in staging; stale-source re-sync scheduled before publish window." />
             </label>
           </div>
         </Drawer>
+      )}
+
+      {current && (
+        <Modal
+          open={overrideOpen}
+          onClose={() => setOverrideOpen(false)}
+          title={`Publish ${current.version} with override?`}
+          sub="Super-admin only. The justification and the failing checklist items are written to the audit log."
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setOverrideOpen(false)}>Cancel</Button>
+              <Button variant="primary" icon="rocket" busy={busy} disabled={overrideReason.trim().length < 10}
+                onClick={async () => {
+                  if (await transition(current.id, "published", `${current.version} published with override — traffic shifts over the next 60s`, { overrideReason: overrideReason.trim() })) {
+                    setOverrideOpen(false);
+                    setOverrideReason("");
+                  }
+                }}>
+                Publish anyway
+              </Button>
+            </>
+          }
+        >
+          <div className="col gap-12">
+            <Callout tone="critical" title="Failing checks">
+              <ul style={{ margin: "4px 0 0 16px", fontSize: 13 }}>
+                {current.checklist.filter((c) => !c.ok).map((c) => <li key={c.id}>{c.label}{c.detail ? ` — ${c.detail}` : ""}</li>)}
+              </ul>
+            </Callout>
+            <Field label="Justification" required hint="At least 10 characters">
+              <textarea className="textarea" rows={3} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} maxLength={2000}
+                placeholder="e.g. Imported tenant — regression suite is being authored; go-live approved by the customer for a supervised pilot." />
+            </Field>
+          </div>
+        </Modal>
       )}
 
       <ConfirmModal
