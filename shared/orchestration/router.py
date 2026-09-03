@@ -124,8 +124,13 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     )),
     # Busy now / call me later.
     ("callback", re.compile(
-        r"call ?back|call (?:me )?later|baad (?:mein|me|में)|बाद में"
-        r"|(?:kal|parso|कल|परसों)\s+(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
+        # Not `\b`: Devanagari vowel signs are combining marks outside `\w`,
+        # so a boundary formed inside "अहमदाबाद में" and a caller naming
+        # their city became a callback. Require a real word start instead.
+        r"call ?back|call (?:me )?later"
+        r"|(?<![\wऀ-ॿ])(?:baad (?:mein|me|में)|बाद में)"
+        r"|(?<![\wऀ-ॿ])(?:kal|parso|कल|परसों)\s+"
+        r"(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
         # "शाम को कॉल करना", "subah call karo" — a time + an imperative call.
         r"|(?:shaam|sham|subah|dopahar|शाम|सुबह|दोपहर)\s*(?:ko|को)?\s*"
         r"(?:call|कॉल|phone|फोन)"
@@ -176,7 +181,7 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("affirm", re.compile(
         r"^\W*(?:(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
         r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
-        r"हाँ|हां|हा|हनां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
+        r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
         r"ओके(?: जी)?|अच्छा)\W*){1,4}"
         r"(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
         r"shukriya|धन्यवाद|शुक्रिया)?\W*$",
@@ -209,7 +214,7 @@ def classify_user_signal(text: str) -> str | None:
 _LEADING_AFFIRM = re.compile(
     r"^\W*(?:haan|han|haanji|hanji|ji|yes|yeah|yep|ok|okay|theek|thik|bilkul|"
     r"zaroor|jarur|sure|correct|right|"
-    r"हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा)"
+    r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा)"
     # Not `\b`: Devanagari vowel signs/candrabindu are combining marks, which
     # `\w` excludes, so a word boundary never forms after "हाँ". Require the
     # token to END here instead (space, punctuation or end of text).
@@ -219,7 +224,7 @@ _LEADING_AFFIRM = re.compile(
 _AFFIRM_CONTRADICTION = re.compile(
     r"\b(?:no|nope|not|nahi|nahin|nai|mat|never|don't|dont|can't|cannot|"
     r"wrong|galat|bye|goodbye|alvida|rakhta|rakhti|rakho|baad mein|later)\b"
-    r"|नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में",
+    r"|(?<![\wऀ-ॿ])(?:नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में)",
     re.I,
 )
 _LEADING_AFFIRM_MAX_TOKENS = 10

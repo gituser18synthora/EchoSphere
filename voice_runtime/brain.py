@@ -4415,7 +4415,9 @@ class ConversationBrain(FrameProcessor):
             "you have been given. Never invent promises, payment history, "
             "offers or customer details. Keep it to one or two short "
             "sentences, and only restate the pending step if it is still "
-            "appropriate after their message."
+            "appropriate after their message. Never move the flow forward "
+            "yourself: do not ask a question that belongs to a later step "
+            "— the flow asks it when the caller gets there."
         )
 
     @staticmethod
