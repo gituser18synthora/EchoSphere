@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
 from backend.core.deps import (
+    SUPER_ADMIN,
     assert_tenant_access,
     require_permission,
     require_tenant_admin,
@@ -19,6 +20,7 @@ from backend.core.responses import ok
 from shared.db.mysql import get_db
 from shared.models import Release, TestScenario, User, VoiceBot
 from backend.serializers import serialize_release
+from shared.readiness import refresh_readiness
 
 router = APIRouter(tags=["Releases"])
 
@@ -32,6 +34,23 @@ _TRANSITIONS = {
 }
 
 
+# A release that is still moving through the pipeline. Only one may exist per
+# bot at a time — the Publish tab drives exactly one "current" release.
+OPEN_STAGES = ("draft", "review", "approved")
+
+
+def _open_release(db: Session, bot_id: str) -> Release | None:
+    return db.scalar(
+        select(Release)
+        .where(
+            Release.bot_id == bot_id, Release.is_deleted.is_(False),
+            Release.stage.in_(OPEN_STAGES),
+        )
+        .order_by(Release.created_at.desc())
+        .limit(1)
+    )
+
+
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
     bot = db.get(VoiceBot, bot_id)
     if bot is None or bot.is_deleted:
@@ -41,6 +60,12 @@ def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
 
 
 def _build_checklist(db: Session, bot: VoiceBot) -> list[dict]:
+    """Evaluate the publish gate from CURRENT platform state.
+
+    Readiness flags are recomputed here (not read as stored) so a checklist
+    never blocks on a stale r-flag — e.g. a channel that was archived and
+    re-created before the flush fix landed."""
+    refresh_readiness(db, bot)
     scenarios = db.scalars(
         select(TestScenario).where(
             TestScenario.bot_id == bot.id, TestScenario.is_deleted.is_(False)
@@ -97,6 +122,12 @@ def create_release(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    existing = _open_release(db, bot.id)
+    if existing is not None:
+        raise ApiError(
+            f"Release {existing.version} is already {existing.stage}. "
+            "Publish or return it to draft before creating another.", 409,
+        )
     row = Release(
         id=new_id("rel"), tenant_id=bot.tenant_id, bot_id=bot.id, version=body.version,
         stage="review", notes=body.notes, requested_by=user.name,
@@ -115,6 +146,15 @@ def create_release(
 
 class ReleaseStageRequest(BaseModel):
     stage: str = Field(pattern="^(draft|review|approved|published|rolled_back)$")
+    # Free-text note for review / approval decisions (audit only).
+    note: str | None = Field(default=None, max_length=2000)
+    # Super-admin only: publish although checklist items fail. Recorded in the
+    # audit log together with the failing items. Ignored for other roles.
+    override_reason: str | None = Field(
+        default=None, alias="overrideReason", max_length=2000
+    )
+
+    model_config = {"populate_by_name": True}
 
 
 @router.patch("/releases/{release_id}")
@@ -135,16 +175,29 @@ def update_release_stage(
     bot = db.get(VoiceBot, row.bot_id)
     before = {"stage": row.stage}
 
+    # Every forward move re-evaluates the gate so the UI always shows the
+    # current state, not the snapshot taken when the release was requested.
+    if body.stage in ("review", "approved", "published"):
+        row.checklist = _build_checklist(db, bot)
+    override_used = False
     if body.stage == "approved":
         row.approved_by = user.name
     if body.stage == "published":
-        checklist = _build_checklist(db, bot)
-        row.checklist = checklist
-        blocked = [c["label"] for c in checklist if not c["ok"]]
+        blocked = [c["label"] for c in row.checklist if not c["ok"]]
         if blocked:
-            raise ApiError(
-                "Publish blocked — checklist incomplete: " + "; ".join(blocked), 422
-            )
+            reason = (body.override_reason or "").strip()
+            if user.role.code == SUPER_ADMIN and len(reason) >= 10:
+                override_used = True
+            elif user.role.code == SUPER_ADMIN:
+                raise ApiError(
+                    "Publish blocked — checklist incomplete: " + "; ".join(blocked)
+                    + ". A super admin may override by supplying a justification "
+                    "(overrideReason, at least 10 characters).", 422,
+                )
+            else:
+                raise ApiError(
+                    "Publish blocked — checklist incomplete: " + "; ".join(blocked), 422
+                )
         row.published_at = datetime.now(timezone.utc)
         bot.status = "published"
         bot.live_version = row.version
@@ -171,10 +224,20 @@ def update_release_stage(
         "rolled_back": "Rolled back release",
         "draft": "Returned release to draft",
     }[body.stage]
+    if override_used:
+        action = "Published release with checklist override"
+    new_value: dict = {"stage": row.stage}
+    if body.note:
+        new_value["note"] = body.note
+    if override_used:
+        new_value["override"] = {
+            "reason": (body.override_reason or "").strip(),
+            "failedChecks": [c["label"] for c in row.checklist if not c["ok"]],
+        }
     record_audit(
         db, user=user, action=action, entity_type="release", entity_id=row.id,
         target_label=f"{bot.name} {row.version}", tenant_id=row.tenant_id,
-        previous_value=before, new_value={"stage": row.stage}, request=request,
+        previous_value=before, new_value=new_value, request=request,
     )
     db.commit()
     if body.stage in ("published", "rolled_back"):

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Prompt, SimulateTrace, TraceStep, VoiceBot } from "@/types/domain";
 import { useAsync } from "@/hooks/useAsync";
-import { getChannel, listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
+import { createScenario, getChannel, listPrompts, listScenarios, runSuite as runSuiteApi, simulateTurn, testBotChat } from "@/services/api";
 import { VoiceClient, type VoiceSessionConfig } from "@/services/voiceClient";
-import { Button, Callout, CardSkeleton, ErrorState, Field, StatusChip, Toggle } from "@/components/ui";
+import { Button, Callout, CardSkeleton, ErrorState, Field, Modal, StatusChip, Toggle } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { JsonView } from "@/components/JsonView";
 import PhoneCallView from "./PhoneCallView";
@@ -284,6 +284,28 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
   const selected = allSteps.find((s) => s.turn === selectedTurn && s.speaker === "bot") ?? [...allSteps].reverse().find((s) => s.speaker === "bot");
   const failing = (scenariosQ.data ?? []).filter((s) => s.lastRun && !s.lastRun.pass);
 
+  const [newScenarioOpen, setNewScenarioOpen] = useState(false);
+  const [newScenario, setNewScenario] = useState({ name: "", suite: "General", steps: "1" });
+  const [creatingScenario, setCreatingScenario] = useState(false);
+  const newScenarioSteps = Number(newScenario.steps);
+  const newScenarioValid = newScenario.name.trim().length > 0 && Number.isInteger(newScenarioSteps) && newScenarioSteps >= 1 && newScenarioSteps <= 100;
+
+  const submitScenario = async () => {
+    if (!newScenarioValid) return;
+    setCreatingScenario(true);
+    try {
+      await createScenario(bot.id, { name: newScenario.name.trim(), suite: newScenario.suite.trim() || "General", steps: newScenarioSteps });
+      toast(`Scenario "${newScenario.name.trim()}" added — run the suite to record a result`);
+      setNewScenarioOpen(false);
+      setNewScenario({ name: "", suite: "General", steps: "1" });
+      scenariosQ.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create scenario", "error");
+    } finally {
+      setCreatingScenario(false);
+    }
+  };
+
   const runSuite = async () => {
     setRunningSuite(true);
     try {
@@ -527,6 +549,37 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
       {/* Full-pipeline runtime simulator */}
       <RuntimeSimulator bot={bot} prompts={promptsQ.data ?? []} />
 
+      <Modal
+        open={newScenarioOpen}
+        onClose={() => setNewScenarioOpen(false)}
+        title="New regression scenario"
+        sub="A named test case for this bot. It counts as 'never run' until you run the suite; the release checklist needs every scenario to pass."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setNewScenarioOpen(false)}>Cancel</Button>
+            <Button variant="primary" icon="plus" busy={creatingScenario} disabled={!newScenarioValid} onClick={submitScenario}>Add scenario</Button>
+          </>
+        }
+      >
+        <div className="col gap-12">
+          <Field label="Scenario name" required>
+            <input className="input" value={newScenario.name} maxLength={200} autoFocus
+              onChange={(e) => setNewScenario((v) => ({ ...v, name: e.target.value }))}
+              placeholder="e.g. Greeting → FAQ answer in Hindi" />
+          </Field>
+          <div className="grid grid-2 gap-12">
+            <Field label="Suite" hint="Groups scenarios in the table">
+              <input className="input" value={newScenario.suite} maxLength={100}
+                onChange={(e) => setNewScenario((v) => ({ ...v, suite: e.target.value }))} />
+            </Field>
+            <Field label="Steps" hint="1–100 conversation turns" error={newScenario.name.trim() && !newScenarioValid ? "Enter a whole number from 1 to 100" : undefined}>
+              <input className="input" type="number" min={1} max={100} value={newScenario.steps}
+                onChange={(e) => setNewScenario((v) => ({ ...v, steps: e.target.value }))} />
+            </Field>
+          </div>
+        </div>
+      </Modal>
+
       {/* Scenarios & regression suite */}
       <div className="card">
         <div className="card-header">
@@ -537,7 +590,7 @@ export default function TestingTab({ bot }: { bot: VoiceBot }) {
             </span>
           </div>
           <div className="row gap-6">
-            <Button size="sm" icon="plus" onClick={() => toast("Scenario recorder started — interact with the simulator, then save as a scenario", "info")}>New scenario</Button>
+            <Button size="sm" icon="plus" onClick={() => setNewScenarioOpen(true)}>New scenario</Button>
             <Button size="sm" variant="primary" icon="play" busy={runningSuite} onClick={runSuite}>Run all</Button>
           </div>
         </div>

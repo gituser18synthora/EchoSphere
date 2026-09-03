@@ -2,7 +2,7 @@
    (router + workflow engine) and the execution trace shows the workflow
    node path, slots and progress state. */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import type { VoiceBot } from "@/types/domain";
 
 vi.mock("@/services/api", () => ({
   listScenarios: vi.fn(),
+  createScenario: vi.fn(),
   listPrompts: vi.fn(),
   runSuite: vi.fn(),
   testBotChat: vi.fn(),
@@ -251,5 +252,33 @@ describe("high-resolution chat timestamps", () => {
     expect(formatChatTime("2026-08-05T12:34:56.123456Z")).toMatch(
       /^\d{2}:\d{2}\.12$/,
     );
+  });
+});
+
+describe("TestingTab — regression scenarios", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listScenarios).mockResolvedValue([]);
+    vi.mocked(api.listPrompts).mockResolvedValue([]);
+    vi.mocked(api.getChannel).mockResolvedValue(null as never);
+  });
+
+  it("creates a scenario from the New scenario form and reloads the suite", async () => {
+    vi.mocked(api.createScenario).mockResolvedValue({
+      id: "ts_1", botId: "bot_x", name: "Greeting smoke", suite: "Smoke", steps: 2, lastRun: null,
+    } as never);
+    render(<MemoryRouter><TestingTab bot={BOT} /></MemoryRouter>);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Test console" }));
+    await user.click(await screen.findByRole("button", { name: "New scenario" }));
+    const add = screen.getByRole("button", { name: "Add scenario" });
+    expect(add).toBeDisabled();
+    await user.type(screen.getByPlaceholderText(/Greeting/), "Greeting smoke");
+    const suite = screen.getByDisplayValue("General");
+    await user.clear(suite);
+    await user.type(suite, "Smoke");
+    await user.click(add);
+    await waitFor(() => expect(api.createScenario).toHaveBeenCalledWith("bot_x", { name: "Greeting smoke", suite: "Smoke", steps: 1 }));
+    await waitFor(() => expect(api.listScenarios).toHaveBeenCalledTimes(2));
   });
 });
