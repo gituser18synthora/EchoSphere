@@ -557,6 +557,9 @@ function AiSummarySection({ summary, loading }: {
   const pendingItems = [...(summary.unresolvedItems ?? []), ...(summary.missingSlots ?? [])];
   const processing = summary.status === "queued" || summary.status === "processing";
   const failed = summary.status === "failed";
+  const structured = Object.entries(summary.structuredFields ?? {});
+  const structuredSources = summary.structuredFieldSources ?? {};
+  const structuredLabels = summary.structuredFieldLabels ?? {};
 
   return (
     <div className="card-pad-sm col gap-8" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
@@ -584,6 +587,68 @@ function AiSummarySection({ summary, loading }: {
         </span>
       )}
       {summary.summary && <p style={{ fontSize: 13, margin: 0 }}>{summary.summary}</p>}
+
+      {structured.length > 0 && (
+        <div className="col gap-6" data-testid="structured-summary">
+          <div className="row gap-8" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+            <span className="t-label">Structured summary</span>
+            <span className="t-micro">
+              {structured.filter(([, v]) => v != null).length} of {structured.length} determined
+            </span>
+          </div>
+          <div
+            role="table"
+            aria-label="Structured summary fields"
+            style={{ border: "1px solid var(--hairline)", borderRadius: 10, overflow: "hidden" }}
+          >
+            {structured.map(([key, value], index) => {
+              const source = structuredSources[key];
+              const sourceLabel = source === "analysis" ? "post-call analysis" : source === "workflow" ? "call flow" : null;
+              const isYes = value === "Yes";
+              const isNo = value === "No";
+              return (
+                <div
+                  key={key}
+                  role="row"
+                  className="row gap-12"
+                  style={{
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "8px 12px",
+                    fontSize: 12.5,
+                    background: index % 2 === 1 ? "var(--surface-2)" : "transparent",
+                    borderTop: index === 0 ? "none" : "1px solid var(--hairline)",
+                  }}
+                >
+                  <span role="cell" className="col" style={{ minWidth: 0, gap: 1 }}>
+                    <span style={{ textTransform: structuredLabels[key] ? "none" : "capitalize", color: "var(--ink)" }}>
+                      {structuredLabels[key] || key.replace(/_/g, " ")}
+                    </span>
+                    {sourceLabel && <span className="t-micro" style={{ fontSize: 10.5 }}>from {sourceLabel}</span>}
+                  </span>
+                  <span
+                    role="cell"
+                    className="row gap-6"
+                    style={{
+                      alignItems: "center",
+                      flexShrink: 0,
+                      fontWeight: value == null ? 400 : 600,
+                      fontStyle: value == null ? "italic" : "normal",
+                      textTransform: value == null || isYes || isNo ? "none" : "capitalize",
+                      color: isYes ? "var(--status-good)" : isNo ? "var(--status-warning)" : value == null ? "var(--ink-3)" : "var(--ink)",
+                    }}
+                    title={value == null ? "Not determined on this call" : undefined}
+                  >
+                    {isYes && <Icon name="check-circle" size={13} />}
+                    {isNo && <Icon name="x-circle" size={13} />}
+                    <span>{value == null ? "not determined" : value.replace(/_/g, " ")}</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {nba?.action && (
         <div className="row gap-8" style={{ alignItems: "baseline", flexWrap: "wrap" }}>

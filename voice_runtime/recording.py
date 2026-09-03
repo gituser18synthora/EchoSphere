@@ -89,6 +89,10 @@ class SessionRecorder:
         # when the call ran on one — call_state merges into its JSON blob.
         self.runtime_context_record_id: str | None = None
         self.call_state: dict = {}
+        # Latest workflow slot values (the brain replaces this after every
+        # workflow turn) — the authoritative, correction-aware answers the
+        # post-call structured summary is derived from.
+        self.workflow_slots: dict = {}
         # Conversation language, live: starts at the bot default and follows
         # the caller (the brain updates it on every detected switch).
         self.language: str = config.language

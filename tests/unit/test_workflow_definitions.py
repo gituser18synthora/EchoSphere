@@ -1133,3 +1133,498 @@ class TestContextPrefill:
         assert result["slots"]["amount"] == "400 rupees"
         assert "Amount?" not in result["reply"]
         assert "Date?" in result["reply"]
+
+
+CORRECTION_LOOP = {
+    # Enquiry chain → verify hub → correction ask (self-skipping) → re-walk.
+    "id": "wf_correction_loop", "version": 1, "name": "Correction loop",
+    "nodes": [
+        {"id": "s", "kind": "start"},
+        {"id": "ask_called", "kind": "ask", "config": {
+            "question": "Did you call the customer?", "variable": "called",
+            "entity": {"dataType": "text", "synonyms": {
+                "yes (called)": ["haan", "yes", "call kiya"],
+                "no (did not call)": ["nahi", "no", "call nahi kiya"],
+            }},
+        }},
+        {"id": "ask_recipient", "kind": "ask", "config": {
+            "question": "Who received it?", "variable": "recipient",
+            "entity": {"dataType": "text", "synonyms": {
+                "customer": ["customer ko"], "guard": ["guard ko"],
+            }},
+        }},
+        {"id": "verify", "kind": "intent", "config": {
+            "prompt": "Is everything correct?",
+            "alsoCapture": [
+                {"variable": "called", "clear": True, "entity": {
+                    "dataType": "text",
+                    "synonyms": {"clear": ["call wala galat"]}}},
+                {"variable": "recipient", "overwrite": True, "entity": {
+                    "dataType": "text", "synonyms": {
+                        "customer": ["customer ko diya"],
+                        "guard": ["guard ko diya"]}}},
+            ],
+        }},
+        {"id": "correction", "kind": "ask", "config": {
+            "question": "Which part is wrong?", "variable": "correction",
+            "entityType": "text", "skipIfCorrectedThisTurn": True,
+            "alsoCapture": [
+                {"variable": "called", "clear": True, "entity": {
+                    "dataType": "text",
+                    "synonyms": {"clear": ["call wala galat"]}}},
+                {"variable": "recipient", "overwrite": True, "entity": {
+                    "dataType": "text", "synonyms": {
+                        "customer": ["customer ko diya"],
+                        "guard": ["guard ko diya"]}}},
+            ],
+        }},
+        {"id": "e", "kind": "end", "config": {"text": "Registered"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "ask_called"},
+        {"id": "e2", "from": "ask_called", "to": "ask_recipient"},
+        {"id": "e3", "from": "ask_recipient", "to": "verify"},
+        {"id": "e4", "from": "verify", "to": "e", "label": "yes/haan/sahi hai"},
+        {"id": "e5", "from": "verify", "to": "correction", "label": "no/nahi/galat"},
+        {"id": "e6", "from": "correction", "to": "ask_called"},
+    ],
+}
+
+
+class TestCorrectionLoop:
+    """``clear`` captures + ``skipIfCorrectedThisTurn``: a rejected summary
+    changes only the field the caller corrected, re-asks only a field named
+    as wrong, and never restarts the whole enquiry chain."""
+
+    async def _reach_verify(self, engine, session):
+        await _turn(engine, "", session=session, name="correction_loop")
+        await _turn(engine, "haan call kiya", session=session,
+                    name="correction_loop")
+        r = await _turn(engine, "guard ko", session=session,
+                        name="correction_loop")
+        assert r["slots"] == {"called": "yes (called)", "recipient": "guard"}
+        assert "Is everything correct" in r["reply"]
+        return r
+
+    async def test_inline_correction_skips_the_which_part_question(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, CORRECTION_LOOP)
+        await self._reach_verify(engine, "cl-1")
+        # The rejection itself carries the fix → correction ask is skipped,
+        # the re-walk skips both filled asks, and the summary is re-verified.
+        r = await _turn(engine, "nahi, customer ko diya tha", session="cl-1",
+                        name="correction_loop")
+        assert r["slots"]["recipient"] == "customer"
+        assert r["slots"]["called"] == "yes (called)"      # untouched
+        assert "Which part is wrong" not in r["reply"]
+        assert "Did you call" not in r["reply"]
+        assert "Who received" not in r["reply"]
+        assert "Is everything correct" in r["reply"]
+        assert r["trace"][-1] == "verify"
+
+    async def test_naming_a_wrong_field_clears_and_reasks_only_that_field(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, CORRECTION_LOOP)
+        await self._reach_verify(engine, "cl-2")
+        r = await _turn(engine, "nahi, call wala galat hai", session="cl-2",
+                        name="correction_loop")
+        assert "called" not in r["slots"]                  # cleared
+        assert r["slots"]["recipient"] == "guard"          # kept
+        assert "Did you call" in r["reply"]                # only this re-asked
+        assert "Who received" not in r["reply"]
+        r = await _turn(engine, "nahi", session="cl-2", name="correction_loop")
+        assert r["slots"]["called"] == "no (did not call)"
+        assert "Is everything correct" in r["reply"]      # re-verified
+        r = await _turn(engine, "haan sahi hai", session="cl-2",
+                        name="correction_loop")
+        assert r["status"] == "done"
+
+    async def test_bare_rejection_still_asks_which_part(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, CORRECTION_LOOP)
+        await self._reach_verify(engine, "cl-3")
+        r = await _turn(engine, "nahi galat hai", session="cl-3",
+                        name="correction_loop")
+        assert "Which part is wrong" in r["reply"]
+        assert r["slots"] == {"called": "yes (called)", "recipient": "guard"}
+        # The free-text correction answer applies the fix and re-verifies.
+        r = await _turn(engine, "order customer ko diya tha", session="cl-3",
+                        name="correction_loop")
+        assert r["slots"]["recipient"] == "customer"
+        assert "Is everything correct" in r["reply"]
+
+    async def test_correction_check_only_sees_this_turns_audit(
+        self, engine, monkeypatch
+    ):
+        """An earlier turn's correction must not make a LATER bare rejection
+        skip the which-part question (the audit list is checkpointed)."""
+        _use_definition(monkeypatch, CORRECTION_LOOP)
+        await self._reach_verify(engine, "cl-4")
+        r = await _turn(engine, "nahi, customer ko diya tha", session="cl-4",
+                        name="correction_loop")
+        assert "Is everything correct" in r["reply"]
+        r = await _turn(engine, "nahi galat hai", session="cl-4",
+                        name="correction_loop")
+        assert "Which part is wrong" in r["reply"]
+
+    async def test_clear_runs_before_capture_in_one_utterance(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, CORRECTION_LOOP)
+        await self._reach_verify(engine, "cl-5")
+        # Names the field as wrong AND restates the recipient: the clear and
+        # the overwrite both apply; only the cleared field is re-asked.
+        r = await _turn(engine, "nahi, call wala galat hai aur customer ko diya",
+                        session="cl-5", name="correction_loop")
+        assert "called" not in r["slots"]
+        assert r["slots"]["recipient"] == "customer"
+        assert "Did you call" in r["reply"]
+
+
+HOLD_FLOW = {
+    "id": "wf_hold", "version": 1, "name": "Hold flow",
+    "nodes": [
+        {"id": "s", "kind": "start"},
+        {"id": "pitch", "kind": "intent", "config": {
+            "prompt": "Seminar kal hai — aap aa rahe hain?"}},
+        {"id": "book", "kind": "message", "config": {"text": "Seat book ho gayi."}},
+        {"id": "callback", "kind": "ask", "config": {
+            "question": "Aapko kab call karein?", "variable": "callback_time",
+            "entityType": "text"}},
+        {"id": "name", "kind": "ask", "config": {
+            "question": "Aapka naam kya hai?", "variable": "name",
+            "entityType": "text"}},
+        {"id": "e", "kind": "end", "config": {"text": "Dhanyavaad."}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "pitch"},
+        {"id": "e2", "from": "pitch", "to": "book", "label": "yes/haan/aa raha"},
+        {"id": "e3", "from": "pitch", "to": "callback",
+         "label": "busy/baad mein/call later/callback"},
+        {"id": "e4", "from": "book", "to": "name"},
+        {"id": "e5", "from": "name", "to": "e"},
+        {"id": "e6", "from": "callback", "to": "e"},
+    ],
+}
+
+
+class TestHoldSignalInWorkflow:
+    """A caller asking the bot to wait never moves the flow: not an entry
+    signal (the pitch still plays), off-script at a hub (node retained, the
+    callback edge is NOT taken), never stored as a free-text answer."""
+
+    async def test_hold_at_entry_does_not_skip_the_pitch(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HOLD_FLOW)
+        r = await _turn(engine, "haan ek minute ruko", session="h-1",
+                        name="hold_flow", signal="hold")
+        assert "Seminar kal hai" in r["reply"]          # pitch spoken
+        assert r["trace"][-1] == "pitch"
+        assert "callback" not in r["trace"]
+        assert r["status"] == "collecting" and r["done"] is False
+
+    async def test_hold_at_hub_is_off_script_and_keeps_the_node(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HOLD_FLOW)
+        await _turn(engine, "", session="h-2", name="hold_flow")
+        r = await _turn(engine, "ek minute ruko", session="h-2",
+                        name="hold_flow", signal="hold")
+        assert r["offScript"] is True
+        assert r["trace"] == ["pitch"]
+        assert "callback" not in r["trace"]
+        assert r["slots"] == {}
+        assert r["status"] == "collecting"
+        # The caller comes back and answers the pitch normally.
+        r = await _turn(engine, "haan aa raha hoon", session="h-2",
+                        name="hold_flow", signal="affirm")
+        assert "book" in r["trace"] and "Seat book" in r["reply"]
+
+    async def test_callback_signal_still_takes_the_callback_edge(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HOLD_FLOW)
+        await _turn(engine, "", session="h-3", name="hold_flow")
+        r = await _turn(engine, "ek minute baad call karo", session="h-3",
+                        name="hold_flow", signal="callback")
+        assert r["trace"][-1] == "callback"
+        assert "kab call karein" in r["reply"]
+
+    async def test_hold_at_free_text_ask_is_not_stored_as_the_answer(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HOLD_FLOW)
+        await _turn(engine, "", session="h-4", name="hold_flow")
+        await _turn(engine, "haan", session="h-4", name="hold_flow", signal="affirm")
+        r = await _turn(engine, "ek minute ruko", session="h-4",
+                        name="hold_flow", signal="hold")
+        assert "name" not in r["slots"]
+        assert r["status"] == "collecting" and r["done"] is False
+        r = await _turn(engine, "Rohan Mehta", session="h-4", name="hold_flow")
+        assert r["slots"]["name"] == "Rohan Mehta"
+        assert r["status"] == "done"
+
+
+CORRECTION_HUB_FIXED = {
+    # Verification hub with a fixed unmatched reply (deterministic gate) — a
+    # correction the caller phrases as a denial must still be applied.
+    "id": "wf_corr_fixed", "version": 1, "name": "Correction fixed hub",
+    "nodes": [
+        {"id": "s", "kind": "start"},
+        {"id": "ask_recipient", "kind": "ask", "config": {
+            "question": "Who received it?", "variable": "recipient",
+            "entity": {"dataType": "text", "synonyms": {
+                "mother": ["maa ko", "माँ को"], "guard": ["guard ko", "गार्ड को"]}},
+        }},
+        {"id": "verify", "kind": "intent", "config": {
+            "prompt": "Recipient noted. Is everything correct?",
+            "unmatchedReply": "Just confirm — is everything correct?",
+            "alsoCapture": [
+                {"variable": "recipient", "clear": True, "entity": {
+                    "dataType": "text",
+                    "synonymPatterns": {"clear": [r"(?:maa|माँ)\s*(?:ko|को)\s*(?:\S+\s+)?(?:nahi|नहीं)\s*(?:diya|दिया)"]}}},
+                {"variable": "recipient", "overwrite": True, "entity": {
+                    "dataType": "text", "synonyms": {"guard": ["guard ko diya", "गार्ड को दिया"]}}},
+            ],
+        }},
+        {"id": "correction", "kind": "ask", "config": {
+            "question": "Which part is wrong?", "variable": "correction",
+            "entityType": "text", "skipIfCorrectedThisTurn": True}},
+        {"id": "e", "kind": "end", "config": {"text": "Registered"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "ask_recipient"},
+        {"id": "e2", "from": "ask_recipient", "to": "verify"},
+        {"id": "e3", "from": "verify", "to": "e", "label": "yes/haan/sahi hai/हाँ/सही है"},
+        {"id": "e4", "from": "verify", "to": "correction", "label": "no/nahi/galat/नहीं/गलत"},
+        {"id": "e5", "from": "correction", "to": "ask_recipient"},
+    ],
+}
+
+
+class TestCorrectionDespiteOffScriptSignal:
+    """The LLM labelled a spoken correction 'clarify' (not a flow answer): the
+    hub must still apply its captures and take the literally matching NO edge
+    instead of parking the turn behind the fixed re-ask."""
+
+    async def test_denial_clears_and_reasks_only_the_recipient(self, engine, monkeypatch):
+        _use_definition(monkeypatch, CORRECTION_HUB_FIXED)
+        await _turn(engine, "", session="cf-1", name="correction_fixed_hub")
+        r = await _turn(engine, "maa ko", session="cf-1", name="correction_fixed_hub")
+        assert r["slots"]["recipient"] == "mother" and "Is everything correct" in r["reply"]
+        r = await _turn(engine, "नहीं नहीं, माँ को नहीं दिया था। गार्ड को।",
+                        session="cf-1", name="correction_fixed_hub", signal="clarify")
+        assert "recipient" not in r["slots"]                  # denial cleared it
+        assert "Just confirm" not in r["reply"]                 # no fixed re-ask loop
+        assert "Which part is wrong" not in r["reply"]         # correction ask skipped
+        assert "Who received it" in r["reply"]                 # only that field re-asked
+        r = await _turn(engine, "guard ko", session="cf-1", name="correction_fixed_hub")
+        assert r["slots"]["recipient"] == "guard" and "Is everything correct" in r["reply"]
+
+    async def test_restated_value_with_off_script_signal_is_applied(self, engine, monkeypatch):
+        _use_definition(monkeypatch, CORRECTION_HUB_FIXED)
+        await _turn(engine, "", session="cf-2", name="correction_fixed_hub")
+        await _turn(engine, "maa ko", session="cf-2", name="correction_fixed_hub")
+        r = await _turn(engine, "nahi, guard ko diya tha", session="cf-2",
+                        name="correction_fixed_hub", signal="question")
+        assert r["slots"]["recipient"] == "guard"
+        assert "Is everything correct" in r["reply"]          # re-verified at once
+
+    async def test_genuine_off_script_without_correction_keeps_fixed_reply(self, engine, monkeypatch):
+        _use_definition(monkeypatch, CORRECTION_HUB_FIXED)
+        await _turn(engine, "", session="cf-3", name="correction_fixed_hub")
+        await _turn(engine, "maa ko", session="cf-3", name="correction_fixed_hub")
+        r = await _turn(engine, "refund kab milega", session="cf-3",
+                        name="correction_fixed_hub", signal="question")
+        assert r["slots"]["recipient"] == "mother"
+        assert "Just confirm" in r["reply"]
+
+
+GUARD_NAME_HUB = {
+    "id": "wf_guard_name", "version": 1, "name": "Guard name hub",
+    "nodes": [
+        {"id": "s", "kind": "start"},
+        {"id": "asked", "kind": "intent", "config": {
+            "prompt": "Did you ask the guard's name?",
+            "unmatchedReply": "Just confirm — did you ask the guard's name?",
+            "alsoCapture": [{"variable": "guard_name", "entity": {
+                "dataType": "text", "regexPatterns": [
+                    r"(?:uska|उसका)\s*(?:naam|नाम)\s*(?:tha|था|hai|है)?\s*([A-Za-z\u0900-\u097F]{2,24})"]}}]}},
+        {"id": "name", "kind": "ask", "config": {
+            "question": "What was the guard's name?", "variable": "guard_name",
+            "entity": {"dataType": "text", "regexPatterns": [r"^\W*([A-Za-z\u0900-\u097F]{2,24})\W*$"]}}},
+        {"id": "cx", "kind": "ask", "config": {"question": "Did CX call you?", "variable": "cx",
+                                                "entityType": "text"}},
+        {"id": "e", "kind": "end", "config": {"text": "Done"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "asked"},
+        {"id": "e2", "from": "asked", "to": "name", "label": "yes/haan/pucha tha/naam pucha/हाँ/नाम पूछा"},
+        {"id": "e3", "from": "asked", "to": "cx", "label": "no/nahi/nahi pucha/नहीं"},
+        {"id": "e4", "from": "name", "to": "cx"},
+        {"id": "e5", "from": "cx", "to": "e"},
+    ],
+}
+
+
+class TestSpecificLiteralBeatsNonFlowLabel:
+    """An LLM 'clarify'/'question' label must not park a hub when the words
+    literally answer it with a specific token, or when the utterance carried a
+    capture for a later step. Generic yes/no tokens and holds never override."""
+
+    async def test_yes_plus_name_labelled_clarify_skips_the_name_ask(self, engine, monkeypatch):
+        _use_definition(monkeypatch, GUARD_NAME_HUB)
+        await _turn(engine, "", session="gn-1", name="guard_name_hub")
+        r = await _turn(engine, "haan, naam pucha tha, uska naam Raju hai", session="gn-1",
+                        name="guard_name_hub", signal="clarify")
+        assert r["slots"]["guard_name"] == "Raju"
+        assert "What was the guard" not in r["reply"]      # name ask skipped
+        assert "Did CX call" in r["reply"]                  # straight to CX
+        assert "Just confirm" not in r["reply"]
+
+    async def test_bare_yes_asks_the_name(self, engine, monkeypatch):
+        _use_definition(monkeypatch, GUARD_NAME_HUB)
+        await _turn(engine, "", session="gn-2", name="guard_name_hub")
+        r = await _turn(engine, "haan pucha tha", session="gn-2", name="guard_name_hub",
+                        signal="affirm")
+        assert "What was the guard" in r["reply"]
+        r = await _turn(engine, "Raju", session="gn-2", name="guard_name_hub")
+        assert r["slots"]["guard_name"] == "Raju" and "Did CX call" in r["reply"]
+
+    async def test_generic_yes_with_a_capture_still_answers_the_hub(self, engine, monkeypatch):
+        _use_definition(monkeypatch, GUARD_NAME_HUB)
+        await _turn(engine, "", session="gn-3", name="guard_name_hub")
+        r = await _turn(engine, "haan, uska naam Raju hai", session="gn-3",
+                        name="guard_name_hub", signal="clarify")
+        assert r["slots"]["guard_name"] == "Raju" and "Did CX call" in r["reply"]
+
+    async def test_generic_token_alone_does_not_override_a_complaint(self, engine, monkeypatch):
+        _use_definition(monkeypatch, GUARD_NAME_HUB)
+        await _turn(engine, "", session="gn-4", name="guard_name_hub")
+        r = await _turn(engine, "aap meri baat sun nahi rahe", session="gn-4",
+                        name="guard_name_hub", signal="complaint")
+        assert "Just confirm" in r["reply"] and "guard_name" not in r["slots"]
+
+    async def test_hold_never_advances_even_with_literal_tokens(self, engine, monkeypatch):
+        _use_definition(monkeypatch, GUARD_NAME_HUB)
+        await _turn(engine, "", session="gn-5", name="guard_name_hub")
+        r = await _turn(engine, "haan ek minute ruko, naam pucha tha", session="gn-5",
+                        name="guard_name_hub", signal="hold")
+        assert r["trace"] == ["asked"] and "What was the guard" not in r["reply"]
+
+
+FREE_TEXT_CAPTURE_FLOW = {
+    # A free-text "what happened?" ask whose alsoCapture matchers pick up
+    # downstream answers from the narrative.
+    "id": "wf_ft_capture", "version": 1, "name": "Free text capture",
+    "nodes": [
+        {"id": "s", "kind": "start"},
+        {"id": "story", "kind": "ask", "config": {
+            "question": "Bataiye, kya hua tha?", "variable": "story",
+            "entityType": "text",
+            "alsoCapture": [{"variable": "recipient", "entity": {
+                "dataType": "text",
+                "synonyms": {"customer": ["customer ko diya", "कस्टमर को दिया"],
+                             "guard": ["guard ko diya"]}}}],
+        }},
+        {"id": "ask_recipient", "kind": "ask", "config": {
+            "question": "Kisko diya tha?", "variable": "recipient",
+            "entity": {"dataType": "text", "synonyms": {
+                "customer": ["customer ko"], "guard": ["guard ko"]}}}},
+        {"id": "e", "kind": "end", "config": {"text": "Noted."}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "story"},
+        {"id": "e2", "from": "story", "to": "ask_recipient"},
+        {"id": "e3", "from": "ask_recipient", "to": "e"},
+    ],
+}
+
+
+class TestFreeTextAskWithCaptureEvidence:
+    """An off-script label ('complaint', 'question') on a free-text ask is
+    overridden when the utterance itself fills one of the node's alsoCapture
+    slots — the caller was answering, whatever the classifier called it."""
+
+    async def test_labelled_complaint_narrative_is_stored_and_captures(self, engine, monkeypatch):
+        _use_definition(monkeypatch, FREE_TEXT_CAPTURE_FLOW)
+        await _turn(engine, "", session="ft-1", name="free_text_capture")
+        r = await _turn(engine, "maine customer ko diya tha phir bhi paisa kat gaya",
+                        session="ft-1", name="free_text_capture", signal="complaint")
+        assert r["offScript"] is False
+        assert r["slots"]["story"].startswith("maine customer ko diya")
+        assert r["slots"]["recipient"] == "customer"
+        assert r["status"] == "done"          # recipient ask skipped (slot_reused)
+        assert "Kisko diya" not in r["reply"]
+
+    async def test_labelled_question_without_capture_stays_off_script(self, engine, monkeypatch):
+        _use_definition(monkeypatch, FREE_TEXT_CAPTURE_FLOW)
+        await _turn(engine, "", session="ft-2", name="free_text_capture")
+        r = await _turn(engine, "refund kab tak milega?", session="ft-2",
+                        name="free_text_capture", signal="question")
+        assert r["offScript"] is True
+        assert "story" not in r["slots"]
+        assert r["trace"][-1] == "story"
+
+    async def test_off_script_turn_at_matcher_ask_still_keeps_volunteered_answers(self, engine, monkeypatch):
+        """A real question at a matcher ask stays off-script, but a downstream
+        answer said in the same breath is not thrown away."""
+        flow = {**FREE_TEXT_CAPTURE_FLOW, "id": "wf_ft_capture2"}
+        flow["nodes"] = [dict(n) for n in FREE_TEXT_CAPTURE_FLOW["nodes"]]
+        story = dict(flow["nodes"][1]); story["config"] = dict(story["config"])
+        # Make the story ask a matcher ask that will NOT match the utterance.
+        story["config"]["entity"] = {"dataType": "text", "synonyms": {"late": ["late tha"]}}
+        flow["nodes"][1] = story
+        _use_definition(monkeypatch, flow)
+        await _turn(engine, "", session="ft-3", name="free_text_capture")
+        r = await _turn(engine, "guard ko diya tha, refund kab milega?", session="ft-3",
+                        name="free_text_capture", signal="question")
+        assert r["offScript"] is True
+        assert r["slots"]["recipient"] == "guard"
+        assert r["trace"][-1] == "story"
+
+
+def _grounded_verify_flow():
+    flow = {**CORRECTION_HUB_FIXED, "id": "wf_corr_grounded"}
+    flow["nodes"] = [dict(n) for n in CORRECTION_HUB_FIXED["nodes"]]
+    verify = dict(flow["nodes"][2]); verify["config"] = dict(verify["config"])
+    verify["config"]["responseMode"] = "llm_grounded"
+    verify["config"]["responseDirective"] = "Summarize and ask if correct."
+    flow["nodes"][2] = verify
+    return flow
+
+
+class TestQuestionAtGroundedHubWithUnmatchedReply:
+    """``unmatchedReply`` keeps FIXED gates deterministic. A hub that is
+    itself LLM-grounded already trusts the model with this context, so a
+    genuine caller question there goes off-script for an answer instead of
+    being swallowed by the fixed re-ask (cv_3fc5b4c31fe0: "CX support क्या
+    है?" ×3)."""
+
+    async def test_question_at_grounded_hub_is_off_script(self, engine, monkeypatch):
+        _use_definition(monkeypatch, _grounded_verify_flow())
+        await _turn(engine, "", session="gq-1", name="correction_fixed_hub")
+        await _turn(engine, "maa ko", session="gq-1", name="correction_fixed_hub")
+        r = await _turn(engine, "haan sahi hai, CX support kya hai?", session="gq-1",
+                        name="correction_fixed_hub", signal="question")
+        assert r["offScript"] is True
+        assert r["reply"] == ""
+        assert r["slots"]["recipient"] == "mother"
+        assert r["trace"][-1] == "verify"
+        r = await _turn(engine, "haan sahi hai", session="gq-1",
+                        name="correction_fixed_hub", signal="affirm")
+        assert r["status"] == "done"
+
+    async def test_clarify_at_grounded_hub_keeps_the_fixed_reply(self, engine, monkeypatch):
+        _use_definition(monkeypatch, _grounded_verify_flow())
+        await _turn(engine, "", session="gq-2", name="correction_fixed_hub")
+        await _turn(engine, "maa ko", session="gq-2", name="correction_fixed_hub")
+        r = await _turn(engine, "kya bola aapne?", session="gq-2",
+                        name="correction_fixed_hub", signal="clarify")
+        assert r["offScript"] is False
+        assert "Just confirm" in r["reply"]
+
+    async def test_question_at_fixed_hub_still_gets_the_fixed_reply(self, engine, monkeypatch):
+        _use_definition(monkeypatch, CORRECTION_HUB_FIXED)
+        await _turn(engine, "", session="gq-3", name="correction_fixed_hub")
+        await _turn(engine, "maa ko", session="gq-3", name="correction_fixed_hub")
+        r = await _turn(engine, "CX support kya hai?", session="gq-3",
+                        name="correction_fixed_hub", signal="question")
+        assert r["offScript"] is False
+        assert "Just confirm" in r["reply"]

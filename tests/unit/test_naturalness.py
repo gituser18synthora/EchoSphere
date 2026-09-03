@@ -8,6 +8,7 @@ import pytest
 
 from shared.orchestration.naturalness import (
     HUMAN_SPEECH_DEFAULTS,
+    _LEADING_ACK_RE,
     _POOLS,
     SpeechNaturalnessPlanner,
     base_language,
@@ -288,15 +289,26 @@ class TestPlanTurn:
                                signal="affirm", route_kind="llm", turn_index=i)
             assert not plan.has_preface
 
-    def test_fillers_are_occasional_not_constant(self):
-        p = planner(seed=13)
-        used = sum(
-            1 for i in range(1, 101)
-            if p.plan_turn(language="hi-IN", identity=MALE,
-                           route_kind="llm", turn_index=i).has_preface
-        )
-        # Default thinking probability 0.25, dampened after a decorated turn.
-        assert 3 <= used <= 40
+    def test_non_tool_routes_never_get_a_preface_glued_to_the_reply(self):
+        p = planner({"acknowledgement_probability": 1.0,
+                     "thinking_filler_probability": 1.0}, seed=13)
+        for route in ("llm", "kb", "direct"):
+            for i in range(1, 30):
+                plan = p.plan_turn(language="hi-IN", identity=MALE,
+                                   signal="affirm", route_kind=route, turn_index=i)
+                assert not plan.has_preface
+                assert plan.telemetry["suppression_reason"] == "dispatch_ack_path"
+
+    def test_tool_preface_never_stacks_on_a_dispatch_acknowledgement(self):
+        p = planner({"tool_ack_probability": 1.0}, seed=13)
+        for i in range(1, 60):
+            plan = p.plan_turn(language="hi-IN", identity=MALE, route_kind="tool",
+                               turn_index=i, early_ack_spoken=True)
+            assert plan.preface and not _LEADING_ACK_RE.match(plan.preface), plan.preface
+            assert plan.telemetry["early_ack"] is True
+        assert _LEADING_ACK_RE.match("जी... एक मिनट दीजिए")
+        assert _LEADING_ACK_RE.match("Achha... ek minute, main check karta hoon.")
+        assert not _LEADING_ACK_RE.match("Ek minute, main check karta hoon...")
 
     def test_telemetry_shape(self):
         p = planner({"tool_ack_probability": 1.0})
@@ -450,3 +462,205 @@ def test_base_language_mapping():
     assert base_language("hinglish") == "hi"
     assert base_language("en-IN") == "en"
     assert base_language("") == ""
+
+
+# ── latency fillers + first-reply boost ──────────────────────────────────
+
+
+class TestLatencyFillerConfig:
+    def test_defaults_and_bounds(self):
+        assert HUMAN_SPEECH_DEFAULTS["latency_fillers"] is True
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_delay_ms"] == 1500
+        assert validate_human_speech({"latency_fillers": True, "latency_filler_delay_ms": 2000}) == []
+        assert validate_human_speech({"latency_filler_delay_ms": 300}) == [
+            "'latency_filler_delay_ms' must be between 500 and 5000",
+        ]
+        assert validate_human_speech({"latency_filler_delay_ms": 1500.5}) == [
+            "'latency_filler_delay_ms' must be an integer",
+        ]
+        assert validate_human_speech({"latency_fillers": "on"}) == [
+            "'latency_fillers' must be a boolean",
+        ]
+        # Runtime merging clamps rather than failing a live call.
+        assert resolve_human_speech({"latency_filler_delay_ms": 9000})["latency_filler_delay_ms"] == 5000
+        assert resolve_human_speech({"latency_filler_delay_ms": 100})["latency_filler_delay_ms"] == 500
+
+    def test_planner_exposes_the_switch_under_the_master_switch(self):
+        assert planner().latency_fillers_enabled is True
+        assert planner().latency_filler_delay_ms == 1500
+        assert planner({"latency_fillers": False}).latency_fillers_enabled is False
+        assert planner({"enabled": False}).latency_fillers_enabled is False
+        assert planner({"latency_filler_delay_ms": 2200}).latency_filler_delay_ms == 2200
+
+    def test_sources_follow_precedence_for_the_new_keys(self):
+        effective, sources = resolve_human_speech_with_sources(
+            {"latency_fillers": False}, {"latency_filler_delay_ms": 2500},
+        )
+        assert effective["latency_fillers"] is False
+        assert effective["latency_filler_delay_ms"] == 2500
+        assert sources["latency_fillers"] == "tenant"
+        assert sources["latency_filler_delay_ms"] == "bot"
+
+
+class TestEarlyAck:
+    """Dispatch-time acknowledgement: what the caller hears ~1 s after they
+    stop, chosen from what they said, never glued to the reply."""
+
+    @staticmethod
+    def _ack_rate(turn_index, seeds=300, **overrides):
+        hits = 0
+        for seed in range(seeds):
+            p = planner({"acknowledgement_probability": 0.5, **overrides}, seed=seed)
+            hits += bool(p.plan_early_ack(language="hi-IN", identity=MALE,
+                                          context="answer", turn_index=turn_index))
+        return hits / seeds
+
+    def test_first_reply_after_the_greeting_gets_better_odds(self):
+        first, later = self._ack_rate(1), self._ack_rate(5)
+        assert 0.65 <= first <= 0.85      # 0.5 × 1.5
+        assert 0.4 <= later <= 0.6        # 0.5 unchanged
+        assert first > later
+
+    def test_never_on_two_consecutive_turns(self):
+        p = planner({"acknowledgement_probability": 1.0})
+        spoken = [
+            bool(p.plan_early_ack(language="hi-IN", identity=MALE,
+                                  context="answer", turn_index=i))
+            for i in range(1, 11)
+        ]
+        assert spoken == [True, False] * 5
+        assert p.plan_early_ack(language="hi-IN", identity=MALE, context="answer", turn_index=11)
+        assert p.plan_early_ack(language="hi-IN", identity=MALE, context="answer", turn_index=12) == ""
+        assert p.last_early_ack_reason == "anti_repetition"
+
+    def test_context_selects_the_pool(self):
+        p = planner({"acknowledgement_probability": 1.0}, seed=2)
+        expected = {
+            "answer": "ack_answer", "question": "ack_question",
+            "lookup": "ack_lookup", "neutral": "ack_neutral",
+        }
+        turn = 1
+        for context, pool in expected.items():
+            token = p.plan_early_ack(language="hi-IN", identity=MALE,
+                                     context=context, turn_index=turn)
+            pool_norm = {normalize_spoken_variant(e) for e in _POOLS["hi"][pool]}
+            assert normalize_spoken_variant(token) in pool_norm, (context, token)
+            turn += 2   # skip the anti-repetition turn
+
+    def test_serious_or_critical_turns_get_only_neutral_listening_tokens(self):
+        neutral = {normalize_spoken_variant(e) for e in _POOLS["hi"]["ack_neutral"]}
+        spoken = 0
+        for seed in range(30):
+            p = planner({"acknowledgement_probability": 1.0}, seed=seed)
+            turn = 1
+            for kwargs in ({"serious": True}, {"critical": True}):
+                for context in ("answer", "question", "lookup"):
+                    token = p.plan_early_ack(language="hi-IN", identity=MALE,
+                                             context=context, turn_index=turn, **kwargs)
+                    turn += 2
+                    if token:
+                        spoken += 1
+                        assert normalize_spoken_variant(token) in neutral, (kwargs, context, token)
+        assert spoken > 20
+        # …and at half the odds: "ठीक है" after a refusal would read as acceptance.
+        assert 0.15 <= self._neutral_rate() <= 0.35
+
+    @staticmethod
+    def _neutral_rate(seeds=300):
+        hits = 0
+        for seed in range(seeds):
+            p = planner({"acknowledgement_probability": 0.5}, seed=seed)
+            hits += bool(p.plan_early_ack(language="hi-IN", identity=MALE,
+                                          context="answer", turn_index=5, serious=True))
+        return hits / seeds
+
+    def test_female_voice_gets_agreeing_grammar(self):
+        seen = set()
+        for seed in range(40):
+            p = planner({"acknowledgement_probability": 1.0}, seed=seed)
+            seen.add(p.plan_early_ack(language="hi-IN", identity=FEMALE,
+                                      context="lookup", turn_index=1))
+        joined = " ".join(seen)
+        assert "देख रही हूँ" in joined
+        assert "देख रहा हूँ" not in joined
+
+    def test_english_and_fallback_languages(self):
+        p = planner({"acknowledgement_probability": 1.0}, seed=1)
+        en = p.plan_early_ack(language="en-IN", identity=NEUTRAL, context="answer", turn_index=1)
+        assert normalize_spoken_variant(en) in {
+            normalize_spoken_variant(e) for e in _POOLS["en"]["ack_answer"]
+        }
+        # Gujarati has no dedicated ack_* pools: its short pools stand in.
+        gu = p.plan_early_ack(language="gu-IN", identity=NEUTRAL, context="answer", turn_index=3)
+        assert normalize_spoken_variant(gu) in {
+            normalize_spoken_variant(e) for e in _POOLS["gu"]["acknowledgement"]
+        }
+        gu_q = p.plan_early_ack(language="gu-IN", identity=NEUTRAL, context="question", turn_index=5)
+        assert normalize_spoken_variant(gu_q) in {
+            normalize_spoken_variant(e) for e in _POOLS["gu"]["thinking"]
+        }
+
+    def test_withheld_cases_report_why(self):
+        p = planner({"acknowledgement_probability": 1.0})
+        assert p.plan_early_ack(language="bn-IN", identity=MALE, turn_index=1) == ""
+        assert p.last_early_ack_reason == "no_pool_language:bn"
+        assert p.plan_early_ack(language="hi-IN", identity=MALE, turn_index=0) == ""
+        assert p.last_early_ack_reason == "greeting_turn"
+        off = planner({"acknowledgements": False})
+        assert off.plan_early_ack(language="hi-IN", identity=MALE, turn_index=1) == ""
+        assert off.last_early_ack_reason == "disabled"
+        master_off = planner({"enabled": False, "acknowledgement_probability": 1.0})
+        assert master_off.plan_early_ack(language="hi-IN", identity=MALE, turn_index=1) == ""
+        no_think = planner({"acknowledgement_probability": 1.0, "thinking_fillers": False})
+        assert no_think.plan_early_ack(language="hi-IN", identity=MALE,
+                                       context="question", turn_index=1) == ""
+        assert no_think.last_early_ack_reason == "thinking_disabled"
+        never = planner({"acknowledgement_probability": 0.0})
+        assert never.plan_early_ack(language="hi-IN", identity=MALE, turn_index=1) == ""
+        assert never.last_early_ack_reason == "roll"
+
+    def test_one_token_never_stacked(self):
+        p = planner({"acknowledgement_probability": 1.0}, seed=8)
+        for turn in range(1, 40, 2):
+            token = p.plan_early_ack(language="hi-IN", identity=MALE,
+                                     context="answer", turn_index=turn)
+            assert token.count("…") <= 1 and len(token.split()) <= 3, token
+
+
+class TestSentenceBreathAndAckPacing:
+    def test_short_acknowledgement_is_a_touch_quicker(self):
+        p = planner()
+        seg = p.plan_segment("ठीक है।", base_pause_ms=150, language="hi-IN")
+        assert seg.speed_scale is not None and 1.02 <= seg.speed_scale <= 1.05
+
+    def test_breath_only_before_long_or_critical_sentences_in_pause_mode(self):
+        p = planner({"sentence_breath_probability": 1.0})
+        long = "Aapke account mein pichle mahine ki kist abhi tak update nahi hui hai isliye"
+        assert p.plan_segment(long, base_pause_ms=150, language="hi-IN").breath_before is True
+        assert p.plan_segment("Ji, theek hai.", base_pause_ms=150,
+                              language="hi-IN").breath_before is False
+        assert p.plan_segment("Aapka balance ₹5000 hai.", base_pause_ms=150,
+                              language="hi-IN").breath_before is True      # critical
+        # Never before the first sentence, never a second one in the turn,
+        # never outside pause mode.
+        assert p.plan_segment(long, base_pause_ms=150, language="hi-IN",
+                              first_in_turn=True).breath_before is False
+        assert p.plan_segment(long, base_pause_ms=150, language="hi-IN",
+                              breaths_so_far=1).breath_before is False
+        assert p.plan_segment(long, base_pause_ms=0, language="hi-IN").breath_before is False
+
+    def test_breaths_are_rare_and_switchable(self):
+        p = planner(seed=5)
+        long = "Aapke account mein pichle mahine ki kist abhi tak update nahi hui hai isliye"
+        hits = sum(
+            p.plan_segment(long, base_pause_ms=150, language="hi-IN").breath_before
+            for _ in range(200)
+        )
+        assert 45 <= hits <= 100                       # default probability 0.35
+        off = planner({"sentence_breaths": False, "sentence_breath_probability": 1.0})
+        assert off.plan_segment(long, base_pause_ms=150, language="hi-IN").breath_before is False
+        assert HUMAN_SPEECH_DEFAULTS["sentence_breaths"] is True
+        assert HUMAN_SPEECH_DEFAULTS["sentence_breath_probability"] == 0.35
+        assert validate_human_speech({"sentence_breath_probability": 1.5}) == [
+            "'sentence_breath_probability' must be between 0 and 1",
+        ]

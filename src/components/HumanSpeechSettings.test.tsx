@@ -20,15 +20,19 @@ const inherited: HumanSpeechEffectiveSettings = {
   gender_agreement: true,
   micro_pauses: true,
   self_correction: false,
+  latency_fillers: true,
+  sentence_breaths: true,
   thinking_filler_probability: 0.25,
   acknowledgement_probability: 0.4,
   tool_ack_probability: 0.9,
   backchannel_probability: 0.35,
   micro_pause_probability: 0.45,
   self_correction_probability: 0.01,
+  sentence_breath_probability: 0.2,
   min_long_turn_for_backchannel_ms: 4000,
   min_gap_between_backchannels_ms: 8000,
   max_backchannels_per_call: 4,
+  latency_filler_delay_ms: 1500,
 };
 
 const platformSources = Object.fromEntries(
@@ -100,6 +104,33 @@ describe("HumanSpeechSettingsEditor", () => {
     expect(validateHumanSpeechOverrides({ max_backchannels_per_call: 2.5 })).toEqual([
       "Maximum backchannels per call must be between 0 and 20.",
     ]);
+  });
+
+  it("exposes the latency filler switch and its delay with backend bounds", async () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("switch", { name: "Latency fillers" }));
+    expect(onChange).toHaveBeenLastCalledWith({ latency_fillers: false });
+    const delay = screen.getByRole("spinbutton", { name: "Latency filler delay (ms)" });
+    expect(delay).toHaveValue(1500);
+    expect(delay).toHaveAttribute("min", "500");
+    expect(delay).toHaveAttribute("max", "5000");
+    expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 300 })).toEqual([
+      "Latency filler delay (ms) must be between 500 and 5000.",
+    ]);
+    expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 1500.5 })).toEqual([
+      "Latency filler delay (ms) must be between 500 and 5000.",
+    ]);
+    expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 2000 })).toEqual([]);
   });
 
   it("preserves fields a future form version may not understand", async () => {

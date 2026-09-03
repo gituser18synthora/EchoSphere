@@ -178,3 +178,27 @@ class TestVadDurationFallback:
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         result = await strategy.process_frame(final("एक मिनट रुकिए"))
         assert fired and result == ProcessFrameResult.STOP
+
+
+class TestRecordingAnnouncementDoesNotInterrupt:
+    async def test_announcement_transcript_does_not_confirm_barge_in(self):
+        strategy, fired = make_strategy(min_words=2)
+        await strategy.process_frame(BotStartedSpeakingFrame())
+        result = await strategy.process_frame(final("Call is now being recorded."))
+        assert not fired and result == ProcessFrameResult.CONTINUE
+        result = await strategy.process_frame(final("This call may be recorded for quality purposes."))
+        assert not fired and result == ProcessFrameResult.CONTINUE
+
+    async def test_real_speech_after_announcement_still_interrupts(self):
+        strategy, fired = make_strategy(min_words=2)
+        await strategy.process_frame(BotStartedSpeakingFrame())
+        result = await strategy.process_frame(
+            final("Call is now being recorded. ek minute ruko")
+        )
+        assert fired and result == ProcessFrameResult.STOP
+
+    async def test_ordinary_multiword_transcript_still_interrupts(self):
+        strategy, fired = make_strategy(min_words=2)
+        await strategy.process_frame(BotStartedSpeakingFrame())
+        result = await strategy.process_frame(final("haan bol raha hoon"))
+        assert fired and result == ProcessFrameResult.STOP

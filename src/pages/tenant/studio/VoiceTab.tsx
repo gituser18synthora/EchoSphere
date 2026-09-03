@@ -903,16 +903,16 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         <div className="col gap-16">
           {/* Delivery tuning (compact) */}
           <SectionCard title="Delivery tuning" sub="How the assistant sounds, independent of engine">
-            <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={1.4} step={0.05} fmt={(v) => `${v.toFixed(2)}×`}
-              hint="Applies across all voice providers — the single speed control for this bot."
+            <Slider label="Speaking speed" value={tuning.speed} min={0.7} max={2} step={0.1} fmt={(v) => `${v.toFixed(1)}×`}
+              hint="Applies across all voice providers — the single speed control for this bot. Sarvam accepts up to 2×; ElevenLabs voices are capped at 1.2× at synthesis time."
               onChange={(v) => setTuning((t) => ({ ...t, speed: v }))} />
             <Slider label="Pause between sentences" value={tuning.pauseMs} min={100} max={900} step={50} fmt={(v) => `${v}ms`}
               hint="Silence inserted between assistant sentences."
               onChange={(v) => setTuning((t) => ({ ...t, pauseMs: v }))} />
-            <Slider label="Empathy" value={tuning.empathy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+            <Slider label="Empathy" value={tuning.empathy} min={0} max={100} step={1} fmt={(v) => `${v}%`}
               hint="Influences wording and acknowledgement in generated replies."
               onChange={(v) => setTuning((t) => ({ ...t, empathy: v }))} />
-            <Slider label="Energy" value={tuning.energy} min={0} max={100} step={5} fmt={(v) => `${v}%`}
+            <Slider label="Energy" value={tuning.energy} min={0} max={100} step={1} fmt={(v) => `${v}%`}
               hint="How calm or lively replies feel; native voice support varies by provider."
               onChange={(v) => setTuning((t) => ({ ...t, energy: v }))} />
           </SectionCard>
@@ -1845,8 +1845,8 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
               {speedRange ? (
                 <Slider
                   label="Speaking speed" value={speed}
-                  min={speedRange[0]} max={speedRange[1]} step={0.05}
-                  fmt={(v) => `${v.toFixed(2)}×`}
+                  min={speedRange[0]} max={speedRange[1]} step={0.1}
+                  fmt={(v) => `${v.toFixed(1)}×`}
                   hint={`Sent as ${form.provider === "sarvam" ? "pace" : "speed"} (${speedRange[0]}–${speedRange[1]}×) — the bot's single speed control.`}
                   onChange={(v) => { setSpeed(v); setApplied(false); }}
                 />
@@ -1866,13 +1866,13 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
                 onChange={(v) => { setPause(v); setApplied(false); }}
               />
               <Slider
-                label="Empathy" value={empathy} min={0} max={100} step={5}
+                label="Empathy" value={empathy} min={0} max={100} step={1}
                 fmt={(v) => `${v}%`}
                 hint="Shapes live LLM replies — cannot rewrite this fixed sample text."
                 onChange={(v) => { setEmpathy(v); setApplied(false); }}
               />
               <Slider
-                label="Energy" value={energy} min={0} max={100} step={5}
+                label="Energy" value={energy} min={0} max={100} step={1}
                 fmt={(v) => `${v}%`}
                 hint="Native voice mapping where the provider supports it."
                 onChange={(v) => { setEnergy(v); setApplied(false); }}

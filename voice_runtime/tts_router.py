@@ -99,6 +99,14 @@ _FIRST_AUDIO_TIMEOUT_S = 4.0
 # after one or two turns. The failed sentence is skipped instead.
 _FATAL_ERROR_CATEGORIES = frozenset({"auth", "invalid_input"})
 
+# In-reply breath (planner-gated, pause mode): a short INHALE clip that
+# rises into the sentence it precedes — the pre-reply exhale-shaped clip,
+# trimmed, read as a cut noise between two sentences (live feedback
+# 2026-09-03). Only a brief beat separates it from the sentence, the way a
+# person starts talking on the top of a breath.
+_SENTENCE_BREATH_KIND = "inhale"
+_SENTENCE_BREATH_BEAT_MS = 60
+
 
 def is_streaming_tts_provider(provider: str) -> bool:
     return provider in _STREAMING_PROVIDERS
@@ -128,6 +136,8 @@ class _Sentence:
     phrase_boundaries: tuple[int, ...] = ()
     critical: bool = False
     critical_reason: str = ""
+    # One soft breath in the gap before this sentence (planner-decided).
+    breath_before: bool = False
 
 
 @dataclass
@@ -170,6 +180,8 @@ class _Generation:
     # close-out must not wait for a second final that will never come.
     midturn_final_seen: bool = False
     seq: int = 0
+    # In-reply breaths materialized so far (planner caps them per turn).
+    breaths: int = 0
 
 
 class StreamingTTSRouter(TTSService):
@@ -186,6 +198,7 @@ class StreamingTTSRouter(TTSService):
         provider_factory=None,
         latency=None,
         naturalness=None,
+        filler_library=None,
         first_audio_timeout: float = _FIRST_AUDIO_TIMEOUT_S,
         **kwargs,
     ):
@@ -214,6 +227,7 @@ class StreamingTTSRouter(TTSService):
             "provider": tts_config.get("provider") or "sarvam",
             "model": tts_config.get("model") or "",
             "voice": tts_config.get("voice") or "",
+            "voice_gender": tts_config.get("voice_gender") or "neutral",
             "params": {},
             "api_key_reference": tts_config.get("api_key_reference") or "",
         }
@@ -233,6 +247,10 @@ class StreamingTTSRouter(TTSService):
         # Optional shared SpeechNaturalnessPlanner: per-sentence pause and
         # subtle rate variation in pause mode. None → legacy fixed delivery.
         self._naturalness = naturalness
+        # Optional voice_runtime.latency_filler.FillerClipLibrary: the source
+        # of the rare in-reply breath (pause mode, planner-gated), matched to
+        # the engine's catalog voice gender.
+        self._filler_library = filler_library
         self._first_audio_timeout = first_audio_timeout
 
         self._providers: dict[tuple, StreamingTTSProvider] = {}
@@ -496,7 +514,11 @@ class StreamingTTSRouter(TTSService):
                 delivery = self._naturalness.plan_segment(
                     text, base_pause_ms=self._pause_ms,
                     language=self._current_language,
+                    first_in_turn=len(state.texts) == 1,
+                    breaths_so_far=state.breaths,
                 )
+                if delivery.breath_before and self._filler_library is not None:
+                    state.breaths += 1
                 planning_ms = (time.perf_counter() - planned_at) * 1000.0
             if self._pause_ms > 0:
                 # Pause mode: sentences are serialized so the provider's
@@ -513,6 +535,9 @@ class StreamingTTSRouter(TTSService):
                     sentence.phrase_boundaries = delivery.phrase_boundaries
                     sentence.critical = delivery.critical
                     sentence.critical_reason = delivery.critical_reason
+                    sentence.breath_before = (
+                        delivery.breath_before and self._filler_library is not None
+                    )
             if delivery is not None:
                 provider_name = state.engine.get("provider") or ""
                 model = state.engine.get("model") or ""
@@ -565,6 +590,9 @@ class StreamingTTSRouter(TTSService):
                         delivery.question_style if capabilities.question_style else False
                     ),
                     "phrase_boundary_count": len(delivery.phrase_boundaries),
+                    "breath_before": bool(
+                        delivery.breath_before and self._filler_library is not None
+                    ),
                     "naturalness_processing_ms": round(planning_ms, 3),
                 }, ensure_ascii=False))
             if self._pause_ms > 0:
@@ -809,8 +837,9 @@ class StreamingTTSRouter(TTSService):
         and releases the next sentence. Raises like synthesize_stream; callers
         handle fallback/error routing.
         """
-        await self._materialize_gap(context_id, state)
-        sentence: _Sentence = state.pending.popleft()
+        sentence: _Sentence = state.pending[0]
+        await self._materialize_gap(context_id, state, breath_before=sentence.breath_before)
+        state.pending.popleft()
         state.seq += 1
         sub_id = f"{context_id}~{state.seq}"
         self._subgenerations[sub_id] = context_id
@@ -858,12 +887,17 @@ class StreamingTTSRouter(TTSService):
         except Exception:  # noqa: BLE001 — prosody is decoration, never fatal
             logger.debug("tts-router: per-sentence speed configure failed", exc_info=True)
 
-    async def _materialize_gap(self, context_id: str, state: _Generation):
+    async def _materialize_gap(
+        self, context_id: str, state: _Generation, *, breath_before: bool = False
+    ):
         """Insert the owed inter-sentence silence right before a dispatch.
 
         Positioning is exact by construction: the previous sentence's audio
         has fully arrived (its final released the gap) and the next sentence
-        has not been sent to the provider yet.
+        has not been sent to the provider yet. When the planner asked for a
+        breath before this sentence, it follows the planned pause — pause,
+        soft breath, a short beat, then the sentence — as TTS audio of the
+        same reply (this IS the bot speaking, unlike the pre-reply filler).
         """
         if not state.gap_pending:
             return
@@ -872,13 +906,29 @@ class StreamingTTSRouter(TTSService):
         state.gap_ms = None
         if not self.audio_context_available(context_id):
             return
-        silence = silence_pcm(self.sample_rate, gap_ms)
-        if silence:
-            state.audio_bytes += len(silence)
+        pieces = [silence_pcm(self.sample_rate, gap_ms)]
+        if breath_before and self._filler_library is not None:
+            breath = self._filler_library.clip(
+                state.engine.get("voice_gender") or "neutral", self.sample_rate,
+                kind=_SENTENCE_BREATH_KIND,
+            )
+            if breath:
+                pieces += [breath, silence_pcm(self.sample_rate, _SENTENCE_BREATH_BEAT_MS)]
+                if self._recorder is not None:
+                    self._recorder.add_event(
+                        "sentence_breath_played",
+                        context=str(context_id)[:8],
+                        gender=state.engine.get("voice_gender") or "neutral",
+                        breath_ms=round(len(breath) / (self.sample_rate * 2) * 1000, 1),
+                    )
+        for audio in pieces:
+            if not audio:
+                continue
+            state.audio_bytes += len(audio)
             state.audio_chunks += 1
             await self.append_to_audio_context(
                 context_id,
-                TTSAudioRawFrame(silence, self.sample_rate, 1, context_id=context_id),
+                TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=context_id),
             )
 
     async def _on_sentence_final(self, context_id: str, sub_id: str, state: _Generation):

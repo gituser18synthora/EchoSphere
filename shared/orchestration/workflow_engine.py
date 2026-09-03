@@ -579,7 +579,10 @@ def _short_question(base: str, lang: str = "") -> str:
 
 # Signals that talk ABOUT the conversation (or ask something) rather than
 # answering the pending question — never advanced by literal keyword luck.
-_OFF_SCRIPT_SIGNALS = ("complaint", "clarify", "question")
+# hold ("ek minute ruko") is off-script everywhere: a free-text ask must not
+# store it as the answer, a hub must not advance on it, and it is never an
+# entry signal — the node simply waits for the caller to come back.
+_OFF_SCRIPT_SIGNALS = ("complaint", "clarify", "question", "hold")
 # Flow-answer signals that may still advance via literal tokens when no edge
 # declares the signal explicitly (the author spelled the words out instead).
 _LITERAL_FALLBACK_SIGNALS = ("refusal", "callback", "payment_intent", "affirm")
@@ -676,13 +679,26 @@ def _choose_intent_edge_detailed(
         if supporting:
             edge, token = max(supporting, key=lambda pair: len(pair[1]))
             return edge, "signal", token
-        if signal not in _LITERAL_FALLBACK_SIGNALS:
-            return None, "off_script", ""
     best, best_token = None, ""
     for edge, tokens, _signals in meta:
         token = _best_token(tokens, lowered)
         if len(token) > len(best_token):
             best, best_token = edge, token
+    if signal and signal not in _LITERAL_FALLBACK_SIGNALS:
+        # The classifier called this a non-flow signal. Only a 'clarify' label
+        # yields to a SPECIFIC literal edge token: "हाँ, नाम पूछा था तो guard
+        # बोला…" was labelled clarify by the LLM, yet "नाम पूछा" is
+        # unmistakably this hub's yes. Every other label (question, complaint,
+        # hardship, hold…) keeps the turn off-script — "nahi bas, refund kab
+        # tak aayega?" is a question to answer, not the hub's "no" — and
+        # generic yes/no tokens never override a label at all.
+        if (
+            best is not None
+            and signal == "clarify"
+            and _specific_answer_token(best_token)
+        ):
+            return best, "token", best_token
+        return None, "off_script", ""
     if best is not None:
         return best, "token", best_token
     return None, "no_match", ""
@@ -896,18 +912,37 @@ def _apply_also_capture(node: dict, text: str, slots: dict,
     invent an answer. A correction node may explicitly set ``overwrite:
     true`` for a capture, implementing "latest clear answer wins" without
     weakening ordinary multi-answer collection.
+
+    A spec may instead set ``clear: true``: when its matcher fires the slot is
+    REMOVED ("the call part is wrong" — a field named without its new value),
+    so the flow's next walk re-asks exactly that question and nothing else.
+    Clears run before captures, so "call wala galat hai, maine call nahi kiya
+    tha" clears and then re-fills the same slot in one utterance.
     """
     from shared.orchestration.entity_extractor import extract_entity
 
-    for spec in (_node_config(node).get("alsoCapture") or []):
-        if not isinstance(spec, dict):
-            continue
+    specs = [
+        spec for spec in (_node_config(node).get("alsoCapture") or [])
+        if isinstance(spec, dict)
+    ]
+    ordered = ([s for s in specs if s.get("clear") is True]
+               + [s for s in specs if s.get("clear") is not True])
+    for spec in ordered:
         variable = str(spec.get("variable") or "").strip()
         entity = spec.get("entity")
         if not variable or not isinstance(entity, dict) or not entity:
             continue
-        overwrite = spec.get("overwrite") is True
         previous = str(slots.get(variable) or "").strip()
+        if spec.get("clear") is True:
+            if not previous:
+                continue  # nothing to clear
+            extracted = extract_entity(text, {"name": variable, **entity})
+            if extracted.get("matched"):
+                slots.pop(variable, None)
+                audit.append({"action": "also_cleared", "node": node_id,
+                              "variable": variable})
+            continue
+        overwrite = spec.get("overwrite") is True
         if previous and not overwrite:
             continue  # never overwrite an answer the caller already gave
         extracted = extract_entity(text, {"name": variable, **entity})
@@ -920,6 +955,16 @@ def _apply_also_capture(node: dict, text: str, slots: dict,
             audit.append({"action": ("also_updated" if previous else
                                       "also_captured"), "node": node_id,
                           "variable": variable})
+
+
+# Audit actions that mean "this turn's utterance already changed an earlier
+# answer" — a correction ask marked ``skipIfCorrectedThisTurn`` steps aside
+# when one of these was recorded before the walk reached it.
+_CORRECTION_ACTIONS = frozenset({"also_updated", "also_cleared"})
+# At an intent hub, ANY capture from the utterance (a new downstream fact,
+# an overwrite or a clear) shows the caller answered this hub — "haan, uska
+# naam Raju hai" answered "did you ask the name?" whatever the LLM labelled it.
+_HUB_CAPTURE_ACTIONS = frozenset({"also_captured", "also_updated", "also_cleared"})
 
 
 def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
@@ -1023,16 +1068,29 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # re-prompt when the node text has no question to extract.
         return canned("wf_retry_prefix", lang) + _short_question(base, lang)
 
-    def _unmatched_reply(node: dict) -> str:
+    def _unmatched_reply(node: dict, signal: str | None = None) -> str:
         """Fixed, workflow-authored reply for fail-closed collection nodes.
 
         Most workflows deliberately delegate an off-script turn to the LLM.
         Identity/verification gates can opt out with ``unmatchedReply`` so an
         unconsumed question or ambiguous answer can never be answered from
         unverified context or drift into an authored catch-all branch.
+
+        A node that is itself ``llm_grounded`` already trusts the model with
+        this context, so its fixed reply only guards AMBIGUOUS turns (a
+        'clarify', a no-match): a genuine caller ``question`` there goes
+        off-script for an answer — "हाँ सही है, CX support क्या है?" was met
+        three times with "बस confirm करना है" (cv_3fc5b4c31fe0).
         """
-        value = _node_config(node).get("unmatchedReply")
-        return value.strip() if isinstance(value, str) else ""
+        config = _node_config(node)
+        value = config.get("unmatchedReply")
+        if not isinstance(value, str) or not value.strip():
+            return ""
+        if signal == "question" and str(
+            config.get("responseMode") or ""
+        ).strip().lower() == "llm_grounded":
+            return ""
+        return value.strip()
 
     def _intent_correction(node: dict, text: str) -> tuple[str, str, str] | None:
         """Extract an explicitly configured identifier correction.
@@ -1071,6 +1129,9 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         node_retries = dict(state.get("node_retries") or {})
         pending_digits = dict(state.get("pending_digits") or {})
         audit = list(state.get("audit") or [])
+        # Entries appended from here on belong to THIS turn (the audit itself
+        # is checkpointed and accumulates across turns).
+        turn_audit_start = len(audit)
         trace: list[str] = []
         replies: list[str] = []
         # Delivery contract of THIS turn's reply. Engine-generated strings
@@ -1189,14 +1250,35 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 )
                 value = None
                 accumulated = False
+                captured_first = False
                 if not handled:
                     if buffered and fresh:
                         value = _extract_ask_value(node, variable, combined)
                         accumulated = value is not None
-                    if value is None and not (
-                        guarded and _ask_is_free_text(node, variable)
-                    ):
+                    guarded_free_text = guarded and _ask_is_free_text(node, variable)
+                    if value is None and not guarded_free_text:
                         value = _extract_ask_value(node, variable, text)
+                    if value is None and signal is not None:
+                        # The label says "not an answer", yet the words may
+                        # still carry answers to UPCOMING asks ("guard ko
+                        # diya tha, refund kab milega?"): harvest them now so
+                        # an off-script turn never throws them away. At a
+                        # FREE-TEXT ask such a capture is also the proof that
+                        # the caller was answering this very question — the
+                        # LLM called a partner's deduction story 'complaint'
+                        # (cv_3fc5b4c31fe0) and the flow parked off-script,
+                        # lost the next answer too and let the model invent a
+                        # recipient. Store the narrative and move on.
+                        before = len(audit)
+                        _apply_also_capture(node, text, slots, audit, awaiting)
+                        captured_first = True
+                        if guarded_free_text and any(
+                            entry.get("action") in _HUB_CAPTURE_ACTIONS
+                            for entry in audit[before:]
+                        ):
+                            audit.append({"action": "capture_evidence",
+                                          "node": awaiting, "signal": signal})
+                            value = text.strip() or None
                 if handled:
                     pass  # replied above; the ask stays open
                 elif value is not None:
@@ -1208,7 +1290,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     if accumulated:
                         entry["accumulated_digits"] = len(combined)
                     audit.append(entry)
-                    _apply_also_capture(node, text, slots, audit, awaiting)
+                    if not captured_first:
+                        _apply_also_capture(node, text, slots, audit, awaiting)
                     current, awaiting = _next_of(awaiting), None
                 elif dictated and fresh and len(combined) > max_digits:
                     # Impossible buffer: longer than every length this
@@ -1249,7 +1332,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # Do not burn a retry, advance, or speak a canned
                     # "didn't catch that"; the brain answers in context and
                     # the ask still accepts the next answer.
-                    fixed_reply = _unmatched_reply(node)
+                    fixed_reply = _unmatched_reply(node, signal)
                     if fixed_reply:
                         audit.append({"action": "unmatched_fixed",
                                       "node": awaiting, "signal": signal})
@@ -1297,7 +1380,30 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                   "target": target})
                     current, awaiting = target, None
                     chosen, why = None, "identifier_correction"
-                fixed_reply = _unmatched_reply(node) if chosen is None else ""
+                captured_here = False
+                if correction is None and chosen is None and why in ("off_script", "no_match"):
+                    # The signal said "not an answer" (an LLM 'clarify' on a
+                    # correction such as "नहीं, माँ को नहीं दिया — guard को"),
+                    # yet the words may still change an earlier answer. Apply
+                    # the hub's captures/clears; when one fired, the caller
+                    # DID answer this hub — take the literally matching edge
+                    # ("नहीं" → the correction branch) instead of parking the
+                    # turn behind a fixed re-ask that loses the correction.
+                    _apply_also_capture(node, text, slots, audit, awaiting)
+                    captured_here = True
+                    if any(
+                        entry.get("action") in _HUB_CAPTURE_ACTIONS
+                        for entry in audit[turn_audit_start:]
+                    ):
+                        literal, literal_why, _tok = _choose_intent_edge_detailed(
+                            edge_meta_from.get(awaiting, []), text, None
+                        )
+                        if literal is not None and literal_why == "token":
+                            chosen, why = literal, "correction_literal"
+                fixed_reply = (
+                    _unmatched_reply(node, signal if why == "off_script" else None)
+                    if chosen is None else ""
+                )
                 if (
                     correction is None and chosen is None and not fixed_reply
                     and why == "no_match"
@@ -1375,7 +1481,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # (for example "haan, summary sahi hai aur onboarding
                     # deduction bhi sahi tha"). Capture it before walking to
                     # the next node so that completed ask is skipped.
-                    _apply_also_capture(node, text, slots, audit, awaiting)
+                    if not captured_here:
+                        _apply_also_capture(node, text, slots, audit, awaiting)
                     audit.append({"action": "intent_branch", "node": awaiting,
                                   "edge": chosen.get("label") or chosen.get("id"),
                                   "matched": why, "signal": signal})
@@ -1408,6 +1515,19 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             elif kind == "ask":
                 config = _node_config(node)
                 variable = str(config.get("variable") or node.get("id"))
+                if config.get("skipIfCorrectedThisTurn") is True and any(
+                    entry.get("action") in _CORRECTION_ACTIONS
+                    for entry in audit[turn_audit_start:]
+                ):
+                    # "Which part is wrong?" is pointless when the utterance
+                    # that rejected the summary already carried the fix
+                    # ("nahi, guard ko nahi — customer ko diya tha"): the
+                    # corrected slots are in place, so walk on and let the
+                    # flow re-verify instead of asking the caller to repeat.
+                    audit.append({"action": "correction_skipped",
+                                  "node": current, "variable": variable})
+                    current = _next_of(current)
+                    continue
                 existing = slots.get(variable)
                 context_key = str(config.get("prefillFromContext") or "").strip()
                 if (

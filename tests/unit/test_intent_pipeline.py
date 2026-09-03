@@ -204,3 +204,19 @@ class TestEventShape:
         assert event["entities"] == {"payment_date": "kal"}
         assert event["tool"] == "check_payment_status"
         json.dumps(event)
+
+
+class TestHoldSignalVocabulary:
+    def test_hold_is_a_platform_signal_taught_to_the_llm(self):
+        from shared.orchestration.intent_classifier import (
+            PLATFORM_SIGNAL_MEANINGS,
+            PLATFORM_SIGNALS,
+        )
+        assert "hold" in PLATFORM_SIGNALS
+        assert "hold =" in PLATFORM_SIGNAL_MEANINGS
+        assert "NOT a callback" in PLATFORM_SIGNAL_MEANINGS
+
+    def test_regex_fallback_classifies_hold(self):
+        from shared.orchestration.router import classify_user_signal
+        assert classify_user_signal("ek minute ruko") == "hold"
+        assert classify_user_signal("ek minute baad call karo") == "callback"

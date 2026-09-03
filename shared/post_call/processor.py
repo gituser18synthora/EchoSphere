@@ -33,6 +33,7 @@ from shared.post_call.analyzer import (
     fallback_analysis,
 )
 from shared.post_call.nba import decide_next_best_action
+from shared.post_call.structured import merge_structured_fields
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,26 @@ def _workflow_position(events: list[dict]) -> tuple[bool, str | None]:
     return False, stage or None
 
 
+_SLOT_SECRET_HINTS = ("otp", "pin", "cvv", "password", "card_number", "aadhaar")
+_MAX_SLOT_SNAPSHOT_CHARS = 160
+_MAX_SLOT_SNAPSHOT_KEYS = 48
+
+
+def _snapshot_workflow_slots(slots: dict) -> dict[str, str]:
+    """Bounded, string-only copy of the workflow slots for final_state."""
+    out: dict[str, str] = {}
+    for key, value in list(slots.items())[:_MAX_SLOT_SNAPSHOT_KEYS]:
+        name = str(key or "").strip()
+        if not name or value is None or isinstance(value, (dict, list)):
+            continue
+        if any(hint in name.lower() for hint in _SLOT_SECRET_HINTS):
+            continue
+        text = " ".join(str(value).split())[:_MAX_SLOT_SNAPSHOT_CHARS]
+        if text:
+            out[name] = text
+    return out
+
+
 def enqueue_post_call(recorder) -> str | None:
     """Create the queued memory row for one finalized call (sync, cheap).
 
@@ -97,6 +118,11 @@ def enqueue_post_call(recorder) -> str | None:
     escalated = any(e.get("kind") == "handoff" for e in recorder.events)
     workflow_active, workflow_stage = _workflow_position(recorder.events)
     final_state = {
+        # Final guided-flow answers (scalar slots, bounded, secret-named keys
+        # dropped) — the authoritative source for structured summary fields.
+        "workflow_slots": _snapshot_workflow_slots(
+            getattr(recorder, "workflow_slots", None) or {}
+        ),
         "disposition": recorder.disposition,
         "end_reason": recorder.end_reason,
         "call_state": recorder.call_state or {},
@@ -370,6 +396,7 @@ async def process_memory_row(row_id: str) -> bool:
         json.dumps({"source_conversation_id": row_data["conversation_id"]}),
     )
     final_state = row_data["final_state"]
+    policy = None
 
     try:
         from shared.bot_config import resolve_bot_config
@@ -427,6 +454,15 @@ async def process_memory_row(row_id: str) -> bool:
             analysis.follow_up_required = False
         if not analysis.dominant_language:
             analysis.dominant_language = row_data["language"] or ""
+        # Structured summary fields: the workflow's final (corrected) slots
+        # outrank the analyst; the analyst only fills what the flow never
+        # collected, clamped onto each field's vocabulary.
+        analysis.structured_fields, analysis.structured_field_sources = (
+            merge_structured_fields(
+                policy, final_state.get("workflow_slots") or {},
+                analysis.structured_fields,
+            )
+        )
 
         await asyncio.to_thread(
             _persist_result_sync,
@@ -454,7 +490,7 @@ async def process_memory_row(row_id: str) -> bool:
         if verdict == "exhausted":
             # Terminal: persist the deterministic fallback so the customer's
             # next call still gets safe context; the transcript is untouched.
-            fallback = fallback_analysis(final_state=final_state)
+            fallback = fallback_analysis(final_state=final_state, policy=policy)
             await asyncio.to_thread(
                 _persist_result_sync,
                 row_id,

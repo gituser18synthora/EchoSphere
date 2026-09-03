@@ -318,3 +318,65 @@ describe("TurnDetectionTab", () => {
     expect(screen.getByRole("dialog", { name: "Import Configuration" })).toBeInTheDocument();
   });
 });
+
+describe("TurnDetectionTab — silence prompt timeout", () => {
+  const SILENCE_FIELD = {
+    group: "turn_detection" as const, key: "silence_prompt_seconds", section: "no_response",
+    label: "Silence prompt timeout",
+    description: "Seconds of caller silence before the bot asks whether the caller can hear it. Minimum 5 seconds, maximum 15 seconds.",
+    input: "number" as const, valueType: "integer" as const, unit: "seconds",
+    min: 5, max: 15, step: 1,
+    default: { browser: 15, telephony: 15 },
+    recommended: { browser: 15, telephony: 15 },
+  };
+  const WITH_SILENCE: TurnDetectionConfig = {
+    ...CONFIG,
+    sections: [...CONFIG.sections, { id: "no_response", label: "No-response Handling", description: "Silence checks." }],
+    fields: [...CONFIG.fields, SILENCE_FIELD],
+    effective: {
+      browser: {
+        ...CONFIG.effective.browser,
+        turn_detection: { ...CONFIG.effective.browser.turn_detection, silence_prompt_seconds: 15 },
+      },
+      telephony: {
+        ...CONFIG.effective.telephony,
+        turn_detection: { ...CONFIG.effective.telephony.turn_detection, silence_prompt_seconds: 15 },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTurnDetectionSettings).mockResolvedValue(WITH_SILENCE);
+    vi.mocked(api.saveTurnDetectionSettings).mockResolvedValue(WITH_SILENCE);
+  });
+
+  it("renders the field with its 15 second default and 5–15 second range", async () => {
+    render(<TurnDetectionTab />);
+    expect(await screen.findByLabelText("Silence prompt timeout value")).toHaveValue(15);
+    expect(screen.getByText("No-response Handling")).toBeInTheDocument();
+    expect(screen.getByText("Range 5–15 seconds")).toBeInTheDocument();
+    expect(screen.getByText(/Minimum 5 seconds, maximum 15 seconds/)).toBeInTheDocument();
+  });
+
+  it("clamps typed values below 5 and above 15 so they can never be saved", async () => {
+    const user = userEvent.setup();
+    render(<TurnDetectionTab />);
+    const input = await screen.findByLabelText("Silence prompt timeout value");
+    fireEvent.change(input, { target: { value: "3" } });
+    expect(screen.getByLabelText("Silence prompt timeout slider")).toHaveValue("5");
+    fireEvent.blur(input);
+    expect(input).toHaveValue(5);
+    fireEvent.change(input, { target: { value: "20" } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(15);
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(8);
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(api.saveTurnDetectionSettings).toHaveBeenCalled());
+    const [mode, overrides] = vi.mocked(api.saveTurnDetectionSettings).mock.calls[0];
+    expect(mode).toBe("custom");
+    expect(overrides.browser?.turn_detection?.silence_prompt_seconds).toBe(8);
+  });
+});

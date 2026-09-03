@@ -72,6 +72,36 @@ _PHRASES: dict[str, dict[str, str]] = {
             "दोबारा कॉल नहीं की जाएगी। धन्यवाद।"
         ),
     },
+    # No-response ladder (voice_runtime.silence_policy): rotating check-ins,
+    # then a polite close. Authored phrases pass the speaker-grammar adapter,
+    # so करता/करती follows the bot's voice gender.
+    "silence_check_1": {
+        "en": "Hello, can you hear me?",
+        "hi": "Hello, क्या आप मुझे सुन पा रहे हैं?",
+    },
+    "silence_check_2": {
+        "en": "Hello, are you still there?",
+        "hi": "Hello, क्या आप वहाँ हैं?",
+    },
+    "silence_check_3": {
+        "en": "Are you still on the line? I am here whenever you are ready.",
+        "hi": "क्या आप अभी भी line पर हैं? आप बोलिए, मैं यहीं हूँ।",
+    },
+    "silence_close": {
+        "en": (
+            "It seems you are unable to talk right now. I will connect with "
+            "you later. Goodbye!"
+        ),
+        "hi": (
+            "लगता है अभी आप बात नहीं कर पा रहे हैं। मैं आपसे बाद में connect "
+            "करता हूँ। धन्यवाद!"
+        ),
+    },
+    # The caller asked the bot to wait a moment ("ek minute ruko", "hold on").
+    "hold_ack": {
+        "en": "Sure, I am on the line. Take your time.",
+        "hi": "जी बिल्कुल, मैं line पर हूँ।",
+    },
     "repeat_none": {
         "en": "I haven't said anything yet.",
         "hi": "अभी तक मैंने कुछ नहीं कहा है।",

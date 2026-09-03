@@ -122,3 +122,75 @@ def test_old_cached_snapshot_keeps_legacy_fallback_until_cache_expiry():
         stt={"settings": {"turn_detection": {"confidence": 0.8}}},
     )
     assert resolve_turn_detection(config, "browser")["confidence"] == 0.8
+
+
+# ── silence prompt timeout (no-response ladder, Turn Detection field) ───────
+
+def test_silence_prompt_seconds_is_a_schema_field_with_5_to_15_second_bounds():
+    field = next(f for f in TURN_DETECTION_FIELDS if f["key"] == "silence_prompt_seconds")
+    assert field["group"] == "turn_detection" and field["section"] == "no_response"
+    assert field["valueType"] == "integer" and field["unit"] == "seconds"
+    assert (field["min"], field["max"]) == (5.0, 15.0)
+    for transport in ("browser", "telephony"):
+        assert TURN_DETECTION_DEFAULTS[transport]["silence_prompt_seconds"] == 15.0
+    payload = tenant_turn_detection_payload(None)
+    assert any(s["id"] == "no_response" for s in payload["sections"])
+    assert payload["effective"]["telephony"]["turn_detection"]["silence_prompt_seconds"] == 15.0
+
+
+def test_silence_prompt_seconds_api_validation_enforces_range_and_whole_seconds():
+    def _submit(value):
+        return validate_tenant_turn_detection({
+            "mode": "custom",
+            "overrides": {"telephony": {"turn_detection": {"silence_prompt_seconds": value}}},
+        })
+    assert _submit(5) == [] and _submit(15) == [] and _submit(8) == []
+    assert any("between 5 and 15" in e for e in _submit(4))
+    assert any("between 5 and 15" in e for e in _submit(16))
+    assert any("whole number" in e for e in _submit(7.5))
+
+
+def test_silence_ladder_fields_share_the_no_response_section():
+    fields = {f["key"]: f for f in TURN_DETECTION_FIELDS if f["section"] == "no_response"}
+    assert set(fields) == {"silence_prompt_seconds", "silence_retry_seconds", "silence_max_prompts"}
+    assert (fields["silence_retry_seconds"]["min"], fields["silence_retry_seconds"]["max"]) == (5.0, 15.0)
+    assert (fields["silence_max_prompts"]["min"], fields["silence_max_prompts"]["max"]) == (1.0, 5.0)
+    for transport in ("browser", "telephony"):
+        assert TURN_DETECTION_DEFAULTS[transport]["silence_retry_seconds"] == 15.0
+        assert TURN_DETECTION_DEFAULTS[transport]["silence_max_prompts"] == 3.0
+    assert any("between 1 and 5" in e for e in validate_tenant_turn_detection({
+        "mode": "custom",
+        "overrides": {"browser": {"turn_detection": {"silence_max_prompts": 0}}},
+    }))
+    assert any("between 5 and 15" in e for e in validate_tenant_turn_detection({
+        "mode": "custom",
+        "overrides": {"browser": {"turn_detection": {"silence_retry_seconds": 20}}},
+    }))
+
+
+def test_runtime_silence_policy_reads_the_configured_ladder():
+    from voice_runtime.pipeline import resolve_silence_policy
+
+    snapshot = resolve_tenant_turn_detection({
+        "mode": "custom",
+        "overrides": {"telephony": {"turn_detection": {
+            "silence_prompt_seconds": 6, "silence_retry_seconds": 7,
+            "silence_max_prompts": 2,
+        }}},
+    })
+    config = ResolvedBotConfig(
+        tenant_id="tn-a", bot_id="bot-a", bot_name="A", version="1", published=True,
+        turn_detection=snapshot,
+    )
+    phone = resolve_silence_policy(resolve_turn_detection(config, "telephony"))
+    assert (phone.prompt_seconds, phone.retry_seconds, phone.max_prompts) == (6.0, 7.0, 2)
+    # Other transport untouched; missing fields (old snapshot) keep defaults.
+    browser = resolve_silence_policy(resolve_turn_detection(config, "browser"))
+    assert (browser.prompt_seconds, browser.retry_seconds, browser.max_prompts) == (15.0, 15.0, 3)
+    empty = resolve_silence_policy({})
+    assert (empty.prompt_seconds, empty.retry_seconds, empty.max_prompts) == (15.0, 15.0, 3)
+    assert resolve_silence_policy({"silence_prompt_seconds": "junk"}).prompt_seconds == 15.0
+    # A corrupt cached value can never escape the bounds.
+    assert resolve_silence_policy({"silence_prompt_seconds": 90.0}).prompt_seconds == 15.0
+    assert resolve_silence_policy({"silence_prompt_seconds": 1.0}).prompt_seconds == 5.0
+    assert resolve_silence_policy({"silence_max_prompts": 99}).max_prompts == 5

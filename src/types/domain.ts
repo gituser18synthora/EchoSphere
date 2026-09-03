@@ -85,15 +85,22 @@ export interface HumanSpeechSettings {
   gender_agreement?: boolean;
   micro_pauses?: boolean;
   self_correction?: boolean;
+  /** Pre-rendered, voice-gender-matched breath while a reply is still on its way. */
+  latency_fillers?: boolean;
+  /** Rare soft breath before a long or verification sentence inside a reply (pause mode). */
+  sentence_breaths?: boolean;
   thinking_filler_probability?: number;
   acknowledgement_probability?: number;
   tool_ack_probability?: number;
   backchannel_probability?: number;
   micro_pause_probability?: number;
   self_correction_probability?: number;
+  sentence_breath_probability?: number;
   min_long_turn_for_backchannel_ms?: number;
   min_gap_between_backchannels_ms?: number;
   max_backchannels_per_call?: number;
+  /** Quiet after the caller stops (ms) before a latency filler may play. */
+  latency_filler_delay_ms?: number;
 }
 
 export type HumanSpeechEffectiveSettings = Required<HumanSpeechSettings>;
@@ -1694,6 +1701,12 @@ export interface ConversationAiSummary {
   resolvedItems: string[];
   unresolvedItems: string[];
   missingSlots: string[];
+  /** Bot-configured structured summary (goal policy summaryFields): stable keys, null = not determined. */
+  structuredFields?: Record<string, string | null>;
+  /** Per-field provenance: "workflow" (guided-flow answer) or "analysis" (post-call analyst). */
+  structuredFieldSources?: Record<string, string>;
+  /** Display labels from goal policy summaryFields; keys without one are shown humanised. */
+  structuredFieldLabels?: Record<string, string>;
   nextBestAction?: ConversationNextBestAction | null;
   followUpRequired: boolean;
   followUpAt?: string | null;

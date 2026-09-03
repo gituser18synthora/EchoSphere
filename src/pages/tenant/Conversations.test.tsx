@@ -596,6 +596,31 @@ describe("AI call summary display", () => {
     expect(within(dialog).getByText("Follow-up")).toBeInTheDocument();
   });
 
+  it("renders the configured structured summary fields with their values", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      summary: {
+        ...SUMMARY,
+        structuredFields: {
+          call_customer: "Yes",
+          reach_customer_location: "Yes",
+          hand_over_product: "Yes",
+          hand_over_to: "security_guard",
+          call_cx: null,
+        },
+        structuredFieldSources: { call_customer: "workflow", hand_over_to: "workflow" },
+      },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    const section = await within(dialog).findByTestId("structured-summary");
+    expect(within(section).getByText("Structured summary")).toBeInTheDocument();
+    expect(within(section).getByText("hand over to")).toBeInTheDocument();
+    expect(within(section).getByText("security guard")).toBeInTheDocument();
+    expect(within(section).getAllByText("Yes")).toHaveLength(3);
+    expect(within(section).getByText("not determined")).toBeInTheDocument();
+  });
+
   it("shows a processing state while the analysis is pending", async () => {
     vi.mocked(api.getConversation).mockResolvedValue({
       ...DETAIL,

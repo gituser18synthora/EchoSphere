@@ -5,6 +5,7 @@ Masking: values of entities flagged sensitive (pii/masking_enabled) are
 masked before they are returned to logs or transcripts.
 """
 
+import functools
 import re
 from functools import lru_cache
 from typing import Any
@@ -126,23 +127,67 @@ def identifier_length_bounds(entity: dict[str, Any]) -> tuple[int, int]:
     return _DEFAULT_MIN_DIGITS, _DEFAULT_MAX_DIGITS
 
 
+@functools.lru_cache(maxsize=2048)
+def _compiled(pattern: str) -> "re.Pattern | None":
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def _match_synonym_patterns(text: str, patterns: Any) -> str | None:
+    """Structured canonical matching: ``synonymPatterns`` = {canonical: [regex…]}.
+
+    Spoken answers rarely repeat a fixed surface string: "माँ को दे दिया",
+    "उनके माँ को प्रोडक्ट दिया", "mummy ke paas de diya" all hand the order to
+    the mother, while "माँ के पास दे दो" (the customer's instruction) and "माँ
+    को नहीं दिया" do not. A per-canonical regex expresses that structure
+    (recipient → postposition → optional object words → past-tense handover
+    verb, negation excluded) once, instead of enumerating word orders.
+    Canonicals are tried in authored order, so negative/"no" canonicals may
+    be listed first to win over their positive counterparts; the first
+    canonical with any matching pattern wins.
+    """
+    if not isinstance(patterns, dict):
+        return None
+    for canonical, alternatives in patterns.items():
+        if isinstance(alternatives, str):
+            alternatives = [alternatives]
+        for pattern in alternatives or []:
+            compiled = _compiled(str(pattern))
+            if compiled is not None and compiled.search(text):
+                return str(canonical)
+    return None
+
+
 def _match_entity_text(text: str, entity: dict[str, Any]) -> tuple[str | None, str]:
-    """One matching pass over one candidate text: regex → lexicon → builtin."""
+    """One matching pass over one candidate text: regex → patterns → lexicon → builtin."""
     kind = entity.get("kind", "custom")
     data_type = entity.get("dataType") or entity.get("data_type") or "text"
     lowered = text.lower()
 
-    # 1. Explicit regex wins.
+    # 1. Explicit regex wins. ``regexPatterns`` (a list) is tried in order,
+    #    each pattern with its own capturing group — the way to extract one
+    #    value ("the guard's name") from several unrelated phrasings without
+    #    a giant alternation whose group is None on the other branches.
+    patterns = entity.get("regexPatterns") or entity.get("regex_patterns") or []
     pattern = entity.get("regexPattern") or entity.get("regex_pattern")
     if kind == "regex" and not pattern:
         pattern = None
-    if pattern:
-        try:
-            m = re.search(pattern, text, re.IGNORECASE)
-        except re.error:
-            m = None
+    for candidate in ([pattern] if pattern else []) + [str(x) for x in patterns if x]:
+        compiled = _compiled(candidate)
+        m = compiled.search(text) if compiled is not None else None
         if m:
-            return (m.group(1) if m.groups() else m.group(0)), "regex"
+            value = m.group(1) if m.groups() else m.group(0)
+            if value:
+                return value, "regex"
+
+    # 1b. Structured per-canonical patterns (order-tolerant, negation-aware).
+    canonical = _match_synonym_patterns(
+        text, entity.get("synonymPatterns") or entity.get("synonym_patterns")
+    )
+    if canonical is not None:
+        return canonical, "lexicon_pattern"
 
     # 2. Allowed values + synonyms lexicon.
     allowed = entity.get("allowedValues") or entity.get("allowed_values") or []

@@ -185,6 +185,14 @@ class Settings(BaseSettings):
     voice_session_timeout: int = 900
     max_call_duration: int = 3600
     default_silence_timeout: int = 12
+    # Platform no-response policy (all tenants; see voice_runtime.silence_policy):
+    # quiet seconds before the first "can you hear me?" prompt, seconds between
+    # retries, total prompts before the call is closed politely, and the extra
+    # quiet a caller gets after asking the bot to hold.
+    silence_prompt_seconds: float = 15.0
+    silence_retry_seconds: float = 15.0
+    silence_max_prompts: int = 3
+    silence_hold_grace_seconds: float = 45.0
     # Per-call audio recording (stereo WAV: caller left, bot right). Written by
     # the voice worker, served by /conversations/{id}/recording.
     voice_call_recording_enabled: bool = True
@@ -193,6 +201,12 @@ class Settings(BaseSettings):
     # in-browser recordings). Written by /voice-clones, served back by
     # /voice-clones/{id}/audio/{audio_id}.
     voice_clone_audio_dir: str = "storage/voice_clones"
+    # Optional operator-recorded latency-filler clips (human_speech
+    # "latency_fillers", see voice_runtime.latency_filler): 16-bit PCM WAV
+    # files whose name carries a gender token — filler_male_1.wav,
+    # breath_female.wav, filler_neutral.wav. A gender with no file gets the
+    # runtime's synthesized breath instead.
+    filler_audio_dir: str = "storage/filler_audio"
 
     # ── Telephony ────────────────────────────────────────────────
     freeswitch_host: str = "127.0.0.1"

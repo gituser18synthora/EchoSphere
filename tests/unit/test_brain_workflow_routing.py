@@ -291,3 +291,49 @@ class TestBargeInAndIsolation:
         assert fresh._active_workflow is None
         assert fresh._history == []
         assert fresh._pending_segments == []
+
+
+class TestHoldFastPath:
+    """'Ek minute ruko' during a workflow: one canned acknowledgement, no LLM
+    turn, no workflow step consumed — and the node is still there when the
+    caller returns. Explicit callback wording keeps routing to the flow."""
+
+    async def test_hold_acknowledged_without_engine_or_llm(self):
+        engine = _WorkflowStub(off_script_result())
+        llm = _LLMStub()
+        brain = make_brain(workflow_engine=engine, llm=llm)
+        brain._active_workflow = "frankfinn_seminar"
+
+        await brain._handle_turn("हां, एक मिनट रुक जाओ")
+
+        assert engine.calls == []                       # node untouched
+        assert llm.systems == []                        # no generation
+        assert brain._active_workflow == "frankfinn_seminar"
+        assert "hold_acknowledged" in brain._recorder.event_kinds()
+        assert brain._history[-1] == {"role": "assistant",
+                                      "content": "जी बिल्कुल, मैं line पर हूँ।"}
+        assert brain._hold_requested_at is not None
+        route = [d for k, d in brain._recorder.events if k == "route_decision"][-1]
+        assert route["signal"] == "hold"
+
+    async def test_dont_disconnect_is_hold_not_hangup(self):
+        engine = _WorkflowStub(off_script_result())
+        brain = make_brain(workflow_engine=engine, llm=_LLMStub())
+        brain._active_workflow = "frankfinn_seminar"
+
+        await brain._handle_turn("मुझे एक मिनट दो, कट मत करो")
+
+        assert brain._closing is False
+        assert "hold_acknowledged" in brain._recorder.event_kinds()
+        assert not any(k == "call_control" for k, _ in brain._recorder.events)
+
+    async def test_callback_wording_still_reaches_the_workflow(self):
+        engine = _WorkflowStub(consumed_result("kab call karein?"))
+        brain = make_brain(workflow_engine=engine, llm=_LLMStub())
+        brain._active_workflow = "frankfinn_seminar"
+
+        await brain._handle_turn("ek minute baad call karo")
+
+        assert len(engine.calls) == 1
+        assert engine.calls[0]["signal"] == "callback"
+        assert "hold_acknowledged" not in brain._recorder.event_kinds()

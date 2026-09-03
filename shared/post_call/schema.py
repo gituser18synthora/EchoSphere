@@ -199,6 +199,13 @@ class PostCallAnalysis(BaseModel):
     unresolved_items: list[str] = Field(default_factory=list)
     collected_slots: dict[str, str] = Field(default_factory=dict)
     missing_slots: list[str] = Field(default_factory=list)
+    # Configured structured summary fields (goal_policy.summaryFields), keyed
+    # by field name; None = not determined. Values are clamped onto each
+    # field's own vocabulary by shared.post_call.structured before persisting;
+    # ``structured_field_sources`` records whether the workflow slot or the
+    # analyst supplied each value.
+    structured_fields: dict[str, str | None] = Field(default_factory=dict)
+    structured_field_sources: dict[str, str] = Field(default_factory=dict)
     next_best_action: NextBestAction = Field(default_factory=NextBestAction)
     follow_up_required: bool = True
     confidence: float = 0.0
@@ -240,6 +247,33 @@ class PostCallAnalysis(BaseModel):
                 continue
             out[name] = _clean_text(value, _MAX_SLOT_VALUE_CHARS)
         return out
+
+    @field_validator("structured_fields", mode="before")
+    @classmethod
+    def _clean_structured(cls, v):
+        if not isinstance(v, dict):
+            return {}
+        out: dict[str, str | None] = {}
+        for key, value in list(v.items())[:32]:
+            name = _clean_text(key, 64)
+            if not name:
+                continue
+            if value is None or isinstance(value, (dict, list)):
+                out[name] = None
+            else:
+                out[name] = _clean_text(value, _MAX_SLOT_VALUE_CHARS) or None
+        return out
+
+    @field_validator("structured_field_sources", mode="before")
+    @classmethod
+    def _clean_structured_sources(cls, v):
+        if not isinstance(v, dict):
+            return {}
+        return {
+            _clean_text(k, 64): _clean_text(val, 20)
+            for k, val in list(v.items())[:32]
+            if _clean_text(k, 64) and _clean_text(val, 20)
+        }
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -324,6 +358,7 @@ def parse_analysis(raw: object) -> PostCallAnalysis | None:
         "unresolvedItems": "unresolved_items",
         "collectedSlots": "collected_slots",
         "missingSlots": "missing_slots",
+        "structuredFields": "structured_fields",
         "nextBestAction": "next_best_action",
         "followUpRequired": "follow_up_required",
         "dominantLanguage": "dominant_language",

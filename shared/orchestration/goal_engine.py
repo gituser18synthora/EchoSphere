@@ -41,14 +41,17 @@ import logging
 import re
 import time
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.orchestration.decision_schema import (
     SCOPE_IN,
     ConversationDecision,
     parse_decision,
 )
-from shared.orchestration.intent_classifier import PLATFORM_SIGNALS
+from shared.orchestration.intent_classifier import (
+    PLATFORM_SIGNAL_MEANINGS,
+    PLATFORM_SIGNALS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,79 @@ class GoalSpec(BaseModel):
     completion: str = ""
 
 
+SUMMARY_FIELD_TYPES = ("yes_no", "choice", "text")
+
+
+class SummaryFieldSpec(BaseModel):
+    """One structured post-call summary field the bot reports for every call.
+
+    Configuration, not code: the field's output ``name``, its ``type``
+    (``yes_no`` → "Yes"/"No", ``choice`` → one of ``options``, ``text``), the
+    workflow slot it is read from (``source``) and how that slot's canonical
+    values map onto the output vocabulary (``values``; ``"*"`` = any other
+    non-empty slot value). The workflow slot is authoritative — it reflects
+    every correction the caller made during the call; the post-call analyst
+    may fill a field only when the slot never got a value and ``allowLlm`` is
+    on. See shared.post_call.structured for the derivation rules.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    name: str
+    label: str = ""
+    description: str = ""
+    type: str = "yes_no"
+    source: str = ""
+    options: list[str] = Field(default_factory=list)
+    values: dict[str, str] = Field(default_factory=dict)
+    allow_llm: bool = Field(default=True, alias="allowLlm")
+
+    @field_validator("name", "source", mode="before")
+    @classmethod
+    def _clean_key(cls, v):
+        return str(v or "").strip()[:64]
+
+    @field_validator("label", "description", mode="before")
+    @classmethod
+    def _clean_text(cls, v):
+        return " ".join(str(v or "").split())[:200]
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _clamp_type(cls, v):
+        v = str(v or "").strip().lower()
+        return v if v in SUMMARY_FIELD_TYPES else "text"
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _clean_options(cls, v):
+        if not isinstance(v, (list, tuple)):
+            return []
+        out: list[str] = []
+        for item in v:
+            text = str(item or "").strip()[:60]
+            if text and text not in out:
+                out.append(text)
+        return out[:24]
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def _clean_values(cls, v):
+        if not isinstance(v, dict):
+            return {}
+        return {
+            str(k).strip().lower()[:120]: str(val if val is not None else "").strip()[:60]
+            for k, val in list(v.items())[:48]
+            if str(k or "").strip()
+        }
+
+    @model_validator(mode="after")
+    def _require_name(self):
+        if not self.name:
+            raise ValueError("summary field needs a name")
+        return self
+
+
 class IdentityPolicy(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -161,6 +237,12 @@ class BotGoalPolicy(BaseModel):
     # gives these operational meaning — shared code only validates against
     # the combined set.
     next_actions: list[str] = Field(default_factory=list, alias="nextActions")
+    # Structured post-call summary fields (see SummaryFieldSpec): derived from
+    # the call's final workflow slots first, analyst-filled second. Post-call
+    # only — never consulted by the live decision engine.
+    summary_fields: list[SummaryFieldSpec] = Field(
+        default_factory=list, alias="summaryFields"
+    )
     # Instruction for HOW to redirect off-goal requests (never a fixed
     # sentence — the reply itself is generated per turn, in the caller's
     # language, from this instruction).
@@ -199,21 +281,27 @@ def compile_goal_policy(
     published prompt, configured intents and the runtime-context domain
     policy — so every existing bot keeps working with no new configuration.
     """
+    post_call_only: BotGoalPolicy | None = None
     if goal_config:
         try:
             policy = BotGoalPolicy.model_validate(goal_config)
-            policy.source = "configured"
-            if not policy.role:
-                policy.role = bot_name or "voice assistant"
-            if not policy.prompt_excerpt:
-                policy.prompt_excerpt = (system_prompt or "")[:_MAX_PROMPT_EXCERPT_CHARS]
-            return policy
+            if set(goal_config) - _POST_CALL_ONLY_KEYS:
+                policy.source = "configured"
+                if not policy.role:
+                    policy.role = bot_name or "voice assistant"
+                if not policy.prompt_excerpt:
+                    policy.prompt_excerpt = (system_prompt or "")[:_MAX_PROMPT_EXCERPT_CHARS]
+                return policy
+            # Only post-call keys (summary fields / extra next actions) were
+            # authored: the LIVE policy stays the derived default — adding a
+            # structured summary must never change how the bot talks.
+            post_call_only = policy
         except Exception:  # noqa: BLE001 — a bad config degrades to derived
             logger.exception("invalid goal_policy configuration; deriving defaults")
 
     intent_names = [i.get("name", "") for i in (intents or []) if i.get("name")]
     goal = use_case or bot_name or "assist the caller"
-    return BotGoalPolicy(
+    derived = BotGoalPolicy(
         role=bot_name or "voice assistant",
         domain=domain_policy if domain_policy != "generic" else (use_case or ""),
         goals=[GoalSpec(id="primary", description=goal)],
@@ -229,6 +317,17 @@ def compile_goal_policy(
         source="derived",
         prompt_excerpt=(system_prompt or "")[:_MAX_PROMPT_EXCERPT_CHARS],
     )
+    if post_call_only is not None:
+        derived.summary_fields = list(post_call_only.summary_fields)
+        derived.next_actions = list(post_call_only.next_actions)
+    return derived
+
+
+# goal_policy keys that only shape the post-call analysis. A config made of
+# these alone does not switch the live Goal Engine to "configured" mode.
+_POST_CALL_ONLY_KEYS = frozenset({
+    "summaryFields", "summary_fields", "nextActions", "next_actions",
+})
 
 
 class GoalEngine:
@@ -463,6 +562,10 @@ class GoalEngine:
             "}",
             "",
             "# Decision rules (non-negotiable)",
+            "- signal meanings: " + PLATFORM_SIGNAL_MEANINGS + " A caller "
+            "asking you to wait a moment or not to disconnect is 'hold' even "
+            "when a duration is named ('paanch minute ruko'); choose "
+            "'callback' only for calling at another time.",
             "- decision: judge ONLY the pending question stated in the live "
             "state. Any negation ('नहीं', 'no', 'जी नहीं', 'not me') means "
             "denied even if affirmative words also appear. Partial, noisy or "

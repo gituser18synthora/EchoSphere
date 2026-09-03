@@ -25,6 +25,8 @@ configuration (ResolvedBotConfig):
 
 import asyncio
 import logging
+import math
+from dataclasses import replace
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -65,7 +67,9 @@ from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.barge_in import WordConfirmedBargeInStrategy
+from voice_runtime.silence_policy import SilencePolicy
 from voice_runtime.brain import ConversationBrain
+from voice_runtime.latency_filler import LatencyFillerProcessor, get_filler_library
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
 from voice_runtime.recording import (
@@ -105,6 +109,37 @@ def _warn_invalid(section: str):
         )
 
     return report
+
+
+def resolve_silence_policy(turn: dict[str, float]) -> SilencePolicy:
+    """Platform silence policy with the tenant-configured ladder values.
+
+    ``turn`` is the resolved Turn Detection map for this call's transport:
+    first-prompt wait, retry interval and prompt count come from it (a
+    snapshot written before a field existed has no key and keeps that
+    field's schema default). Bounds are enforced by the schema already; the
+    clamp here only guards a corrupt cached value. The post-hold grace stays
+    a platform setting.
+    """
+    base = SilencePolicy.from_settings(get_settings())
+
+    def _turn_value(key: str) -> float:
+        low, high = TURN_DETECTION_BOUNDS[key]
+        default = TURN_DETECTION_DEFAULTS["browser"][key]
+        try:
+            value = float(turn.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        if not math.isfinite(value):
+            value = default
+        return min(high, max(low, value))
+
+    return replace(
+        base,
+        prompt_seconds=_turn_value("silence_prompt_seconds"),
+        retry_seconds=_turn_value("silence_retry_seconds"),
+        max_prompts=int(round(_turn_value("silence_max_prompts"))),
+    )
 
 
 def resolve_turn_detection(
@@ -514,6 +549,10 @@ def build_tts_service(
             recorder=recorder,
             latency=latency,
             naturalness=naturalness,
+            # Rare planner-gated breath between sentences (pause mode),
+            # matched to the engine voice's gender — same clips as the
+            # pre-reply latency filler.
+            filler_library=get_filler_library(),
         )
 
     # Delivery tuning for the segmented REST path: canonical speed overrides
@@ -547,6 +586,30 @@ def build_tts_service(
         model=tts_conf.get("model") or "",
         provider_name=provider,
         naturalness=naturalness,
+    )
+
+
+def build_latency_filler(
+    naturalness: SpeechNaturalnessPlanner,
+    *,
+    sample_rate: int,
+    recorder=None,
+    library=None,
+) -> LatencyFillerProcessor | None:
+    """The gap-cover processor for one call, or None when the resolved
+    human-speech config turns latency fillers off (no processor, no cost).
+
+    Sits between the TTS service and the output transport; the brain arms it
+    per dispatched turn with the active voice's gender. Config already comes
+    merged platform -> tenant -> bot and bounds-clamped from the planner.
+    """
+    if not naturalness.latency_fillers_enabled:
+        return None
+    return LatencyFillerProcessor(
+        delay_ms=naturalness.latency_filler_delay_ms,
+        library=library if library is not None else get_filler_library(),
+        sample_rate=sample_rate,
+        recorder=recorder,
     )
 
 
@@ -625,6 +688,12 @@ def build_voice_pipeline(
         naturalness=naturalness,
     )
     llm_provider = build_llm_provider(config)
+    # Latency filler: a gender-matched breath from pre-rendered audio when a
+    # dispatched reply has not started speaking within the configured delay,
+    # cut the instant reply audio arrives (voice_runtime.latency_filler).
+    latency_filler = build_latency_filler(
+        naturalness, sample_rate=tts_sample_rate, recorder=recorder,
+    )
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply
     # do not contribute to a verdict).
@@ -671,6 +740,11 @@ def build_voice_pipeline(
         # streaming identifier came out invalid. Lazy — no client is built
         # unless a recovery runs.
         batch_transcriber=build_batch_transcriber(config),
+        # No-response ladder: first-prompt wait, retry interval and prompt
+        # count are the tenant's Turn Detection values (per transport); the
+        # post-hold grace remains a platform setting.
+        silence_policy=resolve_silence_policy(turn),
+        latency_filler=latency_filler,
     )
     processors = [transport.input()]
     if audio_gate is not None:
@@ -744,7 +818,12 @@ def build_voice_pipeline(
             )],
         )
     processors.append(UserTurnProcessor(user_turn_strategies=user_turn_strategies))
-    processors += [brain, tts, transport.output()]
+    processors += [brain, tts]
+    if latency_filler is not None:
+        # After the TTS service so it sees reply audio the moment it exists
+        # (cut point), before the transport so its own chunks reach the wire.
+        processors.append(latency_filler)
+    processors.append(transport.output())
 
     if get_settings().voice_call_recording_enabled:
         # Sits after transport.output() so it observes exactly the frames that
