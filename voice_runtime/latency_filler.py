@@ -401,10 +401,15 @@ _MAX_SPEECH_STOP_AGE_S = 10.0
 # Ladder rungs, in order. ``breath`` is the pre-rendered gap breath; ``hmm``
 # and ``wait`` are voiced cues in the bot's own voice (voice_runtime.voiced_cues).
 RUNGS = ("breath", "hmm", "wait")
-# Quiet before the first rung when the filler is re-armed after an early
-# acknowledgement, and after the bot's previous reply falls silent: a breath
-# right on the heels of speech sounds like a gasp.
+# Quiet before a held rung plays once the bot's previous reply falls silent:
+# a breath right on the heels of speech sounds like a gasp.
 _RESUME_GAP_S = 0.7
+# After a spoken early acknowledgement ("जी, ठीक है…") the breath rung is
+# skipped altogether — a person who just spoke does not then breathe audibly
+# into the phone — and the voiced rungs wait at least this long after the
+# acknowledgement ended (live call cv_06b9ead29d43: ack → 0.7 s → breath read
+# as two fillers back to back).
+_AFTER_ACK_GAP_S = 1.2
 # Minimum quiet between two rungs (the next rung's schedule may be earlier):
 # a breath and a "हम्म…" less than a second apart read as one stuttered noise.
 _MIN_RUNG_GAP_S = 1.0
@@ -436,6 +441,8 @@ class _ArmedTurn:
     # its audio is a provider round-trip away, so no NEW rung may start — a
     # cue cut 200 ms in is a stray puff right before the reply.
     reply_imminent: bool = False
+    # Re-armed after this turn's early acknowledgement: breath rung skipped.
+    after_ack: bool = False
 
 
 def _taper(chunk: bytes) -> bytes:
@@ -562,10 +569,14 @@ class LatencyFillerProcessor(FrameProcessor):
         tracker knows it (that is when the caller started waiting), else from
         dispatch; a deadline already in the past fires at once. ``resume``
         marks a re-arm after the turn's early acknowledgement finished
-        speaking: the schedule keeps the caller's true wait as its origin but
-        the first rung is held off a short beat from now.
+        speaking: the schedule keeps the caller's true wait as its origin, the
+        breath rung is skipped (the bot just spoke) and the voiced rungs are
+        held at least ``_AFTER_ACK_GAP_S`` from now. Without a ladder there is
+        nothing left to play, so a resume then arms nothing.
         """
         await self._cut("rearmed")
+        if resume and not self.ladder_enabled:
+            return
         now = time.monotonic()
         origin = dispatched_at if dispatched_at is not None else now
         if (
@@ -577,10 +588,11 @@ class LatencyFillerProcessor(FrameProcessor):
             turn_id=int(turn_id),
             gender=normalize_gender(gender),
             origin=origin,
-            fire_at=max(origin + self._delay_s, now + (_RESUME_GAP_S if resume else 0.0)),
+            fire_at=max(origin + self._delay_s, now),
             language=language or "",
             engine=dict(engine) if engine else None,
             allow_spoken=bool(allow_spoken),
+            after_ack=bool(resume),
         )
         self._armed = armed
         if self._cue_library is not None and self.ladder_enabled:
@@ -660,10 +672,19 @@ class LatencyFillerProcessor(FrameProcessor):
                 if kind not in self._rung_delays_s:
                     return
                 armed.rung, armed.rung_kind = index, kind
+                if kind == "breath" and armed.after_ack:
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="after_early_ack",
+                    )
+                    continue
                 if index > 0:
                     armed.fire_at = max(
                         armed.origin + self._rung_delays_s[kind],
-                        time.monotonic() + _MIN_RUNG_GAP_S,
+                        time.monotonic() + (
+                            _AFTER_ACK_GAP_S if armed.after_ack and not armed.rungs_played
+                            else _MIN_RUNG_GAP_S
+                        ),
                     )
                 if kind == "wait" and not armed.allow_spoken:
                     self._event(
