@@ -684,16 +684,30 @@ class TestEscalationLadder:
         assert [p["rung"] for p in filler._recorder.data("latency_filler_played")] == ["breath"]
         assert not filler.armed
 
-    async def test_rearm_after_the_early_ack_holds_the_first_rung_a_beat(self, monkeypatch):
-        monkeypatch.setattr(latency_filler_module, "_RESUME_GAP_S", 0.08)
-        filler = make_filler(delay_ms=10)
-        # Deadline long past (the ack took the first second of the wait).
-        await filler.arm(turn_id=2, gender="male", speech_stopped_at=asyncio.get_running_loop().time() - 2.0
-                         if False else None, dispatched_at=None, resume=True)
-        await wait(0.04)
+    async def test_rearm_after_the_early_ack_skips_the_breath_and_holds_the_cue(
+        self, monkeypatch
+    ):
+        # The bot just said "जी, ठीक है…": no audible breath right after it
+        # (live call cv_06b9ead29d43 heard ack + breath as two fillers). The
+        # voiced rungs still cover a long wait, held a beat off the ack.
+        monkeypatch.setattr(latency_filler_module, "_AFTER_ACK_GAP_S", 0.1)
+        filler = self.make(monkeypatch, hmm=50, spoken=400, delay=10)
+        await filler.arm(turn_id=2, gender="male", language="hi-IN", resume=True)
+        await wait(0.06)
         assert filler_audio(filler) == []
+        assert filler._recorder.data("latency_filler_skipped") == [
+            {"turn": 2, "rung": "breath", "reason": "after_early_ack"},
+        ]
+        await wait(0.12)
+        assert [p["rung"] for p in filler._recorder.data("latency_filler_played")] == ["hmm"]
+        assert filler.rungs_played["breath"] == 0
+
+    async def test_rearm_after_the_early_ack_without_a_ladder_arms_nothing(self):
+        filler = make_filler(delay_ms=10)
+        await filler.arm(turn_id=2, gender="male", resume=True)
+        assert not filler.armed
         await wait(0.1)
-        assert filler_audio(filler)
+        assert filler_audio(filler) == []
 
     def test_rung_order_and_delay_monotonicity(self):
         assert RUNGS == ("breath", "hmm", "wait")

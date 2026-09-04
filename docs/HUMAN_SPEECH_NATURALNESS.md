@@ -148,9 +148,11 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   a dispatch-time acknowledgement ("जी…", TTS audio like the reply) stands the
   filler down (`early_ack`) and the brain re-arms it the moment the
   acknowledgement's `BotStoppedSpeakingFrame` arrives, if the reply is still
-  generating and has produced no audio (`resume`: first rung held ~0.7 s off
-  the end of speech, the schedule still anchored on the caller's end of
-  speech); and a rung whose deadline falls while the previous reply's tail is
+  generating and has produced no audio (`resume`: the breath rung is skipped —
+  the bot just spoke, and an audible breath 0.7 s after "जी…" was heard as two
+  fillers back to back — and the voiced ladder rungs follow their schedule,
+  held at least 1.2 s off the acknowledgement; without a ladder nothing is
+  re-armed); and a rung whose deadline falls while the previous reply's tail is
   still audible is **deferred** (`latency_filler_deferred`) to the bot's next
   silence plus the same gap, not skipped.
 - **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
@@ -192,6 +194,6 @@ Telemetry on the conversation event stream, every event carrying `rung`
 `caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
 cancellation reason, `played_ms`), `latency_filler_completed`,
 `latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
-(`no_clip` | `spoken_withheld` | `reply_imminent`). The per-turn `naturalness_trace` log carries
+(`no_clip` | `spoken_withheld` | `reply_imminent` | `after_early_ack`). The per-turn `naturalness_trace` log carries
 `latency_filler_enabled` and `latency_fillers_played` (all rungs); the
 processor's `rungs_played` counts per kind.
