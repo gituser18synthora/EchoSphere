@@ -34,6 +34,7 @@ from pipecat.serializers.base_serializer import FrameSerializer
 
 from shared.config import get_settings
 from shared.errors import ApiError
+from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
 _VAANI_MIN_CHUNK_BYTES = 3200
 _VAANI_MAX_CHUNK_BYTES = 100_000
 _VAANI_FRAME_BYTES = 320
@@ -70,6 +71,8 @@ class _RampedAudioMixin:
     def _init_ramp(self) -> None:
         self._ramp_step = 0
         self._last_audio_at = 0.0
+        # Remnants retired by _note_audio (diagnostics).
+        self.stale_audio_dropped = 0
         # Monotonic time of the last INBOUND caller-media message. The session
         # host reads this to tell an abandoned socket from a live call when
         # the transport-level session timer fires (pipecat's session_timeout
@@ -80,11 +83,29 @@ class _RampedAudioMixin:
         self.last_media_at = time.monotonic()
 
     def _note_audio(self) -> None:
-        """Record inbound-from-TTS audio, restarting the ramp after a gap."""
+        """Record inbound-from-TTS audio, restarting the ramp after a gap.
+
+        A gap also retires any sub-packet remnant still buffered: audio that
+        ended more than ``_RAMP_RESET_IDLE_S`` ago belongs to a finished sound
+        (a breath, a cue, a reply whose flush was missed) and playing it now,
+        glued to the front of the new utterance, is heard as that sound
+        repeating. Utterances that flush properly never leave a remnant.
+        """
         now = time.monotonic()
         if self._last_audio_at and now - self._last_audio_at > _RAMP_RESET_IDLE_S:
             self._ramp_step = 0
+            pending = getattr(self, "_pending_audio", None)
+            if pending:
+                self.stale_audio_dropped += 1
+                logger.debug(
+                    "telephony: dropped %d stale outbound bytes buffered %.1fs ago",
+                    len(pending), now - self._last_audio_at,
+                )
+                pending.clear()
         self._last_audio_at = now
+
+    def _is_audio_flush(self, message: dict | None) -> bool:
+        return bool(message) and message.get("type") == AUDIO_FLUSH_MESSAGE_TYPE
 
     def _reset_ramp(self) -> None:
         self._ramp_step = 0
@@ -231,6 +252,10 @@ class FreeSwitchAudioStreamSerializer(
         if isinstance(
             frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
         ):
+            if self._is_audio_flush(frame.message):
+                # A plain-audio clip (latency filler) just ended: send its
+                # last partial packet now instead of ahead of the next reply.
+                return self._pop_audio_chunk(force=True)
             return await self._serialize_control(frame.message or {})
         return None
 
@@ -244,7 +269,11 @@ class FreeSwitchAudioStreamSerializer(
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _FREESWITCH_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available
@@ -397,6 +426,8 @@ class FreeSwitchAudioForkSerializer(
         if isinstance(
             frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
         ):
+            if self._is_audio_flush(frame.message):
+                return self._pop_audio_chunk(force=True)
             return await self._serialize_control(frame.message or {})
         return None
 
@@ -410,7 +441,11 @@ class FreeSwitchAudioForkSerializer(
             return None
         limit = min(available, _FREESWITCH_MAX_CHUNK_BYTES)
         size = limit - (limit % _FREESWITCH_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _FREESWITCH_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available
@@ -530,6 +565,10 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
             frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
         ):
             message = frame.message or {}
+            if self._is_audio_flush(message):
+                # A plain-audio clip (latency filler) just ended: send its
+                # last partial packet now instead of ahead of the next reply.
+                return self._pop_audio_chunk(force=True)
             if message.get("type") == "telephony_control":
                 event = message.get("event")
                 if event == "transfer":
@@ -627,7 +666,11 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
             return None
         limit = min(available, _VAANI_MAX_CHUNK_BYTES)
         size = limit - (limit % _VAANI_FRAME_BYTES)
-        if size == 0:
+        if force and available <= _VAANI_MAX_CHUNK_BYTES:
+            # End of the utterance: nothing may stay behind. A sub-frame
+            # remnant left here would be prepended to the NEXT utterance.
+            size = available
+        elif size == 0:
             if not force:
                 return None
             size = available

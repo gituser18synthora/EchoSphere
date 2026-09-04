@@ -28,6 +28,7 @@ from shared.providers.factory import (
     get_stt_provider,
     get_tts_provider,
 )
+from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
 from voice_runtime.telephony import (
     _RAMP_THRESHOLDS,
     FreeSwitchAudioForkSerializer,
@@ -316,6 +317,90 @@ class TestVaaniTelephony:
         audio = base64.b64decode(message["media"]["payload"])
         assert len(audio) == 320  # zero-padded to the frame quantum
         assert len(audio) % 320 == 0
+
+    async def test_audio_flush_message_sends_the_buffered_tail_now(self):
+        # A plain-audio clip (latency filler breath) ends without a
+        # BotStoppedSpeakingFrame; its <200 ms tail must not wait in the
+        # buffer for the next reply. The filler's flush message releases it.
+        serializer = VaaniFrameSerializer(stream_sid="MZ123")
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        assert json.loads(await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 3200, sample_rate=8000, num_channels=1,
+        )))["media"]["payload"]
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 800, sample_rate=8000, num_channels=1,
+        )) is None
+        raw = await serializer.serialize(OutputTransportMessageFrame(
+            message={"type": AUDIO_FLUSH_MESSAGE_TYPE},
+        ))
+        audio = base64.b64decode(json.loads(raw)["media"]["payload"])
+        assert audio.startswith(b"\x01" * 800) and len(audio) == 960  # padded to 320 B frames
+        assert not serializer._pending_audio
+        # Nothing buffered: the flush is a no-op, not an empty packet.
+        assert await serializer.serialize(OutputTransportMessageFrame(
+            message={"type": AUDIO_FLUSH_MESSAGE_TYPE},
+        )) is None
+
+    @pytest.mark.parametrize("make, kind, key", [
+        (FreeSwitchAudioStreamSerializer, "streamAudio", "audioData"),
+        (FreeSwitchAudioForkSerializer, "playAudio", "audioContent"),
+    ])
+    async def test_freeswitch_audio_flush_message_sends_the_buffered_tail(self, make, kind, key):
+        serializer = make()
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 800, sample_rate=8000, num_channels=1,
+        )) is None
+        raw = await serializer.serialize(OutputTransportMessageFrame(
+            message={"type": AUDIO_FLUSH_MESSAGE_TYPE},
+        ))
+        message = json.loads(raw)
+        assert message["type"] == kind
+        audio = base64.b64decode(message["data"][key])
+        assert audio.startswith(b"\x01" * 800) and len(audio) == 960
+        assert not serializer._pending_audio
+
+    @pytest.mark.parametrize("make", [
+        lambda: VaaniFrameSerializer(stream_sid="MZ123"),
+        FreeSwitchAudioStreamSerializer, FreeSwitchAudioForkSerializer,
+    ])
+    async def test_stale_remnant_is_dropped_instead_of_replaying_before_the_next_reply(
+        self, make
+    ):
+        # Live FreeSWITCH calls: the breath's last <200 ms sat in the buffer
+        # for 1-2 s and then played glued to the front of the reply — heard
+        # as the breath happening twice. Audio older than the idle gap is
+        # a finished sound; it is retired, never prepended.
+        serializer = make()
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 800, sample_rate=8000, num_channels=1,
+        )) is None
+        serializer._last_audio_at -= 5.0
+        raw = await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x02" * 640, sample_rate=8000, num_channels=1,
+        ))
+        message = json.loads(raw)
+        if "media" in message:
+            payload = message["media"]["payload"]
+        else:
+            payload = message["data"].get("audioData") or message["data"]["audioContent"]
+        assert base64.b64decode(payload) == b"\x02" * 640  # only the NEW utterance
+        assert serializer.stale_audio_dropped == 1
+
+    async def test_remnant_within_the_same_utterance_is_kept(self):
+        serializer = VaaniFrameSerializer(stream_sid="MZ123")
+        serializer._ramp_step = len(_RAMP_THRESHOLDS)
+        assert await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x01" * 3000, sample_rate=8000, num_channels=1,
+        )) is None
+        raw = await serializer.serialize(OutputAudioRawFrame(
+            audio=b"\x02" * 640, sample_rate=8000, num_channels=1,
+        ))
+        audio = base64.b64decode(json.loads(raw)["media"]["payload"])
+        assert audio == b"\x01" * 3000 + b"\x02" * 520  # whole 320 B frames, nothing dropped
+        assert serializer._pending_audio == b"\x02" * 120
+        assert serializer.stale_audio_dropped == 0
 
     @staticmethod
     def _media(payload_b64: str, *, chunk="1", sid="MZ123") -> str:
