@@ -39,7 +39,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -383,6 +383,15 @@ def get_filler_library() -> FillerClipLibrary:
 # A speech-stop mark older than this cannot belong to the turn being
 # dispatched (no VAD on this path, or a stale probe): time from dispatch.
 _MAX_SPEECH_STOP_AGE_S = 10.0
+# Ladder rungs, in order. ``breath`` is the pre-rendered gap breath; ``hmm``
+# and ``wait`` are voiced cues in the bot's own voice (voice_runtime.voiced_cues).
+RUNGS = ("breath", "hmm", "wait")
+# Quiet before the first rung when the filler is re-armed after an early
+# acknowledgement, and after the bot's previous reply falls silent: a breath
+# right on the heels of speech sounds like a gasp.
+_RESUME_GAP_S = 0.7
+# Minimum quiet between two rungs (the next rung's schedule may be earlier).
+_MIN_RUNG_GAP_S = 0.6
 
 
 @dataclass
@@ -391,12 +400,22 @@ class _ArmedTurn:
     gender: str
     origin: float            # monotonic: when the caller stopped (or dispatch)
     fire_at: float
+    language: str = ""
+    engine: dict | None = None
+    allow_spoken: bool = True
+    rung: int = 0            # index into RUNGS of the rung being waited on
+    rung_kind: str = "breath"
     playing_since: float | None = None
     clip_ms: float = 0.0
     # Streaming position: the clip being played and the byte offset of the
     # next chunk, so a cut can taper from exactly where playback stopped.
     clip: bytes = b""
     next_offset: int = 0
+    rungs_played: list = field(default_factory=list)
+    # Set while the bot is audibly speaking at a rung's deadline: the rung
+    # waits for BotStoppedSpeakingFrame instead of being dropped.
+    deferred: bool = False
+    resume: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 def _taper(chunk: bytes) -> bytes:
@@ -415,6 +434,15 @@ class LatencyFillerProcessor(FrameProcessor):
     cancellation (``cancel``); reply audio, interruptions, caller speech and
     bot-speaking frames passing through disarm/cut it on their own. The
     processor never withholds or alters a frame.
+
+    Escalation ladder (``hmm_after_ms`` / ``spoken_after_ms``, measured like
+    ``delay_ms`` from the caller's end of speech): when the breath has played
+    and the reply is STILL not speaking, a short "हम्म…" in the bot's voice
+    follows, then a spoken "एक सेकंड…" — each rung only if its clip is already
+    rendered (``cue_library``), the spoken rung only when the brain allowed it
+    for this turn (never on critical/serious content). A rung whose deadline
+    falls while the bot is still audibly speaking (previous reply's tail) is
+    deferred to the bot's next silence instead of being dropped.
     """
 
     def __init__(
@@ -426,6 +454,9 @@ class LatencyFillerProcessor(FrameProcessor):
         recorder=None,
         chunk_ms: int = 20,
         lead_chunks: int = 2,
+        cue_library=None,
+        hmm_after_ms: int | None = None,
+        spoken_after_ms: int | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -435,11 +466,28 @@ class LatencyFillerProcessor(FrameProcessor):
         self._recorder = recorder
         self._chunk_ms = max(10, int(chunk_ms))
         self._lead_chunks = max(0, int(lead_chunks))
+        # Voiced cue source (voice_runtime.voiced_cues.VoicedCueLibrary or a
+        # stand-in with ``clip(engine, language, kind, rate)`` / ``warm``);
+        # None → breath only, no ladder.
+        self._cue_library = cue_library
+        self._rung_delays_s: dict[str, float] = {"breath": self._delay_s}
+        if cue_library is not None and hmm_after_ms is not None:
+            self._rung_delays_s["hmm"] = max(self._delay_s, float(hmm_after_ms) / 1000.0)
+        if cue_library is not None and spoken_after_ms is not None:
+            self._rung_delays_s["wait"] = max(
+                self._rung_delays_s.get("hmm", self._delay_s), float(spoken_after_ms) / 1000.0
+            )
+        # Optional ``callable(active: bool)`` told when a VOICED cue starts and
+        # ends, so the caller audio gate can shield its echo the way it does
+        # for backchannels (the breath is too quiet to matter).
+        self.cue_window_hook = None
         self._armed: _ArmedTurn | None = None
         self._task: asyncio.Task | None = None
         self._bot_speaking = False
         self.fillers_played = 0
-        # Armed turns whose reply audio arrived before the deadline — the
+        # Rungs played per kind across the call.
+        self.rungs_played: dict[str, int] = {kind: 0 for kind in RUNGS}
+        # Armed turns whose reply audio arrived before the first rung — the
         # common case, and the number that says whether the delay is tuned.
         self.fillers_unneeded = 0
 
@@ -448,6 +496,10 @@ class LatencyFillerProcessor(FrameProcessor):
     @property
     def delay_ms(self) -> int:
         return int(round(self._delay_s * 1000.0))
+
+    @property
+    def ladder_enabled(self) -> bool:
+        return len(self._rung_delays_s) > 1
 
     @property
     def armed(self) -> bool:
@@ -476,12 +528,19 @@ class LatencyFillerProcessor(FrameProcessor):
         gender: str,
         speech_stopped_at: float | None = None,
         dispatched_at: float | None = None,
+        language: str = "",
+        engine: dict | None = None,
+        allow_spoken: bool = True,
+        resume: bool = False,
     ) -> None:
         """A reply is now in flight for ``turn_id``.
 
         The wait is measured from the caller's end of speech when the latency
         tracker knows it (that is when the caller started waiting), else from
-        dispatch; a deadline already in the past fires at once.
+        dispatch; a deadline already in the past fires at once. ``resume``
+        marks a re-arm after the turn's early acknowledgement finished
+        speaking: the schedule keeps the caller's true wait as its origin but
+        the first rung is held off a short beat from now.
         """
         await self._cut("rearmed")
         now = time.monotonic()
@@ -495,9 +554,19 @@ class LatencyFillerProcessor(FrameProcessor):
             turn_id=int(turn_id),
             gender=normalize_gender(gender),
             origin=origin,
-            fire_at=max(origin + self._delay_s, now),
+            fire_at=max(origin + self._delay_s, now + (_RESUME_GAP_S if resume else 0.0)),
+            language=language or "",
+            engine=dict(engine) if engine else None,
+            allow_spoken=bool(allow_spoken),
         )
         self._armed = armed
+        if self._cue_library is not None and self.ladder_enabled:
+            try:
+                # Renders (once per voice) in the background so the cues are
+                # ready by the time a slow reply needs them.
+                self._cue_library.warm(armed.engine, armed.language)
+            except Exception:  # noqa: BLE001 — decoration must never break a turn
+                logger.debug("latency-filler: cue warm-up failed", exc_info=True)
         self._task = self.create_task(self._run(armed))
 
     async def cancel(self, reason: str = "cancelled") -> None:
@@ -513,11 +582,11 @@ class LatencyFillerProcessor(FrameProcessor):
         if armed is None:
             return
         if armed.playing_since is None:
-            if reason == "tts_audio":
+            if reason == "tts_audio" and not armed.rungs_played:
                 self.fillers_unneeded += 1
             return
         if reason == "tts_audio":
-            # The reply is about to speak: taper the breath over ONE more
+            # The reply is about to speak: taper the clip over ONE more
             # chunk (20 ms) instead of stopping it mid-sample, so it ends as a
             # breath and not as a click. The reply's first frame follows
             # right behind it — an imperceptible cost, well under the lead.
@@ -529,61 +598,124 @@ class LatencyFillerProcessor(FrameProcessor):
                         audio=tail, sample_rate=self._sample_rate, num_channels=1,
                     )
                 )
+        self._end_cue_window(armed)
         played_ms = (time.monotonic() - armed.playing_since) * 1000.0
         self._event(
             "latency_filler_cut",
-            turn=armed.turn_id, reason=reason,
+            turn=armed.turn_id, reason=reason, rung=armed.rung_kind,
             played_ms=round(played_ms, 1), clip_ms=round(armed.clip_ms, 1),
         )
         logger.info(
-            "turn[%s] latency filler cut after %.0f ms (reason=%s turn=%d)",
-            self._session(), played_ms, reason, armed.turn_id,
+            "turn[%s] latency filler %s cut after %.0f ms (reason=%s turn=%d)",
+            self._session(), armed.rung_kind, played_ms, reason, armed.turn_id,
         )
+
+    def _rung_clip(self, armed: _ArmedTurn, kind: str) -> bytes:
+        if kind == "breath":
+            return self._library.clip(armed.gender, self._sample_rate)
+        if self._cue_library is None:
+            return b""
+        return self._cue_library.clip(armed.engine, armed.language, kind, self._sample_rate)
+
+    def _begin_cue_window(self, armed: _ArmedTurn) -> None:
+        if armed.rung_kind != "breath" and self.cue_window_hook is not None:
+            try:
+                self.cue_window_hook(True)
+            except Exception:  # noqa: BLE001
+                logger.debug("latency-filler: cue window hook failed", exc_info=True)
+
+    def _end_cue_window(self, armed: _ArmedTurn) -> None:
+        if armed.rung_kind != "breath" and self.cue_window_hook is not None:
+            try:
+                self.cue_window_hook(False)
+            except Exception:  # noqa: BLE001
+                logger.debug("latency-filler: cue window hook failed", exc_info=True)
 
     async def _run(self, armed: _ArmedTurn) -> None:
         try:
-            delay = armed.fire_at - time.monotonic()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            if self._armed is not armed:
-                return
-            if self._bot_speaking:
-                # Dispatched while the previous reply's tail was still
-                # audible and it has not stopped yet: nothing to fill.
+            for index, kind in enumerate(RUNGS):
+                if kind not in self._rung_delays_s:
+                    return
+                armed.rung, armed.rung_kind = index, kind
+                if index > 0:
+                    armed.fire_at = max(
+                        armed.origin + self._rung_delays_s[kind],
+                        time.monotonic() + _MIN_RUNG_GAP_S,
+                    )
+                if kind == "wait" and not armed.allow_spoken:
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="spoken_withheld",
+                    )
+                    return
+                if not await self._wait_for_rung(armed):
+                    return
+                clip = self._rung_clip(armed, kind)
+                if not clip:
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="no_clip", gender=armed.gender,
+                    )
+                    continue
+                armed.clip_ms = len(clip) / (self._sample_rate * 2) * 1000.0
+                armed.clip = clip
+                armed.next_offset = 0
+                armed.playing_since = time.monotonic()
+                self.fillers_played += 1
+                self.rungs_played[kind] = self.rungs_played.get(kind, 0) + 1
+                waited_ms = (armed.playing_since - armed.origin) * 1000.0
                 self._event(
-                    "latency_filler_skipped", turn=armed.turn_id, reason="bot_speaking",
+                    "latency_filler_played",
+                    turn=armed.turn_id, gender=armed.gender, rung=kind,
+                    waited_ms=round(waited_ms, 1), clip_ms=round(armed.clip_ms, 1),
                 )
-                return
-            clip = self._library.clip(armed.gender, self._sample_rate)
-            if not clip:
+                logger.info(
+                    "turn[%s] latency filler %s playing (turn=%d gender=%s waited=%.0fms clip=%.0fms)",
+                    self._session(), kind, armed.turn_id, armed.gender, waited_ms, armed.clip_ms,
+                )
+                self._begin_cue_window(armed)
+                try:
+                    await self._stream(armed)
+                finally:
+                    self._end_cue_window(armed)
                 self._event(
-                    "latency_filler_skipped", turn=armed.turn_id, reason="no_clip",
-                    gender=armed.gender,
+                    "latency_filler_completed", turn=armed.turn_id, rung=kind,
+                    played_ms=round(armed.clip_ms, 1),
                 )
-                return
-            armed.clip_ms = len(clip) / (self._sample_rate * 2) * 1000.0
-            armed.clip = clip
-            armed.playing_since = time.monotonic()
-            self.fillers_played += 1
-            waited_ms = (armed.playing_since - armed.origin) * 1000.0
-            self._event(
-                "latency_filler_played",
-                turn=armed.turn_id, gender=armed.gender,
-                waited_ms=round(waited_ms, 1), clip_ms=round(armed.clip_ms, 1),
-            )
-            logger.info(
-                "turn[%s] latency filler playing (turn=%d gender=%s waited=%.0fms clip=%.0fms)",
-                self._session(), armed.turn_id, armed.gender, waited_ms, armed.clip_ms,
-            )
-            await self._stream(armed)
-            self._event(
-                "latency_filler_completed", turn=armed.turn_id,
-                played_ms=round(armed.clip_ms, 1),
-            )
+                armed.rungs_played.append(kind)
+                armed.playing_since = None
+                armed.clip = b""
         finally:
             if self._armed is armed:
                 self._armed = None
                 self._task = None
+
+    async def _wait_for_rung(self, armed: _ArmedTurn) -> bool:
+        """Sleep until the rung's deadline; while the bot is audibly speaking
+        at that moment, wait for its silence plus a short gap instead. False
+        when the turn was disarmed meanwhile."""
+        while True:
+            delay = armed.fire_at - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if self._armed is not armed:
+                return False
+            if not self._bot_speaking:
+                return True
+            # Dispatched while the previous reply's tail was still audible:
+            # nothing to fill yet. Hold the rung until the bot falls silent.
+            if not armed.deferred:
+                self._event(
+                    "latency_filler_deferred", turn=armed.turn_id, rung=armed.rung_kind,
+                    reason="bot_speaking",
+                )
+            armed.deferred = True
+            armed.resume.clear()
+            await armed.resume.wait()
+            if self._armed is not armed:
+                return False
+            armed.deferred = False
+            armed.fire_at = time.monotonic() + _RESUME_GAP_S
 
     def _chunk_bytes(self) -> int:
         return max(1, int(self._sample_rate * self._chunk_ms / 1000)) * 2
@@ -641,6 +773,11 @@ class LatencyFillerProcessor(FrameProcessor):
             await self._cut("bot_speaking")
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            armed = self._armed
+            if armed is not None and armed.deferred and armed.playing_since is None:
+                # The previous reply's tail is over; the held rung may play
+                # after a short gap (see _wait_for_rung).
+                armed.resume.set()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             await self._cut("pipeline_end")
         await self.push_frame(frame, direction)

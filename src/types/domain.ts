@@ -101,6 +101,12 @@ export interface HumanSpeechSettings {
   max_backchannels_per_call?: number;
   /** Quiet after the caller stops (ms) before a latency filler may play. */
   latency_filler_delay_ms?: number;
+  /** Long-wait escalation: voiced "hmm" then a spoken "one second" cue in the bot's voice. */
+  latency_filler_ladder?: boolean;
+  /** Time after the caller stops (ms) before the voiced "hmm" cue may play. */
+  latency_filler_hmm_ms?: number;
+  /** Time after the caller stops (ms) before the spoken "one second" cue may play. */
+  latency_filler_spoken_ms?: number;
 }
 
 export type HumanSpeechEffectiveSettings = Required<HumanSpeechSettings>;

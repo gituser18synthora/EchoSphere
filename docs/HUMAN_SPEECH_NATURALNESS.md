@@ -141,10 +141,40 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   guard all see a quiet bot, and a caller who talks over a breath opens a turn
   exactly as over silence. Nothing is spoken, so history, turn records and
   the client transcript never contain it.
-- **One opportunity per dispatched turn.** The brain arms the processor at
+- **One schedule per dispatched turn.** The brain arms the processor at
   dispatch and every cancellation path (barge-in, late-final merge, hang-up,
-  teardown) disarms it; caller speech, interruptions and bot audio passing
-  through cut it too.
+  teardown) disarms it; caller speech, interruptions and reply audio passing
+  through cut it too. Two cases keep the wait covered instead of dropping it:
+  a dispatch-time acknowledgement ("जी…", TTS audio like the reply) stands the
+  filler down (`early_ack`) and the brain re-arms it the moment the
+  acknowledgement's `BotStoppedSpeakingFrame` arrives, if the reply is still
+  generating and has produced no audio (`resume`: first rung held ~0.7 s off
+  the end of speech, the schedule still anchored on the caller's end of
+  speech); and a rung whose deadline falls while the previous reply's tail is
+  still audible is **deferred** (`latency_filler_deferred`) to the bot's next
+  silence plus the same gap, not skipped.
+- **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
+  `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
+  still not speaking, a short "हम्म…" in the bot's OWN voice follows at
+  `latency_filler_hmm_ms` (default 3200, 2000–8000) and a spoken "एक सेकंड…"
+  at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
+  from the caller's end of speech with at least 0.6 s of quiet between rungs.
+  Cue texts are fixed per language (`ladder_cue`), gender-neutral, rendered
+  ONCE per (provider, model, voice, language) through the provider's REST
+  `synthesize`, trimmed of lead/tail silence, faded, normalized under the reply's level (≈−25 dBFS RMS, peaks ≤ −10 dBFS) and
+  cached in memory and as WAV under `filler_audio_dir/cache/`; rendering
+  starts in the background when a voice is first armed, and a cue that is not
+  ready yet is skipped for that turn (`no_clip`) — the ladder never waits on
+  a render, never bills a per-turn TTS call, and a failed render is remembered
+  for five minutes. Cues are plain output audio like the breath (no
+  bot-speaking flips, fully interruptible, a `TTSAudioRawFrame` mid-cue
+  tapers it); because a voiced cue is loud enough to echo, the processor opens
+  the caller audio gate's backchannel shield for its duration. The spoken rung
+  is withheld (`spoken_withheld`) when the caller's words carry critical
+  content (amounts, identifiers, OTPs, dates), a serious caller state
+  (complaint, refusal, hardship…) or an identifier capture is open — the
+  reply itself must be the next thing such a caller hears. The mock TTS
+  provider never renders cues.
 - **Gender-matched.** The clip follows the catalog gender of the voice the TTS
   router will actually use for the current conversation language. Operators
   may drop 16-bit PCM WAV recordings into `filler_audio_dir`
@@ -156,10 +186,12 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   breath); `python scripts/export_filler_audio.py` writes those as WAVs for
   audition. A file that fails to decode falls back to the synthesized breath.
 
-Telemetry on the conversation event stream: `latency_filler_played`
-(`turn`, `gender`, `waited_ms`, `clip_ms`), `latency_filler_cut` (`reason`
-`tts_audio` | `caller_speech` | `interruption` | `bot_speaking` | brain
-cancellation reason, `played_ms`), `latency_filler_completed` and
-`latency_filler_skipped` (`bot_speaking` | `no_clip`). The per-turn
-`naturalness_trace` log carries `latency_filler_enabled` and
-`latency_fillers_played`.
+Telemetry on the conversation event stream, every event carrying `rung`
+(`breath` | `hmm` | `wait`): `latency_filler_played` (`turn`, `gender`,
+`waited_ms`, `clip_ms`), `latency_filler_cut` (`reason` `tts_audio` |
+`caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
+cancellation reason, `played_ms`), `latency_filler_completed`,
+`latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
+(`no_clip` | `spoken_withheld`). The per-turn `naturalness_trace` log carries
+`latency_filler_enabled` and `latency_fillers_played` (all rungs); the
+processor's `rungs_played` counts per kind.
