@@ -81,7 +81,7 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     # rendered once per voice and cached (voice_runtime.voiced_cues); the
     # spoken rung is withheld on critical/serious turns.
     "latency_filler_ladder": True,
-    "latency_filler_hmm_ms": 3200,
+    "latency_filler_hmm_ms": 3500,
     "latency_filler_spoken_ms": 5000,
 }
 

@@ -53,6 +53,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     StartFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
     UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -266,6 +267,20 @@ class FillerClipLibrary:
         self._sources: dict[tuple[str, str], list] | None = None
         self._rendered: dict[tuple[str, str, int, int], bytes] = {}
         self._cursor: dict[tuple[str, str], int] = {}
+        # Monotonic time the latency filler last started a rung (any kind):
+        # the TTS router consults it so an in-reply inhale never follows a
+        # pre-reply breath within a couple of seconds (two breaths back to
+        # back around a short first sentence read as a stutter).
+        self.last_played_at: float | None = None
+
+    def note_played(self, when: float | None = None) -> None:
+        self.last_played_at = time.monotonic() if when is None else when
+
+    def recently_played(self, within_s: float) -> bool:
+        return (
+            self.last_played_at is not None
+            and time.monotonic() - self.last_played_at < within_s
+        )
 
     def _scan(self) -> dict[tuple[str, str], list]:
         sources: dict[tuple[str, str], list] = {
@@ -390,8 +405,9 @@ RUNGS = ("breath", "hmm", "wait")
 # acknowledgement, and after the bot's previous reply falls silent: a breath
 # right on the heels of speech sounds like a gasp.
 _RESUME_GAP_S = 0.7
-# Minimum quiet between two rungs (the next rung's schedule may be earlier).
-_MIN_RUNG_GAP_S = 0.6
+# Minimum quiet between two rungs (the next rung's schedule may be earlier):
+# a breath and a "हम्म…" less than a second apart read as one stuttered noise.
+_MIN_RUNG_GAP_S = 1.0
 
 
 @dataclass
@@ -416,6 +432,10 @@ class _ArmedTurn:
     # waits for BotStoppedSpeakingFrame instead of being dropped.
     deferred: bool = False
     resume: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set when the reply's synthesis has been requested (TTSStartedFrame):
+    # its audio is a provider round-trip away, so no NEW rung may start — a
+    # cue cut 200 ms in is a stray puff right before the reply.
+    reply_imminent: bool = False
 
 
 def _taper(chunk: bytes) -> bytes:
@@ -442,7 +462,10 @@ class LatencyFillerProcessor(FrameProcessor):
     rendered (``cue_library``), the spoken rung only when the brain allowed it
     for this turn (never on critical/serious content). A rung whose deadline
     falls while the bot is still audibly speaking (previous reply's tail) is
-    deferred to the bot's next silence instead of being dropped.
+    deferred to the bot's next silence instead of being dropped; once the
+    reply's synthesis has been requested (``TTSStartedFrame``) no new rung
+    starts. Every rung start is noted on the clip library so the TTS router
+    withholds an in-reply inhale right after a pre-reply breath.
     """
 
     def __init__(
@@ -650,6 +673,12 @@ class LatencyFillerProcessor(FrameProcessor):
                     return
                 if not await self._wait_for_rung(armed):
                     return
+                if armed.reply_imminent:
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="reply_imminent",
+                    )
+                    return
                 clip = self._rung_clip(armed, kind)
                 if not clip:
                     self._event(
@@ -661,6 +690,9 @@ class LatencyFillerProcessor(FrameProcessor):
                 armed.clip = clip
                 armed.next_offset = 0
                 armed.playing_since = time.monotonic()
+                note_played = getattr(self._library, "note_played", None)
+                if note_played is not None:
+                    note_played(armed.playing_since)
                 self.fillers_played += 1
                 self.rungs_played[kind] = self.rungs_played.get(kind, 0) + 1
                 waited_ms = (armed.playing_since - armed.origin) * 1000.0
@@ -700,7 +732,7 @@ class LatencyFillerProcessor(FrameProcessor):
                 await asyncio.sleep(delay)
             if self._armed is not armed:
                 return False
-            if not self._bot_speaking:
+            if not self._bot_speaking or armed.reply_imminent:
                 return True
             # Dispatched while the previous reply's tail was still audible:
             # nothing to fill yet. Hold the rung until the bot falls silent.
@@ -764,6 +796,17 @@ class LatencyFillerProcessor(FrameProcessor):
             # breath chunk can be queued behind this frame.
             if self._task is not None:
                 await self._cut("tts_audio")
+        elif isinstance(frame, TTSStartedFrame):
+            # Synthesis of the reply was just requested: its first audio is
+            # one provider round-trip (~200-400 ms) away. A rung already
+            # playing runs on until that audio cuts it; a rung not yet
+            # started stays unstarted — a "हम्म…" chopped after 200 ms is a
+            # grunt, and a breath chopped that early a puff, right before the
+            # reply. Nothing is cut here: the reply may still stall.
+            if self._armed is not None:
+                self._armed.reply_imminent = True
+                if self._armed.playing_since is None and self._armed.deferred:
+                    self._armed.resume.set()
         elif isinstance(frame, InterruptionFrame):
             await self._cut("interruption")
         elif isinstance(frame, UserStartedSpeakingFrame):

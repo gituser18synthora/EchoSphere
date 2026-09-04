@@ -480,7 +480,7 @@ class TestLatencyFillerConfig:
             "'latency_filler_delay_ms' must be an integer",
         ]
         assert HUMAN_SPEECH_DEFAULTS["latency_filler_ladder"] is True
-        assert HUMAN_SPEECH_DEFAULTS["latency_filler_hmm_ms"] == 3200
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_hmm_ms"] == 3500
         assert HUMAN_SPEECH_DEFAULTS["latency_filler_spoken_ms"] == 5000
         assert validate_human_speech({"latency_filler_hmm_ms": 1000}) == [
             "'latency_filler_hmm_ms' must be between 2000 and 8000",

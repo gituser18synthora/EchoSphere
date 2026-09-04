@@ -22,6 +22,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -626,6 +627,55 @@ class TestEscalationLadder:
         await wait(0.25)
         assert windows == [True, False, True, False]
 
+    async def test_tts_start_before_a_rung_holds_it_and_the_reply_cuts_silently(
+        self, monkeypatch
+    ):
+        # Synthesis requested (TTSStartedFrame) before the hmm deadline: the
+        # hmm never starts (a 200 ms chopped cue is a grunt), the reply audio
+        # then disarms; the breath that DID play keeps this from "unneeded".
+        filler = self.make(monkeypatch, hmm=250, spoken=350)
+        filler._library = _ShortLibrary(clip_ms=60)
+        await filler.arm(turn_id=1, gender="male", language="hi-IN")
+        await wait(0.15)  # breath done
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.2)   # hmm deadline passes
+        assert filler.rungs_played["hmm"] == 0
+        skipped = filler._recorder.data("latency_filler_skipped")
+        assert skipped == [{"turn": 1, "rung": "hmm", "reason": "reply_imminent"}]
+        assert not filler.armed
+        assert filler.fillers_unneeded == 0
+
+    async def test_tts_start_before_the_breath_means_no_filler_at_all(self):
+        filler = make_filler(delay_ms=40)
+        await filler.arm(turn_id=1, gender="male")
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.1)
+        assert filler_audio(filler) == []
+        assert filler._recorder.data("latency_filler_skipped")[0]["reason"] == "reply_imminent"
+
+    async def test_tts_start_during_a_playing_rung_lets_it_run_until_audio(self, monkeypatch):
+        filler = self.make(monkeypatch, cue_library=_CueStub(clip_ms=400), delay=10)
+        filler._library = _ShortLibrary(clip_ms=400)
+        await filler.arm(turn_id=1, gender="male", language="hi-IN")
+        await wait(0.1)
+        assert filler.playing
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.05)
+        assert filler.playing  # not cut by the start frame itself
+        await filler.process_frame(tts_audio(), DOWN)
+        assert not filler.playing
+        assert filler._recorder.data("latency_filler_cut")[0]["reason"] == "tts_audio"
+
+    async def test_rung_start_is_noted_on_the_clip_library(self, monkeypatch):
+        filler = self.make(monkeypatch)
+        library = FillerClipLibrary(None)
+        filler._library = library
+        assert not library.recently_played(10.0)
+        await filler.arm(turn_id=1, gender="male", language="hi-IN")
+        await wait(0.06)
+        assert library.recently_played(10.0)
+        assert not library.recently_played(0.0)
+
     async def test_no_cue_library_means_breath_only(self):
         filler = make_filler(delay_ms=20, hmm_after_ms=40, spoken_after_ms=60)
         assert not filler.ladder_enabled
@@ -928,7 +978,7 @@ class TestPipelineBuilder:
 
     def test_ladder_defaults_and_wiring(self):
         assert HUMAN_SPEECH_DEFAULTS["latency_filler_ladder"] is True
-        assert HUMAN_SPEECH_DEFAULTS["latency_filler_hmm_ms"] == 3200
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_hmm_ms"] == 3500
         assert HUMAN_SPEECH_DEFAULTS["latency_filler_spoken_ms"] == 5000
         cues = _CueStub()
         processor = build_latency_filler(
@@ -936,7 +986,7 @@ class TestPipelineBuilder:
             library=FillerClipLibrary(None), cue_library=cues,
         )
         assert processor.ladder_enabled and processor._cue_library is cues
-        assert processor._rung_delays_s == {"breath": 1.5, "hmm": 3.2, "wait": 5.0}
+        assert processor._rung_delays_s == {"breath": 1.5, "hmm": 3.5, "wait": 5.0}
         off = build_latency_filler(
             SpeechNaturalnessPlanner({"latency_filler_ladder": False}), sample_rate=8000,
             library=FillerClipLibrary(None), cue_library=cues,
