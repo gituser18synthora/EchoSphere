@@ -156,9 +156,9 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
 - **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
   `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
   still not speaking, a short "हम्म…" in the bot's OWN voice follows at
-  `latency_filler_hmm_ms` (default 3200, 2000–8000) and a spoken "एक सेकंड…"
+  `latency_filler_hmm_ms` (default 3500, 2000–8000) and a spoken "एक सेकंड…"
   at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
-  from the caller's end of speech with at least 0.6 s of quiet between rungs.
+  from the caller's end of speech with at least 1 s of quiet between rungs. Once the reply's synthesis is requested (`TTSStartedFrame`) no new rung starts (`reply_imminent`) — a cue chopped 200 ms in by the reply is a grunt, not a cue — and the TTS router withholds the in-reply sentence inhale for 6 s after any latency rung started (`sentence_breath_suppressed`, `recent_latency_filler`), so a reply never carries two breaths back to back.
   Cue texts are fixed per language (`ladder_cue`), gender-neutral, rendered
   ONCE per (provider, model, voice, language) through the provider's REST
   `synthesize`, trimmed of lead/tail silence, faded, normalized under the reply's level (≈−25 dBFS RMS, peaks ≤ −10 dBFS) and
@@ -192,6 +192,6 @@ Telemetry on the conversation event stream, every event carrying `rung`
 `caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
 cancellation reason, `played_ms`), `latency_filler_completed`,
 `latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
-(`no_clip` | `spoken_withheld`). The per-turn `naturalness_trace` log carries
+(`no_clip` | `spoken_withheld` | `reply_imminent`). The per-turn `naturalness_trace` log carries
 `latency_filler_enabled` and `latency_fillers_played` (all rungs); the
 processor's `rungs_played` counts per kind.

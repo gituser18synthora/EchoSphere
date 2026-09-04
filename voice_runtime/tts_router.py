@@ -106,6 +106,10 @@ _FATAL_ERROR_CATEGORIES = frozenset({"auth", "invalid_input"})
 # person starts talking on the top of a breath.
 _SENTENCE_BREATH_KIND = "inhale"
 _SENTENCE_BREATH_BEAT_MS = 60
+# No in-reply inhale this soon after the pre-reply latency filler breathed:
+# the planning moment is at most a sentence or two into the reply, so this
+# window covers "breath (cut) → short first sentence → inhale".
+_SENTENCE_BREATH_QUIET_AFTER_FILLER_S = 6.0
 
 
 def is_streaming_tts_provider(provider: str) -> bool:
@@ -299,6 +303,17 @@ class StreamingTTSRouter(TTSService):
         return sanitize_for_tts(text)
 
     # ── engine / provider management ────────────────────────────────────
+    def _recent_latency_filler(self) -> bool:
+        """True when the latency filler started a breath/cue for this reply's
+        gap within the last few seconds (clip library bookkeeping)."""
+        recently = getattr(self._filler_library, "recently_played", None)
+        if recently is None:
+            return False
+        try:
+            return bool(recently(_SENTENCE_BREATH_QUIET_AFTER_FILLER_S))
+        except Exception:  # noqa: BLE001 — decoration must never break synthesis
+            return False
+
     def _engine_for_language(self, locale: str) -> dict:
         return resolve_language_engine(
             self._language_map, locale, self._default_engine
@@ -517,6 +532,20 @@ class StreamingTTSRouter(TTSService):
                     first_in_turn=len(state.texts) == 1,
                     breaths_so_far=state.breaths,
                 )
+                if (
+                    delivery.breath_before
+                    and self._filler_library is not None
+                    and self._recent_latency_filler()
+                ):
+                    # The pre-reply latency filler just breathed for this very
+                    # reply: an inhale before the second sentence would be a
+                    # second breath within a couple of seconds.
+                    delivery.breath_before = False
+                    if self._recorder is not None:
+                        self._recorder.add_event(
+                            "sentence_breath_suppressed",
+                            context=str(context_id)[:8], reason="recent_latency_filler",
+                        )
                 if delivery.breath_before and self._filler_library is not None:
                     state.breaths += 1
                 planning_ms = (time.perf_counter() - planned_at) * 1000.0

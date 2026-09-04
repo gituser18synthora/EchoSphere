@@ -471,6 +471,42 @@ class _RouterRecorder:
         self.events.append((kind, data))
 
 
+class _RecentFillerLibraryStub(_ClipLibraryStub):
+    """Clip library that reports the latency filler just breathed."""
+
+    def recently_played(self, within_s):
+        return True
+
+
+async def test_no_in_reply_inhale_right_after_the_pre_reply_latency_breath():
+    library = _RecentFillerLibraryStub(b"\x05\x00" * 1600)
+    recorder = _RouterRecorder()
+    router = make_router(pause_ms=150, naturalness=_BreathPlanner(),
+                         filler_library=library, recorder=recorder)
+    provider = FakeProvider()
+    state = _Generation(engine=dict(ENGINE, voice_gender="female"), provider=provider)
+    router._generations["ctx"] = state
+
+    async for _ in router.run_tts("Pehla vaakya.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx~1", audio=b"\x01\x02" * 8,
+    ))
+    async for _ in router.run_tts("Doosra vaakya kaafi lamba hai aur isme bahut saari baatein hain.", "ctx"):
+        pass
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx~1"))
+    # The pause is materialized, the inhale is not: the reply gap already
+    # carried a breath a moment ago.
+    frames = audio_frames(router)
+    assert frames[-1].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
+    assert library.requests == []
+    assert state.breaths == 0
+    assert ("sentence_breath_suppressed", {
+        "context": "ctx", "reason": "recent_latency_filler",
+    }) in recorder.events
+    assert not any(k == "sentence_breath_played" for k, _ in recorder.events)
+
+
 async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence():
     breath = b"\x05\x00" * 1600                      # 100 ms at 16 kHz
     library = _ClipLibraryStub(breath)
