@@ -51,6 +51,7 @@ from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
     OutputAudioRawFrame,
+    OutputTransportMessageFrame,
     StartFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -59,6 +60,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from shared.audio.pcm import apply_fade_in, apply_fade_out, resample_pcm, wav_to_pcm
+from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -487,9 +489,17 @@ class LatencyFillerProcessor(FrameProcessor):
         cue_library=None,
         hmm_after_ms: int | None = None,
         spoken_after_ms: int | None = None,
+        emit_flush_marker: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        # Telephony transports packetize outbound PCM (200 ms) and flush a
+        # partial packet only on BotStoppedSpeakingFrame, which plain audio
+        # never produces: a completed clip's tail would sit there and play
+        # glued to the next reply ("the breath repeats"). When set, a
+        # transport message follows every completed clip (in order, via the
+        # audio queue) telling the serializer to send that tail now.
+        self._emit_flush_marker = bool(emit_flush_marker)
         self._delay_s = max(0.0, float(delay_ms) / 1000.0)
         self._library = library
         self._sample_rate = int(sample_rate)
@@ -731,6 +741,10 @@ class LatencyFillerProcessor(FrameProcessor):
                     await self._stream(armed)
                 finally:
                     self._end_cue_window(armed)
+                if self._emit_flush_marker:
+                    await self.push_frame(
+                        OutputTransportMessageFrame(message={"type": AUDIO_FLUSH_MESSAGE_TYPE})
+                    )
                 self._event(
                     "latency_filler_completed", turn=armed.turn_id, rung=kind,
                     played_ms=round(armed.clip_ms, 1),

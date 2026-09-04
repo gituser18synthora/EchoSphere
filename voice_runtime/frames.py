@@ -58,3 +58,14 @@ class STTTurnResumedFrame(DataFrame):
     """
 
     reason: str = "turn_resumed"
+
+
+# Transport message the latency filler sends right after a clip it streamed as
+# plain output audio (breath / voiced cue) has fully left the pipeline. The
+# telephony serializers packetize outbound PCM into 200 ms frames and flush a
+# partial packet only on BotStoppedSpeakingFrame — which plain audio never
+# produces — so a clip's last <200 ms would otherwise sit in the buffer and
+# play glued to the front of the NEXT utterance (heard on FreeSWITCH calls as
+# the breath "repeating" right before the reply). The message rides the audio
+# queue, so it reaches the serializer after the clip's last frame.
+AUDIO_FLUSH_MESSAGE_TYPE = "audio_flush"

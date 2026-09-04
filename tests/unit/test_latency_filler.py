@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
     EndFrame,
     InterruptionFrame,
     OutputAudioRawFrame,
+    OutputTransportMessageFrame,
     StartFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
@@ -44,6 +45,7 @@ from voice_runtime.latency_filler import (
     scale_pcm,
     synthesize_breath,
 )
+from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
 from voice_runtime.pipeline import build_latency_filler
 from voice_runtime.voiced_cues import VoicedCueLibrary, trim_silence
 
@@ -676,6 +678,43 @@ class TestEscalationLadder:
         assert library.recently_played(10.0)
         assert not library.recently_played(0.0)
 
+    async def test_telephony_flush_marker_follows_each_completed_clip(self, monkeypatch):
+        # Telephony serializers packetize PCM and only flush on
+        # BotStoppedSpeaking: without this marker the breath's tail would sit
+        # buffered and play glued to the reply (heard as a second breath).
+        filler = self.make(monkeypatch, hmm=250, spoken=350)
+        filler._library = _ShortLibrary(clip_ms=60)
+        filler._emit_flush_marker = True
+        await filler.arm(turn_id=1, gender="male", language="hi-IN")
+        await wait(0.15)
+        pushed = [f for f, _ in filler.pushed]
+        markers = [i for i, f in enumerate(pushed) if isinstance(f, OutputTransportMessageFrame)]
+        assert len(markers) == 1
+        assert pushed[markers[0]].message == {"type": AUDIO_FLUSH_MESSAGE_TYPE}
+        # After the last audio chunk, never before it.
+        last_audio = max(i for i, f in enumerate(pushed) if isinstance(f, OutputAudioRawFrame))
+        assert markers[0] > last_audio
+        # Each further completed rung gets its own marker.
+        await wait(0.25)
+        assert sum(isinstance(f, OutputTransportMessageFrame) for f, _ in filler.pushed) == 3
+
+    async def test_a_cut_clip_sends_no_flush_marker(self):
+        filler = make_filler(delay_ms=10)
+        filler._emit_flush_marker = True
+        await filler.arm(turn_id=1, gender="male")
+        await wait(0.05)
+        assert filler.playing
+        await filler.process_frame(tts_audio(), DOWN)
+        await wait(0.02)
+        assert not any(isinstance(f, OutputTransportMessageFrame) for f, _ in filler.pushed)
+
+    async def test_browser_default_sends_no_flush_marker(self):
+        filler = make_filler(delay_ms=10)
+        await filler.arm(turn_id=1, gender="male")
+        await wait(0.25)
+        assert filler._recorder.data("latency_filler_completed")
+        assert not any(isinstance(f, OutputTransportMessageFrame) for f, _ in filler.pushed)
+
     async def test_no_cue_library_means_breath_only(self):
         filler = make_filler(delay_ms=20, hmm_after_ms=40, spoken_after_ms=60)
         assert not filler.ladder_enabled
@@ -1006,6 +1045,18 @@ class TestPipelineBuilder:
             library=FillerClipLibrary(None), cue_library=cues,
         )
         assert not off.ladder_enabled and off._cue_library is None
+
+    def test_flush_marker_only_for_telephony(self):
+        library = FillerClipLibrary(None)
+        phone = build_latency_filler(
+            SpeechNaturalnessPlanner({}), sample_rate=8000, library=library,
+            cue_library=_CueStub(), transport_kind="telephony",
+        )
+        browser = build_latency_filler(
+            SpeechNaturalnessPlanner({}), sample_rate=16000, library=library,
+            cue_library=_CueStub(),
+        )
+        assert phone._emit_flush_marker is True and browser._emit_flush_marker is False
 
     def test_enabled_config_carries_delay_and_rate(self):
         planner = SpeechNaturalnessPlanner({"latency_filler_delay_ms": 900})

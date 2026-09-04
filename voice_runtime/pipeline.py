@@ -597,6 +597,7 @@ def build_latency_filler(
     recorder=None,
     library=None,
     cue_library=None,
+    transport_kind: str = "browser",
 ) -> LatencyFillerProcessor | None:
     """The gap-cover processor for one call, or None when the resolved
     human-speech config turns latency fillers off (no processor, no cost).
@@ -621,6 +622,9 @@ def build_latency_filler(
         ),
         hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
         spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
+        # Telephony serializers packetize outbound PCM; a completed clip's
+        # tail must be flushed explicitly or it plays ahead of the next reply.
+        emit_flush_marker=transport_kind == "telephony",
     )
 
 
@@ -704,6 +708,7 @@ def build_voice_pipeline(
     # cut the instant reply audio arrives (voice_runtime.latency_filler).
     latency_filler = build_latency_filler(
         naturalness, sample_rate=tts_sample_rate, recorder=recorder,
+        transport_kind=transport_kind,
     )
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply

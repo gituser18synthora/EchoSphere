@@ -155,6 +155,17 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   re-armed); and a rung whose deadline falls while the previous reply's tail is
   still audible is **deferred** (`latency_filler_deferred`) to the bot's next
   silence plus the same gap, not skipped.
+- **Telephony packetization.** The FreeSWITCH/Vaani serializers send outbound
+  PCM in 200 ms packets and flush a partial packet only on
+  `BotStoppedSpeakingFrame`, which plain filler audio never produces — so a
+  completed breath's last <200 ms used to sit in the buffer and play glued to
+  the front of the reply one or two seconds later (heard on phone calls, never
+  in the browser, as the breath "repeating"). On telephony the processor now
+  follows every completed clip with an `audio_flush` transport message (ordered
+  behind the clip's audio) that the serializers answer by sending the tail at
+  once, and the serializers additionally retire any remnant older than the
+  ramp idle gap (0.5 s) instead of prepending it to the next utterance
+  (`stale_audio_dropped` counter).
 - **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
   `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
   still not speaking, a short "हम्म…" in the bot's OWN voice follows at
