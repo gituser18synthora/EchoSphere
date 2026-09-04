@@ -70,6 +70,7 @@ from voice_runtime.barge_in import WordConfirmedBargeInStrategy
 from voice_runtime.silence_policy import SilencePolicy
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.latency_filler import LatencyFillerProcessor, get_filler_library
+from voice_runtime.voiced_cues import get_voiced_cue_library
 from voice_runtime.services import EchoSTTService, EchoTTSService
 from voice_runtime.tts_router import StreamingTTSRouter, is_streaming_tts_provider
 from voice_runtime.recording import (
@@ -595,6 +596,7 @@ def build_latency_filler(
     sample_rate: int,
     recorder=None,
     library=None,
+    cue_library=None,
 ) -> LatencyFillerProcessor | None:
     """The gap-cover processor for one call, or None when the resolved
     human-speech config turns latency fillers off (no processor, no cost).
@@ -602,14 +604,23 @@ def build_latency_filler(
     Sits between the TTS service and the output transport; the brain arms it
     per dispatched turn with the active voice's gender. Config already comes
     merged platform -> tenant -> bot and bounds-clamped from the planner.
+    With ``latency_filler_ladder`` on, the breath is followed on a long wait
+    by voiced cues rendered once per voice (voice_runtime.voiced_cues).
     """
     if not naturalness.latency_fillers_enabled:
         return None
+    ladder = naturalness.latency_filler_ladder_enabled
     return LatencyFillerProcessor(
         delay_ms=naturalness.latency_filler_delay_ms,
         library=library if library is not None else get_filler_library(),
         sample_rate=sample_rate,
         recorder=recorder,
+        cue_library=(
+            (cue_library if cue_library is not None else get_voiced_cue_library())
+            if ladder else None
+        ),
+        hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
+        spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
     )
 
 
@@ -715,6 +726,14 @@ def build_voice_pipeline(
         if (use_vad or provider_owns_turns) and gate_conf["enabled"] >= 0.5
         else None
     )
+    if latency_filler is not None and audio_gate is not None:
+        # A voiced ladder cue ("हम्म…") is bot audio the gate's echo guard
+        # does not see (no bot-speaking state flips for it): shield its echo
+        # the way mid-caller-turn backchannels are shielded.
+        latency_filler.cue_window_hook = (
+            lambda active: audio_gate.begin_backchannel_window()
+            if active else audio_gate.end_backchannel_window()
+        )
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,

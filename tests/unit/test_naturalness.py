@@ -7,6 +7,7 @@ import random
 import pytest
 
 from shared.orchestration.naturalness import (
+    ladder_cue,
     HUMAN_SPEECH_DEFAULTS,
     _LEADING_ACK_RE,
     _POOLS,
@@ -478,6 +479,18 @@ class TestLatencyFillerConfig:
         assert validate_human_speech({"latency_filler_delay_ms": 1500.5}) == [
             "'latency_filler_delay_ms' must be an integer",
         ]
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_ladder"] is True
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_hmm_ms"] == 3200
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_spoken_ms"] == 5000
+        assert validate_human_speech({"latency_filler_hmm_ms": 1000}) == [
+            "'latency_filler_hmm_ms' must be between 2000 and 8000",
+        ]
+        assert validate_human_speech({"latency_filler_spoken_ms": 20000}) == [
+            "'latency_filler_spoken_ms' must be between 3000 and 12000",
+        ]
+        assert validate_human_speech({"latency_filler_ladder": 1}) == [
+            "'latency_filler_ladder' must be a boolean",
+        ]
         assert validate_human_speech({"latency_fillers": "on"}) == [
             "'latency_fillers' must be a boolean",
         ]
@@ -491,6 +504,13 @@ class TestLatencyFillerConfig:
         assert planner({"latency_fillers": False}).latency_fillers_enabled is False
         assert planner({"enabled": False}).latency_fillers_enabled is False
         assert planner({"latency_filler_delay_ms": 2200}).latency_filler_delay_ms == 2200
+        assert planner().latency_filler_ladder_enabled is True
+        assert planner({"latency_fillers": False}).latency_filler_ladder_enabled is False
+        assert planner({"latency_filler_ladder": False}).latency_filler_ladder_enabled is False
+        assert planner({"latency_filler_hmm_ms": 4000}).latency_filler_hmm_ms == 4000
+        assert planner({"latency_filler_spoken_ms": 6000}).latency_filler_spoken_ms == 6000
+        assert ladder_cue("hi-IN", "hmm") == "हम्म…" and ladder_cue("en-US", "wait") == "One second…"
+        assert ladder_cue("fr-FR", "hmm") == "" and ladder_cue("hi-IN", "sigh") == ""
 
     def test_sources_follow_precedence_for_the_new_keys(self):
         effective, sources = resolve_human_speech_with_sources(

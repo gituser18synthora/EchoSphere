@@ -904,6 +904,9 @@ class ConversationBrain(FrameProcessor):
         # voice's gender and disarmed by every cancellation path. None when
         # the feature is off for this call (or the brain is built directly).
         self._latency_filler = latency_filler
+        # Turn id the filler was armed with at dispatch; a re-arm after the
+        # early acknowledgement keeps it (the wait is the same turn's).
+        self._latency_filler_turn_id = 0
         # Dispatch-time acknowledgement ("जी…"): spoken the moment the
         # caller's turn closes, separate from the reply. While its audio is
         # queued/playing it is NOT the reply — latency keeps waiting for the
@@ -1158,8 +1161,16 @@ class ConversationBrain(FrameProcessor):
                 self._end_backchannel_window()
             elif self._early_ack_pending:
                 # The acknowledgement finished; the reply's own audio will
-                # own the bot-speaking marks from here.
+                # own the bot-speaking marks from here. The caller is still
+                # waiting: the latency filler (stood down for the ack) takes
+                # the floor back after a short beat.
                 self._early_ack_pending = False
+                if (
+                    self._generation_in_flight()
+                    and not self._reply_audio_started
+                    and self._open_turn_text
+                ):
+                    await self._arm_latency_filler(self._open_turn_text, resume=True)
             else:
                 self._latency.mark_bot_stopped_speaking()
             await self.push_frame(frame, direction)
@@ -2112,8 +2123,9 @@ class ConversationBrain(FrameProcessor):
         # The reply for THIS turn has produced no audio yet.
         self._reply_audio_started = False
         # From here the caller is waiting on us: if no reply audio starts
-        # within the configured delay, a gender-matched breath fills the gap.
-        await self._arm_latency_filler()
+        # within the configured delay, a gender-matched breath fills the gap
+        # (then, on a long wait, a voiced cue in the bot's own voice).
+        await self._arm_latency_filler(text)
         # And a person answers a closed turn with a short "जी…" within about
         # a second — before they know what they will say. Spoken now, from
         # the caller's own words, separate from the reply that follows.
@@ -2718,26 +2730,56 @@ class ConversationBrain(FrameProcessor):
 
     # ── latency filler (human speech naturalness) ─────────────────────────
 
-    async def _arm_latency_filler(self) -> None:
+    async def _arm_latency_filler(self, text: str = "", *, resume: bool = False) -> None:
         """A turn was dispatched: the filler may cover the wait for its reply.
 
         The turn id matches the latency record `_handle_turn` is about to
         number; the wait is anchored on the tracker's physical end of speech
         (dispatch when unknown); the clip follows the voice the TTS router
-        will actually speak with for the current conversation language.
+        will actually speak with for the current conversation language, and
+        the voiced ladder cues are rendered with that very engine. The spoken
+        "एक सेकंड…" rung is withheld when the caller's words carry critical
+        content (amounts, identifiers, OTPs) or a serious state (complaint,
+        refusal…): the reply itself must be the next thing they hear.
+        ``resume`` re-arms after this turn's early acknowledgement finished.
         """
         filler = self._latency_filler
         if filler is None or self._closing:
             return
+        if not resume:
+            self._latency_filler_turn_id = self._turn_counter + 1
         try:
             await filler.arm(
-                turn_id=self._turn_counter + 1,
+                turn_id=self._latency_filler_turn_id,
                 gender=self._active_identity().gender,
                 speech_stopped_at=self._latency.speech_stopped_at,
                 dispatched_at=self._latency.dispatched_at,
+                language=self._conversation_language,
+                engine=self._latency_cue_engine(),
+                allow_spoken=not (
+                    contains_critical_content(text)
+                    or is_serious_caller_state(self._latest_caller_signal)
+                    or self._identifier_capture is not None
+                ),
+                resume=resume,
             )
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             logger.debug("latency filler could not be armed", exc_info=True)
+
+    def _latency_cue_engine(self) -> dict:
+        """The engine (provider/model/voice/key reference) the TTS router
+        resolves for the current language — what a voiced cue is rendered
+        with, so it is unmistakably the same voice as the reply."""
+        tts = self._config.tts or {}
+        engine = resolve_tts_engine(tts, self._conversation_language)
+        return {
+            "provider": engine.get("provider") or tts.get("provider") or "sarvam",
+            "model": engine.get("model") or tts.get("model") or "",
+            "voice": engine.get("voice") or tts.get("voice") or "",
+            "api_key_reference": (
+                engine.get("api_key_reference") or tts.get("api_key_reference") or ""
+            ),
+        }
 
     async def _cancel_latency_filler(self, reason: str) -> None:
         filler = self._latency_filler
@@ -2822,6 +2864,11 @@ class ConversationBrain(FrameProcessor):
             return
         self._early_ack_pending = True
         self._early_ack_spoken_turn = turn_id
+        # The acknowledgement's audio is TTS audio too: left armed, the
+        # filler would take it for the reply, cut for good and leave the rest
+        # of the wait uncovered. Stand down now; BotStoppedSpeaking re-arms
+        # once the "जी…" is over (if the reply still has not started).
+        await self._cancel_latency_filler("early_ack")
         self._recorder.add_event(
             "early_ack_played", turn=turn_id, context=context,
             language=self._conversation_language,

@@ -74,12 +74,21 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "min_gap_between_backchannels_ms": 8000,
     "max_backchannels_per_call": 4,
     "latency_filler_delay_ms": 1500,
+    # Escalation ladder for LONG waits: when the breath has played and the
+    # reply still has not started, a short voiced cue in the bot's own voice
+    # ("हम्म…") follows at ``latency_filler_hmm_ms`` after the caller stopped,
+    # and a spoken "एक सेकंड…" at ``latency_filler_spoken_ms``. Cues are
+    # rendered once per voice and cached (voice_runtime.voiced_cues); the
+    # spoken rung is withheld on critical/serious turns.
+    "latency_filler_ladder": True,
+    "latency_filler_hmm_ms": 3200,
+    "latency_filler_spoken_ms": 5000,
 }
 
 _BOOL_KEYS = (
     "enabled", "thinking_fillers", "acknowledgements", "backchannels",
     "prosody_variation", "gender_agreement", "micro_pauses", "self_correction",
-    "latency_fillers", "sentence_breaths",
+    "latency_fillers", "sentence_breaths", "latency_filler_ladder",
 )
 _PROBABILITY_KEYS = (
     "thinking_filler_probability", "acknowledgement_probability",
@@ -94,6 +103,9 @@ _INT_KEYS = {
     # Quiet time after the caller stops before a filler may play. Below 500 ms
     # it would fire on ordinary fast turns; above 5 s it never masks anything.
     "latency_filler_delay_ms": (500, 5000),
+    # Ladder rungs, measured from the caller's end of speech like the delay.
+    "latency_filler_hmm_ms": (2000, 8000),
+    "latency_filler_spoken_ms": (3000, 12000),
 }
 
 # The first caller reply after the greeting carries the call's highest
@@ -468,6 +480,30 @@ _LEADING_ACK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Latency-ladder cues (voice_runtime.latency_filler / voiced_cues): ONE fixed,
+# gender-neutral text per language and rung, rendered once per voice and
+# cached, so no per-turn TTS round-trip. ``hmm`` is a beat of thought; ``wait``
+# announces a moment more — only ever after the breath and the hmm, when the
+# reply is provably slow, and never on critical/serious turns.
+LADDER_CUE_KINDS = ("hmm", "wait")
+_LADDER_CUES: dict[str, dict[str, str]] = {
+    "hi": {"hmm": "हम्म…", "wait": "एक सेकंड…"},
+    "en": {"hmm": "Hmm…", "wait": "One second…"},
+    "gu": {"hmm": "હમ્મ…", "wait": "એક ક્ષણ…"},
+    "ml": {"hmm": "ഹും…", "wait": "ഒരു നിമിഷം…"},
+    "mr": {"hmm": "हं…", "wait": "एक क्षण…"},
+    "pa": {"hmm": "ਹੂੰ…", "wait": "ਇੱਕ ਪਲ…"},
+    "ta": {"hmm": "ம்…", "wait": "ஒரு நிமிடம்…"},
+    "te": {"hmm": "హ్మ్…", "wait": "ఒక్క క్షణం…"},
+    "ur": {"hmm": "ہمم…", "wait": "ایک لمحہ…"},
+}
+
+
+def ladder_cue(language: str | None, kind: str) -> str:
+    """The fixed cue text for ``kind`` in ``language`` ("" when the language
+    has no pool — never a cross-language cue)."""
+    return _LADDER_CUES.get(base_language(language), {}).get(kind, "")
+
 
 def normalize_spoken_variant(text: str) -> str:
     """Comparison form for cross-pool no-repeat tracking.
@@ -604,6 +640,18 @@ class SpeechNaturalnessPlanner:
     @property
     def latency_filler_delay_ms(self) -> int:
         return int(self._config["latency_filler_delay_ms"])
+
+    @property
+    def latency_filler_ladder_enabled(self) -> bool:
+        return self.latency_fillers_enabled and bool(self._config["latency_filler_ladder"])
+
+    @property
+    def latency_filler_hmm_ms(self) -> int:
+        return int(self._config["latency_filler_hmm_ms"])
+
+    @property
+    def latency_filler_spoken_ms(self) -> int:
+        return int(self._config["latency_filler_spoken_ms"])
 
     @property
     def configuration_level(self) -> str:

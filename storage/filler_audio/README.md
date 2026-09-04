@@ -8,3 +8,8 @@ for the short rising breath before a sentence inside a reply. All files of a gen
 the runtime's synthesized breath. Any sample rate is accepted (resampled per
 call). Subdirectories are ignored — `python scripts/export_filler_audio.py`
 writes the synthesized defaults into `synthesized/` for audition.
+
+`cache/` holds the voiced ladder cues ("हम्म…", "एक सेकंड…") the runtime renders
+once per provider/model/voice/language (`voice_runtime/voiced_cues.py`); delete a
+file there to force a re-render after a voice change. Both subdirectories are
+git-ignored.
