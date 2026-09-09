@@ -34,6 +34,7 @@ from pipecat.frames.frames import (
     EndWorkerFrame,
     ErrorFrame,
     Frame,
+    LLMFullResponseEndFrame,
     StartFrame,
     TTSAudioRawFrame,
     TTSStoppedFrame,
@@ -62,7 +63,13 @@ from shared.providers.tts.streaming import (
     TTSStreamSettings,
 )
 from voice_runtime.aggregator import VoiceSentenceAggregator
-from voice_runtime.frames import SwitchVoiceLanguageFrame, TTSFlushHintFrame
+from voice_runtime.frames import (
+    ReplyMarkerFrame,
+    ReplyTTSCompleteFrame,
+    ReplyTTSInterruptedFrame,
+    SwitchVoiceLanguageFrame,
+    TTSFlushHintFrame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +121,29 @@ _SENTENCE_BREATH_QUIET_AFTER_FILLER_S = 6.0
 
 def is_streaming_tts_provider(provider: str) -> bool:
     return provider in _STREAMING_PROVIDERS
+
+
+def _sentence_index(state) -> int:
+    """Which sentence the arriving audio belongs to (see sentence_bytes)."""
+    total = len(state.texts)
+    if total == 0:
+        return 0
+    active = getattr(state, "active", None)
+    if active is not None and getattr(state, "pending", None) is not None:
+        # Pause mode: sentences are serialized — the one in flight is the
+        # last dispatched (= texts minus the ones still pending).
+        return max(0, min(total - 1, total - 1 - len(state.pending)))
+    # Streaming mode: the provider speaks sentences in order; attribute to the
+    # first sentence whose byte share is still below its character share.
+    delivered = sum(state.sentence_bytes) or 0
+    total_chars = sum(len(x) for x in state.texts) or 1
+    running = 0
+    for idx, text in enumerate(state.texts):
+        running += len(text)
+        expected = (running / total_chars) * (delivered + 1)
+        if sum(state.sentence_bytes[: idx + 1]) < expected:
+            return idx
+    return total - 1
 
 
 @dataclass
@@ -186,6 +216,15 @@ class _Generation:
     seq: int = 0
     # In-reply breaths materialized so far (planner caps them per turn).
     breaths: int = 0
+    # Brain-assigned delivery marker (ReplyMarkerFrame): the brain is told
+    # via ReplyTTSCompleteFrame when this generation finishes. None for
+    # untracked speech (prefaces, backchannels, early acks).
+    marker: int | None = None
+    # Audio bytes attributed to each dispatched sentence (index = order in
+    # ``texts``). Pause mode attributes per sub-generation; streaming mode
+    # attributes everything to the sentence being spoken when the chunk
+    # arrives, which is the best available approximation.
+    sentence_bytes: list = dc_field(default_factory=list)
 
 
 class StreamingTTSRouter(TTSService):
@@ -264,6 +303,10 @@ class StreamingTTSRouter(TTSService):
         self._subgenerations: dict[str, str] = {}
         # True while a flush-hint fragment is being pushed (see _Sentence).
         self._mid_turn_flush = False
+        # Marker of the reply whose LLMFullResponseStartFrame comes next;
+        # consumed by that reply's generation, dropped at its end frame if
+        # no generation was ever created (nothing speakable).
+        self._pending_marker: int | None = None
         self._fatal_call_ended = False
         # Whether ANY engine has delivered audio this call — the discriminator
         # between a configuration-level invalid_input (nothing can ever
@@ -440,7 +483,16 @@ class StreamingTTSRouter(TTSService):
         if isinstance(frame, TTSFlushHintFrame):
             await self._handle_flush_hint()
             return
+        if isinstance(frame, ReplyMarkerFrame):
+            # Frames are ordered: the next generation created belongs to the
+            # reply this marker precedes. Never forwarded to the transport.
+            self._pending_marker = frame.marker
+            return
         await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseEndFrame) and self._pending_marker is not None:
+            # The marked reply ended without creating a generation (no
+            # speakable text): the marker must not leak onto later speech.
+            self._pending_marker = None
 
     async def _handle_flush_hint(self):
         """Mid-turn flush: release buffered text and push it to the provider."""
@@ -520,6 +572,7 @@ class StreamingTTSRouter(TTSService):
                 engine = self._engine_for_language(self._current_language)
                 provider = await self._get_provider(engine, self._current_language)
                 state = _Generation(engine=engine, provider=provider)
+                state.marker, self._pending_marker = self._pending_marker, None
                 self._generations[context_id] = state
             state.texts.append(text)
             delivery = None
@@ -741,6 +794,18 @@ class StreamingTTSRouter(TTSService):
                 await state.provider.cancel(state.active or context_id)
             except (ConnectionError, OSError):
                 pass
+            if state.marker is not None:
+                # Tell the brain how much of the marked reply had been
+                # synthesized per sentence; it decides what the caller heard.
+                per_sample = float(self.sample_rate * 2) or 1.0
+                sentences = [
+                    (len(text), (state.sentence_bytes[i] if i < len(state.sentence_bytes) else 0) / per_sample)
+                    for i, text in enumerate(state.texts)
+                ]
+                await self.push_frame(
+                    ReplyTTSInterruptedFrame(marker=state.marker, sentences=sentences),
+                    FrameDirection.UPSTREAM,
+                )
         await super().on_audio_context_interrupted(context_id)
 
     async def stop(self, frame):
@@ -822,6 +887,11 @@ class StreamingTTSRouter(TTSService):
             if provider_rate != self.sample_rate:
                 audio = resample_pcm(audio, provider_rate, self.sample_rate)
             state.audio_bytes += len(audio)
+            if state.texts:
+                while len(state.sentence_bytes) < len(state.texts):
+                    state.sentence_bytes.append(0)
+                _idx = _sentence_index(state)
+                state.sentence_bytes[_idx] += len(audio)
             state.audio_chunks += 1
             await self.append_to_audio_context(
                 context_id,
@@ -954,6 +1024,11 @@ class StreamingTTSRouter(TTSService):
             if not audio:
                 continue
             state.audio_bytes += len(audio)
+            if state.texts:
+                while len(state.sentence_bytes) < len(state.texts):
+                    state.sentence_bytes.append(0)
+                _idx = _sentence_index(state)
+                state.sentence_bytes[_idx] += len(audio)
             state.audio_chunks += 1
             await self.append_to_audio_context(
                 context_id,
@@ -1079,6 +1154,16 @@ class StreamingTTSRouter(TTSService):
                 context_id, TTSStoppedFrame(context_id=context_id)
             )
             await self.remove_audio_context(context_id)
+        if state.marker is not None:
+            # Tell the brain the marked reply's synthesis is complete (all
+            # audio handed downstream). An interrupted generation is popped in
+            # on_audio_context_interrupted and never reports completion.
+            await self.push_frame(
+                ReplyTTSCompleteFrame(
+                    marker=state.marker, failed=failed or not state.audio_bytes,
+                ),
+                FrameDirection.UPSTREAM,
+            )
 
     async def _first_audio_watchdog(self, context_id: str):
         await asyncio.sleep(self._first_audio_timeout)

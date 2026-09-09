@@ -158,7 +158,18 @@ facts and skips every one the story already answered:
    received it and no name was captured.
 3. **CX-support call about this delivery** (`n_ask_cx`, `m_cx_support_call`) —
    new.
-4. **Verification** — grounded summary ending in "क्या ये सब सही है?". A
+4. **Verification** — grounded summary ending in "क्या ये सब सही है?" (English
+   callers: "Is all of this correct?", pinned via `responseMustIncludeByLanguage`).
+   It opens the partner's-answers part with a short natural "आपके द्वारा दी गई
+   जानकारी को एक बार confirm कर लेता हूँ" line (English equivalent for English
+   calls). The ticket facts ("record के हिसाब से … 9203 / 4 अगस्त / 400") are
+   repeated ONLY when the partner did not hear the opening readout in full:
+   the voice brain reports which nodes' replies played to completion
+   (`heard_nodes`, from the TTS router's completion signal + bot-stopped,
+   un-marked on barge-in; a readout that fell back to its authored question
+   is not counted) and the engine picks the `responseDirectiveVariants`
+   entry keyed on `n_ask_issue_desc` heard. In /testing/simulate every reply
+   is heard unless the next turn is sent with `"interrupted": true`. A
    rejection that carries the fix ("nahi, customer ko nahi — guard ko diya
    tha") is applied at the hub and re-verified (the "which part?" ask has
    `skipIfCorrectedThisTurn`); a field named as wrong without a value

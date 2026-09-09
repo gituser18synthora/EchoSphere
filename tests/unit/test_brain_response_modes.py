@@ -325,3 +325,196 @@ class TestGroundedConstrained:
         brain2 = self._brain(english, language="hi-IN")
         await brain2._handle_turn("हाँ भेज दीजिए")
         assert brain2._history[-1]["content"] == self.SCRIPT
+
+
+class TestHeardNodeTracking:
+    """The brain tells the engine which workflow replies the caller heard.
+
+    A reply speaks for the nodes the engine reports in ``spokenNodes``; it is
+    heard once the TTS router reports the marked generation complete AND the
+    bot has stopped speaking. A barge-in before that abandons (or un-marks)
+    it, and a grounded fallback never counts.
+    """
+
+    def _result(self, nodes, **kwargs):
+        result = wf_result("Your ticket shows a deduction. What happened?",
+                           done=False, node_prompt="What happened?", **kwargs)
+        result["spokenNodes"] = list(nodes)
+        return result
+
+    async def test_workflow_reply_is_marked_and_heard_nodes_are_reported(self):
+        from voice_runtime.frames import ReplyMarkerFrame, ReplyTTSCompleteFrame
+
+        llm = _LLMStub()
+        stub = _WorkflowStub(self._result(["readout"]))
+        brain = make_brain(stub, llm)
+
+        await brain._handle_turn("hello")
+
+        assert stub.calls[-1]["heard_nodes"] == []
+        markers = [f for f in brain._pushed if isinstance(f, ReplyMarkerFrame)]
+        assert len(markers) == 1 and markers[0].marker == brain._reply_marker
+        assert brain._reply_nodes == ["readout"]
+
+        # Synthesis complete while audio is still playing → wait for stop.
+        brain._bot_speaking = True
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == []
+        brain._bot_speaking = False
+        brain._mark_reply_heard()          # what the BotStoppedSpeaking branch does
+        assert brain._heard_nodes == ["readout"]
+        assert ("workflow_reply_heard", {"nodes": ["readout"]}) in brain._recorder.events
+
+        # The next turn carries the report to the engine.
+        stub.result = self._result(["verify"])
+        await brain._handle_turn("I delivered it")
+        assert stub.calls[-1]["heard_nodes"] == ["readout"]
+
+    async def test_completion_after_audio_ended_marks_heard_immediately(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == ["readout"]
+
+    async def test_stale_marker_or_failed_generation_never_counts(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker + 5))
+        assert brain._reply_nodes == ["readout"] and brain._heard_nodes == []
+        brain._on_reply_tts_complete(
+            ReplyTTSCompleteFrame(marker=brain._reply_marker, failed=True)
+        )
+        assert brain._reply_nodes == [] and brain._heard_nodes == []
+
+    async def test_barge_in_before_completion_abandons_the_reply(self):
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = True
+        brain._on_reply_interrupted()
+        assert brain._reply_nodes == [] and brain._heard_nodes == []
+        assert any(kind == "workflow_reply_interrupted" and data.get("nodes") == ["readout"]
+                   for kind, data in brain._recorder.events)
+
+    async def test_barge_in_during_the_tail_unmarks_a_reply_marked_at_completion(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False        # a gap: synthesis done, tail buffered
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        assert brain._heard_nodes == ["readout"]
+        brain._bot_speaking = True         # tail plays, caller talks over it
+        brain._on_reply_interrupted()
+        assert brain._heard_nodes == []
+
+    async def test_speech_after_a_fully_played_reply_keeps_it_heard(self):
+        from voice_runtime.frames import ReplyTTSCompleteFrame
+
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._bot_speaking = False
+        brain._on_reply_tts_complete(ReplyTTSCompleteFrame(marker=brain._reply_marker))
+        brain._on_reply_interrupted()      # caller speaks after the reply ended
+        assert brain._heard_nodes == ["readout"]
+
+    async def test_grounded_fallback_drops_the_nodes(self):
+        """The authored fallback is not the directive's utterance (a readout
+        fallback carries no ticket facts): it can never count as heard."""
+        from voice_runtime.frames import ReplyMarkerFrame
+
+        llm = _LLMStub(fail_generate=True)
+        result = self._result(["readout"], mode="llm_grounded",
+                              directives=["Read the ticket facts, then ask."])
+        brain = make_brain(_WorkflowStub(result), llm)
+        await brain._handle_turn("hello")
+        assert "workflow_grounded_fallback" in brain._recorder.event_kinds()
+        assert brain._reply_nodes == []
+        assert not [f for f in brain._pushed if isinstance(f, ReplyMarkerFrame)]
+
+    async def test_new_turn_resets_the_tracking_state(self):
+        brain = make_brain(_WorkflowStub(self._result(["readout"])), _LLMStub())
+        await brain._handle_turn("hello")
+        brain._begin_reply_tracking()
+        assert brain._reply_nodes == [] and not brain._reply_marker_pushed
+        assert not brain._reply_tts_complete and not brain._reply_heard
+
+
+class TestOffScriptInstructionCarriesCollectedFacts:
+    def test_paused_flow_instruction_lists_the_slots(self):
+        brain = make_brain(_WorkflowStub(wf_result("x")), _LLMStub())
+        result = {"nodePrompt": "ये order आपने किसको सौंपा था?",
+                  "slots": {"m_reached_location": "yes (reached the location)",
+                            "m_called_customer": "yes (called the customer)",
+                            "m_issue_description": "a very long story " * 10,
+                            "mock": {"nested": True}}}
+        text = brain._workflow_context_instruction(result)
+        assert "ALREADY collected" in text
+        assert "m_reached_location: yes (reached the location)" in text
+        assert "m_called_customer: yes (called the customer)" in text
+        assert "m_issue_description" not in text and "nested" not in text
+        assert "never ask for these again" in text
+        assert brain._workflow_context_instruction({"nodePrompt": "q", "slots": {}}).startswith("\n\n# Paused call flow")
+
+
+class TestPartiallyHeardReply:
+    """A barge-in during the reply's LAST sentence (the question) still means
+    the content sentences were heard (cv_fd720f2e9024: ticket facts played,
+    only "बताइए — क्या हुआ था?" was cut)."""
+
+    def _cut_brain(self, played):
+        from voice_runtime.frames import ReplyTTSInterruptedFrame
+
+        brain = make_brain(_WorkflowStub(wf_result("x")), _LLMStub())
+        brain._reply_marker = 3
+        brain._reply_cut = {"marker": 3, "nodes": ["n_ask_issue_desc"], "played": played}
+        return brain, ReplyTTSInterruptedFrame
+
+    def test_all_but_the_last_sentence_played_counts_as_heard(self):
+        brain, Frame = self._cut_brain(played=7.2)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(80, 4.3), (60, 2.7), (20, 1.5)]))
+        assert brain._heard_nodes == ["n_ask_issue_desc"]
+        assert ("workflow_reply_heard", {"nodes": ["n_ask_issue_desc"], "partial": True,
+                                         "sentences_heard": 2, "sentences_total": 3}) in brain._recorder.events
+
+    def test_cut_during_the_facts_is_not_heard(self):
+        brain, Frame = self._cut_brain(played=3.0)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(80, 4.3), (60, 2.7), (20, 1.5)]))
+        assert brain._heard_nodes == []
+
+    def test_single_sentence_reply_is_heard_only_in_full(self):
+        brain, Frame = self._cut_brain(played=9.0)
+        brain._on_reply_tts_interrupted(Frame(marker=3, sentences=[(120, 6.0)]))
+        assert brain._heard_nodes == []
+
+    def test_stale_marker_is_ignored(self):
+        brain, Frame = self._cut_brain(played=9.0)
+        brain._on_reply_tts_interrupted(Frame(marker=99, sentences=[(80, 4.3), (20, 1.5)]))
+        assert brain._heard_nodes == []
+
+
+class TestWorkflowRollbackOnLateMerge:
+    async def test_rewinding_a_workflow_turn_rolls_the_engine_back(self):
+        class _RollbackStub(_WorkflowStub):
+            def __init__(self, result):
+                super().__init__(result)
+                self.rollbacks = []
+
+            async def rollback_last_turn(self, **kwargs):
+                self.rollbacks.append(kwargs)
+                return True
+
+        stub = _RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())          # active workflow "modes_flow"
+        await brain._handle_turn("okay")
+        assert brain._open_turn_workflow == ("modes_flow", "modes_flow")
+        brain._open_turn_text = "okay"
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == [{"session_id": "s-test", "workflow_name": "modes_flow"}]
+        assert brain._active_workflow == "modes_flow"               # restored to the pre-turn value
+        assert "workflow_turn_rolled_back" in brain._recorder.event_kinds()
+        assert brain._pending_segments == ["okay"]

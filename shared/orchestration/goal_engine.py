@@ -148,6 +148,11 @@ class SummaryFieldSpec(BaseModel):
     options: list[str] = Field(default_factory=list)
     values: dict[str, str] = Field(default_factory=dict)
     allow_llm: bool = Field(default=True, alias="allowLlm")
+    # Consistency guard: this field is reported only when another field's
+    # final value is one of the listed options, e.g. drop_location requires
+    # handover_type in ["place"] and hand_over_to requires ["person"] — a
+    # stale/analyst value can never contradict the decided handover type.
+    requires: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("name", "source", mode="before")
     @classmethod

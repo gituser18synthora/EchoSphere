@@ -30,6 +30,8 @@ from shared.orchestration.response_modes import (
     RESPONSE_MODE_GROUNDED,
     aggregate_response_mode,
     node_response_mode,
+    resolve_response_directive,
+    resolve_response_must_include,
 )
 from shared.orchestration.router import classify_user_signal
 
@@ -67,6 +69,17 @@ class WorkflowState(TypedDict, total=False):
     response_mode: str  # fixed | exact | llm_grounded (aggregated per turn)
     response_directives: list[str]  # grounded nodes' response goals
     response_must_include: list[str]  # literals that must survive generation
+    # Delivery feedback. ``spoken_nodes`` accumulates every node whose
+    # authored text was spoken on this session; ``spoken_this_turn`` is the
+    # per-turn subset (reported to the caller as ``spokenNodes``).
+    # ``heard_nodes`` is INPUT from the delivery channel: node ids whose reply
+    # audio the caller heard to completion (the voice brain tracks barge-ins
+    # and TTS completion). Absent/None = the channel cannot observe delivery
+    # (text chat, simulate) → every spoken node counts as heard. Grounded
+    # nodes select ``responseDirectiveVariants`` on it.
+    spoken_nodes: list[str]
+    spoken_this_turn: list[str]
+    heard_nodes: list[str] | None
     # Input-only: the caller-supplied semantic signal for THIS turn (from the
     # Goal Engine's validated decision). Consumed by _step and cleared in the
     # returned state so a checkpointed value can never leak into a later turn;
@@ -967,6 +980,168 @@ _CORRECTION_ACTIONS = frozenset({"also_updated", "also_cleared"})
 _HUB_CAPTURE_ACTIONS = frozenset({"also_captured", "also_updated", "also_cleared"})
 
 
+_YES_NO_SIGNALS = ("affirm", "refusal")
+# Bare surfaces that identify a canonical as the YES / NO answer of a yes-no
+# ask. Whole strings (never substrings): a lexicon surface such as "हा" or
+# "ji" would also match inside "रहा" / "jiska", which is exactly why STT
+# variants of "हाँ" are resolved from the SIGNAL instead of the lexicon.
+_BARE_YES = frozenset({"haan", "yes", "हाँ", "ji haan", "जी हाँ"})
+_BARE_NO = frozenset({"nahi", "no", "नहीं"})
+
+
+def _yes_no_canonicals(entity: dict) -> tuple[str, str] | None:
+    """(yes_canonical, no_canonical) of a yes-no shaped ask entity, else None.
+
+    Shape = exactly one canonical whose surfaces include a bare yes word and
+    exactly one whose surfaces include a bare no word. A recipient choice, a
+    free-text ask or a numeric identifier never qualifies.
+    """
+    synonyms = entity.get("synonyms")
+    if not isinstance(synonyms, dict):
+        return None
+
+    def _polarity(canonical, surfaces) -> str | None:
+        # Platform canonicals read "yes (called the customer)" / "no (did not
+        # call)": the leading word decides. A lookahead entity that carries
+        # only explicit phrases (no bare "haan") is still yes-no shaped.
+        first = re.split(r"[\s(]+", str(canonical).strip().lower(), maxsplit=1)[0]
+        if first in _BARE_YES or first in ("yes", "haan", "हाँ"):
+            return "yes"
+        if first in _BARE_NO or first in ("no", "nahi", "नहीं"):
+            return "no"
+        if isinstance(surfaces, (list, tuple)):
+            lowered = {str(x).strip().lower() for x in surfaces}
+            if lowered & _BARE_YES:
+                return "yes"
+            if lowered & _BARE_NO:
+                return "no"
+        return None
+
+    yes = [c for c, surfaces in synonyms.items() if _polarity(c, surfaces) == "yes"]
+    no = [c for c, surfaces in synonyms.items() if _polarity(c, surfaces) == "no"]
+    if len(yes) == 1 and len(no) == 1 and yes[0] != no[0]:
+        return str(yes[0]), str(no[0])
+    return None
+
+
+# A "bare" answer is only affirmation/negation (plus fillers): no field-level
+# evidence at all. Used for asks that put TWO yes-no questions in one breath
+# ("location par pahunche the aur call kiya tha?"): a bare "हाँ" answers both,
+# while any explicit content is attributed field by field.
+_BARE_YES_WORDS = frozenset({
+    "haan", "haa", "ha", "han", "hanji", "haanji", "ji", "jee", "yes", "yeah",
+    "yep", "ok", "okay", "bilkul", "sahi", "theek", "thik", "pakka", "zaroor",
+    "jarur", "jaroor", "correct", "right", "sure",
+    "हाँ", "हां", "हा", "हाँजी", "हांजी", "जी", "बिल्कुल", "बिलकुल", "सही",
+    "ठीक", "पक्का", "ज़रूर", "जरूर",
+})
+_BARE_NO_WORDS = frozenset({
+    "nahi", "nahin", "nhi", "na", "no", "nope", "नहीं", "नही", "ना", "नो",
+})
+_BARE_FILLERS = frozenset({
+    "to", "toh", "tho", "hai", "tha", "bhai", "sir", "hmm", "hm", "umm", "arre",
+    "are", "ye", "yeh", "wo", "woh", "ab", "bas", "hi", "bhi",
+    "है", "था", "तो", "भाई", "अरे", "ये", "वो", "अब", "बस", "ही", "भी", "जी",
+})
+_BARE_TOKEN_SPLIT = re.compile(r"[\s,.;:!?।\-\"'()\[\]]+")
+
+
+def _bare_yes_no(text: str) -> str | None:
+    """"yes" / "no" when the utterance is ONLY affirmation/negation words."""
+    tokens = [t.lower() for t in _BARE_TOKEN_SPLIT.split(text or "") if t]
+    if not tokens:
+        return None
+    yes = no = False
+    for token in tokens:
+        if token in _BARE_NO_WORDS:
+            no = True
+        elif token in _BARE_YES_WORDS:
+            yes = True
+        elif token in _BARE_FILLERS:
+            continue
+        else:
+            return None
+    if no:
+        return "no"      # "ji nahi" / "haan nahi" — the negation is the answer
+    return "yes" if yes else None
+
+
+def _strip_bare_words(text: str) -> str:
+    """The utterance without its leading/trailing yes-no and filler words, so
+    "हाँ, customer को call किया था" leaves only the field-level evidence."""
+    # Whitespace tokens, compared with their punctuation stripped, so
+    # "didn't" / "customer's" keep their apostrophes for the field matchers.
+    tokens = (text or "").split()
+    # Tense/auxiliary fillers (tha/था/hai) stay: the field matchers may rely
+    # on them ("गया था"); only the yes-no words and discourse fillers go.
+    skip = _BARE_YES_WORDS | _BARE_NO_WORDS | {
+        "to", "toh", "tho", "bhai", "sir", "hmm", "hm", "umm", "arre", "are",
+        "तो", "भाई", "अरे", "जी",
+    }
+    punct = ",.;:!?।-\"'()[]"
+
+    def _bare(token: str) -> bool:
+        return token.strip(punct).lower() in skip
+
+    while tokens and _bare(tokens[0]):
+        tokens.pop(0)
+    while tokens and _bare(tokens[-1]):
+        tokens.pop()
+    return " ".join(tokens).strip(" ,.;:!?।")
+
+
+def _without_bare_surfaces(entity: dict) -> dict:
+    """The entity minus its bare yes/no surfaces ("haan", "nahi", "नहीं"…).
+
+    At a joint yes-no ask a non-bare utterance is judged on field evidence
+    only: an inner "नहीं" in "मैंने customer को call नहीं किया था" belongs to the
+    call, never to the location slot."""
+    synonyms = entity.get("synonyms")
+    if not isinstance(synonyms, dict):
+        return entity
+    bare = _BARE_YES_WORDS | _BARE_NO_WORDS
+    cleaned = {
+        canonical: [x for x in (surfaces or []) if str(x).strip().lower() not in bare]
+        for canonical, surfaces in synonyms.items()
+        if isinstance(surfaces, (list, tuple))
+    }
+    return {**entity, "synonyms": cleaned}
+
+
+def _joint_yes_no_variables(config: dict) -> list[str]:
+    joint = config.get("jointYesNo")
+    if not isinstance(joint, list):
+        return []
+    return [str(item).strip() for item in joint if str(item or "").strip()]
+
+
+def _joint_entity(config: dict, variable: str) -> dict | None:
+    """The alsoCapture entity that describes a joint yes-no variable."""
+    for spec in config.get("alsoCapture") or []:
+        if isinstance(spec, dict) and str(spec.get("variable") or "") == variable:
+            entity = spec.get("entity")
+            if isinstance(entity, dict):
+                return entity
+    return None
+
+
+def _yes_no_from_signal(node: dict, variable: str, signal: str | None) -> str | None:
+    """A bare affirmation/refusal IS the answer to a yes-no ask.
+
+    cv_5729e30fad60: the partner answered the reached+called question with
+    "हा." (Gujarati STT transliteration of हाँ). The lexicon knew "हाँ" only,
+    the turn went off-script (signal=affirm), the LLM improvised a guard
+    question, and the partner's next "नहीं" landed in the still-pending ask as
+    reached = no. The semantic signal already says yes/no — use it.
+    """
+    if signal not in _YES_NO_SIGNALS:
+        return None
+    pair = _yes_no_canonicals(_ask_entity(node, variable))
+    if pair is None:
+        return None
+    return pair[0] if signal == "affirm" else pair[1]
+
+
 def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
     from shared.orchestration.entity_extractor import extract_entity
 
@@ -1140,25 +1315,37 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         segment_modes: list[str] = []
         response_directives: list[str] = []
         response_must_include: list[str] = []
+        spoken_nodes = list(state.get("spoken_nodes") or [])
+        spoken_this_turn: list[str] = []
+        # What the caller has actually heard so far: the channel's report when
+        # it can observe delivery, else everything spoken on earlier turns.
+        heard_input = state.get("heard_nodes")
+        heard_nodes = (
+            set(str(item) for item in heard_input)
+            if isinstance(heard_input, list) else set(spoken_nodes)
+        )
 
         def _speak(node: dict, spoken: str) -> None:
             """Speak node-authored text under the node's response mode."""
             if not spoken:
                 return
             replies.append(spoken)
+            node_id = str(node.get("id") or "")
+            if node_id:
+                if node_id not in spoken_this_turn:
+                    spoken_this_turn.append(node_id)
+                if node_id not in spoken_nodes:
+                    spoken_nodes.append(node_id)
             config = _node_config(node)
             mode = node_response_mode(config)
             segment_modes.append(mode)
             if mode == RESPONSE_MODE_GROUNDED:
-                directive = str(config.get("responseDirective") or "").strip()
+                directive = resolve_response_directive(config, heard_nodes)
                 if directive:
                     response_directives.append(directive)
-                include = config.get("responseMustInclude")
-                if isinstance(include, list):
-                    response_must_include.extend(
-                        str(item).strip() for item in include
-                        if str(item or "").strip()
-                    )
+                response_must_include.extend(
+                    resolve_response_must_include(config, lang)
+                )
 
         status = "collecting"
         handoff_queue: str | None = None
@@ -1251,13 +1438,65 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 value = None
                 accumulated = False
                 captured_first = False
+                joint_partial = False
+                joint_vars = _joint_yes_no_variables(config) if not expects_digits else []
+                if not handled and joint_vars:
+                    # ONE question, TWO yes-no fields (cv_f07c65c4cdb5: "location
+                    # par pahunche the aur call kiya tha?" → "हाँ" must answer
+                    # both). Priority: explicit field evidence (patterns /
+                    # lexicon, via alsoCapture and the own matcher on the text
+                    # WITHOUT its bare yes-no words) → a bare yes/no fills every
+                    # still-open joint field → a partial explicit answer fills
+                    # only its field and the node advances so the flow's single
+                    # ask collects the other half. Never guess the other half.
+                    bare = _bare_yes_no(text)
+                    stripped = _strip_bare_words(text)
+                    before = len(audit)
+                    if bare is None and stripped:
+                        # Field evidence is read from the text WITHOUT its bare
+                        # yes-no words: a leading "haan" belongs to the question
+                        # as a whole, never to one joint field.
+                        _apply_also_capture(node, stripped, slots, audit, awaiting)
+                    captured_first = True
+                    joint_hit = any(
+                        entry.get("action") in _HUB_CAPTURE_ACTIONS
+                        and entry.get("variable") in joint_vars
+                        for entry in audit[before:]
+                    )
+                    if bare is not None:
+                        own_pair = _yes_no_canonicals(_ask_entity(node, variable))
+                        if own_pair is not None:
+                            value = own_pair[0] if bare == "yes" else own_pair[1]
+                        for joint_var in joint_vars:
+                            if slots.get(joint_var) not in (None, ""):
+                                continue
+                            entity = _joint_entity(config, joint_var)
+                            pair = _yes_no_canonicals(entity or {})
+                            if pair is not None:
+                                slots[joint_var] = pair[0] if bare == "yes" else pair[1]
+                                audit.append({"action": "joint_yes_no", "node": awaiting,
+                                              "variable": joint_var, "answer": bare})
+                    else:
+                        if stripped:
+                            evidence_node = {**node, "config": {
+                                **config,
+                                "entity": _without_bare_surfaces(_ask_entity(node, variable)),
+                            }}
+                            value = _extract_ask_value(evidence_node, variable, stripped)
+                        if value is None and joint_hit:
+                            joint_partial = True
                 if not handled:
                     if buffered and fresh:
                         value = _extract_ask_value(node, variable, combined)
                         accumulated = value is not None
                     guarded_free_text = guarded and _ask_is_free_text(node, variable)
-                    if value is None and not guarded_free_text:
+                    if value is None and not guarded_free_text and not joint_vars:
                         value = _extract_ask_value(node, variable, text)
+                    if value is None and not guarded_free_text and not joint_partial:
+                        value = _yes_no_from_signal(node, variable, signal)
+                        if value is not None:
+                            audit.append({"action": "signal_answer", "node": awaiting,
+                                          "signal": signal})
                     if value is None and signal is not None:
                         # The label says "not an answer", yet the words may
                         # still carry answers to UPCOMING asks ("guard ko
@@ -1292,6 +1531,15 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     audit.append(entry)
                     if not captured_first:
                         _apply_also_capture(node, text, slots, audit, awaiting)
+                    current, awaiting = _next_of(awaiting), None
+                elif joint_partial:
+                    # The partner answered the OTHER half explicitly and said
+                    # nothing about this one: leave it Unknown and move on —
+                    # the flow's single ask for this variable follows.
+                    audit.append({"action": "joint_partial_answer", "node": awaiting,
+                                  "variable": variable})
+                    pending_digits.pop(awaiting, None)
+                    node_retries.pop(awaiting, None)
                     current, awaiting = _next_of(awaiting), None
                 elif dictated and fresh and len(combined) > max_digits:
                     # Impossible buffer: longer than every length this
@@ -1395,11 +1643,45 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         entry.get("action") in _HUB_CAPTURE_ACTIONS
                         for entry in audit[turn_audit_start:]
                     ):
-                        literal, literal_why, _tok = _choose_intent_edge_detailed(
-                            edge_meta_from.get(awaiting, []), text, None
+                        # An edge labelled "correction" is the author's
+                        # declared destination for a changed answer at THIS
+                        # hub (cv_ee8fe14ab6d3: "इन्वर्टर पर नहीं रखा था, गार्ड
+                        # को दिया था" AFTER registration — the decline edge's
+                        # own "नहीं" token must not close the call instead).
+                        declared = next(
+                            (e for e in edges_from.get(awaiting, [])
+                             if "correction" in _edge_tokens(e.get("label", ""))),
+                            None,
                         )
-                        if literal is not None and literal_why == "token":
-                            chosen, why = literal, "correction_literal"
+                        if declared is not None:
+                            chosen, why = declared, "correction_edge"
+                        else:
+                            literal, literal_why, _tok = _choose_intent_edge_detailed(
+                                edge_meta_from.get(awaiting, []), text, None
+                            )
+                            if literal is not None and literal_why == "token":
+                                chosen, why = literal, "correction_literal"
+                if correction is None and why not in ("correction_edge",):
+                    # A hub with a declared "correction" edge: whatever edge the
+                    # signal picked (a "नहीं" that also matches the decline edge),
+                    # a changed answer in the same breath takes the correction
+                    # edge — the caller is correcting, not declining
+                    # (cv_ee8fe14ab6d3: "नहीं रखा था, गार्ड को दिया था" after
+                    # registration closed the call in simulation).
+                    declared = next(
+                        (e for e in edges_from.get(awaiting, [])
+                         if "correction" in _edge_tokens(e.get("label", ""))),
+                        None,
+                    )
+                    if declared is not None:
+                        if not captured_here:
+                            _apply_also_capture(node, text, slots, audit, awaiting)
+                            captured_here = True
+                        if any(
+                            entry.get("action") in _HUB_CAPTURE_ACTIONS
+                            for entry in audit[turn_audit_start:]
+                        ):
+                            chosen, why = declared, "correction_edge"
                 fixed_reply = (
                     _unmatched_reply(node, signal if why == "off_script" else None)
                     if chosen is None else ""
@@ -1549,6 +1831,50 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     audit.append({"action": "slot_reused", "node": current,
                                   "variable": variable})
                     current = _next_of(current)
+                elif entry_text and _ask_is_free_text(node, variable):
+                    # A free-text first ask ("बताइए — क्या हुआ था?") and the
+                    # utterance that ROUTED here may already BE the answer: a
+                    # partner who tells the whole story in reply to the
+                    # greeting (cv_c64a7de63300 — the flow then asked "what
+                    # happened?", got "I just told you", and re-asked answers
+                    # already given). An opener is never swallowed blindly:
+                    # the proof is the same capture_evidence rule the awaiting
+                    # path uses — the narrative must fill at least one
+                    # downstream answer. Then the story is stored, the node's
+                    # optional ``consumedReply`` (e.g. the ticket facts
+                    # WITHOUT the question, under the node's response mode /
+                    # ``consumedDirective``) is spoken and the flow moves on.
+                    before = len(audit)
+                    _apply_also_capture(node, entry_text, slots, audit, current)
+                    if any(
+                        entry.get("action") in _HUB_CAPTURE_ACTIONS
+                        for entry in audit[before:]
+                    ):
+                        slots[variable] = entry_text.strip()
+                        audit.append({"action": "capture_evidence", "node": current,
+                                      "from_entry": True})
+                        audit.append({"action": "entry_slot_filled",
+                                      "node": current, "variable": variable})
+                        entry_text = ""
+                        consumed = str(config.get("consumedReply") or "").strip()
+                        if consumed:
+                            consumed_config = {
+                                **config,
+                                "responseDirective": str(
+                                    config.get("consumedDirective")
+                                    or config.get("responseDirective") or ""
+                                ),
+                                "responseDirectiveVariants": [],
+                                # The consumed reply carries no question: the
+                                # node's question literals must not apply.
+                                "responseMustInclude": [],
+                                "responseMustIncludeByLanguage": {},
+                            }
+                            _speak({**node, "config": consumed_config}, consumed)
+                        current = _next_of(current)
+                    else:
+                        _speak(node, _question(node, retrying=False, lang=lang))
+                        awaiting, current = current, None
                 elif entry_text and not _ask_is_free_text(node, variable):
                     # The utterance that ROUTED into this workflow may already
                     # contain the requested value (often a bare booking/order
@@ -1794,6 +2120,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             "response_mode": aggregate_response_mode(segment_modes),
             "response_directives": response_directives,
             "response_must_include": response_must_include,
+            "spoken_nodes": spoken_nodes,
+            "spoken_this_turn": spoken_this_turn,
         }
 
     graph = StateGraph(WorkflowState)
@@ -1811,6 +2139,12 @@ class WorkflowEngine:
         self._graphs: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self._saver_cm = None
+        # thread_id → (graph, state values BEFORE the last turn). A late
+        # transcript merge rewinds the brain's turn; the checkpointed
+        # workflow state must rewind with it (cv_30327c49bb47: the cancelled
+        # first turn had already consumed the readout ask, so the merged
+        # utterance was stored as the "story" and the readout never played).
+        self._pre_turn: dict[str, tuple[Any, dict]] = {}
 
     async def _get_checkpointer(self):
         if self._checkpointer is not None:
@@ -1891,6 +2225,7 @@ class WorkflowEngine:
         initial_slots: dict | None = None,
         context_values: dict | None = None,
         reset_state: bool = False,
+        heard_nodes: list[str] | None = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -1902,6 +2237,10 @@ class WorkflowEngine:
         ``signal`` is the semantic signal of the utterance as decided by the
         Goal Engine (validated). When provided, intent-node edge selection
         routes on it instead of re-deriving meaning from regex patterns.
+
+        ``heard_nodes`` is the delivery channel's report of which nodes'
+        replies the caller heard to completion (see ``WorkflowState``).
+        Leave it None for text channels, where everything spoken is heard.
         """
         definition: dict | None = None
         try:
@@ -1929,6 +2268,13 @@ class WorkflowEngine:
             }
 
         thread = {"configurable": {"thread_id": f"{session_id}:{workflow_name}"}}
+        try:
+            snapshot = await graph.aget_state(thread)
+            self._pre_turn[thread["configurable"]["thread_id"]] = (
+                graph, dict(getattr(snapshot, "values", None) or {})
+            )
+        except Exception:  # noqa: BLE001 — rollback is best-effort bookkeeping
+            self._pre_turn.pop(thread["configurable"]["thread_id"], None)
         invocation = {
             "tenant_id": tenant_id,
             "bot_id": bot_id,
@@ -1943,6 +2289,8 @@ class WorkflowEngine:
             invocation["context_values"] = dict(context_values)
         if initial_slots is not None:
             invocation["slots"] = dict(initial_slots)
+        if heard_nodes is not None:
+            invocation["heard_nodes"] = [str(item) for item in heard_nodes]
         if reset_state:
             invocation.update({
                 "slots": dict(initial_slots or {}),
@@ -1951,6 +2299,7 @@ class WorkflowEngine:
                 "node_retries": {},
                 "pending_digits": {},
                 "audit": [],
+                "spoken_nodes": [],
             })
         try:
             state = await asyncio.wait_for(
@@ -1994,7 +2343,46 @@ class WorkflowEngine:
             "responseMode": state.get("response_mode") or RESPONSE_MODE_FIXED,
             "responseDirectives": list(state.get("response_directives") or []),
             "responseMustInclude": list(state.get("response_must_include") or []),
+            # Node ids whose authored text is part of THIS turn's reply. The
+            # voice brain reports them back as heard (``heard_nodes``) once
+            # the reply's audio has played to completion without a barge-in.
+            "spokenNodes": list(state.get("spoken_this_turn") or []),
         }
+
+    async def rollback_last_turn(self, *, session_id: str, workflow_name: str) -> bool:
+        """Restore the workflow state from before the most recent turn.
+
+        Used when the brain rewinds a turn whose reply never reached the caller
+        (late transcript merge): the merged utterance will run as ONE turn
+        against the state the flow was in before the fragment. Returns False
+        when nothing is known about the thread.
+        """
+        thread_id = f"{session_id}:{workflow_name}"
+        entry = self._pre_turn.pop(thread_id, None)
+        if entry is None:
+            return False
+        graph, previous = entry
+        thread = {"configurable": {"thread_id": thread_id}}
+        try:
+            current = await graph.aget_state(thread)
+            current_values = dict(getattr(current, "values", None) or {})
+        except Exception:  # noqa: BLE001
+            current_values = {}
+        restored: dict = {}
+        for key in set(current_values) | set(previous):
+            if key in previous:
+                restored[key] = previous[key]
+            else:
+                value = current_values.get(key)
+                restored[key] = [] if isinstance(value, list) else {} if isinstance(value, dict) else None
+        if not restored:
+            return True
+        try:
+            await graph.aupdate_state(thread, restored, as_node="step")
+        except Exception:  # noqa: BLE001
+            logger.exception("workflow rollback failed for %s", thread_id)
+            return False
+        return True
 
     async def aclose(self) -> None:
         if self._saver_cm is not None:

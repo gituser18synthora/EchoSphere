@@ -421,3 +421,180 @@ class TestEngineModes:
         hindi = await _turn(engine, "hi", "m-loc-hi", name="noprompt_flow",
                             language="hi-IN")
         assert hindi["reply"] == canned("wf_how_help", "hi-IN")
+
+
+HEARD_FLOW = {
+    "id": "wf_heard", "version": 1, "name": "Heard flow",
+    "nodes": [
+        {"id": "start", "kind": "start", "label": "Start"},
+        {"id": "readout", "kind": "ask", "label": "Readout",
+         "config": {"question": "Your ticket shows a deduction. What happened?",
+                    "variable": "story", "entityType": "text",
+                    "responseMode": "llm_grounded",
+                    "responseDirective": "Read the ticket facts, then ask."}},
+        {"id": "verify", "kind": "intent", "label": "Verify",
+         "config": {"prompt": "Is all of this correct?",
+                    "responseMode": "llm_grounded",
+                    "responseDirective": "Repeat the ticket facts, then confirm.",
+                    "responseDirectiveVariants": [
+                        {"heard": ["readout"],
+                         "directive": "Confirm WITHOUT repeating the ticket facts."},
+                    ],
+                    "responseMustInclude": ["क्या ये सब सही है"],
+                    "responseMustIncludeByLanguage": {
+                        "en": ["is all of this correct"]}}},
+        {"id": "end", "kind": "end", "label": "End", "config": {"text": "Bye."}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "readout"},
+        {"id": "e2", "from": "readout", "to": "verify"},
+        {"id": "e3", "from": "verify", "to": "end", "label": "yes"},
+    ],
+}
+
+
+class TestDirectiveVariantsAndHeardNodes:
+    """Grounded wording can depend on what the caller actually HEARD."""
+
+    async def test_spoken_nodes_are_reported_per_turn(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HEARD_FLOW)
+        first = await _turn(engine, "hello", "h-spoken", name="heard_flow")
+        assert first["spokenNodes"] == ["readout"]
+        second = await _turn(engine, "I delivered it", "h-spoken", name="heard_flow")
+        assert second["spokenNodes"] == ["verify"]
+
+    async def test_text_channel_counts_every_spoken_node_as_heard(
+        self, engine, monkeypatch
+    ):
+        """No heard_nodes report (chat/simulate): the readout was spoken on
+        turn 1, so turn 2 uses the heard variant."""
+        _use_definition(monkeypatch, HEARD_FLOW)
+        await _turn(engine, "hello", "h-text", name="heard_flow")
+        result = await _turn(engine, "I delivered it", "h-text", name="heard_flow")
+        assert result["responseDirectives"] == [
+            "Confirm WITHOUT repeating the ticket facts."
+        ]
+
+    async def test_voice_report_without_the_readout_uses_the_default_directive(
+        self, engine, monkeypatch
+    ):
+        """The brain reports what played out; a readout cut by a barge-in is
+        absent from the report, so the confirmation repeats the facts."""
+        _use_definition(monkeypatch, HEARD_FLOW)
+        await _turn(engine, "hello", "h-voice", name="heard_flow", heard_nodes=[])
+        result = await _turn(
+            engine, "I delivered it", "h-voice", name="heard_flow", heard_nodes=[],
+        )
+        assert result["responseDirectives"] == [
+            "Repeat the ticket facts, then confirm."
+        ]
+
+    async def test_voice_report_with_the_readout_uses_the_heard_variant(
+        self, engine, monkeypatch
+    ):
+        _use_definition(monkeypatch, HEARD_FLOW)
+        await _turn(engine, "hello", "h-voice2", name="heard_flow", heard_nodes=[])
+        result = await _turn(
+            engine, "I delivered it", "h-voice2", name="heard_flow",
+            heard_nodes=["readout"],
+        )
+        assert result["responseDirectives"] == [
+            "Confirm WITHOUT repeating the ticket facts."
+        ]
+
+    async def test_must_include_follows_the_caller_language(self, engine, monkeypatch):
+        _use_definition(monkeypatch, HEARD_FLOW)
+        await _turn(engine, "hello", "h-lang-hi", name="heard_flow", language="hi-IN")
+        hindi = await _turn(
+            engine, "deliver kiya", "h-lang-hi", name="heard_flow", language="hi-IN",
+        )
+        assert hindi["responseMustInclude"] == ["क्या ये सब सही है"]
+        await _turn(engine, "hello", "h-lang-en", name="heard_flow", language="en-IN")
+        english = await _turn(
+            engine, "I delivered it", "h-lang-en", name="heard_flow", language="en-IN",
+        )
+        assert english["responseMustInclude"] == ["is all of this correct"]
+
+    def test_variant_resolution_rules(self):
+        from shared.orchestration.response_modes import (
+            resolve_response_directive,
+            resolve_response_must_include,
+        )
+        config = {
+            "responseDirective": "default",
+            "responseDirectiveVariants": [
+                "junk",
+                {"heard": ["a"], "notHeard": ["b"], "directive": "a-not-b"},
+                {"heard": ["a", "b"], "directive": "a-and-b"},
+                {"directive": ""},
+            ],
+        }
+        assert resolve_response_directive(config, []) == "default"
+        assert resolve_response_directive(config, ["a"]) == "a-not-b"
+        assert resolve_response_directive(config, ["a", "b"]) == "a-and-b"
+        assert resolve_response_directive({"responseDirective": " d "}, ["a"]) == "d"
+        assert resolve_response_directive(None, ["a"]) == ""
+        must = {"responseMustInclude": ["x"],
+                "responseMustIncludeByLanguage": {"en-US": ["us"], "en": ["en"]}}
+        assert resolve_response_must_include(must, "en-US") == ["us"]
+        assert resolve_response_must_include(must, "en-IN") == ["en"]
+        assert resolve_response_must_include(must, "hi-IN") == ["x"]
+        assert resolve_response_must_include(must, None) == ["x"]
+        assert resolve_response_must_include({}, "en") == []
+
+
+ENTRY_STORY_FLOW = {
+    "id": "wf_entry_story", "version": 1, "name": "Entry story flow",
+    "nodes": [
+        {"id": "start", "kind": "start", "label": "Start"},
+        {"id": "story", "kind": "ask", "label": "What happened?",
+         "config": {"question": "Tell me what happened?",
+                    "variable": "story", "entityType": "text",
+                    "consumedReply": "I can see the deduction on your ticket.",
+                    "alsoCapture": [{"variable": "called", "entity": {
+                        "dataType": "text",
+                        "synonyms": {"yes": ["called the customer", "i called"]}}}]}},
+        {"id": "ask_called", "kind": "ask", "label": "Called?",
+         "config": {"question": "Did you call the customer?", "variable": "called",
+                    "entity": {"dataType": "text",
+                               "synonyms": {"yes": ["yes"], "no": ["no"]}}}},
+        {"id": "ask_where", "kind": "ask", "label": "Where?",
+         "config": {"question": "Where did you leave it?", "variable": "where",
+                    "entityType": "text"}},
+        {"id": "end", "kind": "end", "label": "End", "config": {"text": "Bye."}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "story"},
+        {"id": "e2", "from": "story", "to": "ask_called"},
+        {"id": "e3", "from": "ask_called", "to": "ask_where"},
+        {"id": "e4", "from": "ask_where", "to": "end"},
+    ],
+}
+
+
+class TestFreeTextFirstAskConsumesTheEntryStory:
+    async def test_story_in_the_routing_utterance_is_the_answer(self, engine, monkeypatch):
+        """The narrative filled a downstream answer → it IS the description:
+        stored, the consumed reply spoken instead of the question, the filled
+        ask skipped, the next open one asked — all in the entry turn."""
+        _use_definition(monkeypatch, ENTRY_STORY_FLOW)
+        result = await _turn(
+            engine, "I delivered it and I called the customer but got deducted",
+            "es-story", name="entry_story_flow",
+        )
+        assert result["slots"]["story"].startswith("I delivered it")
+        assert result["slots"]["called"] == "yes"
+        assert result["reply"] == (
+            "I can see the deduction on your ticket. Where did you leave it?"
+        )
+        assert result["nodePrompt"] == "Where did you leave it?"
+        assert result["spokenNodes"] == ["story", "ask_where"]
+        assert result["trace"] == ["start", "story", "ask_called", "ask_where"]
+
+    async def test_plain_opener_still_gets_the_question(self, engine, monkeypatch):
+        _use_definition(monkeypatch, ENTRY_STORY_FLOW)
+        result = await _turn(engine, "I have an issue", "es-opener", name="entry_story_flow")
+        assert "story" not in result["slots"]
+        assert result["reply"] == "Tell me what happened?"
+        assert result["nodePrompt"] == "Tell me what happened?"
+        assert result["spokenNodes"] == ["story"]

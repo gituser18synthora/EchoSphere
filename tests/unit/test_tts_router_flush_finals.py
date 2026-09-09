@@ -247,3 +247,89 @@ async def test_language_switch_prewarms_unconnected_engine():
     await asyncio.gather(*router.tasks)
     assert warmed == [("elevenlabs", "en-US")]
     assert ("connect",) in provider.calls
+
+
+async def test_reply_marker_rides_the_generation_and_reports_completion_upstream():
+    """ReplyMarkerFrame → attached to the NEXT generation created; finishing
+    that generation pushes ReplyTTSCompleteFrame upstream with the marker."""
+    from voice_runtime.frames import ReplyMarkerFrame, ReplyTTSCompleteFrame
+
+    router = make_router()
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append((frame, direction))
+
+    router.push_frame = push
+    await router.process_frame(ReplyMarkerFrame(marker=7), FrameDirection.DOWNSTREAM)
+    assert router._pending_marker == 7
+    assert pushed == []                      # never forwarded to the transport
+
+    # The generation the reply creates consumes the marker …
+    state = _Generation(engine=ENGINE, provider=FakeProvider())
+    state.marker, router._pending_marker = router._pending_marker, None
+    router._generations["ctx7"] = state
+    assert state.marker == 7 and router._pending_marker is None
+
+    # … and completion reports it upstream once, after the audio.
+    await router._dispatch_event(KEY, TTSStreamEvent(
+        kind="audio", generation_id="ctx7", audio=b"\x01\x02" * 8,
+    ))
+    state.turn_complete = True
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx7"))
+    completes = [f for f, d in pushed if isinstance(f, ReplyTTSCompleteFrame)]
+    assert len(completes) == 1
+    assert completes[0].marker == 7 and completes[0].failed is False
+    assert pushed[-1][1] == FrameDirection.UPSTREAM
+
+
+async def test_untracked_generation_reports_nothing_and_failure_is_flagged():
+    from voice_runtime.frames import ReplyTTSCompleteFrame
+
+    router = make_router()
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    router.push_frame = push
+    plain = _Generation(engine=ENGINE, provider=FakeProvider())
+    router._generations["ctx-plain"] = plain
+    plain.turn_complete = True
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx-plain"))
+    assert not [f for f in pushed if isinstance(f, ReplyTTSCompleteFrame)]
+
+    silent = _Generation(engine=ENGINE, provider=FakeProvider(), marker=3)
+    router._generations["ctx-silent"] = silent
+    silent.turn_complete = True            # no audio ever arrived
+    await router._dispatch_event(KEY, TTSStreamEvent(kind="final", generation_id="ctx-silent"))
+    completes = [f for f in pushed if isinstance(f, ReplyTTSCompleteFrame)]
+    assert len(completes) == 1 and completes[0].marker == 3 and completes[0].failed is True
+
+
+async def test_interrupted_generation_never_reports_completion():
+    from voice_runtime.frames import ReplyTTSCompleteFrame
+
+    router = make_router()
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    router.push_frame = push
+
+    async def _noop_super(context_id):
+        pass
+
+    router._generations["ctx-cut"] = _Generation(
+        engine=ENGINE, provider=FakeProvider(), marker=9,
+    )
+    import voice_runtime.tts_router as mod
+    original = mod.TTSService.on_audio_context_interrupted
+    mod.TTSService.on_audio_context_interrupted = lambda self, cid: _noop_super(cid)
+    try:
+        await router.on_audio_context_interrupted("ctx-cut")
+    finally:
+        mod.TTSService.on_audio_context_interrupted = original
+    assert "ctx-cut" not in router._generations
+    assert not [f for f in pushed if isinstance(f, ReplyTTSCompleteFrame)]

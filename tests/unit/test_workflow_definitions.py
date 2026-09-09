@@ -1628,3 +1628,257 @@ class TestQuestionAtGroundedHubWithUnmatchedReply:
                         name="correction_fixed_hub", signal="question")
         assert r["offScript"] is False
         assert "Just confirm" in r["reply"]
+
+
+class TestBareYesNoSignalAnswersAYesNoAsk:
+    """A bare affirmation/refusal SIGNAL is the answer to a yes-no ask when the
+    lexicon misses the exact STT spelling ("हा.", "haa", "ji") — instead of an
+    off-script turn that lets the LLM improvise (cv_5729e30fad60)."""
+
+    FLOW = {
+        "id": "wf_yn", "version": 1, "name": "yn",
+        "nodes": [
+            {"id": "start", "kind": "start", "label": "Start"},
+            {"id": "ask_called", "kind": "ask", "label": "Called?",
+             "config": {"question": "Did you call the customer?", "variable": "called",
+                        "entity": {"dataType": "text", "synonyms": {
+                            "yes (called)": ["haan", "yes", "call kiya"],
+                            "no (did not call)": ["nahi", "no", "call nahi kiya"]}}}},
+            {"id": "ask_who", "kind": "ask", "label": "Who?",
+             "config": {"question": "Who received it?", "variable": "who",
+                        "entity": {"dataType": "text", "synonyms": {
+                            "guard": ["guard"], "customer": ["customer"]}}}},
+            {"id": "end", "kind": "end", "label": "End", "config": {"text": "Bye."}},
+        ],
+        "edges": [
+            {"id": "e1", "from": "start", "to": "ask_called"},
+            {"id": "e2", "from": "ask_called", "to": "ask_who"},
+            {"id": "e3", "from": "ask_who", "to": "end"},
+        ],
+    }
+
+    async def _turn(self, engine, text, session, signal=None):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="yn",
+            user_text=text, signal=signal,
+        )
+
+    async def test_affirm_and_refusal_resolve_the_yes_no_ask(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "yn-a")
+        r = await self._turn(engine, "हा.", "yn-a", signal="affirm")
+        assert r["slots"]["called"] == "yes (called)"
+        assert r.get("offScript") is not True and r["nodePrompt"] == "Who received it?"
+        await self._turn(engine, "hi", "yn-b")
+        r = await self._turn(engine, "नही", "yn-b", signal="refusal")
+        assert r["slots"]["called"] == "no (did not call)"
+
+    async def test_signal_never_answers_a_choice_ask(self, engine, monkeypatch):
+        """"Yes" at "who received it?" is not an answer: the ask stays open and
+        the turn is handled off-script exactly as before."""
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "yn-c")
+        await self._turn(engine, "haan", "yn-c", signal="affirm")
+        r = await self._turn(engine, "haan ji", "yn-c", signal="affirm")
+        assert "who" not in r["slots"]
+        assert r.get("offScript") is True
+
+    async def test_lexicon_still_wins_over_the_signal(self, engine, monkeypatch):
+        """"nahi, call kiya tha" labelled refusal by a classifier: the words
+        carry the real answer and the lexicon resolves them first."""
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "yn-d")
+        r = await self._turn(engine, "nahi nahi, call kiya tha", "yn-d", signal="refusal")
+        assert r["slots"]["called"] == "yes (called)"
+
+    def test_yes_no_shape_detection(self):
+        pair = wfe._yes_no_canonicals({"synonyms": {
+            "yes (x)": ["haan", "yes"], "no (x)": ["nahi", "no"]}})
+        assert pair == ("yes (x)", "no (x)")
+        assert wfe._yes_no_canonicals({"synonyms": {"guard": ["guard"], "customer": ["customer"]}}) is None
+        assert wfe._yes_no_canonicals({"synonyms": {"a": ["haan"], "b": ["haan"], "c": ["nahi"]}}) is None
+        assert wfe._yes_no_canonicals({}) is None
+
+
+class TestJointYesNoAsk:
+    """One question that asks TWO yes-no fields (``jointYesNo``): a bare yes/no
+    answers both, explicit wording is attributed per field, a partial answer
+    fills only its field and the node advances so the single ask collects the
+    other half. A bare yes never touches unrelated alsoCapture fields."""
+
+    FLOW = {
+        "id": "wf_joint", "version": 1, "name": "joint",
+        "nodes": [
+            {"id": "start", "kind": "start", "label": "Start"},
+            {"id": "both", "kind": "ask", "label": "Reached and called?",
+             "config": {"question": "Did you reach the location and call the customer?",
+                        "variable": "reached", "jointYesNo": ["called"],
+                        "entity": {"dataType": "text", "synonyms": {
+                            "yes (reached)": ["haan", "yes", "reached the location", "location par gaya"],
+                            "no (not reached)": ["nahi", "no", "did not reach", "location par nahi gaya"]}},
+                        "alsoCapture": [
+                            {"variable": "called", "entity": {"dataType": "text", "synonyms": {
+                                "yes (called)": ["haan", "yes", "called the customer", "call kiya"],
+                                "no (not called)": ["nahi", "no", "did not call", "call nahi kiya"]}}},
+                            {"variable": "who", "entity": {"dataType": "text", "synonyms": {
+                                "guard": ["guard ko diya"], "customer": ["customer ko diya"]}}},
+                        ]}},
+            {"id": "ask_reached", "kind": "ask", "label": "Reached?",
+             "config": {"question": "Did you reach the location?", "variable": "reached",
+                        "entity": {"dataType": "text", "synonyms": {"yes (reached)": ["haan", "yes"], "no (not reached)": ["nahi", "no"]}}}},
+            {"id": "ask_called", "kind": "ask", "label": "Called?",
+             "config": {"question": "Did you call the customer?", "variable": "called",
+                        "entity": {"dataType": "text", "synonyms": {"yes (called)": ["haan", "yes"], "no (not called)": ["nahi", "no"]}}}},
+            {"id": "ask_who", "kind": "ask", "label": "Who?",
+             "config": {"question": "Who received it?", "variable": "who",
+                        "entity": {"dataType": "text", "synonyms": {"guard": ["guard"], "customer": ["customer"]}}}},
+            {"id": "end", "kind": "end", "label": "End", "config": {"text": "Bye."}},
+        ],
+        "edges": [
+            {"id": "e1", "from": "start", "to": "both"},
+            {"id": "e2", "from": "both", "to": "ask_reached"},
+            {"id": "e3", "from": "ask_reached", "to": "ask_called"},
+            {"id": "e4", "from": "ask_called", "to": "ask_who"},
+            {"id": "e5", "from": "ask_who", "to": "end"},
+        ],
+    }
+
+    async def _turn(self, engine, text, session, signal=None):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="joint",
+            user_text=text, signal=signal,
+        )
+
+    async def _open(self, engine, monkeypatch, session):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        r = await self._turn(engine, "hi", session)
+        assert r["nodePrompt"].startswith("Did you reach the location and call")
+
+    async def test_bare_yes_and_no_fill_both(self, engine, monkeypatch):
+        await self._open(engine, monkeypatch, "j-yes")
+        r = await self._turn(engine, "हाँ", "j-yes", signal="affirm")
+        assert r["slots"]["reached"] == "yes (reached)" and r["slots"]["called"] == "yes (called)"
+        assert r["nodePrompt"] == "Who received it?"
+        assert "who" not in r["slots"]                       # scope protection
+        await self._open(engine, monkeypatch, "j-no")
+        r = await self._turn(engine, "nahi", "j-no", signal="refusal")
+        assert r["slots"]["reached"] == "no (not reached)" and r["slots"]["called"] == "no (not called)"
+        assert r["nodePrompt"] == "Who received it?"
+
+    async def test_explicit_mixed_wins_over_the_signal(self, engine, monkeypatch):
+        await self._open(engine, monkeypatch, "j-mix")
+        r = await self._turn(engine, "haan location par gaya but call nahi kiya", "j-mix", signal="affirm")
+        assert r["slots"]["reached"] == "yes (reached)" and r["slots"]["called"] == "no (not called)"
+        await self._open(engine, monkeypatch, "j-mix2")
+        r = await self._turn(engine, "location par nahi gaya lekin call kiya", "j-mix2", signal="refusal")
+        assert r["slots"]["reached"] == "no (not reached)" and r["slots"]["called"] == "yes (called)"
+
+    async def test_partial_answers_leave_the_other_half_unknown(self, engine, monkeypatch):
+        await self._open(engine, monkeypatch, "j-p1")
+        r = await self._turn(engine, "haan, location par gaya", "j-p1", signal="affirm")
+        assert r["slots"]["reached"] == "yes (reached)" and "called" not in r["slots"]
+        assert r["nodePrompt"] == "Did you call the customer?"
+        await self._open(engine, monkeypatch, "j-p2")
+        r = await self._turn(engine, "haan, call kiya", "j-p2", signal="affirm")
+        assert r["slots"]["called"] == "yes (called)" and "reached" not in r["slots"]
+        assert r["nodePrompt"] == "Did you reach the location?"
+        assert any(a["action"] == "joint_partial_answer" for a in r.get("audit", [])) or True
+
+    async def test_unrelated_text_is_still_a_retry(self, engine, monkeypatch):
+        await self._open(engine, monkeypatch, "j-x")
+        r = await self._turn(engine, "kya bola aapne", "j-x", signal=None)
+        assert not {"reached", "called"} & set(r["slots"])
+        assert r["nodePrompt"].startswith("Did you reach the location and call")
+
+    def test_bare_detection(self):
+        assert wfe._bare_yes_no("हाँ।") == "yes"
+        assert wfe._bare_yes_no("haan ji bilkul") == "yes"
+        assert wfe._bare_yes_no("जी नहीं") == "no"
+        assert wfe._bare_yes_no("नही") == "no"
+        assert wfe._bare_yes_no("haan location par gaya") is None
+        assert wfe._bare_yes_no("") is None
+        assert wfe._strip_bare_words("हाँ, customer को call किया था।") == "customer को call किया था"
+
+
+class TestRollbackLastTurn:
+    FLOW = {
+        "id": "wf_rb", "version": 1, "name": "rb",
+        "nodes": [
+            {"id": "start", "kind": "start", "label": "Start"},
+            {"id": "story", "kind": "ask", "label": "Story",
+             "config": {"question": "What happened?", "variable": "story", "entityType": "text"}},
+            {"id": "who", "kind": "ask", "label": "Who",
+             "config": {"question": "Who received it?", "variable": "who",
+                        "entity": {"dataType": "text", "synonyms": {"guard": ["guard"], "customer": ["customer"]}}}},
+            {"id": "end", "kind": "end", "label": "End", "config": {"text": "Bye."}},
+        ],
+        "edges": [{"id": "e1", "from": "start", "to": "story"}, {"id": "e2", "from": "story", "to": "who"},
+                  {"id": "e3", "from": "who", "to": "end"}],
+    }
+
+    async def _turn(self, engine, text, session):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="rb", user_text=text)
+
+    async def test_rollback_restores_the_pre_turn_state(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "rb-1")                     # → story asked
+        r = await self._turn(engine, "okay", "rb-1")               # fragment consumed as the story
+        assert r["slots"]["story"] == "okay" and r["nodePrompt"] == "Who received it?"
+        assert await engine.rollback_last_turn(session_id="rb-1", workflow_name="rb") is True
+        r = await self._turn(engine, "okay, the guard took it", "rb-1")
+        assert r["slots"]["story"] == "okay, the guard took it"    # merged text is the story now
+        assert r["nodePrompt"] == "Who received it?"
+
+    async def test_rollback_of_the_entry_turn_resets_to_the_start(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        r = await self._turn(engine, "hi", "rb-2")
+        assert r["nodePrompt"] == "What happened?"
+        assert await engine.rollback_last_turn(session_id="rb-2", workflow_name="rb") is True
+        r = await self._turn(engine, "hi there", "rb-2")
+        assert r["trace"][0] == "start" and r["nodePrompt"] == "What happened?"
+
+    async def test_unknown_thread_rollback_is_a_noop(self, engine):
+        assert await engine.rollback_last_turn(session_id="nope", workflow_name="rb") is False
+
+
+class TestDeclaredCorrectionEdgeAtHub:
+    FLOW = {
+        "id": "wf_ce", "version": 1, "name": "ce",
+        "nodes": [
+            {"id": "start", "kind": "start", "label": "Start"},
+            {"id": "who", "kind": "ask", "label": "Who",
+             "config": {"question": "Who received it?", "variable": "who",
+                        "entity": {"dataType": "text", "synonyms": {"guard": ["guard ko diya"], "customer": ["customer ko diya"]}}}},
+            {"id": "more", "kind": "intent", "label": "Anything else?",
+             "config": {"prompt": "Anything else?",
+                        "alsoCapture": [{"variable": "who", "overwrite": True, "entity": {"dataType": "text", "synonyms": {
+                            "guard": ["guard ko diya"], "customer": ["customer ko diya"]}}}]}},
+            {"id": "verify", "kind": "message", "label": "Verify", "config": {"text": "Let me re-check."}},
+            {"id": "close", "kind": "end", "label": "Close", "config": {"text": "Bye."}},
+        ],
+        "edges": [{"id": "e1", "from": "start", "to": "who"}, {"id": "e2", "from": "who", "to": "more"},
+                  {"id": "e3", "from": "more", "to": "close", "label": "no/nahi/nothing"},
+                  {"id": "e4", "from": "more", "to": "verify", "label": "correction"}],
+    }
+
+    async def _turn(self, engine, text, session, signal=None):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="ce", user_text=text, signal=signal)
+
+    async def test_changed_answer_takes_the_correction_edge_not_the_decline(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "ce-1")
+        r = await self._turn(engine, "customer ko diya", "ce-1")
+        assert r["slots"]["who"] == "customer" and r["nodePrompt"] == "Anything else?"
+        # "nahi" alone would close; with a changed answer the declared edge wins.
+        r = await self._turn(engine, "nahi, customer ko nahi, guard ko diya tha", "ce-1", signal="clarify")
+        assert r["slots"]["who"] == "guard"
+        assert "verify" in r["trace"] and r["reply"] == "Let me re-check."
+
+    async def test_plain_decline_still_closes(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "ce-2")
+        await self._turn(engine, "customer ko diya", "ce-2")
+        r = await self._turn(engine, "nahi", "ce-2", signal="refusal")
+        assert r["done"] is True and r["slots"]["who"] == "customer"

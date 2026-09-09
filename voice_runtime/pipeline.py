@@ -566,6 +566,11 @@ def build_tts_service(
         speed=config.speed,
         energy=config.energy,
     )
+    if provider == "elevenlabs":
+        # Synthesize at the pipeline rate instead of 16 kHz + upsampling
+        # (eleven_v3 replies on a 24 kHz browser call sounded duller than the
+        # same voice over the 24 kHz WebSocket path).
+        extra = {**extra, "output_sample_rate": sample_rate}
     tts_provider = get_tts_provider(
         ProviderConfig(
             provider=provider,

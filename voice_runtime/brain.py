@@ -81,6 +81,8 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -132,6 +134,7 @@ from shared.orchestration.response_modes import (
     RESPONSE_MODE_EXACT,
     RESPONSE_MODE_FIXED,
     RESPONSE_MODE_GROUNDED,
+    collected_facts_block,
     grounded_delivery_instruction,
     language_label,
     validate_grounded_reply,
@@ -175,6 +178,9 @@ from voice_runtime.endpointing import (
     utterance_looks_complete,
 )
 from voice_runtime.frames import (
+    ReplyMarkerFrame,
+    ReplyTTSCompleteFrame,
+    ReplyTTSInterruptedFrame,
     STTEagerEndOfTurnFrame,
     STTTurnResumedFrame,
     SwitchVoiceLanguageFrame,
@@ -773,10 +779,40 @@ class ConversationBrain(FrameProcessor):
         # The bot reply a barge-in cut short, remembered until the speech that
         # caused it is classified: a telephony recording notice restores it.
         self._interrupted_reply: str | None = None
+        # Workflow delivery feedback. ``_heard_nodes`` = workflow node ids
+        # whose reply the caller heard to completion (reported to the engine
+        # every turn so grounded steps can word themselves accordingly —
+        # e.g. not repeating a ticket readout the caller already heard).
+        # ``_reply_nodes`` = the nodes spoken by the reply being delivered
+        # now; it is marked heard once the TTS router reports the reply's
+        # synthesis complete (ReplyTTSCompleteFrame for ``_reply_marker``)
+        # AND the transport reports the bot stopped speaking; a barge-in
+        # before that abandons (or un-marks) it.
+        self._heard_nodes: list[str] = []
+        self._reply_nodes: list[str] = []
+        self._reply_marker = 0
+        self._reply_marker_pushed = False
+        self._reply_tts_complete = False
+        self._reply_heard = False
+        # When the reply's audio started (monotonic) and, after a barge-in,
+        # the cut reply awaiting the router's per-sentence report.
+        self._reply_audio_started_at: float | None = None
+        self._reply_cut: dict | None = None
+        # The workflow turn the open (rewindable) user turn ran, if any:
+        # (workflow name, previous active workflow) — restored on rollback.
+        self._open_turn_workflow: tuple[str, str | None] | None = None
         # Turn taking: STT segments buffered until the turn controller closes
         # the user's turn (see module docstring). Finalization is debounced by
         # ``finalize_grace`` so straggler STT finals merge into ONE turn.
         self._turn_active = False
+        # Physical speech as the VAD sees it (VADUser*SpeakingFrames pass
+        # through the turn processor untouched). Distinct from
+        # ``_turn_active``: inside an open turn the turn controller withholds
+        # UserStartedSpeakingFrame when the caller resumes after a pause, so
+        # this is the only signal that the adaptive complete-sentence
+        # endpoint (or an already-dispatched, not-yet-audible reply) is about
+        # to talk over the rest of the caller's thought.
+        self._physical_speech_active = False
         self._pending_segments: list[str] = []
         self._pending_language: str | None = None
         self._finalize_grace = max(0.0, float(finalize_grace))
@@ -989,6 +1025,14 @@ class ConversationBrain(FrameProcessor):
             self._discard_decision_prefetch("turn_resumed")
             return
 
+        if isinstance(frame, ReplyTTSCompleteFrame):
+            self._on_reply_tts_complete(frame)
+            return
+
+        if isinstance(frame, ReplyTTSInterruptedFrame):
+            self._on_reply_tts_interrupted(frame)
+            return
+
         if isinstance(frame, TranscriptionFrame):
             # Billable STT audio is tracked for EVERY final — including ones
             # the quality gate rejects or that arrive during hang-up: the
@@ -1008,6 +1052,17 @@ class ConversationBrain(FrameProcessor):
                 (InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame),
             ):
                 return
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._physical_speech_active = True
+            await self._on_physical_speech_resumed()
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._physical_speech_active = False
             await self.push_frame(frame, direction)
             return
 
@@ -1078,6 +1133,7 @@ class ConversationBrain(FrameProcessor):
                     self._policy.interruption_detected = True
                 self._recorder.add_event("barge_in", during_bot_audio=True)
                 self._interrupted_reply = self._last_bot_reply or None
+                self._on_reply_interrupted()
             await self._cancel_generation(
                 "late_transcript_merge" if resumed_before_reply else "barge_in"
             )
@@ -1148,6 +1204,8 @@ class ConversationBrain(FrameProcessor):
             # caller stops waiting, so it closes the turn's latency measurement.
             self._reply_audio_started = True
             self._bot_speaking = True
+            if self._reply_audio_started_at is None:
+                self._reply_audio_started_at = time.monotonic()
             self._disarm_silence_timer()
             self._interrupted_reply = None
             self._latency.mark_bot_started_speaking()
@@ -1173,6 +1231,10 @@ class ConversationBrain(FrameProcessor):
                     await self._arm_latency_filler(self._open_turn_text, resume=True)
             else:
                 self._latency.mark_bot_stopped_speaking()
+                if self._reply_tts_complete:
+                    # Synthesis finished earlier and the audio has now played
+                    # out: the caller heard the whole reply.
+                    self._mark_reply_heard()
             await self.push_frame(frame, direction)
             await self._flush_pending_controls()
             if (
@@ -1602,7 +1664,13 @@ class ConversationBrain(FrameProcessor):
             # with ``user_speech_end_at == 0`` and talked over the rest of the
             # caller's sentence.  Buffer it until a real VAD stop (or another
             # physical start/stop cycle) closes the turn.
-            if getattr(frame, "_echosphere_mid_utterance", False):
+            if (
+                getattr(frame, "_echosphere_mid_utterance", False)
+                or self._physical_speech_active
+            ):
+                # The provider marks finals flushed during active speech; the
+                # brain's own VAD view covers providers that do not, and a
+                # final that lands after the caller has already resumed.
                 await self._cancel_finalize()
                 self._recorder.add_event(
                     "stt_mid_utterance_segment_buffered", text=text[:200]
@@ -1973,7 +2041,44 @@ class ConversationBrain(FrameProcessor):
             return
         if self._turn_active and not ignore_open_turn:
             return
+        if self._turn_active and self._physical_speech_active:
+            # The adaptive endpoint's premise ("the caller paused after a
+            # complete thought") no longer holds: they are audibly speaking
+            # again. Stand down; the VAD stop that ends their speech re-arms
+            # the endpoint (next final) or closes the turn (pause window).
+            self._recorder.add_event("adaptive_endpoint_deferred", reason="speech_active")
+            return
         await self._consume_pending_turn()
+
+    async def _on_physical_speech_resumed(self) -> None:
+        """The caller started speaking again INSIDE an open user turn.
+
+        The turn controller emits no UserStartedSpeakingFrame here (the turn
+        never closed), so the barge-in/merge branch above never runs. Without
+        this hook the complete-sentence endpoint armed on the previous
+        segment fires into the caller's next sentence (cv_d82a2669fea1,
+        cv_d20bd27a2156: reply spoken over the rest of the story, the
+        continuation then lost as a separate turn).
+        """
+        if self._closing or not self._turn_active:
+            # First start of a turn: the controller's UserStartedSpeakingFrame
+            # follows and owns the bookkeeping.
+            return
+        self._disarm_silence_timer()
+        if self._finalize_pending():
+            await self._cancel_finalize()
+            self._recorder.add_event(
+                "adaptive_endpoint_cancelled", reason="speech_resumed",
+            )
+        if (
+            self._open_turn_text is not None
+            and not self._reply_audio_started
+            and self._generation_in_flight()
+        ):
+            # The early endpoint already dispatched, but no audio has reached
+            # the caller: rewind so the completed utterance runs once.
+            await self._cancel_generation("late_transcript_merge")
+            await self._rollback_open_turn()
 
     async def _rollback_open_turn(self) -> None:
         """Rewind the user turn whose generation was just cancelled.
@@ -1986,6 +2091,22 @@ class ConversationBrain(FrameProcessor):
         """
         text, record = self._open_turn_text, self._open_turn_record
         self._open_turn_text = self._open_turn_record = None
+        workflow_turn, self._open_turn_workflow = self._open_turn_workflow, None
+        if workflow_turn is not None and self._workflows is not None:
+            # The cancelled turn already advanced the checkpointed workflow
+            # (an ask consumed the fragment): rewind it too, or the merged
+            # utterance lands on the wrong step and the reply that never
+            # played is lost for good (cv_30327c49bb47).
+            name, previous_active = workflow_turn
+            try:
+                rolled = await self._workflows.rollback_last_turn(
+                    session_id=self._recorder.session_id, workflow_name=name,
+                )
+            except Exception:  # noqa: BLE001 — never fail the merge
+                rolled = False
+            if rolled:
+                self._active_workflow = previous_active
+                self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
         if self._history and self._history[-1] == {"role": "user", "content": text}:
@@ -2122,6 +2243,7 @@ class ConversationBrain(FrameProcessor):
         self._latency.mark_dispatched()
         # The reply for THIS turn has produced no audio yet.
         self._reply_audio_started = False
+        self._begin_reply_tracking()
         # From here the caller is waiting on us: if no reply audio starts
         # within the configured delay, a gender-matched breath fills the gap
         # (then, on a long wait, a voiced cue in the bot's own voice).
@@ -2208,6 +2330,22 @@ class ConversationBrain(FrameProcessor):
                     "language_switch_blocked",
                     detected=detected,
                     reason="numeric_or_technical_payload",
+                    current=self._conversation_language,
+                )
+            self._reset_language_candidate()
+            return
+        if self._active_workflow is not None and len(meaningful) <= _MIN_SWITCH_WORDS:
+            # Inside a flow a one/two-word utterance is an ANSWER to the pending
+            # question — a name ("रोहन जी"), a yes/no, a place — not a change
+            # of language. cv_c98e4edcc350: an English caller's Devanagari
+            # guard name flipped the call to Hindi for the next question.
+            detected_base = detected.split("-")[0].lower()
+            current_base = self._conversation_language.split("-")[0].lower()
+            if detected_base != current_base:
+                self._recorder.add_event(
+                    "language_switch_blocked",
+                    detected=detected,
+                    reason="short_answer_in_workflow",
                     current=self._conversation_language,
                 )
             self._reset_language_candidate()
@@ -2430,6 +2568,110 @@ class ConversationBrain(FrameProcessor):
         )
         self._naturalness.set_turn_criticality(True, "hold")
         await self._say(canned("hold_ack", self._conversation_language))
+
+    # ── workflow reply delivery tracking (heard / interrupted) ───────────
+
+    def _begin_reply_tracking(self) -> None:
+        """A new turn is being answered: forget the previous reply's nodes."""
+        self._reply_nodes = []
+        self._reply_marker_pushed = False
+        self._reply_tts_complete = False
+        self._reply_heard = False
+        self._reply_audio_started_at = None
+        self._reply_cut = None
+
+    async def _push_reply_marker(self) -> None:
+        """Tag the reply about to be pushed when its delivery matters.
+
+        Only a reply that speaks for workflow nodes is tracked; prefaces,
+        backchannels and plain chat replies carry no marker. One marker per
+        turn: the router answers with ReplyTTSCompleteFrame once the marked
+        generation's audio has all been handed to the transport.
+        """
+        if not self._reply_nodes or self._reply_marker_pushed:
+            return
+        self._reply_marker += 1
+        self._reply_marker_pushed = True
+        await self.push_frame(ReplyMarkerFrame(marker=self._reply_marker))
+
+    def _on_reply_tts_complete(self, frame: ReplyTTSCompleteFrame) -> None:
+        if frame.marker != self._reply_marker or not self._reply_nodes:
+            return
+        if frame.failed:
+            # No audio ever rendered for the reply: nothing was heard.
+            self._reply_nodes = []
+            return
+        self._reply_tts_complete = True
+        if not self._bot_speaking:
+            # The audio already played out before synthesis was reported
+            # complete (short reply, fast transport): heard now.
+            self._mark_reply_heard()
+
+    def _mark_reply_heard(self) -> None:
+        if self._reply_heard or not self._reply_nodes:
+            return
+        self._reply_heard = True
+        for node in self._reply_nodes:
+            if node not in self._heard_nodes:
+                self._heard_nodes.append(node)
+        self._recorder.add_event("workflow_reply_heard", nodes=list(self._reply_nodes))
+
+    def _on_reply_interrupted(self) -> None:
+        """A genuine barge-in: the reply being delivered was not heard out."""
+        if not self._reply_nodes:
+            return
+        if self._reply_heard and not self._bot_speaking:
+            # The reply had fully played before the caller spoke: not an
+            # interruption of THIS reply.
+            return
+        if self._reply_heard:
+            # Marked at synthesis-complete while the tail was still playing.
+            self._heard_nodes = [
+                node for node in self._heard_nodes if node not in self._reply_nodes
+            ]
+        played = (
+            time.monotonic() - self._reply_audio_started_at
+            if self._reply_audio_started_at is not None else 0.0
+        )
+        self._recorder.add_event(
+            "workflow_reply_interrupted", nodes=list(self._reply_nodes),
+            played_s=round(played, 2),
+        )
+        # Not lost yet: the router reports per-sentence audio for the cut
+        # reply; if every sentence but the closing question had played, the
+        # caller did hear the content (cv_fd720f2e9024).
+        self._reply_cut = {
+            "marker": self._reply_marker, "nodes": list(self._reply_nodes),
+            "played": played,
+        }
+        self._reply_nodes = []
+        self._reply_heard = False
+        self._reply_tts_complete = False
+
+    def _on_reply_tts_interrupted(self, frame: ReplyTTSInterruptedFrame) -> None:
+        cut, self._reply_cut = self._reply_cut, None
+        if not cut or frame.marker != cut["marker"] or not cut["nodes"]:
+            return
+        sentences = list(frame.sentences or [])
+        if len(sentences) < 2:
+            return                      # a one-sentence reply is heard only in full
+        played = float(cut["played"]) + 0.3          # transport latency slack
+        heard = 0
+        elapsed = 0.0
+        for _chars, seconds in sentences:
+            elapsed += float(seconds or 0.0)
+            if elapsed <= played:
+                heard += 1
+            else:
+                break
+        if heard >= len(sentences) - 1:
+            for node in cut["nodes"]:
+                if node not in self._heard_nodes:
+                    self._heard_nodes.append(node)
+            self._recorder.add_event(
+                "workflow_reply_heard", nodes=list(cut["nodes"]), partial=True,
+                sentences_heard=heard, sentences_total=len(sentences),
+            )
 
     async def _maybe_resume_interrupted_reply(self) -> None:
         """Re-speak a reply that a recording notice's audio cut short."""
@@ -4328,6 +4570,7 @@ class ConversationBrain(FrameProcessor):
                 verified_slots = self._runtime_context.workflow_values()
                 if verified_slots:
                     initial_slots = verified_slots
+        self._open_turn_workflow = (workflow_name, self._active_workflow)
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -4342,6 +4585,7 @@ class ConversationBrain(FrameProcessor):
                 if self._runtime_context is not None else self._call_context
             ),
             reset_state=reset_state,
+            heard_nodes=list(self._heard_nodes),
         )
         workflow_slots = result.get("slots") or {}
         # Snapshot for the post-call structured summary: scalar slots only,
@@ -4385,6 +4629,12 @@ class ConversationBrain(FrameProcessor):
             return
         reply = result["reply"]
         response_mode = str(result.get("responseMode") or RESPONSE_MODE_FIXED)
+        if reply:
+            # The nodes this reply speaks for: marked heard once its audio
+            # plays out (see _begin_reply_tracking).
+            self._reply_nodes = [
+                str(node) for node in (result.get("spokenNodes") or []) if node
+            ]
         # A step carrying an approved legal wording reference must be spoken
         # VERBATIM through the fixed-phrase path (where the template
         # substitutes) — never re-delivered by generation, which could
@@ -4709,6 +4959,10 @@ class ConversationBrain(FrameProcessor):
                     workflow=workflow_name,
                     reason="provider" if generated is None else "validation",
                 )
+                # The authored fallback is not the utterance the node's
+                # directive promised (a readout fallback carries no ticket
+                # facts): never count these nodes as heard.
+                self._reply_nodes = []
                 await self._say(reply)
             return
         self._recorder.add_event(
@@ -4841,7 +5095,8 @@ class ConversationBrain(FrameProcessor):
         force. The workflow node itself is not advanced."""
         prompt = (result.get("nodePrompt") or "").strip()
         step = f' The flow is currently waiting on this step: "{prompt}".' if prompt else ""
-        return (
+        facts = collected_facts_block(result.get("slots") or {})
+        return facts + (
             "\n\n# Paused call flow (THIS turn)\n"
             "A structured call flow is active but the caller's last message "
             f"did not answer its current step.{step} Respond to what the "
@@ -4973,6 +5228,7 @@ class ConversationBrain(FrameProcessor):
         reply_parts: list[str] = []
         generation_failed = False
         guardrail_block: _GuardrailBlockedReply | None = None
+        await self._push_reply_marker()
         await self.push_frame(LLMFullResponseStartFrame())
         preface = self._consume_speech_preface()
         if preface:
@@ -5389,6 +5645,7 @@ class ConversationBrain(FrameProcessor):
                     text, language=self._conversation_language,
                     identity=self._active_identity(),
                 )
+        await self._push_reply_marker()
         await self.push_frame(LLMFullResponseStartFrame())
         if preface:
             await self.push_frame(TextFrame(preface + " "))

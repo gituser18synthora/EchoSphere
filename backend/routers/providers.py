@@ -573,6 +573,9 @@ async def tts_preview(
                 f"No API key configured for {provider_row.name} — set the referenced "
                 "environment variable to enable previews.", 422,
             )
+        # Same rate as the WebSocket previews so a v3 voice is judged at the
+        # same fidelity as a Flash voice (16 kHz previews sounded duller).
+        rest_rate = 24000 if 24000 in (model_row.sample_rates or [24000]) else 16000
         client = ElevenLabsTTS(ProviderConfig(
             provider="elevenlabs",
             model=body.model,
@@ -580,7 +583,7 @@ async def tts_preview(
             language=body.language,
             api_key_reference=reference,
             timeout_seconds=_PREVIEW_TIMEOUT_S,
-            extra=params,
+            extra={**params, "output_sample_rate": rest_rate},
         ))
         try:
             segments = []
