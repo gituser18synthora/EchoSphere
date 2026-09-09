@@ -3,9 +3,9 @@
 DataFrames so they queue in-order with the token TextFrames they relate to.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from pipecat.frames.frames import DataFrame
+from pipecat.frames.frames import DataFrame, SystemFrame
 
 
 @dataclass
@@ -69,3 +69,44 @@ class STTTurnResumedFrame(DataFrame):
 # the breath "repeating" right before the reply). The message rides the audio
 # queue, so it reaches the serializer after the clip's last frame.
 AUDIO_FLUSH_MESSAGE_TYPE = "audio_flush"
+
+
+@dataclass
+class ReplyMarkerFrame(DataFrame):
+    """Tag the bot reply that FOLLOWS this frame for delivery tracking.
+
+    Emitted by the brain right before a reply's ``LLMFullResponseStartFrame``
+    whenever it needs to know if that reply was actually heard in full. The
+    TTS router attaches the marker to the reply's generation and answers with
+    a :class:`ReplyTTSCompleteFrame` when the generation finishes (all audio
+    delivered) — an interrupted generation never answers.
+    """
+
+    marker: int = 0
+
+
+@dataclass
+class ReplyTTSCompleteFrame(SystemFrame):
+    """Upstream: the marked reply's synthesis finished and all audio was sent.
+
+    A SystemFrame so it reaches the brain immediately (upstream frames are not
+    queued behind audio). ``failed`` marks a generation that produced no
+    audio; the brain then never counts the reply as heard.
+    """
+
+    marker: int = 0
+    failed: bool = False
+
+
+@dataclass
+class ReplyTTSInterruptedFrame(SystemFrame):
+    """Upstream: the marked reply's synthesis was cut by a barge-in.
+
+    ``sentences`` lists (chars, audio_seconds_delivered) per aggregated
+    sentence in speaking order, so the brain can tell how many sentences had
+    played by the time the caller spoke (a ticket readout whose facts played
+    and only the closing question was cut WAS heard — cv_fd720f2e9024).
+    """
+
+    marker: int = 0
+    sentences: list = field(default_factory=list)

@@ -3,7 +3,8 @@
 Used for previews and live segments of models the ElevenLabs realtime
 WebSocket does not accept (Eleven v3); streaming-capable models use
 ``elevenlabs_ws.ElevenLabsWebSocketTTSProvider`` instead. Uses httpx REST
-(no elevenlabs SDK) and requests pcm_16000 output directly.
+(no elevenlabs SDK) and requests PCM output at the consumer's rate when
+ElevenLabs serves it natively (8/16/22.05/24 kHz), else pcm_16000.
 
 The selected model is passed through dynamically (``model_id`` in the
 request body) — never hardcoded per request — and only the voice settings
@@ -30,6 +31,10 @@ logger = logging.getLogger("providers.tts.elevenlabs")
 
 _TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _PCM_RATE = 16000
+# PCM output rates ElevenLabs serves on every plan (44.1 kHz needs Pro). The
+# consumer may ask for its own pipeline rate via ``extra["output_sample_rate"]``
+# so a 24 kHz call or preview is not synthesized at 16 kHz and upsampled.
+_SUPPORTED_PCM_RATES = (8000, 16000, 22050, 24000)
 
 # Catalog-governed configurations always carry a model; this guard only covers
 # direct ProviderConfig construction without one. Matches the WS adapter.
@@ -73,8 +78,16 @@ class ElevenLabsTTS(TTSProvider):
         # Provider-specific synthesis parameters already validated against the
         # model's catalog schema (bot tts_settings / preview params).
         self._params = dict(config.extra or {})
-        # Fixed output rate — consumers resample when their pipeline differs.
-        self.output_sample_rate = _PCM_RATE
+        # Output rate: the consumer's pipeline rate when it is one ElevenLabs
+        # serves natively, else 16 kHz (consumers resample the remainder).
+        requested = self._params.pop("output_sample_rate", None)
+        try:
+            requested = int(requested) if requested is not None else None
+        except (TypeError, ValueError):
+            requested = None
+        self.output_sample_rate = (
+            requested if requested in _SUPPORTED_PCM_RATES else _PCM_RATE
+        )
 
     def _voice_settings(self, speed: float) -> dict:
         allowed = voice_setting_keys(self._model)
@@ -99,7 +112,7 @@ class ElevenLabsTTS(TTSProvider):
         speed: float = 1.0,
     ) -> TTSResult:
         if not text.strip():
-            return TTSResult(audio=b"", sample_rate=_PCM_RATE)
+            return TTSResult(audio=b"", sample_rate=self.output_sample_rate)
         voice_id = (voice or self._voice).strip()
         if not voice_id:
             raise ProviderError(
@@ -118,7 +131,7 @@ class ElevenLabsTTS(TTSProvider):
         try:
             response = await self._client.post(
                 _TTS_URL.format(voice_id=voice_id),
-                params={"output_format": f"pcm_{_PCM_RATE}"},
+                params={"output_format": f"pcm_{self.output_sample_rate}"},
                 json=payload,
             )
         except httpx.TimeoutException as exc:
@@ -142,7 +155,7 @@ class ElevenLabsTTS(TTSProvider):
             raise ProviderError(self.name, "upstream", f"HTTP {response.status_code}: {detail}")
         return TTSResult(
             audio=response.content,
-            sample_rate=_PCM_RATE,
+            sample_rate=self.output_sample_rate,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 

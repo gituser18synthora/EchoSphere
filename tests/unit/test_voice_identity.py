@@ -206,3 +206,29 @@ def test_fixed_text_with_unknown_gender_is_not_changed():
     assert adapt_authored_speaker_grammar(
         text, VoiceIdentity("Custom", "neutral")
     ) == text
+
+
+def test_object_participles_are_not_regendered_with_the_speaker():
+    """cv_b80077e273d8: a male voice spoke "आपके द्वारा दी गया जानकारी" — the
+    passive participle agrees with जानकारी (feminine), not with the speaker.
+    Only the speaker's own predicate (the form before हूँ, or "रही थी") moves."""
+    male, female = VoiceIdentity("Abhishek", "male"), VoiceIdentity("Ritu", "female")
+    text = "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेती हूँ।"
+    assert adapt_authored_speaker_grammar(text, male) == (
+        "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।"
+    )
+    assert adapt_authored_speaker_grammar(text, female) == text
+    # The deduction "हुई थी" is about the deduction, never the speaker.
+    text = "जो 4 अगस्त को हुई थी, वो मैं note कर रहा हूँ।"
+    assert adapt_authored_speaker_grammar(text, male) == text
+    assert adapt_authored_speaker_grammar(text, female) == (
+        "जो 4 अगस्त को हुई थी, वो मैं note कर रही हूँ।"
+    )
+    # Speaker predicates still adapt in both directions.
+    assert adapt_authored_speaker_grammar("मैं समझ गई हूँ", male) == "मैं समझ गया हूँ"
+    assert adapt_authored_speaker_grammar("मैं समझ गया हूँ", female) == "मैं समझ गई हूँ"
+    assert adapt_authored_speaker_grammar("मैं कह रही थी कि", male) == "मैं कह रहा था कि"
+    assert adapt_authored_speaker_grammar("मैं आ चुका था", female) == "मैं आ चुकी थी"
+    assert adapt_authored_speaker_grammar("आपको जो order दिया गया था, मैं देख रही हूँ", male) == (
+        "आपको जो order दिया गया था, मैं देख रहा हूँ"
+    )

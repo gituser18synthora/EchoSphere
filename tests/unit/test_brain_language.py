@@ -277,3 +277,37 @@ class TestHinglishFollowing:
         brain = make_brain(language="en-IN")
         await brain._maybe_switch_language("haan I can pay tomorrow", "hi-IN")
         assert brain._conversation_language == "en-IN"
+
+
+class TestShortAnswersInsideAWorkflow:
+    async def test_two_word_devanagari_answer_does_not_flip_an_english_call(self):
+        """cv_c98e4edcc350: the English caller answered the guard-name ask with
+        "रोहन जी।"; the call flipped to Hindi and the next question came in
+        Hindi. Inside a flow a one/two-word utterance is an answer, not a
+        language change."""
+        brain = make_brain()
+        await brain._maybe_switch_language("Yes, I am speaking.", "en-IN")
+        assert brain._conversation_language == "en-IN"
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("रोहन जी।", "hi-IN")
+        assert brain._conversation_language == "en-IN"
+        assert ("language_switch_blocked", {
+            "detected": "hi-IN", "reason": "short_answer_in_workflow", "current": "en-IN",
+        }) in brain._recorder.events
+
+    async def test_two_word_english_answer_does_not_flip_a_hindi_call(self):
+        brain = make_brain()
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("yes both", "en-IN")
+        assert brain._conversation_language == "hi-IN"
+
+    async def test_a_real_sentence_inside_a_workflow_still_switches(self):
+        brain = make_brain()
+        brain._active_workflow = "wf_x"
+        await brain._maybe_switch_language("I called the customer myself", "en-IN")
+        assert brain._conversation_language == "en-IN"
+
+    async def test_outside_a_workflow_the_old_threshold_applies(self):
+        brain = make_brain()
+        await brain._maybe_switch_language("Yes please", "en-IN")
+        assert brain._conversation_language == "en-IN"

@@ -1164,12 +1164,34 @@ async def simulate_turn(
 
     redis = get_redis()
     active_key = f"wftest:{bot.id}:{session}"
+    # Delivery feedback mirror for text simulation: which workflow nodes the
+    # simulated caller "heard". Every reply counts as heard unless the NEXT
+    # turn is flagged ``interrupted`` (the Testing Studio barge-in switch) —
+    # then the previous reply's nodes are dropped, exactly as the live brain
+    # drops a reply cut short by a barge-in.
+    heard_key = f"wfheard:{bot.id}:{session}"
+    heard_state: dict = {"heard": [], "last": []}
     try:
         active_workflow = await redis.get(active_key)
         if isinstance(active_workflow, bytes):
             active_workflow = active_workflow.decode()
+        raw_heard = await redis.get(heard_key)
+        if raw_heard:
+            loaded = json.loads(
+                raw_heard.decode() if isinstance(raw_heard, bytes) else raw_heard
+            )
+            if isinstance(loaded, dict):
+                heard_state = {
+                    "heard": [str(n) for n in loaded.get("heard") or []],
+                    "last": [str(n) for n in loaded.get("last") or []],
+                }
     except Exception:  # noqa: BLE001 — degrade to single-turn routing
         active_workflow = None
+    if not body.interrupted:
+        for node in heard_state["last"]:
+            if node not in heard_state["heard"]:
+                heard_state["heard"].append(node)
+    heard_state["last"] = []
 
     decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
     pipeline = HybridIntentPipeline(llm=llm, intents=intent_dicts, enabled=True)
@@ -1179,6 +1201,11 @@ async def simulate_turn(
     signal = classification.signal or decision.signal or classify_user_signal(body.message)
     trace["intent"] = classification.as_event()
     trace["signal"] = signal
+    # Same upgrade the live brain applies (_apply_classification): a
+    # confidently classified intent that maps to a workflow starts it even
+    # when the deterministic router only saw chat — a partner telling the
+    # whole story in one breath rarely matches a short intent sample.
+    decision = _upgrade_route_with_intent(decision, classification, intent_dicts)
     trace["routerDecision"] = {
         "route": decision.kind.value, "reason": decision.reason,
         "confidence": round(decision.confidence, 3),
@@ -1277,12 +1304,19 @@ async def simulate_turn(
                 language=body.language or None,
                 mock_tool_results=body.mock_tool_results or None,
                 context_values=runtime_ctx.prompt_values(),
+                heard_nodes=list(heard_state["heard"]),
             )
+            heard_state["last"] = [
+                str(node) for node in (result.get("spokenNodes") or []) if node
+            ]
             workflow_detail = {
                 "name": name, "status": result["status"],
                 "nodeTrace": result["trace"], "slots": result["slots"],
                 "offScript": bool(result.get("offScript")), "done": result["done"],
                 "responseMode": result.get("responseMode"),
+                # Nodes the simulated caller has heard to completion (see
+                # heard_key above) — drives responseDirectiveVariants.
+                "heardNodes": list(heard_state["heard"]),
                 # What the post-call structured summary would report from
                 # the slots as they stand now (same derivation as the
                 # processor) — lets Testing verify Yes/No fields per turn.
@@ -1295,14 +1329,22 @@ async def simulate_turn(
             try:
                 if result["done"]:
                     await redis.delete(active_key)
+                    await redis.delete(heard_key)
                 else:
                     await redis.set(active_key, name, ex=_CHAT_SESSION_TTL_SECONDS)
+                    await redis.set(
+                        heard_key, json.dumps(heard_state),
+                        ex=_CHAT_SESSION_TTL_SECONDS,
+                    )
             except Exception:  # noqa: BLE001
                 pass
             if result.get("offScript"):
+                from shared.orchestration.response_modes import collected_facts_block
+
                 plan_instruction = policy.turn_instruction() if policy else ""
                 response_text = await _simulate_llm_reply(
-                    llm, rendered_prompt + plan_instruction + tool_instruction,
+                    llm, rendered_prompt + plan_instruction + tool_instruction
+                    + collected_facts_block(result.get("slots") or {}),
                     body.messages, body.message,
                 )
                 trace["route"] = "workflow_off_script_llm"
@@ -1316,17 +1358,40 @@ async def simulate_turn(
                 from voice_runtime.transcript_gate import script_supports_language
 
                 pending_question = str(result.get("nodePrompt") or "").strip()
-                grounded_text = await _simulate_llm_reply(
-                    llm,
-                    rendered_prompt + grounded_delivery_instruction(
-                        directives=result.get("responseDirectives") or (),
-                        script=result["reply"],
-                        pending_question=pending_question or None,
-                        workflow_values=result.get("slots") or {},
-                        response_language=body.language or None,
-                    ),
-                    body.messages, body.message,
+                grounded_instruction = grounded_delivery_instruction(
+                    directives=result.get("responseDirectives") or (),
+                    script=result["reply"],
+                    pending_question=pending_question or None,
+                    workflow_values=result.get("slots") or {},
+                    response_language=body.language or None,
                 )
+                must_include_now = result.get("responseMustInclude") or ()
+                if pending_question or must_include_now:
+                    # Parity with the live brain's CONSTRAINED path: a short
+                    # wording-only system (runtime context + instruction), the
+                    # authored script as the sole message, no persona, no
+                    # history. Prefixing the persona here made English callers
+                    # and long summaries fall back to the authored text while
+                    # the live call spoke the generated one.
+                    from shared.orchestration.response_modes import language_label
+
+                    label = language_label(body.language or None)
+                    constrained_system = (
+                        "You word one step of a phone call flow for a voice "
+                        "assistant. Rewrite the script below per the rules; output "
+                        "ONLY the spoken reply."
+                        + runtime_ctx.prompt_section()
+                        + grounded_instruction
+                        + (f"\nRespond in natural spoken {label}." if label else "")
+                    )
+                    grounded_text = await _simulate_llm_reply(
+                        llm, constrained_system, [], result["reply"],
+                    )
+                else:
+                    grounded_text = await _simulate_llm_reply(
+                        llm, rendered_prompt + grounded_instruction,
+                        body.messages, body.message,
+                    )
                 if validate_grounded_reply(
                     result["reply"], grounded_text, body.language or None,
                     require_question=bool(pending_question),
@@ -1359,6 +1424,44 @@ async def simulate_turn(
     if policy is not None:
         trace["dispositionAfterTurn"] = policy.disposition()
     return ok(trace)
+
+
+
+def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict]):
+    """Mirror of the brain's LLM-intent → workflow routing for simulation.
+
+    Only non-committal routes are upgraded; an active workflow keeps its turn.
+    Below the intent's threshold nothing is routed (an uncertain guess must
+    not start a workflow). Intents that map to knowledge/handoff/tool keep
+    the simulator's existing handling.
+    """
+    from shared.orchestration.router import RouteDecision, RouteKind
+
+    if decision.kind not in (
+        RouteKind.CHAT, RouteKind.CLARIFY, RouteKind.KNOWLEDGE,
+        RouteKind.INTENT, RouteKind.TOOL,
+    ):
+        return decision
+    name = classification.intent
+    if not name or classification.below_threshold:
+        return decision
+    configured = next((i for i in intent_dicts if i.get("name") == name), None)
+    if not configured:
+        return decision
+    route = str(configured.get("route") or "")
+    workflow_id = configured.get("workflow_id")
+    action = None
+    if route.startswith("workflow:"):
+        action = route.split(":", 1)[1]
+    elif workflow_id:
+        action = str(workflow_id)
+    if not action:
+        return decision
+    return RouteDecision(
+        kind=RouteKind.WORKFLOW, intent=name,
+        confidence=classification.confidence, action=action,
+        reason="llm_intent_workflow", signal=classification.signal,
+    )
 
 
 async def _simulate_llm_reply(

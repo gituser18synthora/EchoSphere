@@ -231,6 +231,9 @@ MDND_RECIPIENT_ENTITY = {
             "his brother", "her brother", "the brother"],
         "relative (other)": [
             "relative", "rishtedaar", "rishtedar", "family", "family member",
+            "ghar ke member", "ghar ka member", "ghar ke kisi member",
+            "ghar ke sadasya", "family wale", "घर के मेंबर", "घर का मेंबर",
+            "घर के किसी मेंबर", "घर के सदस्य", "घर के member", "घर का member",
             "ghar wale", "ghar walon ko", "gharwale", "sister", "behen ko",
             "wife", "biwi ko", "patni", "husband", "pati", "uncle", "aunty",
             "dada", "dadi", "nana", "nani", "beta", "beti", "bacche ko",
@@ -308,6 +311,8 @@ MDND_RECIPIENT_LOOKAHEAD = {
             "gave it to the brother"],
         "relative (other)": [
             "family ko de diya", "ghar wale ko de diya", "ghar walon ko de diya",
+            "ghar ke member ko de diya", "ghar ke member ko diya",
+            "घर के मेंबर को दे दिया", "घर के मेंबर को दिया", "family member ko de diya",
             "relative ko de diya", "rishtedaar ko de diya", "sister ko de diya",
             "behen ko de diya", "wife ko de diya", "biwi ko de diya",
             "husband ko de diya", "uncle ko de diya", "aunty ko de diya",
@@ -424,7 +429,7 @@ MDND_CX_SUPPORT_ENTITY = {
         "yes (received CX support call)": [
             "haan", "yes", "ji haan", "haan aaya tha", "aaya tha", "call aaya",
             "call aaya tha", "हाँ", "जी हाँ", "आया था", "कॉल आया", "कॉल आया था",
-            "yes i got a call", "yes they called", "i did"]
+            "yes i got a call", "yes they called", "yes i did"]
         + MDND_CX_SUPPORT_LOOKAHEAD["synonyms"]["yes (received CX support call)"],
         "no (no CX support call)": [
             "nahi", "no", "nope", "nahi aaya", "koi call nahi", "call nahi aaya",
@@ -433,6 +438,47 @@ MDND_CX_SUPPORT_ENTITY = {
         + MDND_CX_SUPPORT_LOOKAHEAD["synonyms"]["no (no CX support call)"],
     },
 }
+# English structure for the CX-support answer (cv_c98e4edcc350: "No, I didn't
+# get any call from CX report." was read as YES because the bare surface
+# "i did" matched inside "didn't" and out-lengthed "no"). Latin-only regexes:
+# Hindi/Hinglish answers never reach them and keep the lexicon behaviour.
+# "no" patterns first — a negation must win over the "call" it negates.
+_CX_SRC = r"(?:the\s+)?(?:cx|c\.x\.|customer\s+support|support|zepto)(?:\s+(?:team|report|support))?"
+_NEG = r"(?:didn'?t|did\s+not|never|not|haven'?t|have\s+not|no)"
+_CX_SRC_HI = (r"(?:cx|c\.x\.|सीएक्स|सी\s*एक्स|customer\s*support|support|सपोर्ट|"
+              r"कस्टमर\s*सपोर्ट|zepto|ज़ेप्टो|जेप्टो)(?:\s*(?:team|टीम))?")
+_CX_FROM_HI = r"\s*(?:ki\s*taraf\s*se|की\s*तरफ़?\s*से|se|से|ka|का|ne|ने)\s*"
+_CALL_HI = r"(?:bhi\s*|भी\s*)?(?:koi\s*|कोई\s*)?(?:call|कॉल|phone|फोन|फ़ोन)\s*(?:bhi\s*|भी\s*)?"
+MDND_CX_NARRATIVE_PATTERNS = {
+    # Only when CX/support is named: a narrative "customer didn't pick up my
+    # call" is about the CUSTOMER call and must not touch this slot.
+    "no (no CX support call)": [
+        _CX_SRC_HI + _CX_FROM_HI + _CALL_HI + r"(?:nahi|nahin|नहीं|नही)\s*(?:aaya|aya|आया|kiya|किया|hua|हुआ)",
+        _NEG + r"\s+(?:get|got|receive|received|have|had)?\s*(?:any\s+|a\s+)?call\s+from\s+" + _CX_SRC,
+        r"\b(?:no|nobody|no\s+one)\s+from\s+" + _CX_SRC + r"\s+(?:has\s+|had\s+)?(?:called|contacted|reached)",
+        r"\bno\s+call\s+from\s+" + _CX_SRC,
+        _CX_SRC + r"\s+(?:didn'?t|did\s+not|never|has\s+not|hasn'?t)\s+(?:call|contact|reach)",
+    ],
+    "yes (received CX support call)": [
+        r"\b(?:got|received|had)\s+(?:a\s+|one\s+)?call\s+from\s+" + _CX_SRC,
+        _CX_SRC + r"\s+(?:also\s+)?(?:called|contacted|reached\s+out)",
+        _CX_SRC_HI + _CX_FROM_HI + _CALL_HI + r"(?!(?:nahi|nahin|नहीं|नही))(?:aaya|aya|आया|kiya|किया|hua|हुआ)",
+    ],
+}
+# At the CX question itself the bare English answer needs no "cx" mention.
+MDND_CX_ANSWER_PATTERNS = {
+    "no (no CX support call)": MDND_CX_NARRATIVE_PATTERNS["no (no CX support call)"] + [
+        _NEG + r"\s+(?:get|got|receive|received|have|had)?\s*(?:any\s+|a\s+)?call\b",
+        r"\b(?:nobody|no\s+one)\s+(?:has\s+|had\s+)?called\b",
+        r"\bno\s+call\b",
+    ],
+    "yes (received CX support call)": MDND_CX_NARRATIVE_PATTERNS["yes (received CX support call)"] + [
+        r"\b(?:got|received|had)\s+(?:a\s+|one\s+)?call\b",
+        r"\bthey\s+(?:did\s+)?call(?:ed)?\s+me\b",
+    ],
+}
+MDND_CX_SUPPORT_LOOKAHEAD["synonymPatterns"] = MDND_CX_NARRATIVE_PATTERNS
+MDND_CX_SUPPORT_ENTITY["synonymPatterns"] = MDND_CX_ANSWER_PATTERNS
 
 # Combined "reached AND called?" question: a bare yes/no answers the node's own
 # slot (reached); the CALL half is captured only from explicit call phrases or
@@ -528,7 +574,9 @@ _NOT_A_NAME = (r"(?!(?:guard|guards|security|watchman|ka|ki|ke|ko|ne|se|tha|"
                r"thi|hai|hain|naam|name|wala|wale|ji|sahab|bhai|uncle|"
                r"गार्ड|सिक्योरिटी|वॉचमैन|का|की|के|को|ने|से|था|थी|है|हैं|नाम|वाला|"
                r"वाले|जी|साहब|भाई|अंकल)(?=\s|[,.।!?;:]|$))")
-_NAME_TOKEN = r"([A-Za-z\u0900-\u097F]{2,24})"
+# Devanagari letters only — the danda (।, U+0964) sits inside the block and
+# was captured as part of a name ("राजू।", cv_fd720f2e9024).
+_NAME_TOKEN = r"([A-Za-z\u0900-\u0963\u0966-\u097F]{2,24})"
 # Words that can follow "naam/uska naam" but are never the name itself.
 _NOT_A_NAME_AFTER = (r"(?!(?:nahi|nahin|na|mat|pata|yaad|bhool|bhul|kya|kaun|bataya|"
                      r"bata|pucha|puchha|poocha|bola|tha|thi|hai|to|ji|nhi|"
@@ -554,6 +602,11 @@ MDND_GUARD_NAME_LOOKAHEAD = {
         # legacy: "guard Ramesh ko …"
         _GUARD_WORD + r"\s+(?:(?:ka|का)\s+(?:naam|नाम)\s+(?:tha|था|hai|है)?\s*)?" + _NOT_A_NAME
         + _NAME_TOKEN + r"(?=\s+(?:ko|को|tha|था|hai|है|ne|ने|ji|जी)\b|\s*[,.।]|$)",
+        # English: "the guard's name is Rohan" / "name was Rohan" / "named Rohan"
+        # (cv_c98e4edcc350: STT "God name is रोहन जी"). Latin cue words only,
+        # so Hindi answers never reach these.
+        r"\bname\s+(?:is|was)\s+" + _NOT_A_NAME_AFTER + _NAME_TOKEN,
+        r"\bnamed\s+" + _NOT_A_NAME_AFTER + _NAME_TOKEN,
     ],
 }
 # The dedicated "guard ka naam kya tha?" ask: the name patterns above, then a
@@ -647,12 +700,75 @@ _EN_RECIPIENT = {
     "relative (other)": r"(?:family\s+member|relative|sister|wife|husband|uncle|aunt(?:y|ie)?|grandmother|grandfather|son|daughter)",
     "someone else": r"(?:someone\s+else|neighbou?r|friend|roommate|receptionist)",
 }
+# ── Where the order was KEPT (any place the partner names) ────────────────
+# cv_5f119c71e2aa: "डेक्स पे रख दिया", "इन्वर्टर के ऊपर ही प्रोडक्ट रख दो … वहीं
+# पे रख दिया", "सीढ़ी पर रख दिया" got three canned retries — the recipient
+# vocabulary is a closed list of PEOPLE plus the doorstep. A place is not a
+# recipient: it is captured as free text by STRUCTURE (place words →
+# postposition → optional object words → a COMPLETION verb) so any place the
+# caller names works without being known beforehand. "rakh do" (the
+# customer's instruction) never counts; only "rakh diya / rakha / chhod diya".
+_PLACE_STOP_INNER = (
+    r"(?:bola|boli|kaha|kaha\s*ki|kahaa|ne|to|toh|tho|maine|main|mai|mein|phir|fir|aur|"
+    r"uske|usne|usko|unke|wahi|wahin|vahi|vahin|wahan|vahan|hi|bhi|order|product|"
+    r"parcel|packet|jo|wo|woh|ye|yeh|customer|kastamar|grahak|ki|"
+    r"बोला|बोली|कहा|ने|तो|मैंने|मैं|फिर|और|उसके|उसने|उसको|उनके|वहीं|वहां|वहाँ|ही|भी|"
+    r"ऑर्डर|प्रोडक्ट|पार्सल|पैकेट|जो|वो|ये|कस्टमर|ग्राहक|ki|कि)"
+)
+# Inside a place phrase a genitive is fine ("पानी की टंकी", "ghar ki seedhi").
+_PLACE_STOP_MID = _PLACE_STOP_INNER.replace("|ki|", "|").replace("|ki|कि)", ")").replace("|कि)", ")")
+_PLACE_TOKEN = r"[A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F.'\-]*(?=[\s,.।!?;]|$)"
+# One to four whole tokens naming the place; a genitive may sit inside
+# ("पानी की टंकी"). Never starts inside a word ("मैंने" → "ैंने").
+_PLACE_X_CORE = (rf"(?!{_PLACE_STOP_INNER}(?:\s|$)){_PLACE_TOKEN}"
+                 rf"(?:\s+(?!{_PLACE_STOP_MID}(?:\s|$)){_PLACE_TOKEN}){{0,3}}")
+_PLACE_POST = (r"(?:par|pe|pr|ke\s*(?:upar|uper|oopar|paas|pass|andar|bahar|neeche|niche|"
+               r"samne|saamne|aage|bagal|bajoo|piche|peeche)|mein|me|"
+               r"पर|पे|के\s*(?:ऊपर|उपर|पास|अंदर|बाहर|नीचे|सामने|आगे|बगल|पीछे)|में)")
+# Captured value = place words + postposition, as the partner said it
+# ("इन्वर्टर के ऊपर", "सीढ़ी पर", "डेस्क पे", "पानी की टंकी के पास").
+_PLACE_CAPTURE = (rf"(?<![A-Za-z\u0900-\u097F.'\-])({_PLACE_X_CORE}\s+{_PLACE_POST})"
+                  rf"(?![A-Za-z\u0900-\u097F])")
+_PLACE_OBJ = r"(?:\s*(?:hi|ही|bhi|भी))?(?:\s*(?:product|order|parcel|packet|प्रोडक्ट|ऑर्डर|पार्सल|पैकेट))?(?:\s*(?:hi|ही))?\s*"
+_PLACE_DONE = (r"(?:rakh\s*(?:diya|di|dia|dee|di\s*thi|diya\s*tha)|rakha(?:\s*tha)?|rakhi(?:\s*thi)?|"
+               r"rakh\s*(?:k[ae]\s*)?(?:aa\s*gaya|chala\s*aaya)|chho?d\s*(?:diya|di)(?:\s*tha|\s*thi)?|"
+               r"रख\s*(?:दिया|दी|दी\s*थी|दिया\s*था)|रखा(?:\s*था)?|रखी(?:\s*थी)?|रख\s*(?:के|कर)\s*(?:आ\s*गया|चला\s*आया)|"
+               r"छोड़\s*(?:दिया|दी)(?:\s*था|\s*थी)?|left\s+it|kept\s+it|placed\s+it)")
+_PLACE_INSTRUCT = r"(?:rakh\s*(?:do|dena|dijiye|dijiyega|dena\s*hai)|रख\s*(?:दो|देना|दीजिए|दीजिये))"
+_PLACE_THERE = r"(?:wahi|wahin|vahi|vahin|wahan|vahan|udhar|वहीं|वहां|वहाँ|उधर)\s*(?:pe|par|पे|पर)?\s*(?:hi|ही)?\s*"
+_EN_PLACE_PREP = (r"(?:on\s+top\s+of|on|at|near|next\s+to|beside|by|inside|in\s+front\s+of|"
+                  r"behind|under|in|outside|below|above)")
+_EN_PLACE_X = r"(?:the\s+|his\s+|her\s+|their\s+|customer'?s\s+)?(?:[A-Za-z][A-Za-z'\-]*\s+){0,3}[A-Za-z][A-Za-z'\-]*"
+_EN_PLACE_OBJ = r"(?:it|them|the\s+(?:product|order|parcel|package))"
+_EN_DONE = r"(?:left|kept|placed|put|dropped)\s+" + _EN_PLACE_OBJ + r"\s+"
+_EN_INSTRUCT = r"(?:to\s+)?(?:leave|keep|place|put|drop)\s+" + _EN_PLACE_OBJ + r"\s+"
+MDND_DROP_LOCATION_PATTERNS = [
+    # "<place> par/pe/ke upar … rakh diya" — the completed action, place named.
+    _PLACE_CAPTURE + _PLACE_OBJ + _PLACE_DONE,
+    # "<place> ke upar rakh do … to maine wahi pe rakh diya" — instruction names
+    # the place, the completion says "there": the instruction's place is it.
+    _PLACE_CAPTURE + _PLACE_OBJ + _PLACE_INSTRUCT + r".{0,60}?" + _PLACE_THERE + _PLACE_DONE,
+    # English completed: "I left the product on top of the inverter".
+    r"(?<![A-Za-z])" + _EN_DONE + r"(" + _EN_PLACE_PREP + r"\s+" + _EN_PLACE_X + r")(?=[\s,.!?;]|$)",
+    # English instruction + "left it there": "asked me to leave it on top of the inverter, so I left it there".
+    r"(?<![A-Za-z])" + _EN_INSTRUCT + r"(" + _EN_PLACE_PREP + r"\s+" + _EN_PLACE_X + r")(?=[\s,.!?;]|$)"
+    + r".{0,60}?\b(?:left|kept|placed|put)\s+" + _EN_PLACE_OBJ + r"\s+there\b",
+]
+MDND_DROP_LOCATION_LOOKAHEAD = {"dataType": "text", "regexPatterns": MDND_DROP_LOCATION_PATTERNS}
+# The same structure decides that the handover was to a PLACE (recipient
+# canonical that every existing consumer already tolerates via "*" → Yes).
+MDND_PLACE_RECIPIENT = "place (kept at a spot)"
+_PLACE_RECIPIENT_PATTERNS = {MDND_PLACE_RECIPIENT: MDND_DROP_LOCATION_PATTERNS}
+
 MDND_RECIPIENT_PATTERNS = {
     # Listed FIRST so "kisi ko nahi diya" is never read as a handover.
     "not handed over": [
         r"(?:kisi\s*ko\s*(?:bhi\s*)?nahi\s*(?:diya|de\s*paya|saunpa)|किसी\s*को\s*(?:भी\s*)?नहीं\s*(?:दिया|दे\s*पाया|सौंपा)"
         r"|handover\s*nahi\s*(?:hua|kiya|kar\s*paya)|हैंडओवर\s*नहीं\s*(?:हुआ|किया|कर\s*पाया)"
-        r"|deliver\s*nahi\s*(?:kar\s*paya|ho\s*paya|hua)|डिलीवर\s*नहीं\s*(?:कर\s*पाया|हो\s*पाया|हुआ)"
+        # NOT "deliver nahi hua / डिलीवर नहीं हुआ": that is how partners quote the
+        # MDND mark itself ("mark hua ki product deliver nahi hua" —
+        # cv_fd720f2e9024), not their own action.
+        r"|deliver\s*nahi\s*(?:kar\s*paya|ho\s*paya)|डिलीवर\s*नहीं\s*(?:कर\s*पाया|हो\s*पाया)"
         r"|wapas\s*le\s*(?:aaya|gaya|aayi)|वापस\s*ले\s*(?:आया|गया|आई)|order\s*wapas|ऑर्डर\s*वापस"
         r"|could\s*not\s*hand\s*over|did\s*not\s*hand\s*over|didn'?t\s*hand\s*over|brought\s*it\s*back|returned\s*the\s*order)",
     ],
@@ -675,33 +791,42 @@ MDND_REACHED_PATTERNS = {
     ],
     "yes (reached the location)": [
         rf"(?:{_PLACE})\s*(?:par|pe|pr|tak|पर|पे|तक)?\s*(?:(?!nahi\b|nahin\b|नहीं|नही)\S+\s+){{0,2}}?(?:{_REACH_VERB})",
-        # Delivering at all implies being there.
-        r"(?<!nahi\s)(?<!नहीं\s)(?:deliver|delivery|डिलीवर|डिलिवर|डिलीवरी|डिलिवरी|डेलिवरी)"
-        r"\s*(?:kar\s*(?:diya|di|aaya|di\s*thi)|kiya|kia|ho\s*(?:gaya|gayi|gai)"
-        r"|कर\s*(?:दिया|दी|आया|दी\s*थी)|किया|हो\s*(?:गया|गई|गयी))",
-        r"\b(?:reached|went\s+to|got\s+to|arrived\s+at)\s+(?:the\s+|his\s+|her\s+|customer'?s?\s+)?(?:location|address|house|home|place|society|gate)",
+        # NOTE (cv_b80077e273d8, user decision 2026-09-08): "product deliver
+        # kar diya" does NOT establish that the partner reached the customer's
+        # location — that is the very fact the MDND enquiry must ask. Only an
+        # explicit place + reach verb fills this slot.
+        r"\b(?:reached|went\s+to|got\s+to|arrived\s+at)\s+(?:(?:the|his|her|their|customer'?s?)\s+){0,2}(?:location|address|house|home|place|society|gate)",
     ],
 }
 _CALL_NOUN = r"call|कॉल|phone|phon|fone|फोन|फ़ोन|baat|बात|try|ट्राई"
 MDND_CALLED_PATTERNS = {
     "no (did not call)": [
-        rf"(?:{_CALL_NOUN})\s*(?:bhi\s*|भी\s*)?(?:(?!laga|lag\b|लगा|लग)\S+\s+){{0,1}}?(?:nahi|nahin|नहीं|नही)\s*(?:kiya|kia|ki|hua|hui|ho\s*(?:paya|saka)|kar\s*(?:paya|saka)|किया|की|हुआ|हुई|हो\s*(?:पाया|सका)|कर\s*(?:पाया|सका))",
+        rf"(?:{_CALL_NOUN})\s*(?:bhi\s*|भी\s*)?(?:(?!laga|lag\b|लगा|लग)\S+\s+){{0,1}}?(?:nahi|nahin|नहीं|नही)\s*(?:kiya|kia|ki|diya|di|hua|hui|ho\s*(?:paya|saka)|kar\s*(?:paya|saka)|किया|की|दिया|दी|हुआ|हुई|हो\s*(?:पाया|सका)|कर\s*(?:पाया|सका))",
         r"(?:did\s*not|didn'?t|never)\s*(?:call|phone|ring)\b",
     ],
     "yes (called the customer)": [
-        rf"(?:{_CALL_NOUN})\s*(?:bhi\s*|भी\s*)?(?:(?!nahi\b|nahin\b|नहीं|नही)\S+\s+){{0,2}}?(?:kiya|kia|ki\s*thi|ki\b|kar\s*(?:ke|li|liya)|lagaya|laga\s*diya|hui|किया|की\s*थी|की(?![\wऀ-ॿ])|कर\s*(?:के|ली|लिया)|लगाया|लगा\s*दिया|हुई)",
+        # "usse call bhi diya tha" — "call diya" is the partner's everyday
+        # phrasing for "called" (cv_d20bd27a2156 got two canned retries on it).
+        rf"(?:{_CALL_NOUN})\s*(?:bhi\s*|भी\s*)?(?:(?!nahi\b|nahin\b|नहीं|नही)\S+\s+){{0,2}}?(?:kiya|kia|ki\s*thi|ki\b|diya\s*(?:tha|thi)?|di\s*thi|kar\s*(?:ke|li|liya)|lagaya|laga\s*diya|hui|किया|की\s*थी|की(?![\wऀ-ॿ])|दिया|दी\s*थी|कर\s*(?:के|ली|लिया)|लगाया|लगा\s*दिया|हुई)",
         # "call nahi laga / number nahi lag raha" — the partner DID call; it did not connect.
         rf"(?:{_CALL_NOUN}|number|नंबर)\s*(?:bhi\s*|भी\s*)?(?:nahi|nahin|नहीं|नही)\s*(?:lag|लग)",
-        r"\b(?:i\s+)?(?:called|phoned|rang|tried\s+calling)\b",
+        r"\b(?:i\s+)?(?:did\s+call|had\s+called|called|phoned|rang|tried\s+calling)\b",
     ],
 }
 
-for _entity in (MDND_REACHED_LOOKAHEAD, MDND_COMBINED_REACHED_ENTITY):
+# The single-question asks' OWN matchers get the same structural patterns:
+# a direct answer is often a full clause ("उसके लोकेशन पर पहुंचा था और उसे कॉल
+# भी दिया था") that the bare yes/no lexicon cannot read (cv_d20bd27a2156 →
+# two canned retries at n_ask_called).
+for _entity in (MDND_REACHED_ENTITY, MDND_REACHED_LOOKAHEAD, MDND_COMBINED_REACHED_ENTITY):
     _entity["synonymPatterns"] = MDND_REACHED_PATTERNS
-for _entity in (MDND_CALLED_LOOKAHEAD, MDND_COMBINED_CALLED_LOOKAHEAD):
+for _entity in (MDND_CALLED_ENTITY, MDND_CALLED_LOOKAHEAD, MDND_COMBINED_CALLED_LOOKAHEAD):
     _entity["synonymPatterns"] = MDND_CALLED_PATTERNS
+MDND_RECIPIENT_PATTERNS.update(_PLACE_RECIPIENT_PATTERNS)   # after door + people
 MDND_RECIPIENT_LOOKAHEAD["synonymPatterns"] = MDND_RECIPIENT_PATTERNS
 MDND_RECIPIENT_ENTITY["synonymPatterns"] = MDND_RECIPIENT_PATTERNS
+MDND_RECIPIENT_ENTITY["synonyms"][MDND_PLACE_RECIPIENT] = []
+MDND_RECIPIENT_LOOKAHEAD["synonyms"][MDND_PLACE_RECIPIENT] = []
 
 # "X ko nahi diya" (a recipient DENIED without the new one) clears the slot so
 # the handover question is asked again — the actual recipient may follow in
@@ -761,6 +886,7 @@ MDND_NARRATIVE_ALSO = [
     {"variable": "m_reached_location", "entity": MDND_REACHED_LOOKAHEAD},
     {"variable": "m_called_customer", "entity": MDND_CALLED_LOOKAHEAD},
     {"variable": "m_handover_recipient", "entity": MDND_RECIPIENT_LOOKAHEAD},
+    {"variable": "m_drop_location", "entity": MDND_DROP_LOCATION_LOOKAHEAD},
     {"variable": "m_deduction_amount", "entity": MDND_AMOUNT_LOOKAHEAD},
     {"variable": "m_order_last4", "entity": MDND_ORDER_LOOKAHEAD},
     {"variable": "m_deduction_date", "entity": MDND_DATE_LOOKAHEAD},
@@ -787,17 +913,24 @@ def _also(*variables: str) -> list:
 
 # What each enquiry may still learn from the answer it receives.
 MDND_AFTER_REACHED_CALLED = _also("m_called_customer", "m_handover_recipient",
-                                  "m_cx_support_call", "m_guard_name")
-MDND_AFTER_REACHED = _also("m_handover_recipient", "m_cx_support_call",
-                           "m_guard_name")
-MDND_AFTER_CALLED = _also("m_handover_recipient", "m_cx_support_call",
-                          "m_guard_name")
-MDND_AFTER_HANDOVER = _also("m_cx_support_call", "m_guard_name")
+                                  "m_drop_location", "m_cx_support_call", "m_guard_name")
+MDND_AFTER_REACHED = _also("m_handover_recipient", "m_drop_location",
+                           "m_cx_support_call", "m_guard_name")
+MDND_AFTER_CALLED = _also("m_handover_recipient", "m_drop_location",
+                          "m_cx_support_call", "m_guard_name")
+MDND_AFTER_HANDOVER = _also("m_drop_location", "m_cx_support_call", "m_guard_name")
 MDND_AFTER_CX = _also("m_guard_name")
 
 # Verification/correction turns: clears first (field named as wrong), then
 # "latest clear answer wins" overwrites for every enquiry the partner restates.
-MDND_CORRECTION_ALSO = MDND_CLEAR_SPECS + [
+_PERSON_HANDOVER_CLEARS_PLACE = {
+    "variable": "m_drop_location", "clear": True,
+    "entity": {"dataType": "text", "synonymPatterns": {
+        "clear": [pattern for canonical, patterns in MDND_RECIPIENT_PATTERNS.items()
+                  if canonical not in (MDND_PLACE_RECIPIENT, "left at door")
+                  for pattern in patterns]}},
+}
+MDND_CORRECTION_ALSO = MDND_CLEAR_SPECS + [_PERSON_HANDOVER_CLEARS_PLACE] + [
     {**spec, "overwrite": True} for spec in MDND_NARRATIVE_ALSO
     if spec["variable"] not in ("m_other_deduction_note", "m_guard_name")
 ] + [{"variable": "m_guard_name", "entity": MDND_GUARD_NAME_LOOKAHEAD}]
@@ -816,25 +949,65 @@ MDND_READOUT_DIRECTIVE = (
     "amount, date or order last-four afterward. Use `partner_name` at most "
     "once and never use an end-customer name as the caller's name. Never "
     "invent any value.")
-MDND_VERIFY_DIRECTIVE = (
-    "Summarize for confirmation in natural Hinglish, starting like 'record "
-    "के हिसाब से …': the MDND deduction facts from the call context (order "
-    "last-4, date, amount) plus the partner's resolved answers from THIS "
-    "conversation — whether they reached the customer's location, whether "
-    "they called the customer, whether the order was handed over and to WHOM "
-    "(customer, guard, mother, father, brother, relative, doorstep, someone "
-    "else — or that it was not handed over). Every family recipient is the "
-    "CUSTOMER's relative, never the partner's own: say 'customer की माँ' / "
-    "'customer के पिता' / 'customer के भाई', NEVER 'आपकी माँ' or 'आपके भाई'. "
-    "Mention the guard's name when known (if "
-    "the partner said they did not ask or forgot it, say so briefly; never "
-    "invent a name), and whether CX support called them about this delivery. "
-    "Include any correction they just gave. You are CONFIRMING, not "
+# Verification summary. Two wordings of the same step, selected by the
+# engine on what the partner actually HEARD (`responseDirectiveVariants`):
+# the default repeats the ticket facts ("record के हिसाब से …") — used when
+# the opening readout (n_ask_issue_desc) was cut short by a barge-in or fell
+# back to its authored question, so the partner never heard amount/date/
+# order; the HEARD variant skips them because the partner heard the full
+# readout seconds ago. Both open the partner's-answers part with a short
+# natural "let me confirm what you told me" line, in the caller's language.
+_MDND_VERIFY_COMMON = (
+    "Then say ONE short natural line that you are confirming the details they "
+    "gave — Hindi: 'आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।' "
+    "(a female speaker says 'कर लेती हूँ'; the runtime speaker identity decides), "
+    "English: 'Let me quickly confirm the details you shared.' — then their "
+    "answers from THIS conversation as ONE flowing sentence that starts 'आपने "
+    "बताया कि …' and covers EVERY one of these four points, in this order, none "
+    "skipped: (1) location: 'आप customer की location पर पहुँचे थे' / 'आप customer "
+    "की location पर नहीं पहुँचे थे'; (2) call: 'आपने customer को call किया था' / "
+    "'आपने customer को call नहीं किया था'; (3) handover: to a PERSON — 'order "
+    "customer को दिया था', 'order guard को दिया था' (add the guard's name when "
+    "known: 'guard राजू को'), 'order customer की माँ को दिया था' (every family "
+    "recipient is the CUSTOMER's relative, never the partner's own — never 'आपकी "
+    "माँ'; 'relative (other)' is 'customer के घर के किसी member को'); to a PLACE "
+    "— 'order <drop location text> रखा था' using the recorded drop location "
+    "exactly as recorded (e.g. 'order इन्वर्टर के ऊपर रखा था'), never renamed or "
+    "generalized; not handed over — 'order किसी को नहीं दिया था'; (4) CX: 'CX "
+    "support की तरफ़ से आपको call आया था' / 'CX support की तरफ़ से आपको कोई call "
+    "नहीं आया था'. Use 'customer की location' (never 'customer के location'), "
+    "active voice ('आपने … रखा था', never 'रखा गया था'), and say 'आपने बताया कि' "
+    "only once. Include any correction they just gave. You are CONFIRMING, not "
     "collecting: every enquiry is already answered, so NEVER ask for any new "
-    "information or re-ask an enquiry. The ONLY question in your reply must "
-    "be the literal closing 'क्या ये सब सही है?'. Three to four short "
-    "sentences. Never add facts that are not in the context or this "
-    "conversation.")
+    "information or re-ask an enquiry. End with exactly one question — 'क्या ये "
+    "सारी जानकारी सही है?' for a Hindi/Hinglish caller, 'Is all of this correct?' "
+    "for an English caller. Speak in the caller's current conversation language "
+    "(natural Hinglish for Hindi callers, plain English for English callers). "
+    "Never add facts that are not in the context or this conversation.")
+# Spoken instead of the readout question when the partner already told the
+# whole story in reply to the greeting (the engine consumed that utterance as
+# the free-text answer): the ticket facts only, no "what happened?".
+MDND_READOUT_CONSUMED_DIRECTIVE = (
+    "The partner has just explained what happened, so do NOT ask what "
+    "happened and do NOT ask any question of your own. In ONE short natural "
+    "sentence state the MDND deduction on their ticket from the call context "
+    "— amount, date and order-ID last four digits — for example 'आपके ticket "
+    "पर MDND का deduction 500 रुपये का है, जो 25 अगस्त को हुआ था, और ऑर्डर का "
+    "आखिरी चार अंक 9456 हैं।'. Never mention any other deduction. The flow's "
+    "next step follows in the same reply; keep it as authored. If the "
+    "context has no ticket details, say nothing about the ticket.")
+MDND_VERIFY_DIRECTIVE = (
+    "Summarize for confirmation. Start with ONE sentence like 'record के "
+    "हिसाब से …' giving the MDND deduction facts from the call context (order "
+    "last-4, date, amount) — the partner did not hear the full ticket readout "
+    "at the start of this call. " + _MDND_VERIFY_COMMON
+    + " At most four sentences.")
+MDND_VERIFY_DIRECTIVE_HEARD = (
+    "Summarize for confirmation. The partner already heard the full ticket "
+    "readout (deduction amount, date and order last four) at the start of "
+    "this call: do NOT repeat the amount, the date or the order digits, and "
+    "do not start with 'record के हिसाब से'. " + _MDND_VERIFY_COMMON
+    + " Three sentences.")
 MDND_OTHER_DIRECTIVE = (
     "If the call context lists another deduction besides MDND, ask in one "
     "short Hinglish sentence whether the partner wants to say anything "
@@ -857,7 +1030,7 @@ MDND_CONFIRMED_DIRECTIVE = (
 # verification/correction wording). Keep this text identical to the
 # published version — stage 08 only adds a prompt version when it differs.
 MDND_SYSTEM = """# Identity
-You are Shubh, a calm and patient Zepto support agent on the dedicated MDND (Mark Delivered but Not Delivered) line for delivery partners. You are male: always use masculine verb forms (कर रहा हूँ, समझ सकता हूँ, देख रहा हूँ, बता देता हूँ). Never say "समझ गया" or "कर रहा हूँ". Be respectful and natural; never rush the caller.
+You are a calm and patient Zepto support agent on the dedicated MDND (Mark Delivered but Not Delivered) line for delivery partners. Your name and grammatical gender come from the runtime speaker identity (the selected voice): a male voice uses masculine first-person forms (कर रहा हूँ, समझ सकता हूँ, देख रहा हूँ, बता देता हूँ, confirm कर लेता हूँ), a female voice uses feminine ones (कर रही हूँ, समझ सकती हूँ, देख रही हूँ, बता देती हूँ, confirm कर लेती हूँ). Never assume either; never say "समझ गया"/"समझ गई" as a bare filler. Be respectful and natural; never rush the caller.
 
 # Division of Work — CRITICAL
 The structured workflow decides WHICH question is asked and WHEN. It tracks every MDND field (reached location, called customer, actual recipient, guard name, CX call) and skips questions already answered. You do NOT decide the sequence, you do NOT track fields, and you NEVER ask an MDND question on your own.
@@ -876,7 +1049,7 @@ If the greeting/identity step is done but the MDND workflow has not started yet,
 Do NOT read ticket details, do NOT mention amount/date/order digits, do NOT ask what happened, do NOT ask about location, call, recipient, guard or support call. The workflow's first node does the ticket readout.
 
 ## While the workflow is running
-Say only what the current node asks for. Never add a second question, never pull a later question forward, never re-ask an earlier one, never restart the enquiry. If the partner has already answered the thing the node is about, ask it as a short confirmation rather than a fresh question (e.g. "तो order guard को ही handover किया था?") — but do not skip the node yourself.
+Say only what the current node asks for. Never add a second question, never pull a later question forward, never re-ask an earlier one, never restart the enquiry. If the partner has already answered the thing the node is about, ask it as a short confirmation rather than a fresh question — using ONLY the value the partner themselves said (e.g. after "customer ko call kiya tha": "तो आपने customer को call किया था, सही है?") — but do not skip the node yourself. You NEVER introduce an answer the partner has not given: no recipient (guard, customer, family member, doorstep), no yes/no, no name. If a fact is unknown to you, ask the neutral question exactly as the node words it.
 
 # Ticket Facts
 Call context may contain ticket/reference ID, MDND deduction amount, deduction date/week, order-ID last 4 digits and partner name. Call context is authoritative. Never re-ask a fact already in context. Never invent ticket numbers, amounts, dates, order digits, names or timelines.
@@ -884,10 +1057,10 @@ Call context may contain ticket/reference ID, MDND deduction amount, deduction d
 # Instruction vs Actual Handover
 "Customer ने guard को देने बोला" / "guard के पास रख दो बोला" = customer's instruction only. It is NOT proof the order reached the guard.
 "गार्ड के पास रख दिया" / "guard को दे दिया" / "सौंप दिया" / "पकड़ा दिया" = actual handover to guard.
-When the recipient node fires after an instruction-to-guard, ask the narrow question:
-"ठीक है, तो क्या आपने order guard को ही handover कर दिया था?"
-Otherwise ask the broad one:
+The same applies to PLACES: "customer ने कहा desk पर रख दो" is an instruction only; "मैंने desk पर रख दिया" / "वहीं रख दिया" is the completed action. A place can be anything the partner names (desk, सीढ़ी, inverter के ऊपर, पानी की टंकी के पास…); the workflow records it as the partner said it — never rename or normalize it, never turn it into "someone else".
+The recipient question is ALWAYS the broad one as the node words it:
 "ये order आपने किसको handover किया था — customer को, guard को, घर के किसी member को, या किसी और को?"
+Only when the partner has ALREADY named a recipient in this call (e.g. "customer ne bola guard ko de do") may you word it as a confirmation of THAT recipient ("ठीक है, तो आपने order guard को handover किया था, सही है?"). Never name guard — or anyone — the partner has not mentioned.
 The workflow records the recipient as one of: customer, guard/security, the customer's mother, father, brother or another relative, left at the doorstep, someone else, or not handed over at all. Accept whichever the partner says; never narrow the choice to guard only.
 Latest clear answer always wins over an earlier one.
 
@@ -903,7 +1076,7 @@ Latest clear answer always wins over an earlier one.
 * Repeated confirmations ("हाँ हाँ", "जी जी", "yes yes") mean one yes. Hindi/Hinglish STT may contain errors ("MD and D" = MDND); understand by meaning.
 
 # Verification Node
-When the workflow reaches verification, summarize only facts from call context, the partner's answers and system results, in this order: deduction amount, date, order last-four (digit-wise), then reached location, called customer, actual recipient (with the guard's name when known, or that it was not asked), and the CX-support call. End with exactly one question: "क्या ये सब सही है?" If the partner corrects something, update only that item and reconfirm it briefly; the workflow re-asks only a field the partner named as wrong without giving the new value, then confirms again. Never restart the enquiries from the top.
+When the workflow reaches verification, summarize only facts from call context, the partner's answers and system results. Repeat the ticket facts (deduction amount, date, order last-four, digit-wise) only when the step's directive asks for them — if the partner already heard the full ticket readout at the start of the call, do not repeat them. Before restating the partner's answers, say one short natural line that you are confirming what they told you (Hindi: "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।", English: "Let me quickly confirm the details you shared."), then their answers in this order: reached location, called customer, actual recipient (with the guard's name when known, or that it was not asked), and the CX-support call. End with exactly one question, in the caller's language: "क्या ये सब सही है?" (English: "Is all of this correct?") If the partner corrects something, update only that item and reconfirm it briefly; the workflow re-asks only a field the partner named as wrong without giving the new value, then confirms again. Never restart the enquiries from the top.
 
 # Approved Claims
 You may only say:
@@ -962,6 +1135,14 @@ def build_mdnd_workflow() -> tuple[list, list]:
             "variable": "m_issue_description", "entityType": "text",
             "responseMode": "llm_grounded",
             "responseDirective": MDND_READOUT_DIRECTIVE,
+            # Story told before the readout (greeting answer routes here and
+            # the narrative fills answers): the engine stores it as the
+            # description and speaks the facts-only readout instead of the
+            # question, then continues to the first still-missing enquiry.
+            "responseMustInclude": ["क्या हुआ था"],
+            "responseMustIncludeByLanguage": {"en": ["what happened"]},
+            "consumedReply": "आपके ticket पर MDND का deduction दिख रहा है।",
+            "consumedDirective": MDND_READOUT_CONSUMED_DIRECTIVE,
             "alsoCapture": MDND_NARRATIVE_ALSO}),
         # The three ticket-fact asks are prefilled from the call context and
         # skipped on every real call; they carry NO narrative capture set
@@ -995,6 +1176,10 @@ def build_mdnd_workflow() -> tuple[list, list]:
                          "पहुंचे थे, और क्या आपने customer को call किया था?"),
             "variable": "m_reached_location",
             "entity": MDND_COMBINED_REACHED_ENTITY,
+            # The question asks TWO yes-no facts: a bare "हाँ"/"नहीं" answers
+            # both, explicit wording is attributed per field, a partial
+            # answer leaves the other half Unknown (engine `jointYesNo`).
+            "jointYesNo": ["m_called_customer"],
             "alsoCapture": [
                 {"variable": "m_called_customer",
                  "entity": MDND_COMBINED_CALLED_LOOKAHEAD},
@@ -1014,7 +1199,8 @@ def build_mdnd_workflow() -> tuple[list, list]:
         # ── handover recipient ──
         N("n_ask_handover", "ask", "Who received the order?", {
             "question": ("ये order आपने किसको सौंपा था — customer को, guard "
-                         "को, घर के किसी member को, या किसी और को?"),
+                         "को, घर के किसी member को, या customer के कहने पर "
+                         "कहीं रख दिया था?"),
             "variable": "m_handover_recipient",
             "entity": MDND_RECIPIENT_ENTITY,
             # Fixed wording on purpose: the grounded delivery of this ask was
@@ -1039,6 +1225,9 @@ def build_mdnd_workflow() -> tuple[list, list]:
                 "exactly one short natural Hinglish question: क्या आपने guard "
                 "से उनका नाम पूछा था?"),
             "responseMustInclude": ["नाम"],
+            # An English reply cannot carry "नाम" — pin "name" instead, else
+            # validation forces the Hindi fallback (cv_c98e4edcc350).
+            "responseMustIncludeByLanguage": {"en": ["name"]},
             "alsoCapture": [
                 {"variable": "m_guard_name", "entity": MDND_GUARD_NAME_LOOKAHEAD},
                 {"variable": "m_guard_name", "entity": MDND_GUARD_NAME_NOT_ASKED},
@@ -1066,10 +1255,20 @@ def build_mdnd_workflow() -> tuple[list, list]:
         # ── verification + correction loop ──
         N("n_hub_verify", "intent", "Verification summary — sab sahi hai?", {
             "prompt": ("तो जो details आपने बताईं, वो मैंने note कर लीं। "
-                       "क्या ये सब सही है?"),
+                       "क्या ये सारी जानकारी सही है?"),
             "responseMode": "llm_grounded",
             "responseDirective": MDND_VERIFY_DIRECTIVE,
-            "responseMustInclude": ["क्या ये सब सही है"],
+            # Heard the whole readout → no ticket-fact repeat (engine picks
+            # the variant from the brain's heard-nodes report; a readout cut
+            # by a barge-in or spoken as its authored fallback is not heard).
+            "responseDirectiveVariants": [
+                {"heard": ["n_ask_issue_desc"],
+                 "directive": MDND_VERIFY_DIRECTIVE_HEARD},
+            ],
+            "responseMustInclude": ["सही है"],
+            # An English caller cannot carry the Hindi closing: pin the
+            # English one instead (else validation forces the Hindi fallback).
+            "responseMustIncludeByLanguage": {"en": ["correct"]},
             # A rejection that already carries the fix ("nahi, guard ko nahi
             # — customer ko diya tha") is applied right here; a field named
             # as wrong without a value is cleared for re-asking.
@@ -1096,7 +1295,13 @@ def build_mdnd_workflow() -> tuple[list, list]:
         N("n_pending", "message", "Noted (API unavailable)", {
             "text": "ठीक है — MDND की सारी details मैंने note कर ली हैं।"}),
         N("n_hub_more", "intent", "Koi aur issue?", {
-            "prompt": "इसके अलावा payout में कोई और issue है?"}),
+            "prompt": "इसके अलावा payout में कोई और issue है?",
+            # cv_ee8fe14ab6d3: "इन्वर्टर पर नहीं रखा था, गार्ड को दिया था" came
+            # AFTER registration; the hub had no captures, the LLM improvised
+            # a guard confirmation and the slots never changed. A changed
+            # answer here is applied (clears first) and re-verified via the
+            # declared "correction" edge.
+            "alsoCapture": MDND_CORRECTION_ALSO}),
         N("n_msg_close", "message", "Scripted closing", {
             "text": ("सारी details share करने के लिए धन्यवाद। आपके ticket "
                      "की सारी details मैंने note कर ली हैं — आप बिल्कुल "
@@ -1145,6 +1350,9 @@ def build_mdnd_workflow() -> tuple[list, list]:
         E("n_hub_more", "n_handover", ANOTHER),
         E("n_hub_more", "n_handover", AGENT),
         E("n_hub_more", "n_msg_close", DECLINE),
+        # A changed answer after registration → re-verify (engine takes this
+        # declared edge whenever the hub's captures fired this turn).
+        E("n_hub_more", "n_ask_correction", "correction"),
         E("n_msg_close", "n_end"),
     ]
     return nodes, edges
@@ -1178,7 +1386,26 @@ MDND_SUMMARY_FIELDS = [
                 "customer (direct)": "customer",
                 "mother": "mother", "father": "father", "brother": "brother",
                 "relative (other)": "relative", "left at door": "doorstep",
-                "someone else": "someone_else", "not handed over": ""}},
+                "someone else": "someone_else", "not handed over": "",
+                "place (kept at a spot)": ""},
+     "requires": {"handover_type": ["person", "place"]}},
+    {"name": "handover_type", "type": "choice", "source": "m_handover_recipient",
+     "label": "Handover type",
+     "description": "Whether the product went to a person, was kept at a "
+                    "place, or was not handed over at all.",
+     "options": ["person", "place", "not_handed_over"],
+     "values": {"guard / security": "person", "customer (direct)": "person",
+                "mother": "person", "father": "person", "brother": "person",
+                "relative (other)": "person", "someone else": "person",
+                "left at door": "place", "place (kept at a spot)": "place",
+                "not handed over": "not_handed_over"},
+     "allowLlm": False},
+    {"name": "drop_location", "type": "text", "source": "m_drop_location",
+     "label": "Drop location",
+     "description": "Where the product was kept, in the partner's own words "
+                    "(only when the handover was to a place).",
+     "allowLlm": False,
+     "requires": {"handover_type": ["place"]}},
     {"name": "call_cx", "type": "yes_no", "source": "m_cx_support_call",
      "label": "CX support call received",
      "description": "Did the delivery partner get a call from CX support "

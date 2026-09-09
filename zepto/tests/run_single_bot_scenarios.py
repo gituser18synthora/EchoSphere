@@ -94,7 +94,13 @@ def run(bot_id, name, turns, verbose=False):
                                      ensure_ascii=False).lower(),
                "done": str(wf.get("done")).lower()}
         for kind, want in expect:
-            if kind == "reply_not":
+            if kind == "reply_any":
+                # Any one of several renderings (e.g. a romanized place the
+                # model may speak in Devanagari — same words, other script).
+                if not any(str(w).lower() in got["reply"] for w in want):
+                    ok_all = False
+                    log.append(f"      EXPECT reply ~ any of {list(want)} — NOT FOUND")
+            elif kind == "reply_not":
                 if want.lower() in got["reply"]:
                     ok_all = False
                     log.append(f"      EXPECT reply NOT ~ '{want}' — FOUND")
@@ -124,6 +130,7 @@ def run(bot_id, name, turns, verbose=False):
 R, RN, RT, ST, TR, TN, SL, DN, SM = ("reply", "reply_not", "route", "status",
                                      "trace", "trace_not", "slots", "done",
                                      "summary")
+RA = "reply_any"
 
 MDND_MOCKS = mocks_for("Zepto Register MDND Concern")
 UNIF_MOCKS = mocks_for("Zepto Register Uniform Deduction Concern")
@@ -150,31 +157,31 @@ SUITES = {
           ("maine deliver kiya tha product, maine call kiya tha, customer "
            "ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad "
            "deduction hua jo nahi hona chahiye tha",
-           # Story answered reached + called -> neither is asked again; the
-           # handover recipient is the only open enquiry.
+           # Story answered reached + called AND the handover: the customer
+           # said "ghar ke aage rakh do" and the partner kept it THERE — a
+           # PLACE handover, recorded as said (cv_5f119c71e2aa). Only the
+           # CX-support enquiry is still open; nothing is asked again.
            [(SL, '"m_reached_location": "yes (reached the location)"'),
             (SL, '"m_called_customer": "yes (called the customer)"'),
-            (TR, "n_msg_empathy"), (TR, "n_ask_handover"),
+            (SL, '"m_handover_recipient": "place (kept at a spot)"'),
+            (SL, '"m_drop_location": "ghar ke aage"'),
+            (TR, "n_msg_empathy"), (TR, "n_ask_cx"),
             (TN, "n_ask_reached_called"), (TN, "n_ask_reached"),
-            (R, "परेशानी"),
-            (RN, "delivery से पहले"), (RN, "location पर पहुंचे"),
+            (TN, "n_ask_guard_name_known"),
+            (R, "परेशानी"), (R, "cx support"),
+            (RN, "delivery से पहले"), (RN, "location पर पहुंचे"), (RN, "किसको सौंपा"),
             (SM, '"reach_customer_location": "yes"'),
             (SM, '"call_customer": "yes"'),
-            (SM, '"hand_over_to": null')]),
-          ("ye order maine customer ke guard ko handover kiya tha",
-           # Guard handover -> the guard-name follow-up, nothing else.
-           [(SL, '"m_handover_recipient": "guard / security"'),
-            (TR, "n_cond_guard"), (TR, "n_ask_guard_name_known"),
-            (RN, "cx support"), (R, "नाम"),
             (SM, '"hand_over_product": "yes"'),
-            (SM, '"hand_over_to": "security_guard"')]),
-          ("nahi, naam nahi pucha tha",
-           # "not asked" is recorded, then the NEW CX-support enquiry.
-           [(SL, '"m_guard_name": "not known (name not asked)"'),
-            (TR, "n_ask_cx"), (R, "cx support"), (RN, "सही है")]),
+            (SM, '"handover_type": "place"'),
+            (SM, '"drop_location": "ghar ke aage"'),
+            (SM, '"hand_over_to": null')]),
           ("nahi, cx support se koi call nahi aaya",
+           # The summary keeps the place as the partner said it.
            [(SL, '"m_cx_support_call": "no (no cx support call)"'),
             (TR, "n_hub_verify"), (R, "सही है"),
+            (RA, ["ghar ke aage", "घर के आगे"]),
+            (RN, "किसको सौंपा"), (RN, "कोई call आया था"),
             (SM, '"call_cx": "no"')]),
           # MDND-only line: the confirmation registers at once — no
           # other-deduction question in between.
@@ -182,11 +189,13 @@ SUITES = {
            [(TR, "n_api"), (TR, "n_confirmed"), (TR, "n_hub_more"),
             (TN, "n_ask_other"), (RN, "onboarding"),
             (SL, '"ticket_id": "zpt-mdnd-73412"'), (R, "payout"),
-            # Final structured summary = the five reporting fields.
+            # Final structured summary = the reporting fields.
             (SM, '"call_customer": "yes"'),
             (SM, '"reach_customer_location": "yes"'),
             (SM, '"hand_over_product": "yes"'),
-            (SM, '"hand_over_to": "security_guard"'),
+            (SM, '"handover_type": "place"'),
+            (SM, '"drop_location": "ghar ke aage"'),
+            (SM, '"hand_over_to": null'),
             (SM, '"call_cx": "no"')]),
           ("nahi bas, ye refund kab tak aa jayega?", [(R, "refund")]),
           ("theek hai thank you",
@@ -207,8 +216,10 @@ SUITES = {
             (RN, "सौंपा"), (RN, "delivery से पहले"), (RN, "कोई call आया था"),
             (SM, '"call_cx": "yes"')]),
           ("haan pucha tha, guard ka naam Ramesh tha",
-           # Name given with the yes -> the name ask is skipped too.
-           [(SL, '"m_guard_name": "ramesh"'), (RN, "cx support"),
+           # Name given with the yes -> the name ask is skipped too. The CX
+           # enquiry must not be RE-ASKED (question wording) — the summary
+           # itself legitimately mentions CX support.
+           [(SL, '"m_guard_name": "ramesh"'), (RN, "कोई call आया था"),
             (TR, "n_hub_verify"), (R, "सही है"), (RN, "नाम क्या था")]),
           ("sahi hai",
            [(TR, "n_api"), (TR, "n_pending"), (TR, "n_hub_more"),
@@ -384,8 +395,10 @@ SUITES = {
             (TR, "n_ask_called"), (RN, "सौंपा"),
             (R, "call"), (RN, "location पर पहुंचे")]),
           ("nahi, call nahi laga tha",
-           [(SL, '"m_called_customer": "no (did not call)"'),
-            (TR, "n_ask_handover"), (SM, '"call_customer": "no"'),
+           # "call nahi laga" = the partner DID call, it did not connect
+           # (v4 rule, now also on the single ask's own matcher).
+           [(SL, '"m_called_customer": "yes (called the customer)"'),
+            (TR, "n_ask_handover"), (SM, '"call_customer": "yes"'),
             (SM, '"reach_customer_location": "yes"')]),
           ]),
         ("MDND 13 combined question, split answer extracted independently",

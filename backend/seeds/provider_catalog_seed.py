@@ -218,9 +218,11 @@ _ELEVENLABS_V3_TTS_SCHEMA = {
                 "hallucinate), Natural (balanced) or Robust (very stable).",
     },
     "similarity_boost": {
-        "type": "number", "min": 0.0, "max": 1.0, "default": 1.0, "step": 0.05,
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.75, "step": 0.05,
         "label": "Similarity boost",
-        "help": "How closely synthesis adheres to the original voice timbre.",
+        "help": "How closely synthesis adheres to the original voice timbre. "
+                "ElevenLabs' default is 0.75; values near 1.0 can reproduce "
+                "artifacts from the voice's source recording.",
     },
     "style": {
         "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
@@ -229,16 +231,24 @@ _ELEVENLABS_V3_TTS_SCHEMA = {
     },
 }
 
+# Defaults follow the ElevenLabs API defaults (stability 0.5, similarity 0.75,
+# style 0, speaker boost on, speed 1.0). Stability 0 with similarity 1.0 — the
+# platform's earlier seed — produces erratic, wobbly delivery and carries source
+# artifacts, which is how "ElevenLabs sounds wrong" reached the Voice tab.
 _ELEVENLABS_TTS_SCHEMA = {
     "stability": {
-        "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.05,
         "label": "Stability",
-        "help": "Lower values give more expressive, varied delivery; higher values are steadier.",
+        "help": "Lower values give more expressive, varied delivery; higher values "
+                "are steadier. ElevenLabs' default is 0.5; below ~0.3 delivery "
+                "becomes erratic, especially in Hindi and other non-English text.",
     },
     "similarity_boost": {
-        "type": "number", "min": 0.0, "max": 1.0, "default": 1.0, "step": 0.05,
+        "type": "number", "min": 0.0, "max": 1.0, "default": 0.75, "step": 0.05,
         "label": "Similarity boost",
-        "help": "How closely synthesis adheres to the original voice timbre.",
+        "help": "How closely synthesis adheres to the original voice timbre. "
+                "ElevenLabs' default is 0.75; values near 1.0 can reproduce "
+                "artifacts from the voice's source recording.",
     },
     "style": {
         "type": "number", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.05,
@@ -591,8 +601,9 @@ _SARVAM_VOICE_LOCALES = [
     "te-IN", "kn-IN", "ml-IN", "pa-IN", "or-IN",
 ]
 
+# ElevenLabs API defaults (see _ELEVENLABS_TTS_SCHEMA).
 _ELEVEN_DEFAULT_VOICE_SETTINGS = {
-    "stability": 0.0, "similarity_boost": 1.0, "style": 0.0,
+    "stability": 0.5, "similarity_boost": 0.75, "style": 0.0,
     "use_speaker_boost": True, "speed": 1.0,
 }
 

@@ -104,6 +104,97 @@ def aggregate_response_mode(segment_modes) -> str:
     return RESPONSE_MODE_FIXED
 
 
+def resolve_response_directive(config: dict | None, heard_nodes=()) -> str:
+    """The grounded response goal for a node, given what the caller has heard.
+
+    ``responseDirective`` is the default. ``responseDirectiveVariants`` lets an
+    author word a step differently depending on which EARLIER node utterances
+    the caller actually heard in full — e.g. a confirmation summary that
+    repeats the ticket facts only when the opening readout was cut short by a
+    barge-in. Each variant is ``{"heard": [node ids], "notHeard": [node ids],
+    "directive": str}``; the first variant whose every ``heard`` node was heard
+    and no ``notHeard`` node was heard wins. Malformed variants are skipped.
+
+    ``heard_nodes`` is the delivery channel's knowledge: the voice brain
+    reports nodes whose reply audio played to completion; text channels
+    (testing chat/simulate) count every spoken node as heard.
+    """
+    config = config or {}
+    heard = {str(item) for item in (heard_nodes or ())}
+    variants = config.get("responseDirectiveVariants")
+    if isinstance(variants, list):
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            directive = str(variant.get("directive") or "").strip()
+            if not directive:
+                continue
+            required = variant.get("heard") or []
+            excluded = variant.get("notHeard") or []
+            if not isinstance(required, list) or not isinstance(excluded, list):
+                continue
+            if not all(str(node) in heard for node in required):
+                continue
+            if any(str(node) in heard for node in excluded):
+                continue
+            return directive
+    return str(config.get("responseDirective") or "").strip()
+
+
+def resolve_response_must_include(config: dict | None, language: str | None = None) -> list[str]:
+    """Literals that must survive grounded generation, per caller language.
+
+    ``responseMustInclude`` lists the default literals (typically in the
+    workflow's authored language). ``responseMustIncludeByLanguage`` maps a
+    locale ("en-IN") or base language ("en") to the literals for callers in
+    that language — a Hindi closing question cannot survive in an English
+    reply, so the English variant pins the English closing instead. Exact
+    locale wins over base language; anything else falls back to the default.
+    """
+    config = config or {}
+    by_language = config.get("responseMustIncludeByLanguage")
+    locale = str(language or "").strip()
+    if isinstance(by_language, dict) and locale:
+        base = locale.split("-", 1)[0].lower()
+        for key in (locale, locale.lower(), base):
+            items = by_language.get(key)
+            if isinstance(items, list):
+                return [str(item).strip() for item in items if str(item or "").strip()]
+    items = config.get("responseMustInclude")
+    if isinstance(items, list):
+        return [str(item).strip() for item in items if str(item or "").strip()]
+    return []
+
+
+def collected_facts_block(slots: dict | None, *, skip_prefixes=("m_issue_",)) -> str:
+    """System-prompt lines naming what the flow has ALREADY collected.
+
+    Off-script turns are answered by the LLM from the conversation history
+    plus the pending question — it never saw the workflow's slots, so it
+    could re-ask or "confirm" facts the flow already holds (cv_5f119c71e2aa:
+    "तो आपने customer को call किया था, सही है?" while called=yes was stored).
+    Scalar slots only; long free-text descriptions are left out.
+    """
+    items = []
+    for key, value in (slots or {}).items():
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        name = str(key)
+        if any(name.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        text = " ".join(str(value).split())
+        if not text or len(text) > 80:
+            continue
+        items.append(f"- {name}: {text}")
+    if not items:
+        return ""
+    return (
+        "\nFacts the call flow has ALREADY collected from the caller (never ask "
+        "for these again, never contradict them, never invent others):\n"
+        + "\n".join(items[:24])
+    )
+
+
 def grounded_delivery_instruction(
     *,
     directives=(),

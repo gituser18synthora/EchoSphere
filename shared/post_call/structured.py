@@ -110,7 +110,9 @@ def derive_structured_fields(
     """Every configured field from the workflow slots (None where unknown)."""
     if policy is None:
         return {}
-    return {spec.name: derive_field(spec, slots) for spec in policy.summary_fields}
+    fields = {spec.name: derive_field(spec, slots) for spec in policy.summary_fields}
+    _apply_requires(policy, fields, {})
+    return fields
 
 
 def merge_structured_fields(
@@ -131,9 +133,15 @@ def merge_structured_fields(
     sources: dict[str, str] = {}
     for spec in policy.summary_fields:
         value = derive_field(spec, slots)
-        if value is not None:
+        # A slot that HAS a value decides the field even when it maps to
+        # "not applicable" (hand_over_to for a place handover): the analyst
+        # must not fill it from the transcript (cv_ee8fe14ab6d3 reported
+        # "security guard" next to drop_location "इन्वर्टर के ऊपर").
+        slot_decided = bool(_norm((slots or {}).get(spec.source))) if spec.source else False
+        if value is not None or slot_decided:
             fields[spec.name] = value
-            sources[spec.name] = SOURCE_WORKFLOW
+            if value is not None:
+                sources[spec.name] = SOURCE_WORKFLOW
             continue
         candidate = None
         if spec.allow_llm:
@@ -141,7 +149,23 @@ def merge_structured_fields(
         fields[spec.name] = candidate
         if candidate is not None:
             sources[spec.name] = SOURCE_ANALYSIS
+    _apply_requires(policy, fields, sources)
     return fields, sources
+
+
+def _apply_requires(policy: BotGoalPolicy, fields: dict, sources: dict) -> None:
+    """Blank every field whose ``requires`` condition is not met by the final
+    values (person recipient with a place handover, place text with a person
+    handover) — consistency is enforced here, not left to the UI."""
+    for spec in policy.summary_fields:
+        if not spec.requires or fields.get(spec.name) is None:
+            continue
+        for other, allowed in spec.requires.items():
+            allowed_norm = {_norm(a) for a in (allowed or [])}
+            if _norm(fields.get(other)) not in allowed_norm:
+                fields[spec.name] = None
+                sources.pop(spec.name, None)
+                break
 
 
 def summary_fields_prompt_block(policy: BotGoalPolicy | None) -> str:
