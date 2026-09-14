@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from shared.config import get_settings
 from backend.core.audit import record_audit
+from backend.core.bot_lifecycle import assert_bot_operational
 from backend.core.deps import assert_tenant_access, get_current_user
 from shared.errors import ApiError, NotFoundError
 from backend.core.responses import ok
@@ -69,6 +70,7 @@ async def create_session(
     if bot is None or bot.is_deleted:
         raise NotFoundError("Bot")
     assert_tenant_access(user, bot.tenant_id)
+    assert_bot_operational(bot, action="start a test session")
 
     if body.customer_context_id:
         context = db.get(CustomerCollectionContext, body.customer_context_id)

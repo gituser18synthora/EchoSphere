@@ -73,7 +73,7 @@ Placeholders used below: `<ACCESS_TOKEN>`, `<BOT_ID>`, `<TENANT_ID>`, `<PROMPT_I
 ## Table of contents
 
 1. [VoiceBots](#voicebots)
-   - [List bots](#list-bots) · [Get bot](#get-bot) · [Create bot](#create-bot) · [Update bot](#update-bot) · [Archive bot](#archive-bot)
+   - [List bots](#list-bots) · [Get bot](#get-bot) · [Create bot](#create-bot) · [Update bot](#update-bot) · [Lifecycle: archive / restore / delete](#lifecycle-archive-restore-delete) · [Export / Import (environment migration)](#export--import-environment-migration)
 2. [Voice settings](#voice-settings)
    - [Get voice settings](#get-voice-settings) · [Update voice settings](#update-voice-settings)
 3. [Channels](#channels)
@@ -209,7 +209,7 @@ Partial update of bot metadata, status, languages, voice, owner and readiness fl
 | `name` | string | no | Max 200. |
 | `useCase` (`use_case`) | string | no | Max 200. |
 | `description` | string | no | Max 2000. |
-| `status` | string | no | `draft` \| `in_review` \| `approved` \| `published` \| `rolled_back` \| `archived`. Transitioning to `published` stamps `publishedAt` and sets `liveVersion = version`. No transition matrix here (see [Releases](BACKEND_BOT_STUDIO.md#releases) for the governed pipeline). |
+| `status` | string | no | `draft` \| `in_review` \| `approved` \| `published` \| `rolled_back` \| `archived`. Transitioning to `published` stamps `publishedAt` and sets `liveVersion = version`. `archived` runs the archive (see [Lifecycle](#lifecycle-archive-restore-delete)); from `archived` only `draft` is allowed (restore) — anything else is **409**. No other transition matrix here (see [Releases](BACKEND_BOT_STUDIO.md#releases) for the governed pipeline). |
 | `languages` | string[] | no | Same validation as create; association rows are diffed (removed codes deleted, new ones added). |
 | `voiceId` (`voice_id`) | string | no | Must be an existing voice profile (422 "Unknown voice profile."). Empty string clears the voice. Note: this PATCH checks existence only — the tenant-scope/active checks are on the voice-settings PUT. |
 | `ownerUserId` (`owner_user_id`) | string | no | Must be a user of the same tenant (or a platform user with no tenant), else 422. |
@@ -217,13 +217,155 @@ Partial update of bot metadata, status, languages, voice, owner and readiness fl
 
 **Response 200** — the updated bot object. Audited.
 
-### Archive bot
+### Lifecycle: archive, restore, delete
+
+Archive and Delete are two different actions. **Auth:** tenant admin for all three.
+
+| State | `status` | `is_deleted` | Listed | Runtime traffic | Reversible |
+|---|---|---|---|---|---|
+| Active (draft / in_review / approved / published / rolled_back) | as shown | 0 | yes | only `published` | — |
+| Archived | `archived` | 0 | yes (`?status=archived`) | none | yes (restore) |
+| Deleted | last status preserved | 1 | never | none | no |
+
+#### Archive bot
+`POST /api/v1/bots/{bot_id}/archive`
+
+Parks the bot. `status` becomes `archived`, `liveVersion` is cleared, every channel is
+deactivated (`enabled=false`, a `live` channel drops to `configured`; rows are kept) and each
+`assigned` phone number becomes `reserved` — still bound to this tenant/bot, not routable and
+not claimable by any other bot. All configuration (workflows, prompts and published prompt
+versions, intents, knowledge sources, guardrails, voice/language settings, test scenarios) and
+all history stay untouched and readable through the normal bot APIs. The runtime config cache
+is invalidated. **409** if already archived. Audited as `Archived VoiceBot`.
+
+While archived the bot refuses (409 `This bot is archived. Restore it to …`): voice sessions
+(`POST /voice-sessions`), testing chat/simulate/suite runs, release creation and stage
+changes, channel save/activate/test, and `PATCH` to any status other than `draft`. Inbound
+phone/WhatsApp traffic is refused because the number is `reserved`, the channel is disabled
+and the runtime loader rejects archived bots before the published check.
+
+**Response 200:** `{"archived": true, "id", "status": "archived", "channelsDisabled": n, "phoneNumbersReserved": n}`
+
+#### Restore bot
+`POST /api/v1/bots/{bot_id}/restore`
+
+`archived` → `draft`. Reserved numbers return to `assigned` for the same bot; channels stay
+deactivated until re-tested; nothing is live until the bot is published again through the
+release flow. **409** unless the bot is archived. Audited as `Restored VoiceBot`.
+`PATCH /bots/{id}` with `{"status": "archived"}` / `{"status": "draft"}` (from archived) runs
+exactly the same archive / restore side effects.
+
+**Response 200:** `{"restored": true, "id", "status": "draft", "phoneNumbersReassigned": n}`
+
+#### Delete bot (permanent)
 `DELETE /api/v1/bots/{bot_id}`
 
-Soft-delete (archive) a bot. **Auth:** tenant admin.
-Query: `hard` (bool, default `false`, see soft-delete note in the intro).
+Permanent from the product's point of view. The row is kept as a tombstone (`is_deleted=1`,
+previous `status` preserved) that no tenant API returns — not the list, not `?status=archived`,
+not detail, not any bot-scoped endpoint — and that has no restore action. Channels are
+archived + disabled, phone numbers return to the platform pool (`bot_id`/`tenant_id` cleared,
+`available`), and the bot's editable configuration (workflows, prompts, intents, bot-scoped
+knowledge sources, test scenarios, runtime-context schemas, bot-scoped API connections) is
+soft-deleted so tenant-level listings no longer show it. Conversations, transcripts,
+usage/billing rows, audit rows and post-call memories are never touched; the Conversations
+pages keep showing the deleted bot's name. Runtime config cache invalidated. Audited as
+`Deleted VoiceBot`. Query `hard` is only the environment guard from the intro — the row is
+never purged.
 
-**Response 200:** `{"success": true, "data": {"archived": true, "id": "<BOT_ID>"}}`
+**Response 200:** `{"deleted": true, "id", "channelsArchived": n, "phoneNumbersReleased": n}`
+
+Legacy note: before these actions were separated, "Archive" ran the soft delete
+(`status='archived'` + `is_deleted=1`). `backend/scripts/convert_legacy_archived_bots.py`
+converts such rows back to a recoverable archive when an `Archived VoiceBot` audit row proves
+the intent (dry-run by default).
+
+### Export / Import (environment migration)
+
+Moves ONE bot between environments (typically local → live) as a single JSON file while
+**preserving `tenant_id` and `bot_id`**. This is a sync, not a clone: importing never mints a
+new bot id. Engine: `backend/core/bot_transfer.py`; router: `backend/routers/bot_transfer.py`.
+UI: My VoiceBots → bot menu → *Export bot JSON*; My VoiceBots → *Import bot*.
+
+**Auth (all three):** tenant admin or super admin **with** `bots.manage`. Export is tenant
+scoped (another tenant's bot → 404). Import always resolves the **destination tenant on the
+server**: tenant roles import into their own tenant; super admins pass `?tenantId=` (defaults
+to the package tenant, still validated).
+
+#### Export bot
+`GET /api/v1/bots/{bot_id}/export?includeKnowledge=true`
+
+**Response 200** — the package (save it as `bot_<bot_id>.json`):
+
+```json
+{
+  "kind": "echosphere.bot.export", "schema_version": 1, "exported_at": "…",
+  "tenant_id": "tn_…", "bot_id": "bot_…",
+  "source": {"tenant_name": "…", "bot_name": "…", "bot_status": "published"},
+  "bot": {"…voice_bots row…", "languages": ["hi-IN"], "readiness": [{"item_key": "r1", …}]},
+  "resources": {
+    "voice_bot_settings": {…}, "prompts": [{…, "versions": […]}], "workflows": […],
+    "intents": […], "api_connections": […bot-owned tools…], "knowledge_sources": […bot-scoped…],
+    "test_scenarios": […], "runtime_context_schema": {…}, "releases": […]
+  },
+  "shared": {
+    "guardrails": […], "guardrail_profiles": […], "voice_profiles": […platform…],
+    "tenant_voice_profiles": […clones…], "entity_defs": […], "api_connections": […tenant-wide tools…],
+    "knowledge_sources": [{"id", "name", "scope", "reference_only": true}]
+  },
+  "environment": {"channel_configs": […], "phone_numbers": [{"number", "provider", "country", "status"}]},
+  "knowledge_plane": {"documents": [{…, "chunks": [{…, "embedding": […]}]}]},
+  "integrity": "sha256:…"
+}
+```
+
+| Section | Meaning on import |
+|---|---|
+| `bot` + `resources` | **Bot-owned — the package is the source of truth.** Rows are created/updated with their exported ids; rows that exist on the destination for this bot but are not in the package are soft-deleted (prompt versions, which have no soft-delete column, are removed). |
+| `shared` | **Referenced tenant/platform rows — resolved, never overwritten.** Reuse by id → remap by natural key (code / name / provider voice id) → create only when absent. Tenant/global knowledge sources are reference-only (missing → warning, kept reference). |
+| `environment` | **This environment's runtime assignments.** An existing live channel keeps its configuration (differences reported); a channel type missing on the destination is created **disabled** and its phone number is **not** claimed. `?applyEnvironment=true` applies the package's channel configuration and claims a phone number only if it is free (a number held by another bot is never taken). |
+| `integrity` | SHA-256 of the identity manifest (tenant id, bot id, every row's id + tenant_id/bot_id). Editing `tenant_id`/`bot_id` in the file → 422. |
+
+Never exported: conversations, transcripts, usage/billing, audit rows, customer/runtime-context
+records, users, environment-local metrics (API health, intent test counters, readiness `done`,
+channel last test, scenario last run). Secrets travel only as `secret://` / `env:VAR` references;
+references that do not resolve on the destination are listed in `secretsMissing`.
+
+#### Preview import (dry run)
+`POST /api/v1/bots/import/preview?tenantId=&applyEnvironment=false` — body: the package verbatim.
+
+Runs the complete import on a transaction and rolls it back. **Response 200** — the import
+report (see below) with `"dryRun": true`. Nothing is written, even on success.
+
+#### Import bot
+`POST /api/v1/bots/import?tenantId=&applyEnvironment=false` — body: the package verbatim.
+
+`bot_id` absent under the tenant → **create** with exactly that id. `bot_id` present under the
+same tenant → **update in place** (a deleted tombstone of the same id is restored, with a warning).
+One MySQL transaction; the PostgreSQL knowledge plane (documents + chunks of bot-scoped KBs,
+replace semantics) is written first and compensated if the MySQL commit fails. The runtime
+config cache for the bot is invalidated after commit. Audited as `Imported bot configuration`.
+
+**Response 200:**
+
+```json
+{
+  "botId": "bot_…", "tenantId": "tn_…", "botName": "…", "existing": true, "action": "update",
+  "dryRun": false,
+  "created": {"intent": 1}, "updated": {"bot": 1, "workflow": 1, "prompt_version": 3},
+  "removed": {"prompt": 1}, "reused": {"guardrail_profile": 1, "tenant_api_connection": 1},
+  "remappedIds": {"api_old": "api_live"},
+  "preserved": [{"kind": "channel", "label": "voice", "reason": "kept this environment's channel configuration", "differs": ["phoneNumber"]}],
+  "secretsMissing": [{"owner": "API connection 'Fetch order'", "reference": "secret://orders-api-key"}],
+  "warnings": ["…"], "knowledgeDocuments": 1
+}
+```
+
+**Errors:** `409` package tenant ≠ destination tenant (`This package belongs to tenant 'A' but the
+destination tenant is 'B'…`), `409` an id in the package belongs to another tenant/bot,
+`422 Invalid bot package: …` (wrong `kind`, unsupported `schema_version`, inconsistent
+tenant/bot ids, raw secret, integrity mismatch, missing destination tenant, dangling voice /
+guardrail-profile / API-connection reference, language not available). Every rejection happens
+before or inside the transaction — the previous configuration survives untouched.
 
 ---
 

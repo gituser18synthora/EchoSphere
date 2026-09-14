@@ -76,3 +76,29 @@ class TestOrderedRegexPatterns:
 
     def test_whole_sentence_is_never_the_value(self):
         assert extract_entity("maine bataya na abhi", self.ENTITY)["value"] is None
+
+
+class TestRegexPatternsDigitHint:
+    """An ordered ``regexPatterns`` list opts into the spoken-number retry."""
+
+    def test_contextual_amount_pattern_matches_spoken_hindi_number(self):
+        from shared.orchestration.entity_extractor import _expects_digits, extract_entity
+
+        entity = {
+            "name": "informed_amount", "dataType": "text",
+            "regexPatterns": [r"(?<![0-9])([0-9]{2,6})(?![0-9])\s*(?:rupees?|rupaye)?\s*katega"],
+        }
+        assert _expects_digits(entity) is True
+        spoken = extract_entity("paanch sau rupaye katega bola tha", entity)
+        assert spoken["matched"] is True
+        assert spoken["value"] == "500"
+        assert spoken["normalized"] is True
+        # text dataType: no built-in "any number" fallback — an unrelated
+        # number in the utterance is not taken as the amount.
+        other = extract_entity("do baar kata", entity)
+        assert other["matched"] is False
+
+    def test_text_entity_without_digit_patterns_is_not_numeric(self):
+        from shared.orchestration.entity_extractor import _expects_digits
+
+        assert _expects_digits({"dataType": "text", "regexPatterns": [r"(guard\s+\w+)"]}) is False

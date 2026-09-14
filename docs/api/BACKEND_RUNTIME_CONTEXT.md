@@ -407,6 +407,15 @@ expressions may use `tenant_id`, `bot_id`, `call_id`, `session_id`, `user_id`,
 | `responseMapping` | object[] | no | `[]`. |
 | `botId` | string/null | no | Optional bot scope; otherwise tenant-wide. |
 
+Workflow/tool execution validates `requestSchema` required properties, property
+types, enums and string patterns before calling the service. An authored
+`responseSchema` validates the response container and those property constraints
+after HTTP success, including mocked tool results. A contract violation produces
+a failed tool result and follows the workflow's failure edge. These checks cover
+a JSON Schema subset; nested schemas and other JSON Schema keywords are not
+implemented by this validator. A connection without a response schema retains
+HTTP-based success evaluation.
+
 ### List API connections
 
 `GET /api/v1/api-connections`

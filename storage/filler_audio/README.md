@@ -3,9 +3,15 @@
 Optional operator recordings for the human-speech `latency_fillers` feature
 (see `docs/HUMAN_SPEECH_NATURALNESS.md`). Drop 16-bit PCM WAV files here, named
 with a gender token, e.g. `filler_male_1.wav`, `breath_female.wav`,
-`filler_neutral.wav` for the pre-reply breath, and `inhale_male.wav` / `inhale_female.wav`
-for the short rising breath before a sentence inside a reply. All files of a gender rotate; a gender with no file uses
-the runtime's synthesized breath. Any sample rate is accepted (resampled per
+`filler_neutral.wav` for the pre-reply breath, `inhale_male.wav` / `inhale_female.wav` for the short
+rising breath (also used before a sentence inside a reply), `exhale_<gender>.wav`
+for a settling exhale and `inhale_exhale_<gender>.wav` for a full quiet breath
+cycle. Which kind covers the gap before a reply, and which files of it a bot may
+play (primary + alternates), is chosen per bot in the Natural Conversation tab
+(`humanSpeech.latency_filler_kind` / `filler_audio_selection`); with no
+selection all files of a gender rotate; a kind/gender with no file uses the
+runtime's synthesized sound. Every file can be auditioned from that tab (the
+API serves the exact bytes the runtime plays). Any sample rate is accepted (resampled per
 call). Subdirectories are ignored — `python scripts/export_filler_audio.py`
 writes the synthesized defaults into `synthesized/` for audition.
 

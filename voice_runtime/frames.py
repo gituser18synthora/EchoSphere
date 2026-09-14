@@ -3,9 +3,43 @@
 DataFrames so they queue in-order with the token TextFrames they relate to.
 """
 
+import asyncio
 from dataclasses import dataclass, field
+from uuid import uuid4
 
-from pipecat.frames.frames import DataFrame, SystemFrame
+from pipecat.frames.frames import DataFrame, OutputAudioRawFrame, SystemFrame
+
+
+@dataclass(eq=False)
+class FillerAudioOwner:
+    """One filler turn's identity, shared by its queued PCM and cancellation.
+
+    Tokens are unique across calls and re-arms, even when turn numbers match.
+    The event retires frames already in downstream processor/transport queues.
+    """
+
+    turn_id: int
+    token: str = field(default_factory=lambda: uuid4().hex)
+    cancelled: bool = field(default=False, init=False)
+    cancelled_event: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self.cancelled_event.set()
+
+
+@dataclass
+class FillerAudioRawFrame(OutputAudioRawFrame):
+    """Plain output PCM with explicit ownership; never response TTS audio."""
+
+    owner: FillerAudioOwner | None = None
+
+
+@dataclass
+class FillerClearFrame(SystemFrame):
+    """Discard only this owner's unplayed filler, ahead of response audio."""
+
+    owner: FillerAudioOwner
 
 
 @dataclass
@@ -60,14 +94,9 @@ class STTTurnResumedFrame(DataFrame):
     reason: str = "turn_resumed"
 
 
-# Transport message the latency filler sends right after a clip it streamed as
-# plain output audio (breath / voiced cue) has fully left the pipeline. The
-# telephony serializers packetize outbound PCM into 200 ms frames and flush a
-# partial packet only on BotStoppedSpeakingFrame — which plain audio never
-# produces — so a clip's last <200 ms would otherwise sit in the buffer and
-# play glued to the front of the NEXT utterance (heard on FreeSWITCH calls as
-# the breath "repeating" right before the reply). The message rides the audio
-# queue, so it reaches the serializer after the clip's last frame.
+# Legacy ordered packet flush. Filler completion markers now include
+# filler_owner: their PCM bypasses speech packet buffers, so serializers
+# must not use those markers to flush unrelated speech.
 AUDIO_FLUSH_MESSAGE_TYPE = "audio_flush"
 
 

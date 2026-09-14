@@ -43,6 +43,57 @@ const platformSources = Object.fromEntries(
 ) as HumanSpeechSources;
 
 describe("HumanSpeechSettingsEditor", () => {
+  it("collapses advanced tuning while keeping common switches visible", async () => {
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ backchannel_probability: 0.25, latency_filler_delay_ms: 2000 }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={() => undefined}
+        collapseAdvanced
+      />,
+    );
+
+    const summary = screen.getByText("Advanced tuning").closest("summary");
+    const details = summary?.closest("details");
+    expect(summary).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(within(summary as HTMLElement).getByText("· 2 overrides")).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Thinking fillers" })).toBeVisible();
+    const probability = screen.getByLabelText("Backchannel probability");
+    expect(probability).not.toBeVisible();
+    expect(probability).toHaveValue(0.25);
+
+    await userEvent.click(summary as HTMLElement);
+
+    expect(details).toHaveAttribute("open");
+    expect(probability).toBeVisible();
+    expect(screen.getByLabelText("Latency filler delay (ms)")).toHaveValue(2000);
+  });
+
+  it("preserves hidden numeric overrides when a common switch changes", async () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ backchannel_probability: 0.25, latency_filler_delay_ms: 2000 }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+        collapseAdvanced
+      />,
+    );
+
+    expect(screen.getByLabelText("Backchannel probability")).not.toBeVisible();
+    await userEvent.click(screen.getByRole("switch", { name: "Thinking fillers" }));
+    expect(onChange).toHaveBeenLastCalledWith({
+      backchannel_probability: 0.25,
+      latency_filler_delay_ms: 2000,
+      thinking_fillers: false,
+    });
+  });
+
   it("shows effective inherited values and creates a sparse override", async () => {
     const onChange = vi.fn();
     render(
@@ -58,6 +109,7 @@ describe("HumanSpeechSettingsEditor", () => {
     expect(
       screen.getAllByText("Effective: On · source: platform").length,
     ).toBeGreaterThan(0);
+    expect(screen.getByText("Thinking fillers")).toBeVisible();
     await userEvent.click(screen.getByRole("switch", { name: "Thinking fillers" }));
     expect(onChange).toHaveBeenLastCalledWith({ thinking_fillers: false });
   });
@@ -71,10 +123,12 @@ describe("HumanSpeechSettingsEditor", () => {
         inherited={inherited}
         inheritedSources={platformSources}
         onChange={onChange}
+        collapseAdvanced
       />,
     );
 
     const toggle = screen.getByRole("switch", { name: "Thinking fillers" });
+    expect(screen.getByLabelText("Backchannel probability")).not.toBeVisible();
     const card = toggle.closest(".card-pad-sm");
     expect(card).not.toBeNull();
     await userEvent.click(within(card as HTMLElement).getByRole("button", { name: "Inherit" }));
@@ -93,6 +147,8 @@ describe("HumanSpeechSettingsEditor", () => {
     );
 
     const probability = screen.getByRole("spinbutton", { name: "Backchannel probability" });
+    expect(probability).toBeVisible();
+    expect(screen.queryByText("Advanced tuning")).not.toBeInTheDocument();
     expect(probability).toHaveAttribute("min", "0");
     expect(probability).toHaveAttribute("max", "1");
     const gap = screen.getByRole("spinbutton", { name: "Minimum backchannel gap (ms)" });

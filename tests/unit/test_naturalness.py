@@ -8,6 +8,8 @@ import pytest
 
 from shared.orchestration.naturalness import (
     ladder_cue,
+    ladder_cue_options,
+    ladder_cue_text,
     HUMAN_SPEECH_DEFAULTS,
     _LEADING_ACK_RE,
     _POOLS,
@@ -683,4 +685,164 @@ class TestSentenceBreathAndAckPacing:
         assert HUMAN_SPEECH_DEFAULTS["sentence_breath_probability"] == 0.35
         assert validate_human_speech({"sentence_breath_probability": 1.5}) == [
             "'sentence_breath_probability' must be between 0 and 1",
+        ]
+
+
+class TestFillerAudioSelectionConfig:
+    def test_defaults_keep_the_pre_selection_behaviour(self):
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_kind"] == "breath"
+        assert HUMAN_SPEECH_DEFAULTS["filler_audio_selection"] == {}
+        assert HUMAN_SPEECH_DEFAULTS["latency_filler_cue_selection"] == {}
+        planner = SpeechNaturalnessPlanner({})
+        assert planner.latency_filler_kind == "breath"
+        assert planner.filler_selection_for("breath", "male") is None
+        # No bot choice → the whole language pool is allowed (neutral default first).
+        assert planner.cue_selection_for("hi-IN") == {
+            "primary": "hmm", "alternates": ["hoon", "achha", "ji", "theek_hai", "un_hoon", "oh"],
+        }
+        assert planner.cue_selection_for("en-IN")["primary"] == "hmm"
+        assert planner.cue_selection_for("ta-IN") == {"primary": "hmm", "alternates": []}
+        assert planner.cue_selection_for("fr-FR") is None
+        assert HUMAN_SPEECH_DEFAULTS["latency_cue_probability"] == 0.7
+
+    def test_validation_accepts_well_formed_choices_and_rejects_junk(self):
+        good = {
+            "latency_filler_kind": "inhale_exhale",
+            "filler_audio_selection": {
+                "inhale_exhale": {"female": {"primary": "file:inhale_exhale_female.wav",
+                                             "alternates": ["synth:inhale_exhale:female:1"]}},
+            },
+            "latency_filler_cue_selection": {"hi": {"primary": "achha", "alternates": ["ji"]}},
+        }
+        assert validate_human_speech(good) == []
+        assert validate_human_speech({"latency_filler_kind": "sigh"}) == [
+            "'latency_filler_kind' must be one of breath, inhale, exhale, inhale_exhale",
+        ]
+        assert validate_human_speech({"filler_audio_selection": {"breath": {"male": ["a"]}}}) == [
+            "'filler_audio_selection' must map names to {primary, alternates} choices",
+        ]
+        assert validate_human_speech(
+            {"filler_audio_selection": {"sigh": {"male": {"primary": "a"}}, "breath": {"robot": {"primary": "a"}}}}
+        ) == [
+            "'filler_audio_selection': unknown sound kind 'sigh'",
+            "'filler_audio_selection': unknown gender 'robot'",
+        ]
+        assert validate_human_speech({"latency_filler_cue_selection": {"hi": {"primary": 3}}}) == [
+            "'latency_filler_cue_selection' must map names to {primary, alternates} choices",
+        ]
+
+    def test_resolution_cleans_and_merges_selections(self):
+        merged = resolve_human_speech(
+            {"filler_audio_selection": {"breath": {"male": {"primary": "a", "alternates": ["a", "b", "b", "c"]}}}},
+            {"latency_filler_kind": "exhale", "filler_audio_selection": "junk",
+             "latency_filler_cue_selection": {"hi": {"primary": "", "alternates": []}}},
+        )
+        assert merged["latency_filler_kind"] == "exhale"
+        # Junk bot layer ignored; tenant layer cleaned (primary not repeated among alternates).
+        assert merged["filler_audio_selection"] == {"breath": {"male": {"primary": "a", "alternates": ["b", "c"]}}}
+        assert merged["latency_filler_cue_selection"] == {}   # empty choice = nothing selected
+        planner = SpeechNaturalnessPlanner(merged)
+        assert planner.latency_filler_kind == "exhale"
+        assert planner.filler_selection_for("breath", "male") == {"primary": "a", "alternates": ["b", "c"]}
+        assert planner.filler_selection_for("breath", "female") is None
+        assert planner.filler_selection_for("exhale", "male") is None
+
+    def test_provenance_reports_bot_level_selection(self):
+        effective, sources = resolve_human_speech_with_sources(
+            None, {"latency_filler_kind": "inhale", "filler_audio_selection": {"inhale": {"male": {"primary": "x"}}}}
+        )
+        assert effective["latency_filler_kind"] == "inhale"
+        assert sources["latency_filler_kind"] == "bot" and sources["filler_audio_selection"] == "bot"
+        assert sources["latency_filler_cue_selection"] == "platform"
+
+    def test_cue_pools_keep_the_default_text_first(self):
+        assert ladder_cue("hi-IN", "hmm") == "हम्म…"
+        options = ladder_cue_options("hi-IN", "hmm")
+        assert options[0] == {"id": "hmm", "text": "हम्म…"}
+        assert {o["id"] for o in options} == {"hmm", "hoon", "achha", "ji", "theek_hai", "un_hoon", "oh"}
+        assert ladder_cue_text("hi-IN", "hmm", "un_hoon") == "उँ-हूँ…"
+        assert ladder_cue_text("hi-IN", "hmm", "nope") == "" and ladder_cue_options("fr-FR", "hmm") == []
+        assert ladder_cue_options("en-US", "wait") == [{"id": "one_second", "text": "One second…"}]
+
+
+class TestLatencyCuePlanning:
+    """A voiced cue on a long wait is a per-turn, context-driven decision —
+    first whether a word is needed at all, then which allowed cue fits."""
+
+    @staticmethod
+    def planner(**overrides):
+        return SpeechNaturalnessPlanner(
+            {"latency_cue_probability": 1.0, **overrides}, rng=random.Random(7)
+        )
+
+    def test_context_ranks_the_allowed_cues_by_role(self):
+        p = self.planner()
+        first = {
+            ctx: p.plan_latency_cue(language="hi-IN", context=ctx, turn_index=2).cue_ids[0]
+            for ctx in ("lookup", "thinking", "information", "confirm", "affirm", "polite", "neutral")
+        }
+        assert first == {
+            "lookup": "hmm", "thinking": "hmm", "information": "achha", "confirm": "theek_hai",
+            "affirm": "un_hoon", "polite": "ji", "neutral": "hmm",
+        }
+        # Roles a context does not list never appear: a statement gets no
+        # surprise, a question gets no "ठीक है…".
+        assert "oh" not in p.plan_latency_cue(language="hi-IN", context="information").cue_ids
+        assert "theek_hai" not in p.plan_latency_cue(language="hi-IN", context="thinking").cue_ids
+        assert p.plan_latency_cue(language="en-IN", context="information").cue_ids[0] == "i_see"
+
+    def test_serious_state_allows_only_thinking_polite_and_a_rare_oh(self):
+        p = self.planner()
+        plan = p.plan_latency_cue(language="hi-IN", context="affirm", serious=True)
+        assert plan.cue_ids and set(plan.cue_ids) <= {"hmm", "hoon", "ji"}
+        assert "un_hoon" not in plan.cue_ids and "theek_hai" not in plan.cue_ids
+        # Concern: "ओह…" leads on a minority of turns and at most once per call.
+        leads = 0
+        for seed in range(40):
+            q = SpeechNaturalnessPlanner({"latency_cue_probability": 1.0}, rng=random.Random(seed))
+            plan = q.plan_latency_cue(language="hi-IN", context="concern", serious=True)
+            leads += plan.cue_ids[0] == "oh"
+            assert set(plan.cue_ids) <= {"oh", "hmm", "hoon", "ji"}
+        assert 5 <= leads <= 25
+        q = SpeechNaturalnessPlanner({"latency_cue_probability": 1.0}, rng=random.Random(3))
+        q.note_latency_cue_played("oh")
+        for _ in range(5):
+            assert "oh" not in q.plan_latency_cue(language="hi-IN", context="concern").cue_ids
+        r = self.planner()
+        assert "oh" not in r.plan_latency_cue(language="hi-IN", context="concern", last_cue="oh").cue_ids
+
+    def test_previous_cue_never_leads_again(self):
+        p = self.planner()
+        plan = p.plan_latency_cue(language="hi-IN", context="information", last_cue="achha")
+        assert plan.cue_ids[0] == "theek_hai" and plan.cue_ids[-1] == "achha"
+        # With a single allowed cue it stays (a word is still better than nothing).
+        q = self.planner(latency_filler_cue_selection={"hi": {"primary": "hoon", "alternates": []}})
+        assert q.plan_latency_cue(language="hi-IN", context="thinking", last_cue="hoon").cue_ids == ["hoon"]
+
+    def test_bot_allowed_set_bounds_the_choice(self):
+        p = self.planner(latency_filler_cue_selection={"hi": {"primary": "hmm", "alternates": ["ji"]}})
+        # Information context, but "अच्छा…" is not allowed → polite, then thinking.
+        assert p.plan_latency_cue(language="hi-IN", context="information").cue_ids == ["ji", "hmm"]
+        # Nothing allowed fits an agreement in a serious state except the thinking/polite ones.
+        assert p.plan_latency_cue(language="hi-IN", context="affirm").cue_ids == ["ji", "hmm"]
+
+    def test_whether_a_word_is_needed_at_all(self):
+        p = self.planner()
+        assert p.plan_latency_cue(language="hi-IN", context="neutral", early_ack_spoken=True).reason == "ack_already_spoken"
+        assert p.plan_latency_cue(language="hi-IN", context="information", critical=True).reason == "critical_content"
+        assert p.plan_latency_cue(language="hi-IN", context="neutral", expected_fast=True).reason == "reply_expected_fast"
+        assert p.plan_latency_cue(language="fr-FR", context="neutral").reason.startswith("no_pool_language")
+        assert self.planner(latency_filler_ladder=False).plan_latency_cue(language="hi-IN").reason == "disabled"
+        # The probability keeps most long waits a breath: ~70 % verbal by default.
+        verbal = sum(
+            SpeechNaturalnessPlanner({}, rng=random.Random(seed)).plan_latency_cue(
+                language="hi-IN", context="neutral", turn_index=3
+            ).verbal
+            for seed in range(100)
+        )
+        assert 55 <= verbal <= 85
+        plan = p.plan_latency_cue(language="hi-IN", context="confirm", turn_index=2)
+        assert plan.verbal and plan.as_selection() == {"primary": "theek_hai", "alternates": plan.cue_ids[1:]}
+        assert validate_human_speech({"latency_cue_probability": 1.5}) == [
+            "'latency_cue_probability' must be between 0 and 1",
         ]

@@ -33,8 +33,13 @@ from pipecat.frames.frames import (
 from pipecat.serializers.base_serializer import FrameSerializer
 
 from shared.config import get_settings
+from shared.audio.pcm import resample_pcm
 from shared.errors import ApiError
-from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
+from voice_runtime.frames import (
+    AUDIO_FLUSH_MESSAGE_TYPE,
+    FillerAudioRawFrame,
+    FillerClearFrame,
+)
 _VAANI_MIN_CHUNK_BYTES = 3200
 _VAANI_MAX_CHUNK_BYTES = 100_000
 _VAANI_FRAME_BYTES = 320
@@ -105,7 +110,13 @@ class _RampedAudioMixin:
         self._last_audio_at = now
 
     def _is_audio_flush(self, message: dict | None) -> bool:
-        return bool(message) and message.get("type") == AUDIO_FLUSH_MESSAGE_TYPE
+        # Tagged filler already left as individual packets. Its completion
+        # marker must not flush unrelated speech waiting in _pending_audio.
+        return (
+            bool(message)
+            and message.get("type") == AUDIO_FLUSH_MESSAGE_TYPE
+            and not message.get("filler_owner")
+        )
 
     def _reset_ramp(self) -> None:
         self._ramp_step = 0
@@ -118,6 +129,28 @@ class _RampedAudioMixin:
     def _advance_ramp(self) -> None:
         if self._ramp_step < len(_RAMP_THRESHOLDS):
             self._ramp_step += 1
+
+    def _filler_packet_audio(self, frame: FillerAudioRawFrame) -> bytes:
+        """Return this owner's native packet without touching reply buffering.
+
+        The output transport supplies at most 20 ms of PCM at a time. Sending
+        it immediately keeps filler out of the 200 ms speech-packet buffer
+        and leaves the reply's first-packet ramp unchanged. Nothing is retained
+        here for a later clear to flush ahead of a reply.
+
+        These provider protocols only expose stream-wide playback clears. We
+        cannot revoke an already-sent packet without also risking unrelated
+        audio in their remote queue, so filler cancellation never sends one.
+        """
+        if frame.owner is None or frame.owner.cancelled or not frame.audio:
+            return b""
+        audio = frame.audio
+        if frame.sample_rate != 8000:
+            audio = resample_pcm(audio, frame.sample_rate, 8000)
+        remainder = len(audio) % _VAANI_FRAME_BYTES
+        if remainder:
+            audio += b"\x00" * (_VAANI_FRAME_BYTES - remainder)
+        return audio
 
 
 class _FreeSwitchControlMixin:
@@ -234,6 +267,13 @@ class FreeSwitchAudioStreamSerializer(
         pass
 
     async def serialize(self, frame: Frame) -> str | None:
+        if isinstance(frame, FillerClearFrame):
+            # Tagged filler is never retained in _pending_audio. A broad
+            # killAudio would discard valid audio owned by somebody else.
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
             self._note_audio()
             self._pending_audio.extend(frame.audio)
@@ -283,6 +323,9 @@ class FreeSwitchAudioStreamSerializer(
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
         self._advance_ramp()
+        return self._audio_message(audio)
+
+    def _audio_message(self, audio: bytes) -> str:
         return json.dumps({
             "type": "streamAudio",
             "data": {
@@ -412,6 +455,11 @@ class FreeSwitchAudioForkSerializer(
         pass
 
     async def serialize(self, frame: Frame) -> str | None:
+        if isinstance(frame, FillerClearFrame):
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
             self._note_audio()
             self._pending_audio.extend(frame.audio)
@@ -455,6 +503,9 @@ class FreeSwitchAudioForkSerializer(
         if remainder:
             audio += b"\x00" * (_FREESWITCH_FRAME_BYTES - remainder)
         self._advance_ramp()
+        return self._audio_message(audio)
+
+    def _audio_message(self, audio: bytes) -> str:
         return json.dumps({
             "type": "playAudio",
             "data": {
@@ -544,6 +595,11 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if self._stopped:
             return None  # after `stop`, nothing else may go on the wire
+        if isinstance(frame, FillerClearFrame):
+            return None
+        if isinstance(frame, FillerAudioRawFrame):
+            audio = self._filler_packet_audio(frame)
+            return self._audio_message(audio) if audio else None
         if isinstance(frame, OutputAudioRawFrame):
             self._note_audio()
             self._pending_audio.extend(frame.audio)
@@ -680,6 +736,9 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
         if remainder:
             chunk += b"\x00" * (_VAANI_FRAME_BYTES - remainder)
         self._advance_ramp()
+        return self._audio_message(chunk)
+
+    def _audio_message(self, chunk: bytes) -> str:
         self._out_chunk += 1
         return json.dumps({
             "event": "media",
@@ -698,6 +757,40 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
             "streamSid": self._stream_sid,
             "stop": {"reason": reason},
         })
+
+
+class FillerSafeSerializer(FrameSerializer):
+    """Keep third-party encoder/resampler history free of disposable filler."""
+
+    def __init__(self, delegate):
+        super().__init__()
+        self.delegate = delegate
+
+    async def setup(self, frame):
+        await self.delegate.setup(frame)
+
+    async def serialize(self, frame):
+        if isinstance(frame, FillerClearFrame):
+            return None  # remote clear APIs target the whole stream
+        if isinstance(frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)):
+            if (frame.message or {}).get("filler_owner"):
+                return None
+        if isinstance(frame, FillerAudioRawFrame):
+            if frame.owner is None or frame.owner.cancelled:
+                return None
+            # These provider media contracts use native 8 kHz. At equal
+            # rates Pipecat bypasses the delegate's streaming resampler.
+            audio = frame.audio
+            if frame.sample_rate != 8000:
+                audio = resample_pcm(audio, frame.sample_rate, 8000)
+            frame = FillerAudioRawFrame(
+                audio=audio, sample_rate=8000, num_channels=frame.num_channels,
+                owner=frame.owner,
+            )
+        return await self.delegate.serialize(frame)
+
+    async def deserialize(self, data):
+        return await self.delegate.deserialize(data)
 
 
 def build_media_serializer(
@@ -730,10 +823,10 @@ def build_media_serializer(
         stream_sid = start.get("streamSid") or (start_message or {}).get("streamSid")
         if not stream_sid:
             raise ApiError("Twilio stream start message missing streamSid", 400)
-        return TwilioFrameSerializer(
+        return FillerSafeSerializer(TwilioFrameSerializer(
             stream_sid=stream_sid,
             call_sid=start.get("callSid"),
-        )
+        ))
     if provider == "telnyx":
         from pipecat.serializers.telnyx import TelnyxFrameSerializer
 
@@ -741,11 +834,11 @@ def build_media_serializer(
         stream_id = start.get("stream_id") or (start_message or {}).get("stream_id")
         if not stream_id:
             raise ApiError("Telnyx stream start message missing stream_id", 400)
-        return TelnyxFrameSerializer(
+        return FillerSafeSerializer(TelnyxFrameSerializer(
             stream_id=stream_id,
             call_control_id=start.get("call_control_id"),
             outbound_encoding=start.get("media_format", {}).get("encoding", "PCMU"),
-        )
+        ))
     if provider == "plivo":
         from pipecat.serializers.plivo import PlivoFrameSerializer
 
@@ -753,7 +846,7 @@ def build_media_serializer(
         stream_id = start.get("streamId") or (start_message or {}).get("streamId")
         if not stream_id:
             raise ApiError("Plivo stream start message missing streamId", 400)
-        return PlivoFrameSerializer(stream_id=stream_id, call_id=start.get("callId"))
+        return FillerSafeSerializer(PlivoFrameSerializer(stream_id=stream_id, call_id=start.get("callId")))
     if provider == "exotel":
         from pipecat.serializers.exotel import ExotelFrameSerializer
 
@@ -761,7 +854,7 @@ def build_media_serializer(
         stream_sid = start.get("stream_sid") or (start_message or {}).get("stream_sid")
         if not stream_sid:
             raise ApiError("Exotel stream start message missing stream_sid", 400)
-        return ExotelFrameSerializer(stream_sid=stream_sid)
+        return FillerSafeSerializer(ExotelFrameSerializer(stream_sid=stream_sid))
     if provider == "vaani":
         start = (start_message or {}).get("start", {})
         stream_sid = start.get("streamSid") or (start_message or {}).get("streamSid")

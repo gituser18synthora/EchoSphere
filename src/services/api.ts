@@ -27,6 +27,7 @@ import type {
   ProviderInfo, ProviderModelInfo, ProviderSettings,
   ProviderTestResult, TtsPreviewResult, ValidateConfigResult, VoiceCapability,
   VoiceCloneConfig, VoiceOption,
+  NaturalConversationAudio,
 } from "@/types/domain";
 import { http, requestWithMeta, type Paged } from "./http";
 import { downloadFile } from "./fileDownload";
@@ -109,9 +110,81 @@ export const updateBot = (
   id: string,
   body: Partial<{ name: string; useCase: string; description: string; status: string; languages: string[]; voiceId: string | null; readiness: Record<string, boolean> }>,
 ) => http.patch<VoiceBot>(`/bots/${id}`, body);
-export const archiveBot = (id: string) => http.delete<{ archived: boolean }>(`/bots/${id}`);
+/* Lifecycle. Archive is reversible (status "archived", still listed); Restore
+   returns an archived bot to draft; Delete is permanent (tombstoned, gone from
+   every list, no restore). */
+export const archiveBot = (id: string) =>
+  http.post<{ archived: boolean; id: string; status: "archived"; channelsDisabled: number; phoneNumbersReserved: number }>(
+    `/bots/${id}/archive`,
+  );
+export const restoreBot = (id: string) =>
+  http.post<{ restored: boolean; id: string; status: "draft"; phoneNumbersReassigned: number }>(
+    `/bots/${id}/restore`,
+  );
+export const deleteBot = (id: string) =>
+  http.delete<{ deleted: boolean; id: string; channelsArchived: number; phoneNumbersReleased: number }>(
+    `/bots/${id}`,
+  );
 /** Deep-clone a bot's configuration into a new Draft bot (channels/numbers/data excluded). */
 export const cloneBot = (id: string): Promise<VoiceBot> => http.post(`/bots/${id}/clone`);
+
+/* Bot Export / Import — environment migration of ONE bot. The package keeps
+   tenant_id + bot_id; the backend creates the bot with the same id or updates
+   the existing one in place, same tenant only. */
+export interface BotExportPackage {
+  kind: string;
+  schema_version: number;
+  exported_at?: string;
+  tenant_id: string;
+  bot_id: string;
+  source?: { tenant_name?: string | null; bot_name?: string | null; bot_status?: string | null };
+  bot: { id: string; tenant_id?: string; name?: string; status?: string; languages?: string[]; [k: string]: unknown };
+  resources: Record<string, unknown>;
+  shared?: Record<string, unknown>;
+  environment?: { channel_configs?: unknown[]; phone_numbers?: { number: string }[] };
+  knowledge_plane?: { documents?: unknown[] } | null;
+  integrity?: string;
+}
+
+export interface BotImportReport {
+  botId: string;
+  tenantId: string;
+  botName: string | null;
+  existing: boolean;
+  action: "create" | "update";
+  dryRun: boolean;
+  created: Record<string, number>;
+  updated: Record<string, number>;
+  removed: Record<string, number>;
+  reused: Record<string, number>;
+  remappedIds: Record<string, string>;
+  preserved: { kind: string; label: string; reason: string; differs?: string[] }[];
+  secretsMissing: { owner: string; reference: string }[];
+  warnings: string[];
+  knowledgeDocuments: number;
+}
+
+export interface BotImportOptions {
+  /** Destination tenant — only meaningful for super admins (defaults to the package tenant). */
+  tenantId?: string;
+  /** Also apply channel configuration / phone numbers / local API URLs from the package. */
+  applyEnvironment?: boolean;
+}
+
+const botImportQuery = (opts?: BotImportOptions) => {
+  const params = new URLSearchParams();
+  if (opts?.tenantId) params.set("tenantId", opts.tenantId);
+  if (opts?.applyEnvironment) params.set("applyEnvironment", "true");
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+export const exportBotPackage = (botId: string): Promise<BotExportPackage> =>
+  http.get(`/bots/${botId}/export?includeKnowledge=true`);
+export const previewBotImport = (pkg: BotExportPackage, opts?: BotImportOptions): Promise<BotImportReport> =>
+  http.post(`/bots/import/preview${botImportQuery(opts)}`, pkg);
+export const importBotPackage = (pkg: BotExportPackage, opts?: BotImportOptions): Promise<BotImportReport> =>
+  http.post(`/bots/import${botImportQuery(opts)}`, pkg);
 
 export const getVoiceSettings = (botId: string): Promise<VoiceSettings> =>
   http.get(`/bots/${botId}/voice-settings`);
@@ -122,6 +195,18 @@ export const saveVoiceSettings = async (
   const { data, meta } = await requestWithMeta<VoiceSettings>("PUT", `/bots/${botId}/voice-settings`, body);
   return { settings: data, warnings: meta?.warnings ?? [] };
 };
+
+/* ---------- Natural Conversation audio (read-only preview catalog) ---------- */
+export const getNaturalConversationAudio = (botId: string): Promise<NaturalConversationAudio> =>
+  http.get(`/bots/${botId}/natural-conversation/audio`);
+/** WAV of the exact clip the runtime plays (fetch with the JWT; <audio src> cannot carry it). */
+export const naturalConversationClipUrl = (botId: string, clipId: string): string =>
+  `/api/v1/bots/${botId}/natural-conversation/audio/clip?id=${encodeURIComponent(clipId)}`;
+export const naturalConversationCueUrl = (
+  botId: string, language: string, kind: "hmm" | "wait", cueId: string,
+): string =>
+  `/api/v1/bots/${botId}/natural-conversation/audio/cue?language=${encodeURIComponent(language)}`
+  + `&kind=${kind}&id=${encodeURIComponent(cueId)}`;
 
 /* ---------- Knowledge ---------- */
 export const listKnowledge = async (botId?: string, tenantId?: string): Promise<KnowledgeSource[]> => {

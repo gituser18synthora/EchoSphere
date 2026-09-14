@@ -16,6 +16,7 @@ interface Props {
   inheritedSources: HumanSpeechSources;
   onChange: (next: HumanSpeechSettings) => void;
   disabled?: boolean;
+  collapseAdvanced?: boolean;
 }
 
 const BOOL_FIELDS: { key: HumanSpeechSettingKey; label: string; help: string }[] = [
@@ -86,6 +87,7 @@ export function HumanSpeechSettingsEditor({
   inheritedSources,
   onChange,
   disabled = false,
+  collapseAdvanced = false,
 }: Props) {
   const sourceFor = (key: HumanSpeechSettingKey): HumanSpeechSettingSource =>
     hasOwn(override, key) ? scope : inheritedSources[key];
@@ -100,6 +102,40 @@ export function HumanSpeechSettingsEditor({
     delete next[key];
     onChange(next);
   };
+  const numericOverrideCount = NUMBER_FIELDS.filter((field) => hasOwn(override, field.key)).length;
+  const numericControls = (
+    <div className="grid grid-2" style={{ gap: 12 }}>
+      {NUMBER_FIELDS.map((field) => {
+        const overridden = hasOwn(override, field.key);
+        const value = Number(valueFor(field.key));
+        const source = sourceFor(field.key);
+        return (
+          <div key={field.key} className="card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+            <Field label={field.label} hint={`${field.help} Effective source: ${source}.`}>
+              <div className="row gap-8">
+                <input
+                  className="input t-num"
+                  aria-label={field.label}
+                  type="number"
+                  min={field.min}
+                  max={field.max}
+                  step={field.step}
+                  value={value}
+                  disabled={disabled}
+                  onChange={(event) => setValue(field.key, Number(event.target.value))}
+                />
+                {overridden && (
+                  <Button size="sm" variant="ghost" disabled={disabled} onClick={() => clearValue(field.key)}>
+                    Inherit
+                  </Button>
+                )}
+              </div>
+            </Field>
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="col gap-14" data-testid={`human-speech-${scope}`}>
@@ -128,12 +164,15 @@ export function HumanSpeechSettingsEditor({
           return (
             <div key={field.key} className="card-pad-sm col gap-6" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
               <div className="row-between gap-8">
-                <Toggle
-                  checked={value}
-                  label={field.label}
-                  disabled={disabled}
-                  onChange={(next) => setValue(field.key, next)}
-                />
+                <div className="row gap-8">
+                  <Toggle
+                    checked={value}
+                    label={field.label}
+                    disabled={disabled}
+                    onChange={(next) => setValue(field.key, next)}
+                  />
+                  <span className="t-strong">{field.label}</span>
+                </div>
                 {overridden && (
                   <Button size="sm" variant="ghost" disabled={disabled} onClick={() => clearValue(field.key)}>
                     Inherit
@@ -147,37 +186,22 @@ export function HumanSpeechSettingsEditor({
         })}
       </div>
 
-      <div className="grid grid-2" style={{ gap: 12 }}>
-        {NUMBER_FIELDS.map((field) => {
-          const overridden = hasOwn(override, field.key);
-          const value = Number(valueFor(field.key));
-          const source = sourceFor(field.key);
-          return (
-            <div key={field.key} className="card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
-              <Field label={field.label} hint={`${field.help} Effective source: ${source}.`}>
-                <div className="row gap-8">
-                  <input
-                    className="input t-num"
-                    aria-label={field.label}
-                    type="number"
-                    min={field.min}
-                    max={field.max}
-                    step={field.step}
-                    value={value}
-                    disabled={disabled}
-                    onChange={(event) => setValue(field.key, Number(event.target.value))}
-                  />
-                  {overridden && (
-                    <Button size="sm" variant="ghost" disabled={disabled} onClick={() => clearValue(field.key)}>
-                      Inherit
-                    </Button>
-                  )}
-                </div>
-              </Field>
-            </div>
-          );
-        })}
-      </div>
+      {collapseAdvanced ? (
+        <details>
+          <summary style={{ cursor: "pointer" }}>
+            <span>Advanced tuning</span>
+            {numericOverrideCount > 0 && (
+              <span className="t-micro"> · {numericOverrideCount} {numericOverrideCount === 1 ? "override" : "overrides"}</span>
+            )}
+          </summary>
+          <div className="col gap-12" style={{ marginTop: 12 }}>
+            <p className="t-sub" style={{ margin: 0 }}>
+              Adjust probabilities, timing, and per-call limits. Existing values stay active when this section is closed.
+            </p>
+            {numericControls}
+          </div>
+        </details>
+      ) : numericControls}
     </div>
   );
 }

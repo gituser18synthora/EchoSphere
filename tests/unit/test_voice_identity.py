@@ -232,3 +232,33 @@ def test_object_participles_are_not_regendered_with_the_speaker():
     assert adapt_authored_speaker_grammar("आपको जो order दिया गया था, मैं देख रही हूँ", male) == (
         "आपको जो order दिया गया था, मैं देख रहा हूँ"
     )
+
+
+class TestObjectAgreementIsNeverRegendered:
+    """cv_10dd1b13a5e1: a male voice spoke "fee ली जाता है" — the bare habitual
+    rules rewrote every -ती form in a first-person sentence part."""
+
+    def _male(self):
+        from shared.orchestration.voice_identity import VoiceIdentity
+        return VoiceIdentity(name="Abhishek", gender="male")
+
+    def _female(self):
+        from shared.orchestration.voice_identity import VoiceIdentity
+        return VoiceIdentity(name="Kavya", gender="female")
+
+    def test_third_person_forms_keep_their_noun_gender_for_a_male_voice(self):
+        from shared.orchestration.voice_identity import adapt_authored_speaker_grammar
+        text = ("थोड़ा बता देती हूँ — जब कोई नया rider Zepto join करता है, तो उससे "
+                "onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है।")
+        out = adapt_authored_speaker_grammar(text, self._male())
+        assert "बता देता हूँ" in out                       # speaker predicate adapted
+        assert "onboarding fee ली जाती है" in out           # object agreement untouched
+        assert "अलग हो सकती है" in out
+        assert "जाता है" not in out and "सकता है" not in out.replace("join करता है", "")
+
+    def test_first_person_modal_before_hoon_still_adapts_both_ways(self):
+        from shared.orchestration.voice_identity import adapt_authored_speaker_grammar
+        assert "समझ सकता हूँ" in adapt_authored_speaker_grammar("मैं समझ सकती हूँ।", self._male())
+        assert "समझ सकती हूँ" in adapt_authored_speaker_grammar("मैं समझ सकता हूँ।", self._female())
+        roman = adapt_authored_speaker_grammar("main samajh sakti hoon, fee li jaati hai", self._male())
+        assert "sakta hoon" in roman and "jaati hai" in roman

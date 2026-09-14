@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -78,10 +79,10 @@ class ToolResult:
         }
 
 
-def validate_args(schema: dict | None, args: dict) -> list[str]:
+def validate_args(schema: dict | None, args: dict, *, check_size: bool = True) -> list[str]:
     """Validate tool arguments against a request_schema subset."""
     problems: list[str] = []
-    if len(json.dumps(args, default=str)) > _MAX_ARG_BYTES:
+    if check_size and len(json.dumps(args, default=str)) > _MAX_ARG_BYTES:
         return ["arguments exceed the size limit"]
     if not isinstance(schema, dict):
         return problems
@@ -102,7 +103,29 @@ def validate_args(schema: dict | None, args: dict) -> list[str]:
         allowed = spec.get("enum")
         if allowed and value not in allowed:
             problems.append(f"argument '{name}' must be one of {allowed}")
+        if isinstance(value, str) and spec.get("pattern"):
+            try:
+                valid = re.search(spec["pattern"], value) is not None
+            except re.error:
+                valid = False
+            if not valid:
+                problems.append(f"argument '{name}' does not match the required pattern")
     return problems
+
+
+def validate_response(schema: dict | None, data) -> list[str]:
+    """Enforce an authored response contract for real and mocked results."""
+    if not isinstance(schema, dict):
+        return []
+    check = _TYPE_CHECKS.get(schema.get("type"))
+    if check and not check(data):
+        return [f"response must be {schema['type']}"]
+    if not isinstance(data, dict):
+        if schema.get("required") or schema.get("properties"):
+            return ["response must be object"]
+        return []
+    return [p.replace("argument", "response field")
+            for p in validate_args(schema, data, check_size=False)]
 
 
 def _mask_fields(payload, masks: set[str], keep: int = 4):
@@ -173,6 +196,7 @@ def _load_connection_sync(tenant_id: str, bot_id: str, tool: str) -> dict | None
             "headers": row.headers or {}, "query_params": row.query_params or {},
             "path_params": row.path_params or {}, "body_template": row.body_template,
             "request_schema": row.request_schema,
+            "response_schema": row.response_schema,
             "success_condition": row.success_condition,
             "sensitive_masks": [str(m).lower() for m in (row.sensitive_masks or [])],
             "allowed_intents": row.allowed_intents or [],
@@ -283,9 +307,11 @@ class ToolExecutor:
         # Mocked execution (Testing Studio): validation above still ran.
         if mock_results is not None and tool in mock_results:
             data = mock_results[tool]
+            problems = validate_response(connection.get("response_schema"), data)
             return ToolResult(
-                tool=tool, ok=True, status="ok", data=data,
-                mapped=self._apply_mapping(connection, data),
+                tool=tool, ok=not problems, status="error" if problems else "ok", data=data,
+                error="; ".join(problems) if problems else None,
+                mapped={} if problems else self._apply_mapping(connection, data),
                 latency_ms=0, mocked=True,
                 trace={"request": {"args": masked_args},
                        "response": _mask_fields(data, masks)},
@@ -322,10 +348,14 @@ class ToolExecutor:
 
         ok = self._success(connection, response["status_code"]) and not error
         data = response["body"]
+        if ok:
+            problems = validate_response(connection.get("response_schema"), data)
+            if problems:
+                ok, error = False, "; ".join(problems)
         result = ToolResult(
             tool=tool, ok=ok, status="ok" if ok else "error",
             data=data, mapped=self._apply_mapping(connection, data) if ok else {},
-            error=None if ok else f"HTTP {response['status_code']}",
+            error=None if ok else (error or f"HTTP {response['status_code']}"),
             latency_ms=latency_ms,
             trace={
                 "request": {"args": masked_args, "method": connection["method"]},

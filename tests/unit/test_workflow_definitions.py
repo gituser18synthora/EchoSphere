@@ -1882,3 +1882,367 @@ class TestDeclaredCorrectionEdgeAtHub:
         await self._turn(engine, "customer ko diya", "ce-2")
         r = await self._turn(engine, "nahi", "ce-2", signal="refusal")
         assert r["done"] is True and r["slots"]["who"] == "customer"
+
+
+class TestSetSlotsOnMessageNode:
+    """``setSlots`` records a branch OUTCOME as a constant slot value."""
+
+    DEFINITION = {
+        "id": "wf_set_slots", "version": 1, "name": "Set slots",
+        "nodes": [
+            {"id": "s", "kind": "start"},
+            {"id": "ask_match", "kind": "ask", "config": {
+                "question": "Same amount?", "variable": "amount_matches",
+                "entity": {"dataType": "text", "synonyms": {
+                    "yes": ["haan", "yes", "same"],
+                    "no": ["nahi", "no", "different"],
+                }},
+            }},
+            {"id": "cond", "kind": "condition", "config": {
+                "variable": "amount_matches", "operator": "equals", "value": "yes"}},
+            {"id": "ok", "kind": "message", "config": {
+                "text": "Looks consistent.",
+                "setSlots": {"verification_status": "consistent",
+                             "ignored": {"nested": True}}}},
+            {"id": "bad", "kind": "message", "config": {
+                "text": "Noted the mismatch.",
+                "setSlots": {"verification_status": "amount_mismatch"}}},
+            {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+        ],
+        "edges": [
+            {"id": "e1", "from": "s", "to": "ask_match"},
+            {"id": "e2", "from": "ask_match", "to": "cond"},
+            {"id": "e3", "from": "cond", "to": "ok", "label": "true"},
+            {"id": "e4", "from": "cond", "to": "bad", "label": "false"},
+            {"id": "e5", "from": "ok", "to": "e"},
+            {"id": "e6", "from": "bad", "to": "e"},
+        ],
+    }
+
+    async def test_terminal_message_sets_the_outcome_slot(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        await _turn(engine, "start", session="set-1", name="set_slots")
+        result = await _turn(engine, "haan same", session="set-1", name="set_slots")
+        assert result["slots"]["verification_status"] == "consistent"
+        assert "ignored" not in result["slots"]          # nested values never stored
+        assert result["done"] is True
+
+    async def test_other_branch_sets_the_other_value(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        await _turn(engine, "start", session="set-2", name="set_slots")
+        result = await _turn(engine, "no, different", session="set-2", name="set_slots")
+        assert result["slots"]["verification_status"] == "amount_mismatch"
+
+
+class TestApiNodePayloadPassthroughs:
+    """``includeMetadata`` / ``contextArgs`` enrich the api payload, opt-in only."""
+
+    def _definition(self, api_config):
+        return {
+            "id": "wf_api_meta", "version": 1, "name": "Api meta",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "ask", "kind": "ask", "config": {
+                    "question": "Explained?", "variable": "deduction_explained",
+                    "entity": {"dataType": "text", "synonyms": {
+                        "yes": ["haan", "yes"], "no": ["nahi", "no"]}}}},
+                {"id": "api", "kind": "api", "config": {
+                    "connection": "Register", "text": "Registering.", **api_config}},
+                {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "ask"},
+                {"id": "e2", "from": "ask", "to": "api"},
+                {"id": "e3", "from": "api", "to": "e", "label": "success"},
+            ],
+        }
+
+    class _Result:
+        ok = True
+        mapped: dict = {}
+        status = "ok"
+        mocked = True
+
+    def _capture(self, monkeypatch):
+        seen = {}
+        parent = self
+
+        class _Executor:
+            async def execute(self, **kwargs):
+                seen.update(kwargs)
+                return parent._Result()
+
+        import shared.orchestration.tool_executor as te
+
+        monkeypatch.setattr(te, "get_tool_executor", lambda: _Executor())
+        return seen
+
+    async def test_default_payload_is_slots_only(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition({}))
+        seen = self._capture(monkeypatch)
+        await _turn(engine, "start", session="api-0", name="api_meta",
+                    context_values={"ticket_id": "T-1"})
+        await _turn(engine, "haan", session="api-0", name="api_meta",
+                    context_values={"ticket_id": "T-1"})
+        assert seen["args"] == {"deduction_explained": "yes"}
+        # The executor still receives the call context for template placeholders.
+        assert seen["context_values"] == {"ticket_id": "T-1"}
+
+    async def test_metadata_and_context_args_ride_along(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition({
+            "includeMetadata": True,
+            "contextArgs": ["ticket_id", "partner_id", "missing_key"],
+        }))
+        seen = self._capture(monkeypatch)
+        ctx = {"ticket_id": "ZPT-OBF-1", "partner_id": "ZP-1", "blank": ""}
+        await _turn(engine, "start", session="api-1", name="api_meta",
+                    context_values=ctx, language="hi-IN")
+        await _turn(engine, "nahi", session="api-1", name="api_meta",
+                    context_values=ctx, language="hi-IN")
+        args = seen["args"]
+        assert args["deduction_explained"] == "no"
+        assert args["ticket_id"] == "ZPT-OBF-1"
+        assert args["partner_id"] == "ZP-1"
+        assert "missing_key" not in args and "blank" not in args
+        assert args["bot_id"] == "bot_x"
+        assert args["tenant_id"] == "tn_x"
+        assert args["session_id"] == "api-1"
+        assert args["workflow"] == "api_meta"
+        assert args["conversation_language"] == "hi-IN"
+
+    async def test_metadata_subset_and_slots_win_over_context(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition({
+            "includeMetadata": ["session_id", "not_a_key"],
+            "contextArgs": ["deduction_explained"],
+        }))
+        seen = self._capture(monkeypatch)
+        ctx = {"deduction_explained": "context says yes"}
+        await _turn(engine, "start", session="api-2", name="api_meta", context_values=ctx)
+        await _turn(engine, "no", session="api-2", name="api_meta", context_values=ctx)
+        args = seen["args"]
+        assert args["deduction_explained"] == "no"        # the caller's answer wins
+        assert args["session_id"] == "api-2"
+        assert "bot_id" not in args and "not_a_key" not in args
+
+
+class TestConsumePrecedingUtterance:
+    """An ask may opt in to consume the utterance that advanced the hub."""
+
+    def _definition(self, opt_in):
+        ask_config = {"question": "What should we check?", "variable": "concern",
+                      "entityType": "text",
+                      "alsoCapture": [{"variable": "concern", "entity": {
+                          "dataType": "text",
+                          "regexPattern": r"^(?=(?:\S+\s+){4,})(.+)$"}}]}
+        if opt_in:
+            ask_config["consumePrecedingUtterance"] = True
+        return {
+            "id": "wf_hub_ask", "version": 1, "name": "Hub ask",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "hub", "kind": "intent", "config": {"prompt": "Anything else?"}},
+                {"id": "ask", "kind": "ask", "config": ask_config},
+                {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "hub"},
+                {"id": "e2", "from": "hub", "to": "ask", "label": "yes/haan/one more"},
+                {"id": "e3", "from": "hub", "to": "e", "label": "no/nahi/nothing"},
+                {"id": "e4", "from": "ask", "to": "e"},
+            ],
+        }
+
+    async def test_substantive_hub_answer_is_the_ask_answer(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition(opt_in=True))
+        await _turn(engine, "start", session="hub-1", name="hub_ask")
+        r = await _turn(engine, "yes, one more thing about last week's payout deduction",
+                        session="hub-1", name="hub_ask")
+        assert r["slots"]["concern"].startswith("yes, one more thing")
+        assert "What should we check?" not in r["reply"]
+        assert r["done"] is True
+
+    async def test_bare_yes_still_asks_the_question(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition(opt_in=True))
+        await _turn(engine, "start", session="hub-2", name="hub_ask")
+        r = await _turn(engine, "yes", session="hub-2", name="hub_ask")
+        assert "concern" not in r["slots"]
+        assert "What should we check?" in r["reply"]
+        r = await _turn(engine, "the raincoat deduction from last week", session="hub-2",
+                        name="hub_ask")
+        assert r["slots"]["concern"] == "the raincoat deduction from last week"
+
+    async def test_without_opt_in_the_hub_utterance_is_not_offered(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self._definition(opt_in=False))
+        await _turn(engine, "start", session="hub-3", name="hub_ask")
+        r = await _turn(engine, "yes, one more thing about last week's payout deduction",
+                        session="hub-3", name="hub_ask")
+        assert "concern" not in r["slots"]
+        assert "What should we check?" in r["reply"]
+
+
+class TestSilentStepAndNumericEq:
+    DEFINITION = {
+        "id": "wf_derive", "version": 1, "name": "Derive",
+        "nodes": [
+            {"id": "s", "kind": "start"},
+            {"id": "ask_a", "kind": "ask", "config": {
+                "question": "Told amount?", "variable": "informed",
+                "entity": {"dataType": "text",
+                           "regexPattern": r"(?<![0-9])([0-9]{2,6})(?![0-9])"},
+                "alsoCapture": [{"variable": "deducted", "entity": {
+                    "dataType": "text",
+                    "regexPatterns": [r"(?<![0-9])([0-9]{2,6})(?![0-9])\s*(?:was\s+)?deducted"]}}]}},
+            {"id": "c_known", "kind": "condition", "config": {
+                "variable": "deducted", "operator": "exists"}},
+            {"id": "c_eq", "kind": "condition", "config": {
+                "variable": "informed", "operator": "numeric_eq", "valueVariable": "deducted"}},
+            {"id": "set_yes", "kind": "message", "config": {
+                "silent": True, "setSlots": {"matches": "yes"}}},
+            {"id": "set_no", "kind": "message", "config": {
+                "text": "The amounts differ.", "setSlots": {"matches": "no"}}},
+            {"id": "ask_m", "kind": "ask", "config": {
+                "question": "Same amount?", "variable": "matches",
+                "entity": {"dataType": "text", "synonyms": {"yes": ["same"], "no": ["different"]}}}},
+            {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+        ],
+        "edges": [
+            {"id": "e1", "from": "s", "to": "ask_a"},
+            {"id": "e2", "from": "ask_a", "to": "c_known"},
+            {"id": "e2b", "from": "c_known", "to": "c_eq", "label": "true"},
+            {"id": "e2c", "from": "c_known", "to": "ask_m", "label": "false"},
+            {"id": "e3", "from": "c_eq", "to": "set_yes", "label": "true"},
+            {"id": "e4", "from": "c_eq", "to": "set_no", "label": "false"},
+            {"id": "e5", "from": "set_yes", "to": "ask_m"},
+            {"id": "e6", "from": "set_no", "to": "ask_m"},
+            {"id": "e7", "from": "ask_m", "to": "e"},
+        ],
+    }
+
+    async def test_equal_figures_set_the_match_silently_and_skip_the_ask(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        await _turn(engine, "start", session="d-1", name="derive")
+        r = await _turn(engine, "told 500 and 500 was deducted", session="d-1", name="derive")
+        assert r["slots"]["matches"] == "yes"
+        assert "Same amount?" not in r["reply"]
+        assert "differ" not in r["reply"]          # silent step spoke nothing
+        assert r["reply"] == "Bye"
+        assert r["done"] is True
+
+    async def test_different_figures_speak_the_note_and_skip_the_ask(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        await _turn(engine, "start", session="d-2", name="derive")
+        r = await _turn(engine, "told 300 but 400 was deducted", session="d-2", name="derive")
+        assert r["slots"]["matches"] == "no"
+        assert "The amounts differ." in r["reply"]
+        assert "Same amount?" not in r["reply"]
+
+    async def test_missing_figure_asks_the_question(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        await _turn(engine, "start", session="d-3", name="derive")
+        r = await _turn(engine, "told 300", session="d-3", name="derive")
+        assert "matches" not in r["slots"]
+        # numeric_eq with a missing operand is False → the flow asks
+        assert "Same amount?" in r["reply"]
+
+
+class TestLocalizedRetryQuestion:
+    DEFINITION = {
+        "id": "wf_loc", "version": 1, "name": "Localized",
+        "nodes": [
+            {"id": "s", "kind": "start"},
+            {"id": "ask", "kind": "ask", "config": {
+                "question": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+                "textByLanguage": {"en": "Were you told how much would be deducted?"},
+                "variable": "informed",
+                "entity": {"dataType": "text", "synonyms": {
+                    "yes": ["bataya tha", "told me"], "no": ["nahi bataya", "did not tell"]}}}},
+            {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+        ],
+        "edges": [{"id": "e1", "from": "s", "to": "ask"}, {"id": "e2", "from": "ask", "to": "e"}],
+    }
+
+    async def test_first_ask_and_retry_use_the_english_text(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        r = await _turn(engine, "start", session="loc-1", name="localized", language="en-IN")
+        assert r["reply"] == "Were you told how much would be deducted?"
+        r = await _turn(engine, "hmm let me think", session="loc-1", name="localized",
+                        language="en-IN")
+        assert "Were you told how much would be deducted?" in r["reply"]
+        assert "कितना" not in r["reply"]
+
+    async def test_hindi_caller_keeps_the_authored_text(self, engine, monkeypatch):
+        _use_definition(monkeypatch, self.DEFINITION)
+        r = await _turn(engine, "start", session="loc-2", name="localized", language="hi-IN")
+        assert "कितना amount deduct होगा" in r["reply"]
+
+
+class TestReadbackGroupsAndCorrectionAck:
+    READBACK = {"hi": {
+        "intro": "Confirm karta hoon.", "question": "Sab sahi hai?",
+        "groups": [
+            {"requires": ["informed", "deducted"], "differ": ["informed", "deducted"],
+             "consumes": ["matches"],
+             "template": "Aapko {informed} rupaye bataye the, lekin {deducted} kate — {diff:informed,deducted} ka difference hai."},
+            {"requires": ["informed", "deducted"], "same": ["informed", "deducted"],
+             "consumes": ["matches"],
+             "template": "Aapko {informed} rupaye bataye the aur utna hi kata."},
+        ],
+        "fields": [
+            {"variable": "informed", "template": "Bataya: {value}."},
+            {"variable": "deducted", "template": "Kata: {value}."},
+            {"variable": "matches", "values": {"yes": "Match hai.", "no": "Match nahi."}},
+            {"variable": "week", "template": "Deduction {value} ko hua."},
+        ],
+    }}
+
+    def test_difference_is_derived_and_fields_are_not_repeated(self):
+        from shared.orchestration.workflow_engine import render_readback
+        out = render_readback(self.READBACK["hi"], {"informed": "200", "deducted": "300",
+                                                     "matches": "no", "week": "pichle hafte Monday"})
+        assert "200 rupaye bataye the, lekin 300 kate — 100 ka difference" in out
+        assert "Bataya:" not in out and "Match nahi" not in out       # consumed by the group
+        assert "Deduction pichle hafte Monday ko hua." in out
+        assert out.endswith("Sab sahi hai?")
+
+    def test_equal_amounts_never_speak_a_difference(self):
+        from shared.orchestration.workflow_engine import render_readback
+        out = render_readback(self.READBACK["hi"], {"informed": "500", "deducted": "500", "matches": "yes"})
+        assert "utna hi kata" in out and "difference" not in out
+
+    def test_missing_slots_fall_back_to_per_field_phrases(self):
+        from shared.orchestration.workflow_engine import render_readback
+        out = render_readback(self.READBACK["hi"], {"informed": "500", "matches": "yes"})
+        assert "Bataya: 500." in out and "Match hai." in out and "difference" not in out
+
+    async def test_hub_correction_is_acknowledged_with_the_new_value(self, engine, monkeypatch):
+        week_entity = {"dataType": "text", "regexPatterns": [
+            r"((?:sunday|monday))\s+ko"]}     # "sunday nahi" is not a value
+        definition = {
+            "id": "wf_ack", "version": 1, "name": "Ack",
+            "nodes": [
+                {"id": "s", "kind": "start"},
+                {"id": "ask_week", "kind": "ask", "config": {
+                    "question": "Kab hua?", "variable": "week", "entity": week_entity}},
+                {"id": "hub", "kind": "intent", "config": {
+                    "prompt": "Sab sahi hai?", "responseMode": "exact",
+                    "readback": self.READBACK, "correctionAck": {"hi": "Theek hai — {changes} Baaki sahi hai na?"},
+                    "alsoCapture": [{"variable": "week", "entity": week_entity, "overwrite": True}],
+                    "unmatchedReply": "Bas confirm karna hai — sab sahi hai?"}},
+                {"id": "e", "kind": "end", "config": {"text": "Bye"}},
+            ],
+            "edges": [
+                {"id": "e1", "from": "s", "to": "ask_week"},
+                {"id": "e2", "from": "ask_week", "to": "hub"},
+                {"id": "e3", "from": "hub", "to": "e", "label": "haan/sahi hai"},
+            ],
+        }
+        _use_definition(monkeypatch, definition)
+        await _turn(engine, "start", session="ack-1", name="ack")
+        r = await _turn(engine, "sunday ko", session="ack-1", name="ack")
+        assert r["slots"]["week"] == "sunday"
+        r = await _turn(engine, "nahi, sunday nahi, monday ko hua tha", session="ack-1", name="ack")
+        assert r["slots"]["week"] == "monday"
+        assert r["reply"] == "Theek hai — Deduction monday ko hua. Baaki sahi hai na?"
+        assert r["awaitingKind"] == "intent"
+        r = await _turn(engine, "haan sahi hai", session="ack-1", name="ack")
+        assert r["done"] is True

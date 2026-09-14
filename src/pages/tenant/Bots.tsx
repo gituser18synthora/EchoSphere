@@ -1,35 +1,58 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
-import { archiveBot, cloneBot, createBot, listBots, listLanguages, simulateAction, updateBot } from "@/services/api";
 import {
-  Button, ConfirmModal, Field, Health, MenuButton, Modal, MultiSelect, StatusChip,
+  archiveBot, cloneBot, createBot, deleteBot, listBots, listLanguages, restoreBot, simulateAction,
+} from "@/services/api";
+import {
+  Button, ConfirmModal, Field, Health, MenuButton, Modal, MultiSelect, StatusChip, TypedConfirmModal,
   CardSkeleton, EmptyState,
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { fmtNum } from "@/components/charts";
 import { useApp } from "@/state/AppContext";
+import { downloadBotPackage } from "@/services/botTransfer";
+import { ImportBotModal } from "@/pages/tenant/ImportBotModal";
 import type { VoiceBot } from "@/types/domain";
 
 const langSummary = (codes: string[], max = 3) =>
   codes.length <= max ? codes.join(", ") : `${codes.slice(0, max).join(", ")} +${codes.length - max} more`;
 
+/* Status filter. "active" (the default) is every bot that is not archived.
+   Archived is a normal, recoverable management state — those bots live under
+   their own filter so the working list stays uncluttered, and a deleted bot is
+   never returned by the API at all. */
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "active", label: "All active" },
+  { value: "published", label: "Published" },
+  { value: "in_review", label: "In review" },
+  { value: "approved", label: "Approved" },
+  { value: "draft", label: "Draft" },
+  { value: "rolled_back", label: "Rolled back" },
+  { value: "archived", label: "Archived" },
+];
+
+type LifecycleAction = "archive" | "restore";
+
 export default function Bots() {
   const navigate = useNavigate();
-  const { toast, hasPermission } = useApp();
+  const { toast, hasPermission, user } = useApp();
   // Server-enforced (the API nulls avgCostPerCall / rejects bot creation for
   // roles without these permissions); this only removes the affordances.
   const showCosts = hasPermission("costs.view");
   const canManageBots = hasPermission("bots.manage");
   const q = useAsync(listBots, []);
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState("active");
   const [view, setView] = useState<"cards" | "table">("cards");
   const [createOpen, setCreateOpen] = useState(false);
-  const [archiveTarget, setArchiveTarget] = useState<VoiceBot | null>(null);
+  const [lifecycle, setLifecycle] = useState<{ bot: VoiceBot; action: LifecycleAction } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<VoiceBot | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<VoiceBot | null>(null);
   const [busy, setBusy] = useState(false);
   const [cloningId, setCloningId] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const rows = useMemo(() => {
     let r = q.data ?? [];
@@ -37,9 +60,18 @@ export default function Bots() {
       const s = query.toLowerCase();
       r = r.filter((b) => b.name.toLowerCase().includes(s) || b.useCase.toLowerCase().includes(s) || b.owner.toLowerCase().includes(s));
     }
-    if (status !== "all") r = r.filter((b) => b.status === status);
+    r = status === "active" ? r.filter((b) => b.status !== "archived") : r.filter((b) => b.status === status);
     return r;
   }, [q.data, query, status]);
+
+  const counts = useMemo(() => {
+    const all = q.data ?? [];
+    return {
+      active: all.filter((b) => b.status !== "archived").length,
+      live: all.filter((b) => b.status === "published").length,
+      archived: all.filter((b) => b.status === "archived").length,
+    };
+  }, [q.data]);
 
   const act = async (label: string, after?: () => void) => {
     setBusy(true);
@@ -49,30 +81,44 @@ export default function Bots() {
     after?.();
   };
 
-  /* Archive = the real DELETE (soft delete): the bot leaves the list and its
-     channels/phone numbers are torn down server-side. Restore lifts a
-     status-archived bot back to draft. On failure the modal stays open so the
-     action can be retried or cancelled. */
-  const confirmArchive = async () => {
-    const target = archiveTarget;
+  /* Archive and Restore are the reversible pair: archive parks the bot (status
+     "archived", channels deactivated, phone number reserved, everything kept);
+     restore returns it to draft. On failure the modal stays open so the action
+     can be retried or cancelled. */
+  const confirmLifecycle = async () => {
+    const target = lifecycle;
     if (!target || busy) return;
-    const restoring = target.status === "archived";
     setBusy(true);
     try {
-      if (restoring) {
-        await updateBot(target.id, { status: "draft" });
-        toast(`${target.name} restored to draft`);
+      if (target.action === "restore") {
+        await restoreBot(target.bot.id);
+        toast(`${target.bot.name} restored as a draft — publish it again before it takes calls`);
       } else {
-        await archiveBot(target.id);
-        toast(`${target.name} archived — no new calls will be routed`);
+        await archiveBot(target.bot.id);
+        toast(`${target.bot.name} archived — no calls, messages or test sessions until restored`);
       }
-      setArchiveTarget(null);
+      setLifecycle(null);
       q.reload();
     } catch (e) {
-      toast(
-        e instanceof Error ? e.message : `Failed to ${restoring ? "restore" : "archive"} bot`,
-        "error",
-      );
+      toast(e instanceof Error ? e.message : `Failed to ${target.action} bot`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /* Delete is permanent: the bot leaves every list (Archived included) and has
+     no Restore. The modal makes the user type the bot name first. */
+  const confirmDelete = async () => {
+    const target = deleteTarget;
+    if (!target || busy) return;
+    setBusy(true);
+    try {
+      await deleteBot(target.id);
+      toast(`${target.name} deleted permanently`);
+      setDeleteTarget(null);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to delete bot", "error");
     } finally {
       setBusy(false);
     }
@@ -92,41 +138,88 @@ export default function Bots() {
     }
   };
 
-  const botMenu = (b: VoiceBot) => [
-    { label: "Open in Studio", icon: "edit" as const, onClick: () => navigate(`/t/bots/${b.id}/overview`) },
-    ...(canManageBots
-      ? [{
-          label: cloningId === b.id ? "Cloning…" : "Clone bot",
-          icon: "copy" as const,
-          disabled: cloningId !== null,
-          onClick: () => clone(b),
-        }]
-      : []),
-    { label: "View analytics", icon: "trend" as const, onClick: () => navigate(`/t/bots/${b.id}/analytics`) },
-    "sep" as const,
-    ...(b.status === "published" && b.liveVersion
-      ? [{ label: `Roll back to previous`, icon: "undo" as const, onClick: () => setRollbackTarget(b) }]
-      : []),
-    ...(b.status === "draft" || b.status === "archived"
-      ? []
-      : [{ label: "Publish center", icon: "rocket" as const, onClick: () => navigate(`/t/bots/${b.id}/publish`) }]),
-    ...(canManageBots
-      ? [{ label: b.status === "archived" ? "Restore" : "Archive", icon: "trash" as const, danger: b.status !== "archived", onClick: () => setArchiveTarget(b) }]
-      : []),
-  ];
+  /* Export downloads the bot as one bot_<id>.json — the artifact for
+     "Import bot" on another environment (same tenant, same bot id). */
+  const exportBot = async (b: VoiceBot) => {
+    if (exportingId) return;
+    setExportingId(b.id);
+    try {
+      const { filename } = await downloadBotPackage(b.id);
+      toast(`“${b.name}” exported as ${filename} — import it on the target environment under the same tenant`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to export bot", "error");
+    } finally {
+      setExportingId(null);
+    }
+  };
+
+  const botMenu = (b: VoiceBot) => {
+    const archived = b.status === "archived";
+    return [
+      { label: "Open in Studio", icon: "edit" as const, onClick: () => navigate(`/t/bots/${b.id}/overview`) },
+      ...(canManageBots
+        ? [{
+            label: cloningId === b.id ? "Cloning…" : "Clone bot",
+            icon: "copy" as const,
+            disabled: cloningId !== null,
+            onClick: () => clone(b),
+          }]
+        : []),
+      { label: "View analytics", icon: "trend" as const, onClick: () => navigate(`/t/bots/${b.id}/analytics`) },
+      ...(canManageBots
+        ? [{
+            label: exportingId === b.id ? "Exporting…" : "Export bot JSON",
+            icon: "download" as const,
+            disabled: exportingId !== null,
+            onClick: () => exportBot(b),
+          }]
+        : []),
+      "sep" as const,
+      ...(b.status === "published" && b.liveVersion
+        ? [{ label: `Roll back to previous`, icon: "undo" as const, onClick: () => setRollbackTarget(b) }]
+        : []),
+      ...(b.status === "draft" || archived
+        ? []
+        : [{ label: "Publish center", icon: "rocket" as const, onClick: () => navigate(`/t/bots/${b.id}/publish`) }]),
+      ...(canManageBots
+        ? [
+            archived
+              ? { label: "Restore", icon: "undo" as const, onClick: () => setLifecycle({ bot: b, action: "restore" }) }
+              : { label: "Archive", icon: "pause" as const, onClick: () => setLifecycle({ bot: b, action: "archive" }) },
+            { label: "Delete", icon: "trash" as const, danger: true, onClick: () => setDeleteTarget(b) },
+          ]
+        : []),
+    ];
+  };
+
+  const emptyTitle = status === "archived" && !query
+    ? "No archived bots"
+    : query || status !== "active" ? "No bots match these filters" : "Create your first VoiceBot";
+  const emptyBody = status === "archived" && !query
+    ? "Archived bots keep their whole configuration and can be restored at any time."
+    : query || status !== "active"
+      ? "Adjust the search or status filter."
+      : "A guided setup takes about 10 minutes: name it, add knowledge, pick a voice, then test and publish.";
 
   return (
     <>
       <div className="page-head">
         <div className="page-head-titles">
           <h1 className="page-title">My VoiceBots</h1>
-          <p className="page-sub">{q.data ? `${q.data.length} bots · ${q.data.filter((b) => b.status === "published").length} live` : "Loading…"}</p>
+          <p className="page-sub">
+            {q.data
+              ? `${counts.active} active · ${counts.live} live${counts.archived ? ` · ${counts.archived} archived` : ""}`
+              : "Loading…"}
+          </p>
         </div>
         <div className="page-actions">
           <div className="segmented" role="group" aria-label="View mode">
             <button aria-pressed={view === "cards"} onClick={() => setView("cards")}>Cards</button>
             <button aria-pressed={view === "table"} onClick={() => setView("table")}>Table</button>
           </div>
+          {canManageBots && (
+            <Button icon="upload" onClick={() => setImportOpen(true)}>Import bot</Button>
+          )}
           {canManageBots && (
             <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>
           )}
@@ -139,10 +232,7 @@ export default function Bots() {
           <input className="input" placeholder="Search bots, use cases, owners…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search bots" />
         </div>
         <select className="select" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
-          <option value="all">All statuses</option>
-          {["published", "in_review", "draft", "rolled_back", "archived"].map((s) => (
-            <option key={s} value={s} style={{ textTransform: "capitalize" }}>{s.replace("_", " ")}</option>
-          ))}
+          {STATUS_FILTERS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
       </div>
 
@@ -152,9 +242,9 @@ export default function Bots() {
         <div className="card">
           <EmptyState
             icon="bot"
-            title={query || status !== "all" ? "No bots match these filters" : "Create your first VoiceBot"}
-            body={query || status !== "all" ? "Adjust the search or status filter." : "A guided setup takes about 10 minutes: name it, add knowledge, pick a voice, then test and publish."}
-            action={canManageBots
+            title={emptyTitle}
+            body={emptyBody}
+            action={canManageBots && status === "active" && !query
               ? <Button variant="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create bot</Button>
               : undefined}
           />
@@ -227,19 +317,54 @@ export default function Bots() {
 
       <CreateBotModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={q.reload} />
 
+      <ImportBotModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        tenantId={user?.tenantId}
+        onImported={(report) => {
+          toast(report.action === "update"
+            ? `“${report.botName ?? report.botId}” updated from the imported package`
+            : `“${report.botName ?? report.botId}” created from the imported package`);
+          q.reload();
+        }}
+      />
+
       <ConfirmModal
-        open={!!archiveTarget}
-        onClose={() => setArchiveTarget(null)}
-        danger={archiveTarget?.status !== "archived"}
+        open={!!lifecycle}
+        onClose={() => setLifecycle(null)}
         busy={busy}
-        title={archiveTarget?.status === "archived" ? `Restore ${archiveTarget?.name}?` : `Archive ${archiveTarget?.name}?`}
-        confirmLabel={archiveTarget?.status === "archived" ? "Restore bot" : "Archive bot"}
+        title={lifecycle?.action === "restore" ? `Restore ${lifecycle.bot.name}?` : `Archive ${lifecycle?.bot.name}?`}
+        confirmLabel={lifecycle?.action === "restore" ? "Restore bot" : "Archive bot"}
         body={
-          archiveTarget?.status === "archived"
-            ? "The bot returns to draft state. Channels must be re-tested before publishing again."
-            : <>The bot stops receiving new calls immediately — its channels are disconnected and phone numbers return to the pool. Configuration, knowledge and version history are <b>retained</b> in the archive. This is recorded in the audit log.</>
+          lifecycle?.action === "restore"
+            ? <>The bot returns to <b>Draft</b> with its workflows, prompts, knowledge, intents, voice settings and tests exactly as they were, and keeps its phone number. Channels stay deactivated until they are re-tested, and nothing goes live until you publish it again.</>
+            : <>The bot stops taking calls, messages and test sessions immediately. Its channels are deactivated and its phone number is <b>reserved</b> for this bot. All configuration and history are kept — you can restore it at any time. This is recorded in the audit log.</>
         }
-        onConfirm={confirmArchive}
+        onConfirm={confirmLifecycle}
+      />
+
+      <TypedConfirmModal
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        busy={busy}
+        title={`Delete ${deleteTarget?.name ?? "bot"} permanently?`}
+        confirmLabel="Delete bot permanently"
+        confirmText={deleteTarget?.name ?? ""}
+        body={
+          <>
+            <p style={{ marginTop: 0 }}>
+              This <b>cannot be undone</b> — a deleted bot has no Restore action and disappears from every list, including Archived.
+              If you might need it again, archive it instead.
+            </p>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <li>Active channels are removed and disabled; webhooks stop accepting traffic.</li>
+              <li>Its phone number is released back to the platform pool.</li>
+              <li>Workflows, prompts, intents, knowledge sources and test scenarios are removed from the workspace.</li>
+              <li>Conversation history, transcripts and usage records are kept for reporting and audit.</li>
+            </ul>
+          </>
+        }
+        onConfirm={confirmDelete}
       />
 
       <ConfirmModal

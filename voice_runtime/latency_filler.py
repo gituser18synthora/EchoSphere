@@ -11,13 +11,12 @@ real reply audio arrives.
 
 Design constraints, in priority order:
 
-* **Never delay the reply.** The clip is streamed to the transport in 20 ms
-  chunks at real-time pace (two chunks of lead), so when reply audio shows
-  up at most ~40 ms of breath sits ahead of it in the transport queue, plus
-  one 20 ms taper chunk so the cut ends as a breath rather than a click.
-  Reply audio is never mixed with, queued behind or held for the filler.
-* **Invisible to turn bookkeeping.** Chunks are plain ``OutputAudioRawFrame``
-  instances — pipecat's output transport flips bot-speaking state only for
+* **Response priority.** The clip streams in owned 20 ms chunks at real-time
+  pace without look-ahead. Playable response audio retires its owner and
+  clears queued filler before response playback; no cutoff tail is added.
+  Remote telephony packets already sent cannot be selectively recalled.
+* **Invisible to turn bookkeeping.** Chunks subclass ``OutputAudioRawFrame``
+  — pipecat's output transport flips bot-speaking state only for
   ``TTSAudioRawFrame`` / ``SpeechOutputAudioRawFrame`` — so no
   ``BotStartedSpeakingFrame`` fires: the brain's latency measurement, the
   barge-in/merge discriminator, the word-confirmed barge-in gate and the
@@ -54,22 +53,31 @@ from pipecat.frames.frames import (
     OutputTransportMessageFrame,
     StartFrame,
     TTSAudioRawFrame,
-    TTSStartedFrame,
     UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from shared.audio.pcm import apply_fade_in, apply_fade_out, resample_pcm, wav_to_pcm
-from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
+from shared.orchestration.naturalness import (
+    FILLER_SOUND_KINDS,
+    FILLER_SOUND_LABELS,
+    selection_ids,
+)
+from voice_runtime.frames import (
+    AUDIO_FLUSH_MESSAGE_TYPE, FillerAudioOwner, FillerAudioRawFrame, FillerClearFrame,
+)
 
 logger = logging.getLogger(__name__)
 
 GENDERS = ("male", "female", "neutral")
-# Two clip kinds: the pre-reply ``breath`` (front-loaded, trailing off into
-# the wait) and the in-reply ``inhale`` (short, RISING into the sentence that
-# follows — the shape a person makes right before speaking; the exhale shape
-# trimmed and dropped between two sentences sounds like a cut, not a breath).
-KINDS = ("breath", "inhale")
+# Clip kinds (shared.orchestration.naturalness.FILLER_SOUND_KINDS): the
+# pre-reply ``breath`` (front-loaded, trailing off into the wait), the
+# ``inhale`` (short, RISING into the sentence that follows — the shape a
+# person makes right before speaking; also the in-reply sentence breath), the
+# ``exhale`` (quick onset, long soft tail — a settling breath) and the
+# composite ``inhale_exhale`` (a full quiet breath cycle). The operator
+# chooses which kind covers the pre-reply gap (``latency_filler_kind``).
+KINDS = FILLER_SOUND_KINDS
 
 
 def normalize_gender(value: object) -> str:
@@ -120,6 +128,20 @@ _INHALE_PROFILES: dict[str, _BreathProfile] = {
     "female": _BreathProfile(0.30, 420.0, 1500.0, 3900.0, 2.6, 1.1, -34.0),
     "neutral": _BreathProfile(0.32, 330.0, 1150.0, 3400.0, 2.6, 1.15, -33.5),
 }
+# Exhale: a quick onset and a long, soft tail (peak at ~1/4), a shade lower
+# and darker than the inhale — air released, not drawn.
+_EXHALE_PROFILES: dict[str, _BreathProfile] = {
+    "male": _BreathProfile(0.62, 150.0, 550.0, 2200.0, 1.0, 3.2, -32.0),
+    "female": _BreathProfile(0.55, 280.0, 1000.0, 3200.0, 1.0, 3.0, -33.0),
+    "neutral": _BreathProfile(0.58, 220.0, 780.0, 2700.0, 1.0, 3.1, -32.5),
+}
+_PROFILES_BY_KIND: dict[str, dict[str, _BreathProfile]] = {
+    "breath": _PROFILES,
+    "inhale": _INHALE_PROFILES,
+    "exhale": _EXHALE_PROFILES,
+}
+# The composite inhale-exhale: inhale, a short hold, exhale.
+_INHALE_EXHALE_HOLD_S = 0.06
 # A few variants per gender so consecutive fillers in one call never sound
 # like the same recording; deterministic seeds keep every process identical.
 _VARIANTS_PER_GENDER = 3
@@ -152,11 +174,20 @@ def synthesize_breath(
     """
     gender = normalize_gender(gender)
     kind = kind if kind in KINDS else "breath"
-    profile = (_INHALE_PROFILES if kind == "inhale" else _PROFILES)[gender]
     if sample_rate <= 0:
         return b""
+    if kind == "inhale_exhale":
+        hold = b"\x00\x00" * int(sample_rate * _INHALE_EXHALE_HOLD_S)
+        return (
+            synthesize_breath(gender, sample_rate, variant=variant, kind="inhale")
+            + hold
+            + synthesize_breath(gender, sample_rate, variant=variant, kind="exhale")
+        )
+    profile = _PROFILES_BY_KIND[kind][gender]
     variant = int(variant) % _VARIANTS_PER_GENDER
-    rng = np.random.default_rng(_SEEDS[gender] + 17 * variant + (5000 if kind == "inhale" else 0))
+    rng = np.random.default_rng(
+        _SEEDS[gender] + 17 * variant + {"breath": 0, "inhale": 5000, "exhale": 9000}[kind]
+    )
     duration = profile.duration_s * (1.0 + 0.08 * (variant - 1))
     n = int(sample_rate * duration)
     if n < 16:
@@ -207,15 +238,31 @@ def gender_from_filename(path: Path) -> str | None:
 
 
 def kind_from_filename(path: Path) -> str:
-    """``inhale_female.wav`` → ``inhale`` (in-reply); anything else is the
-    pre-reply ``breath``."""
+    """``inhale_female.wav`` → ``inhale``, ``exhale_male_2.wav`` → ``exhale``,
+    ``inhale_exhale_female.wav`` (or ``inhaleexhale``) → ``inhale_exhale``;
+    anything else is the pre-reply ``breath``."""
     tokens = set(re.split(r"[^a-z]+", path.stem.lower()))
+    if "inhaleexhale" in tokens or ("inhale" in tokens and "exhale" in tokens):
+        return "inhale_exhale"
+    if "exhale" in tokens:
+        return "exhale"
     return "inhale" if "inhale" in tokens else "breath"
 
 
+def _pretty_label(stem: str) -> str:
+    return re.sub(r"[_\-]+", " ", stem).strip().capitalize() or stem
+
+
 class _FileClip:
+    source = "recording"
+
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.gender = gender_from_filename(path) or "neutral"
+        self.kind = kind_from_filename(path)
+        # Stable id the configuration stores (``filler_audio_selection``).
+        self.clip_id = f"file:{path.name}"
+        self.label = _pretty_label(path.stem)
 
     def describe(self) -> str:
         return f"file:{self.path.name}"
@@ -238,10 +285,14 @@ class _FileClip:
 
 
 class _SynthClip:
+    source = "synthesized"
+
     def __init__(self, gender: str, variant: int, kind: str = "breath") -> None:
         self.gender = gender
         self.variant = variant
         self.kind = kind
+        self.clip_id = f"synth:{kind}:{gender}:{variant + 1}"
+        self.label = f"Synthesized {variant + 1}"
 
     def describe(self) -> str:
         prefix = "synth" if self.kind == "breath" else f"synth-{self.kind}"
@@ -264,16 +315,43 @@ class FillerClipLibrary:
     """
 
     def __init__(self, directory: str | Path | None = None, *, synthesize: bool = True) -> None:
+        self._session_local = False
+        self._cache: FillerClipLibrary | None = None
         self._directory = Path(directory) if directory else None
         self._synthesize = synthesize
         self._sources: dict[tuple[str, str], list] | None = None
-        self._rendered: dict[tuple[str, str, int, int], bytes] = {}
-        self._cursor: dict[tuple[str, str], int] = {}
+        # Rendered PCM per (clip id, sample rate): a clip renders once however
+        # many selections include it.
+        self._rendered: dict[tuple[str, int], bytes] = {}
+        # Rotation cursor per (kind, gender, selected ids). Runtime consumers
+        # use a new_session() view so these picks belong to one call only.
+        self._cursor: dict[tuple, int] = {}
+        self._selection_warned: set[tuple] = set()
+        # The id of the clip most recently handed out (telemetry).
+        self.last_clip_id: str | None = None
         # Monotonic time the latency filler last started a rung (any kind):
         # the TTS router consults it so an in-reply inhale never follows a
         # pre-reply breath within a couple of seconds (two breaths back to
         # back around a short first sentence read as a stutter).
         self.last_played_at: float | None = None
+
+    def new_session(self) -> FillerClipLibrary:
+        """Fresh call history over the same scanned/rendered asset cache.
+
+        The cache never references its session views. It can keep reusable
+        PCM and failed-asset results without retaining completed calls.
+        """
+        session = FillerClipLibrary(self._directory, synthesize=self._synthesize)
+        session._cache = self._cache or self
+        session._session_local = True
+        session._rendered = session._cache._rendered
+        session._selection_warned = session._cache._selection_warned
+        return session
+
+    def clear_history(self) -> None:
+        self._cursor.clear()
+        self.last_clip_id = None
+        self.last_played_at = None
 
     def note_played(self, when: float | None = None) -> None:
         self.last_played_at = time.monotonic() if when is None else when
@@ -316,6 +394,8 @@ class FillerClipLibrary:
         return sources
 
     def sources_for(self, gender: str, kind: str = "breath") -> list:
+        if self._cache is not None:
+            return self._cache.sources_for(gender, kind)
         if self._sources is None:
             self._sources = self._scan()
         kind = kind if kind in KINDS else "breath"
@@ -327,25 +407,98 @@ class FillerClipLibrary:
             for gender in GENDERS
         }
 
+    def find(self, clip_id: str) -> object | None:
+        """The clip source with this id (any kind/gender), or None."""
+        for kind in KINDS:
+            for gender in GENDERS:
+                for source in self.sources_for(gender, kind):
+                    if getattr(source, "clip_id", None) == clip_id:
+                        return source
+        return None
+
+    def catalog(self, kind: str, gender: str, sample_rate: int = 16000) -> list[dict]:
+        """Every clip the runtime could play for ``kind``/``gender`` — id,
+        label, source (recording | synthesized) and duration — in the order
+        they rotate when nothing is selected. Clips that fail to render are
+        left out (the runtime skips them too)."""
+        out: list[dict] = []
+        for source in self.sources_for(gender, kind):
+            pcm = self._render_source(source, int(sample_rate))
+            if not pcm:
+                continue
+            out.append({
+                "id": source.clip_id,
+                "label": source.label,
+                "source": source.source,
+                "kind": kind,
+                "gender": normalize_gender(gender),
+                "durationMs": round(len(pcm) / (int(sample_rate) * 2) * 1000.0),
+            })
+        return out
+
+    def render_clip(self, clip_id: str, sample_rate: int) -> bytes:
+        """The exact PCM the runtime plays for ``clip_id`` at ``sample_rate``
+        (preview); b"" when the id is unknown or the file does not render."""
+        source = self.find(clip_id)
+        if source is None or sample_rate <= 0:
+            return b""
+        return self._render_source(source, int(sample_rate))
+
+    def selected_sources(self, kind: str, gender: str, selection: dict | None) -> list:
+        """The sources a bot's ``selection`` ({primary, alternates}) resolves
+        to for ``kind``/``gender``, primary first; every source of that
+        gender when nothing is selected or nothing selected resolves (an id
+        of another gender or kind is never honoured — a male voice cannot be
+        handed a female breath by configuration)."""
+        kind = kind if kind in KINDS else "breath"
+        gender = normalize_gender(gender)
+        sources = self.sources_for(gender, kind)
+        ids = selection_ids(selection)
+        if not ids:
+            return sources
+        by_id = {getattr(source, "clip_id", None): source for source in sources}
+        chosen = [by_id[i] for i in ids if i in by_id]
+        if chosen:
+            return chosen
+        marker = (kind, gender, tuple(ids))
+        if marker not in self._selection_warned:
+            self._selection_warned.add(marker)
+            logger.warning(
+                "latency-filler: none of the selected %s %s clips %s exist; "
+                "rotating all available clips", kind, gender, ids,
+            )
+        return sources
+
     def clip(
         self, gender: str, sample_rate: int, *,
         kind: str = "breath", max_ms: int | None = None, gain_db: float = 0.0,
+        selection: dict | None = None,
     ) -> bytes:
         """The next ``kind`` clip for ``gender`` (rotating), or b"" when none
         renders.
 
-        Operator files that fail to render (not a PCM WAV, unreadable) are
-        skipped; when none of a gender's files renders, the synthesized
-        variants take over so a bad upload degrades to the default, never to
-        dead air where a breath was configured. ``max_ms`` trims the clip
-        (with a short fade-out) and ``gain_db`` lowers it.
+        With a ``selection`` ({primary, alternates}) only those clips rotate,
+        the primary first in a call; without one every clip of the gender
+        rotates. Operator files that fail to render (not a PCM WAV,
+        unreadable) are skipped; when none of a gender's files renders, the
+        synthesized variants take over so a bad upload degrades to the
+        default, never to dead air where a breath was configured. ``max_ms``
+        trims the clip (with a short fade-out) and ``gain_db`` lowers it.
         """
         gender = normalize_gender(gender)
         kind = kind if kind in KINDS else "breath"
-        sources = self.sources_for(gender, kind)
+        all_sources = self.sources_for(gender, kind)
+        sources = self.selected_sources(kind, gender, selection)
         if sample_rate <= 0:
             return b""
-        clip = self._next_rendered((kind, gender), sources, int(sample_rate))
+        slot: tuple = (kind, gender)
+        if sources is not all_sources:
+            slot = (kind, gender, tuple(getattr(x, "clip_id", "") for x in sources))
+        clip = self._next_rendered(slot, sources, int(sample_rate))
+        if not clip and sources is not all_sources:
+            # A selected file went bad: fall back to everything of that gender.
+            clip = self._next_rendered((kind, gender), all_sources, int(sample_rate))
+        sources = all_sources
         if not clip and self._synthesize and not any(
             isinstance(source, _SynthClip) for source in sources
         ):
@@ -363,19 +516,26 @@ class FillerClipLibrary:
             clip = scale_pcm(clip, gain_db)
         return clip
 
-    def _next_rendered(self, slot: tuple[str, str], sources: list, sample_rate: int) -> bytes:
+    def _render_source(self, source, sample_rate: int) -> bytes:
+        if self._cache is not None:
+            return self._cache._render_source(source, sample_rate)
+        key = (getattr(source, "clip_id", None) or source.describe(), sample_rate)
+        clip = self._rendered.get(key)
+        if clip is None:
+            clip = source.render(sample_rate)
+            self._rendered[key] = clip
+        return clip
+
+    def _next_rendered(self, slot: tuple, sources: list, sample_rate: int) -> bytes:
         if not sources:
             return b""
         start = self._cursor.get(slot, 0)
         for step in range(len(sources)):
             index = (start + step) % len(sources)
-            key = (*slot, index, sample_rate)
-            clip = self._rendered.get(key)
-            if clip is None:
-                clip = sources[index].render(sample_rate)
-                self._rendered[key] = clip
+            clip = self._render_source(sources[index], sample_rate)
             if clip:
                 self._cursor[slot] = index + 1
+                self.last_clip_id = getattr(sources[index], "clip_id", None)
                 return clip
         return b""
 
@@ -423,6 +583,7 @@ class _ArmedTurn:
     gender: str
     origin: float            # monotonic: when the caller stopped (or dispatch)
     fire_at: float
+    owner: FillerAudioOwner | None = None
     language: str = ""
     engine: dict | None = None
     allow_spoken: bool = True
@@ -430,8 +591,7 @@ class _ArmedTurn:
     rung_kind: str = "breath"
     playing_since: float | None = None
     clip_ms: float = 0.0
-    # Streaming position: the clip being played and the byte offset of the
-    # next chunk, so a cut can taper from exactly where playback stopped.
+    # Streaming position in the clip currently being generated.
     clip: bytes = b""
     next_offset: int = 0
     rungs_played: list = field(default_factory=list)
@@ -439,21 +599,21 @@ class _ArmedTurn:
     # waits for BotStoppedSpeakingFrame instead of being dropped.
     deferred: bool = False
     resume: asyncio.Event = field(default_factory=asyncio.Event)
-    # Set when the reply's synthesis has been requested (TTSStartedFrame):
-    # its audio is a provider round-trip away, so no NEW rung may start — a
-    # cue cut 200 ms in is a stray puff right before the reply.
-    reply_imminent: bool = False
     # Re-armed after this turn's early acknowledgement: breath rung skipped.
     after_ack: bool = False
-
-
-def _taper(chunk: bytes) -> bytes:
-    """Linear fade of one chunk to silence (click-free end of a cut breath)."""
-    if len(chunk) < 4:
-        return b""
-    samples = np.frombuffer(chunk[: len(chunk) - (len(chunk) % 2)], dtype="<i2").astype(np.float32)
-    samples *= np.linspace(1.0, 0.0, samples.size, dtype=np.float32)
-    return np.clip(np.rint(samples), -32768, 32767).astype("<i2").tobytes()
+    # Which pre-rendered sound the first rung plays and which clips of it
+    # (bot configuration); None → every clip of the gender rotates.
+    filler_kind: str = "breath"
+    filler_selection: dict | None = None
+    # The planner's per-turn cue preference (best first) and whether a
+    # voiced "hmm" cue may play at all this turn (False → breath only, the
+    # spoken "wait" rung still follows ``allow_spoken``).
+    cue_selection: dict | None = None
+    allow_voiced: bool = True
+    # Optional dispatch-planned acknowledgement. It may replace the first
+    # breath only at the same deadline, and only when its cached PCM is ready.
+    acknowledgement: dict | None = None
+    playing_acknowledgement: bool = False
 
 
 class LatencyFillerProcessor(FrameProcessor):
@@ -471,9 +631,9 @@ class LatencyFillerProcessor(FrameProcessor):
     rendered (``cue_library``), the spoken rung only when the brain allowed it
     for this turn (never on critical/serious content). A rung whose deadline
     falls while the bot is still audibly speaking (previous reply's tail) is
-    deferred to the bot's next silence instead of being dropped; once the
-    reply's synthesis has been requested (``TTSStartedFrame``) no new rung
-    starts. Every rung start is noted on the clip library so the TTS router
+    deferred to the bot's next silence instead of being dropped. Synthesis
+    start alone does not suppress a rung: playable PCM retires the filler.
+    Every rung start is noted on the clip library so the TTS router
     withholds an in-reply inhale right after a pre-reply breath.
     """
 
@@ -493,15 +653,18 @@ class LatencyFillerProcessor(FrameProcessor):
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        # Telephony transports packetize outbound PCM (200 ms) and flush a
-        # partial packet only on BotStoppedSpeakingFrame, which plain audio
-        # never produces: a completed clip's tail would sit there and play
-        # glued to the next reply ("the breath repeats"). When set, a
-        # transport message follows every completed clip (in order, via the
-        # audio queue) telling the serializer to send that tail now.
+        # Retain completion markers for telephony, now tagged so they cannot
+        # flush a speech packet after owned filler has been cleared.
         self._emit_flush_marker = bool(emit_flush_marker)
+        # Keep ownership after producer completion: its last chunks may
+        # still be in a transport/browser queue when reply audio arrives.
+        self._output_owners: list[FillerAudioOwner] = []
         self._delay_s = max(0.0, float(delay_ms) / 1000.0)
-        self._library = library
+        self._library = (
+            library.new_session()
+            if hasattr(library, "new_session") and not getattr(library, "_session_local", False)
+            else library
+        )
         self._sample_rate = int(sample_rate)
         self._recorder = recorder
         self._chunk_ms = max(10, int(chunk_ms))
@@ -509,7 +672,11 @@ class LatencyFillerProcessor(FrameProcessor):
         # Voiced cue source (voice_runtime.voiced_cues.VoicedCueLibrary or a
         # stand-in with ``clip(engine, language, kind, rate)`` / ``warm``);
         # None → breath only, no ladder.
-        self._cue_library = cue_library
+        self._cue_library = (
+            cue_library.new_session()
+            if hasattr(cue_library, "new_session") and not getattr(cue_library, "_session_local", False)
+            else cue_library
+        )
         self._rung_delays_s: dict[str, float] = {"breath": self._delay_s}
         if cue_library is not None and hmm_after_ms is not None:
             self._rung_delays_s["hmm"] = max(self._delay_s, float(hmm_after_ms) / 1000.0)
@@ -521,6 +688,7 @@ class LatencyFillerProcessor(FrameProcessor):
         # ends, so the caller audio gate can shield its echo the way it does
         # for backchannels (the breath is too quiet to matter).
         self.cue_window_hook = None
+        self.acknowledgement_hook = None
         self._armed: _ArmedTurn | None = None
         self._task: asyncio.Task | None = None
         self._bot_speaking = False
@@ -530,6 +698,9 @@ class LatencyFillerProcessor(FrameProcessor):
         # Armed turns whose reply audio arrived before the first rung — the
         # common case, and the number that says whether the delay is tuned.
         self.fillers_unneeded = 0
+        # The voiced cue most recently played in this call (the planner keeps
+        # it from leading the next wait's preference).
+        self.last_cue_played: str | None = None
 
     # -- state ---------------------------------------------------------
 
@@ -572,6 +743,11 @@ class LatencyFillerProcessor(FrameProcessor):
         engine: dict | None = None,
         allow_spoken: bool = True,
         resume: bool = False,
+        filler_kind: str = "breath",
+        filler_selection: dict | None = None,
+        cue_selection: dict | None = None,
+        allow_voiced: bool = True,
+        acknowledgement: dict | None = None,
     ) -> None:
         """A reply is now in flight for ``turn_id``.
 
@@ -599,17 +775,32 @@ class LatencyFillerProcessor(FrameProcessor):
             gender=normalize_gender(gender),
             origin=origin,
             fire_at=max(origin + self._delay_s, now),
+            owner=FillerAudioOwner(turn_id=int(turn_id)),
             language=language or "",
             engine=dict(engine) if engine else None,
             allow_spoken=bool(allow_spoken),
             after_ack=bool(resume),
+            filler_kind=filler_kind if filler_kind in KINDS else "breath",
+            filler_selection=dict(filler_selection) if filler_selection else None,
+            cue_selection=dict(cue_selection) if cue_selection else None,
+            allow_voiced=bool(allow_voiced),
+            acknowledgement=dict(acknowledgement) if acknowledgement else None,
         )
         self._armed = armed
+        if armed.acknowledgement and self._cue_library is not None:
+            # Prime the existing cache without awaiting a render or touching
+            # the answer's TTS queue. Playback remains behind the deadline.
+            self._acknowledgement_clip(armed)
         if self._cue_library is not None and self.ladder_enabled:
             try:
                 # Renders (once per voice) in the background so the cues are
                 # ready by the time a slow reply needs them.
-                self._cue_library.warm(armed.engine, armed.language)
+                if armed.cue_selection is not None:
+                    self._cue_library.warm(
+                        armed.engine, armed.language, selection=armed.cue_selection
+                    )
+                else:
+                    self._cue_library.warm(armed.engine, armed.language)
             except Exception:  # noqa: BLE001 — decoration must never break a turn
                 logger.debug("latency-filler: cue warm-up failed", exc_info=True)
         self._task = self.create_task(self._run(armed))
@@ -619,30 +810,36 @@ class LatencyFillerProcessor(FrameProcessor):
 
     # -- internals -----------------------------------------------------
 
+    def _retire_output_owners(self) -> None:
+        # Shared identities also invalidate frames already handed downstream.
+        # Retire before any await, including Pipecat's interruption handling.
+        if self._armed is not None:
+            self._armed.owner.cancel()
+        for owner in self._output_owners:
+            owner.cancel()
+
     async def _cut(self, reason: str) -> None:
+        self._retire_output_owners()
+        owners, self._output_owners = self._output_owners, []
         armed, self._armed = self._armed, None
         task, self._task = self._task, None
         if task is not None and not task.done() and task is not asyncio.current_task():
-            await self.cancel_task(task)
+            task.cancel()
+            # Consume the producer's cancellation, but propagate cancellation
+            # of THIS processing task. Pipecat's cancel_task helper swallows
+            # both, letting a handoff interruption wait for its 1 s timeout
+            # and potentially forward the interrupted response afterward.
+            await asyncio.gather(task, return_exceptions=True)
+        # Production may already have finished while playback is buffered.
+        # Always clear those owners, even without an active task/armed turn.
+        for owner in owners:
+            await self.push_frame(FillerClearFrame(owner))
         if armed is None:
             return
         if armed.playing_since is None:
             if reason == "tts_audio" and not armed.rungs_played:
                 self.fillers_unneeded += 1
             return
-        if reason == "tts_audio":
-            # The reply is about to speak: taper the clip over ONE more
-            # chunk (20 ms) instead of stopping it mid-sample, so it ends as a
-            # breath and not as a click. The reply's first frame follows
-            # right behind it — an imperceptible cost, well under the lead.
-            chunk_bytes = self._chunk_bytes()
-            tail = _taper(armed.clip[armed.next_offset:armed.next_offset + chunk_bytes])
-            if tail:
-                await self.push_frame(
-                    OutputAudioRawFrame(
-                        audio=tail, sample_rate=self._sample_rate, num_channels=1,
-                    )
-                )
         self._end_cue_window(armed)
         played_ms = (time.monotonic() - armed.playing_since) * 1000.0
         self._event(
@@ -657,20 +854,58 @@ class LatencyFillerProcessor(FrameProcessor):
 
     def _rung_clip(self, armed: _ArmedTurn, kind: str) -> bytes:
         if kind == "breath":
-            return self._library.clip(armed.gender, self._sample_rate)
+            ack = self._acknowledgement_clip(armed)
+            if ack:
+                armed.playing_acknowledgement = True
+                return ack
+            if armed.filler_kind == "breath" and armed.filler_selection is None:
+                return self._library.clip(armed.gender, self._sample_rate)
+            return self._library.clip(
+                armed.gender, self._sample_rate,
+                kind=armed.filler_kind, selection=armed.filler_selection,
+            )
         if self._cue_library is None:
             return b""
+        if kind == "hmm" and armed.cue_selection is not None:
+            return self._cue_library.clip(
+                armed.engine, armed.language, kind, self._sample_rate,
+                selection=armed.cue_selection,
+            )
         return self._cue_library.clip(armed.engine, armed.language, kind, self._sample_rate)
 
+    def _acknowledgement_clip(self, armed: _ArmedTurn) -> bytes:
+        get_clip = getattr(self._cue_library, "acknowledgement_clip", None)
+        if not armed.acknowledgement or get_clip is None:
+            return b""
+        try:
+            return get_clip(
+                armed.engine, armed.language, armed.acknowledgement["text"],
+                self._sample_rate,
+            )
+        except Exception:  # Decoration failure must not hold up the reply.
+            logger.debug("latency-filler: acknowledgement unavailable", exc_info=True)
+            return b""
+
+    def _rung_sound(self, armed: _ArmedTurn, kind: str) -> dict:
+        """Telemetry: which sound/clip a rung actually played."""
+        if kind == "breath":
+            if armed.playing_acknowledgement:
+                return {"sound": "acknowledgement"}
+            return {
+                "sound": armed.filler_kind,
+                "clip": getattr(self._library, "last_clip_id", None),
+            }
+        return {"sound": kind, "cue": getattr(self._cue_library, "last_cue_id", None)}
+
     def _begin_cue_window(self, armed: _ArmedTurn) -> None:
-        if armed.rung_kind != "breath" and self.cue_window_hook is not None:
+        if (armed.rung_kind != "breath" or armed.playing_acknowledgement) and self.cue_window_hook is not None:
             try:
                 self.cue_window_hook(True)
             except Exception:  # noqa: BLE001
                 logger.debug("latency-filler: cue window hook failed", exc_info=True)
 
     def _end_cue_window(self, armed: _ArmedTurn) -> None:
-        if armed.rung_kind != "breath" and self.cue_window_hook is not None:
+        if (armed.rung_kind != "breath" or armed.playing_acknowledgement) and self.cue_window_hook is not None:
             try:
                 self.cue_window_hook(False)
             except Exception:  # noqa: BLE001
@@ -682,6 +917,7 @@ class LatencyFillerProcessor(FrameProcessor):
                 if kind not in self._rung_delays_s:
                     return
                 armed.rung, armed.rung_kind = index, kind
+                armed.playing_acknowledgement = False
                 if kind == "breath" and armed.after_ack:
                     self._event(
                         "latency_filler_skipped", turn=armed.turn_id, rung=kind,
@@ -696,6 +932,15 @@ class LatencyFillerProcessor(FrameProcessor):
                             else _MIN_RUNG_GAP_S
                         ),
                     )
+                if kind == "hmm" and not armed.allow_voiced:
+                    # The planner decided this wait stays a breath (an
+                    # acknowledgement already spoke, critical content, a fast
+                    # reply expected, or simply not every silence gets a word).
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="voiced_withheld",
+                    )
+                    continue
                 if kind == "wait" and not armed.allow_spoken:
                     self._event(
                         "latency_filler_skipped", turn=armed.turn_id, rung=kind,
@@ -703,12 +948,6 @@ class LatencyFillerProcessor(FrameProcessor):
                     )
                     return
                 if not await self._wait_for_rung(armed):
-                    return
-                if armed.reply_imminent:
-                    self._event(
-                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
-                        reason="reply_imminent",
-                    )
                     return
                 clip = self._rung_clip(armed, kind)
                 if not clip:
@@ -721,29 +960,50 @@ class LatencyFillerProcessor(FrameProcessor):
                 armed.clip = clip
                 armed.next_offset = 0
                 armed.playing_since = time.monotonic()
+                if armed.owner not in self._output_owners:
+                    self._output_owners.append(armed.owner)
                 note_played = getattr(self._library, "note_played", None)
                 if note_played is not None:
                     note_played(armed.playing_since)
                 self.fillers_played += 1
                 self.rungs_played[kind] = self.rungs_played.get(kind, 0) + 1
+                if kind == "hmm":
+                    self.last_cue_played = getattr(self._cue_library, "last_cue_id", None)
                 waited_ms = (armed.playing_since - armed.origin) * 1000.0
                 self._event(
                     "latency_filler_played",
                     turn=armed.turn_id, gender=armed.gender, rung=kind,
                     waited_ms=round(waited_ms, 1), clip_ms=round(armed.clip_ms, 1),
+                    **self._rung_sound(armed, kind),
                 )
                 logger.info(
                     "turn[%s] latency filler %s playing (turn=%d gender=%s waited=%.0fms clip=%.0fms)",
                     self._session(), kind, armed.turn_id, armed.gender, waited_ms, armed.clip_ms,
                 )
                 self._begin_cue_window(armed)
+                if armed.playing_acknowledgement:
+                    # No bot-speaking frames: this remains waiting-period
+                    # audio, and the answer's first audio owns reply state.
+                    armed.allow_voiced = False
+                    self._event(
+                        "early_ack_played", turn=armed.turn_id,
+                        context=armed.acknowledgement.get("context", "answer"),
+                        language=armed.language, waited_ms=round(waited_ms, 1),
+                    )
+                    if self.acknowledgement_hook is not None:
+                        self.acknowledgement_hook(armed.turn_id)
                 try:
                     await self._stream(armed)
                 finally:
                     self._end_cue_window(armed)
+                if armed.owner.cancelled:
+                    return
                 if self._emit_flush_marker:
                     await self.push_frame(
-                        OutputTransportMessageFrame(message={"type": AUDIO_FLUSH_MESSAGE_TYPE})
+                        OutputTransportMessageFrame(message={
+                            "type": AUDIO_FLUSH_MESSAGE_TYPE,
+                            "filler_owner": armed.owner.token,
+                        })
                     )
                 self._event(
                     "latency_filler_completed", turn=armed.turn_id, rung=kind,
@@ -753,7 +1013,10 @@ class LatencyFillerProcessor(FrameProcessor):
                 armed.playing_since = None
                 armed.clip = b""
         finally:
-            if self._armed is armed:
+            # Retirement can reach a paced producer before the data-frame
+            # handler reaches _cut(). Keep that turn for cancellation metrics
+            # and cleanup; it did not naturally complete its clip.
+            if self._armed is armed and not armed.owner.cancelled:
                 self._armed = None
                 self._task = None
 
@@ -765,9 +1028,9 @@ class LatencyFillerProcessor(FrameProcessor):
             delay = armed.fire_at - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
-            if self._armed is not armed:
+            if self._armed is not armed or armed.owner.cancelled:
                 return False
-            if not self._bot_speaking or armed.reply_imminent:
+            if not self._bot_speaking:
                 return True
             # Dispatched while the previous reply's tail was still audible:
             # nothing to fill yet. Hold the rung until the bot falls silent.
@@ -788,15 +1051,7 @@ class LatencyFillerProcessor(FrameProcessor):
         return max(1, int(self._sample_rate * self._chunk_ms / 1000)) * 2
 
     async def _stream(self, armed: _ArmedTurn) -> None:
-        """Push the clip as plain output audio at real-time pace.
-
-        Chunk ``k`` is due ``(k - lead) × chunk`` after the start: the first
-        chunks go out immediately (a small cushion against event-loop jitter)
-        and everything after rides the wall clock, so the transport queue never
-        holds more than the lead when reply audio arrives and cuts this off.
-        The clip is zero-padded to whole 40 ms so the transport's own chunk
-        buffer is left empty, not holding a stray tail.
-        """
+        """Push owned output PCM at real-time pace with no queued look-ahead."""
         rate = self._sample_rate
         chunk_bytes = self._chunk_bytes()
         clip = armed.clip
@@ -806,43 +1061,54 @@ class LatencyFillerProcessor(FrameProcessor):
             armed.clip = clip
         chunk_s = chunk_bytes / (rate * 2)
         started = time.monotonic()
+        # Neither acknowledgements nor breaths pre-fill the output queue.
+        lead_chunks = 0
         for index, offset in enumerate(range(0, len(clip), chunk_bytes)):
-            due = started + max(0, index - self._lead_chunks) * chunk_s
+            due = started + max(0, index - lead_chunks) * chunk_s
             wait = due - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
+            if armed.owner.cancelled:
+                return
             armed.next_offset = offset + chunk_bytes
             await self.push_frame(
-                OutputAudioRawFrame(
+                FillerAudioRawFrame(
                     audio=clip[offset:offset + chunk_bytes], sample_rate=rate, num_channels=1,
+                    owner=armed.owner,
                 )
             )
 
     # -- pipeline plumbing ---------------------------------------------
 
+    async def queue_frame(self, frame, direction=FrameDirection.DOWNSTREAM, callback=None):
+        # Retire queued filler as soon as playable audio enters this
+        # processor, not after it has waited in Pipecat's data-frame queue.
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, CancelFrame)) or (
+            direction == FrameDirection.DOWNSTREAM
+            and isinstance(frame, TTSAudioRawFrame) and frame.num_frames > 0
+        ):
+            self._retire_output_owners()
+        await super().queue_frame(frame, direction, callback)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, CancelFrame)):
+            self._retire_output_owners()
         await super().process_frame(frame, direction)
         if isinstance(frame, StartFrame):
             rate = getattr(frame, "audio_out_sample_rate", 0)
             if rate:
                 self._sample_rate = int(rate)
         elif isinstance(frame, TTSAudioRawFrame):
-            # The reply is speaking. Cut BEFORE forwarding so not one more
-            # breath chunk can be queued behind this frame.
-            if self._task is not None:
+            # Readiness means at least one complete PCM sample frame. An
+            # empty packet or TTSStartedFrame (synthesis requested) leaves
+            # the configured filler deadline intact while the provider waits.
+            # Cut BEFORE forwarding playable audio so no filler follows it.
+            if frame.num_frames > 0:
                 await self._cut("tts_audio")
-        elif isinstance(frame, TTSStartedFrame):
-            # Synthesis of the reply was just requested: its first audio is
-            # one provider round-trip (~200-400 ms) away. A rung already
-            # playing runs on until that audio cuts it; a rung not yet
-            # started stays unstarted — a "हम्म…" chopped after 200 ms is a
-            # grunt, and a breath chopped that early a puff, right before the
-            # reply. Nothing is cut here: the reply may still stall.
-            if self._armed is not None:
-                self._armed.reply_imminent = True
-                if self._armed.playing_since is None and self._armed.deferred:
-                    self._armed.resume.set()
         elif isinstance(frame, InterruptionFrame):
+            # The output is being stopped globally. Do not depend on a later
+            # BotStoppedSpeakingFrame to release a new turn's filler deadline.
+            self._bot_speaking = False
             await self._cut("interruption")
         elif isinstance(frame, UserStartedSpeakingFrame):
             await self._cut("caller_speech")
@@ -862,4 +1128,8 @@ class LatencyFillerProcessor(FrameProcessor):
 
     async def cleanup(self):
         await self._cut("cleanup")
+        for library in (self._library, self._cue_library):
+            if getattr(library, "_session_local", False):
+                library.clear_history()
+        self.last_cue_played = None
         await super().cleanup()

@@ -57,6 +57,48 @@ class TestValidateArgs:
         assert validate_args(schema, {"mode": "full"}) == []
         assert validate_args(schema, {"mode": "other"})
 
+    def test_numeric_string_contract(self):
+        schema = {"properties": {"amount": {"type": "string", "pattern": r"^[0-9]+(?:\.[0-9]{1,2})?$"}}}
+        assert validate_args(schema, {"amount": "500.50"}) == []
+        assert validate_args(schema, {"amount": "banana"})
+
+
+class TestResponseContract:
+    @pytest.mark.parametrize("mocked", [True, False])
+    @pytest.mark.parametrize("body,expected", [
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": True}, True),
+        ({"status": "failed", "ticket_id": "T1", "verification_recorded": False}, False),
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": False}, False),
+        ({"status": "updated", "verification_recorded": True}, False),
+        ({"status": "updated", "ticket_id": "T1", "verification_recorded": "true"}, False),
+        ([], False),
+    ])
+    async def test_http_200_and_mock_require_business_success(self, monkeypatch, mocked, body, expected):
+        connection = {**CONNECTION, "response_schema": {
+            "type": "object", "required": ["status", "ticket_id", "verification_recorded"],
+            "properties": {
+                "status": {"type": "string", "enum": ["updated"]},
+                "ticket_id": {"type": "string"},
+                "verification_recorded": {"type": "boolean", "enum": [True]},
+            },
+        }}
+        _patch_connection(monkeypatch, connection)
+
+        async def fake_request(self, conn, args, context):
+            return {"status_code": 200, "body": body}, None
+
+        monkeypatch.setattr(ToolExecutor, "_request", fake_request)
+        result = await ToolExecutor().execute(
+            tenant_id="tn-a", bot_id="b", tool="check_payment_status",
+            args={"loan_account": "LN1"},
+            mock_results={"check_payment_status": body} if mocked else None,
+        )
+        assert result.ok is expected
+        assert result.mocked is mocked
+        if not expected:
+            assert result.status == "error" and result.error
+            assert result.mapped == {}
+
 
 class TestValidationLadder:
     async def test_unknown_tool_is_not_found(self, monkeypatch):
@@ -233,6 +275,7 @@ class TestSecrets:
 
 
 class _FakeConnectionRow:
+    response_schema = None
     """Attribute bag mirroring the ApiConnection columns _load_connection_sync reads."""
 
     def __init__(self, **overrides):

@@ -16,6 +16,7 @@ Verified here:
 """
 
 import copy
+import json
 import uuid
 from datetime import datetime
 
@@ -894,3 +895,340 @@ class TestSecretHygiene:
             f"{API}/tenants/import", headers=super_admin, json=future)
         assert response.status_code == 422, response.text
         assert "schema_version" in response.json()["message"]
+
+
+# ── Natural Conversation (human_speech) round-trip ────────────────────────────
+#
+# The Natural Conversation tab stores every naturalness setting inside the
+# JSON column voice_bot_settings.human_speech (tenant defaults in
+# tenant_settings.human_speech). The package must carry that object exactly:
+# nested selection maps included, nothing dropped, renamed, flattened or
+# retyped. The bot override below sets EVERY HUMAN_SPEECH_DEFAULTS key to a
+# non-default value so the whole object is verified, not only the four keys
+# the Natural Conversation tab added (latency_filler_kind,
+# filler_audio_selection, latency_filler_cue_selection, latency_cue_probability).
+
+_NATURAL_CONVERSATION_KEYS = (
+    "latency_filler_kind", "filler_audio_selection",
+    "latency_filler_cue_selection", "latency_cue_probability",
+)
+
+_BOT_HUMAN_SPEECH = {
+    "enabled": True,
+    "thinking_fillers": False,
+    "acknowledgements": True,
+    "backchannels": True,
+    "prosody_variation": False,
+    "gender_agreement": True,
+    "micro_pauses": False,
+    "self_correction": True,
+    "latency_fillers": True,
+    "sentence_breaths": False,
+    "thinking_filler_probability": 0.15,
+    "acknowledgement_probability": 0.6,
+    "tool_ack_probability": 0.8,
+    "backchannel_probability": 0.2,
+    "micro_pause_probability": 0.3,
+    "self_correction_probability": 0.02,
+    "sentence_breath_probability": 0.4,
+    "min_long_turn_for_backchannel_ms": 3000,
+    "min_gap_between_backchannels_ms": 9000,
+    "max_backchannels_per_call": 3,
+    "latency_filler_delay_ms": 1200,
+    "latency_filler_ladder": True,
+    "latency_filler_hmm_ms": 3000,
+    "latency_filler_spoken_ms": 6000,
+    "latency_filler_kind": "inhale_exhale",
+    "filler_audio_selection": {
+        "breath": {
+            "male": {
+                "primary": "synth:breath:male:3",
+                "alternates": ["synth:breath:male:1", "file:breath_male_ops.wav"],
+            },
+            "female": {"primary": "file:breath_female_studio.wav", "alternates": []},
+        },
+        "inhale_exhale": {
+            "neutral": {
+                "alternates": ["synth:inhale_exhale:neutral:2",
+                               "synth:inhale_exhale:neutral:1"],
+            },
+        },
+    },
+    "latency_filler_cue_selection": {
+        "hi": {"primary": "hmm", "alternates": ["achha", "ji", "theek_hai"]},
+        "en": {"primary": "hmm", "alternates": ["okay"]},
+    },
+    "latency_cue_probability": 0.55,
+}
+
+# Tenant-wide defaults (sparse), including the new keys, so the tenant layer
+# of the package is verified too.
+_TENANT_HUMAN_SPEECH = {
+    "backchannels": False,
+    "latency_filler_delay_ms": 1800,
+    "latency_filler_kind": "inhale",
+    "latency_filler_cue_selection": {"hi": {"primary": "ji", "alternates": ["hmm"]}},
+    "latency_cue_probability": 0.9,
+}
+
+
+def _canonical(value) -> str:
+    """Type-strict comparison form: dict equality alone treats True == 1 and
+    1.0 == 1, which would hide a retyped value."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=True)
+
+
+def _retenant(package: dict, *, tenant_id: str, suffix: str) -> dict:
+    """The same package addressed to a brand-new tenant: fresh tenant, bot and
+    settings ids so it lands next to the source instead of updating it."""
+    pkg = copy.deepcopy(package)
+    res = pkg["resources"]
+    old_tid = res["tenant"]["id"]
+    ids = {old_tid: tenant_id, res["tenant_settings"]["id"]: new_id("tset")}
+    for bot in res["bots"]:
+        ids[bot["id"]] = new_id("bot")
+    for row in res["voice_bot_settings"]:
+        ids[row["id"]] = new_id("vbs")
+
+    def swap(value):
+        if isinstance(value, str):
+            return ids.get(value, value)
+        if isinstance(value, list):
+            return [swap(v) for v in value]
+        if isinstance(value, dict):
+            return {k: swap(v) for k, v in value.items()}
+        return value
+
+    pkg = swap(pkg)
+    tenant = pkg["resources"]["tenant"]
+    tenant["name"] = f"NC Target {suffix}"
+    tenant["code"] = f"nct_{suffix}"
+    tenant["domain"] = f"nc-target-{suffix}.example.test"
+    tenant["admin_email"] = f"nc.target.{suffix}@example.test"
+    return pkg
+
+
+@pytest.fixture(scope="module")
+def nc_source():
+    """A minimal source tenant whose only interesting configuration is the
+    Natural Conversation plane: tenant defaults + one bot with a full override."""
+    from shared.orchestration.naturalness import (
+        HUMAN_SPEECH_DEFAULTS, validate_human_speech,
+    )
+
+    # The fixture values must be exactly what the UI could have saved through
+    # PUT /bots/{id}/voice-settings, and must cover every known key — a new
+    # key added to HUMAN_SPEECH_DEFAULTS fails here until it is covered too.
+    assert validate_human_speech(_BOT_HUMAN_SPEECH) == []
+    assert validate_human_speech(_TENANT_HUMAN_SPEECH) == []
+    assert set(_BOT_HUMAN_SPEECH) == set(HUMAN_SPEECH_DEFAULTS)
+
+    suffix = uuid.uuid4().hex[:10]
+    session = _db()
+    cleanup_ids: list[str] = []
+    try:
+        tenant = Tenant(
+            id=new_id("tn"), name=f"NC Source {suffix}", code=f"ncs_{suffix}",
+            domain=f"nc-source-{suffix}.example.test", status="active",
+            admin_email=f"nc.source.{suffix}@example.test",
+        )
+        session.add(tenant)
+        session.flush()
+        cleanup_ids.append(tenant.id)
+        tenant_settings = TenantSetting(
+            id=new_id("tset"), tenant_id=tenant.id, timezone="Asia/Kolkata",
+            human_speech=copy.deepcopy(_TENANT_HUMAN_SPEECH),
+        )
+        bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"NC Bot {suffix}",
+            use_case="Natural conversation", status="draft",
+        )
+        session.add_all([tenant_settings, bot])
+        session.flush()
+        settings_row = VoiceBotSetting(
+            id=new_id("vbs"), bot_id=bot.id, tenant_id=tenant.id,
+            speed=1.05, pause_ms=320, stt_provider="sarvam", tts_provider="sarvam",
+            human_speech=copy.deepcopy(_BOT_HUMAN_SPEECH),
+        )
+        session.add(settings_row)
+        session.commit()
+
+        yield {
+            "suffix": suffix,
+            "tenant_id": tenant.id,
+            "tenant_settings_id": tenant_settings.id,
+            "bot_id": bot.id,
+            "settings_id": settings_row.id,
+            "cleanup_ids": cleanup_ids,
+        }
+    finally:
+        session.rollback()
+        session.close()
+        _purge_tenant_graph(cleanup_ids)
+
+
+@pytest.fixture(scope="module")
+def nc_package_text(client, nc_source, super_admin) -> str:
+    """The export exactly as the operator downloads it — the raw JSON text, so
+    the tests exercise real serialization, not the in-memory dict."""
+    response = client.get(
+        f"{API}/tenants/{nc_source['tenant_id']}/export",
+        headers=super_admin, params={"includeKnowledge": "false"},
+    )
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+def _stored_human_speech(session, *, tenant_id: str, bot_id: str) -> tuple[dict | None, dict | None]:
+    settings_row = session.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot_id))
+    tenant_row = session.scalar(
+        select(TenantSetting).where(TenantSetting.tenant_id == tenant_id))
+    assert settings_row is not None and tenant_row is not None
+    return settings_row.human_speech, tenant_row.human_speech
+
+
+class TestNaturalConversationTransfer:
+    def test_export_carries_the_whole_human_speech_object(self, nc_package_text, nc_source):
+        package = json.loads(nc_package_text)["data"]
+        rows = [r for r in package["resources"]["voice_bot_settings"]
+                if r["bot_id"] == nc_source["bot_id"]]
+        assert len(rows) == 1
+        assert _canonical(rows[0]["human_speech"]) == _canonical(_BOT_HUMAN_SPEECH)
+        assert _canonical(package["resources"]["tenant_settings"]["human_speech"]) == (
+            _canonical(_TENANT_HUMAN_SPEECH))
+        # The nested selections are present as objects — never flattened or
+        # stringified by the row serializer.
+        selection = rows[0]["human_speech"]["filler_audio_selection"]
+        assert selection["breath"]["male"]["alternates"] == [
+            "synth:breath:male:1", "file:breath_male_ops.wav"]
+        assert selection["inhale_exhale"]["neutral"] == {
+            "alternates": ["synth:inhale_exhale:neutral:2", "synth:inhale_exhale:neutral:1"]}
+        assert rows[0]["human_speech"]["latency_filler_cue_selection"]["hi"]["alternates"] == [
+            "achha", "ji", "theek_hai"]
+
+    def test_import_into_fresh_environment_restores_exactly(
+            self, client, nc_source, nc_package_text, super_admin):
+        # The live side: the tenant graph does not exist yet.
+        _purge_tenant_graph([nc_source["tenant_id"]])
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin,
+            json=json.loads(nc_package_text)["data"]))
+        assert report["tenantId"] == nc_source["tenant_id"]
+        assert report["created"]["voice_bot_settings"] == 1
+        assert report["created"]["tenant_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=nc_source["tenant_id"], bot_id=nc_source["bot_id"])
+            assert _canonical(bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+            settings_row = session.get(VoiceBotSetting, nc_source["settings_id"])
+            assert settings_row.bot_id == nc_source["bot_id"]  # id preserved
+        finally:
+            session.close()
+
+        # What the Natural Conversation tab loads after the import is the
+        # source override, and the effective resolution honours it.
+        settings = _data(client.get(
+            f"{API}/bots/{nc_source['bot_id']}/voice-settings", headers=super_admin))
+        assert _canonical(settings["humanSpeech"]) == _canonical(_BOT_HUMAN_SPEECH)
+        effective = settings["humanSpeechEffective"]
+        assert effective["latency_filler_kind"] == "inhale_exhale"
+        assert _canonical(effective["filler_audio_selection"]) == (
+            _canonical(_BOT_HUMAN_SPEECH["filler_audio_selection"]))
+        assert _canonical(effective["latency_filler_cue_selection"]) == (
+            _canonical(_BOT_HUMAN_SPEECH["latency_filler_cue_selection"]))
+        assert effective["latency_cue_probability"] == 0.55
+        assert all(settings["humanSpeechSources"][k] == "bot"
+                   for k in _NATURAL_CONVERSATION_KEYS)
+        # Tenant defaults are the inherited layer the tab shows.
+        inherited = settings["humanSpeechInherited"]
+        assert inherited["latency_filler_kind"] == "inhale"
+        assert inherited["latency_filler_cue_selection"] == (
+            _TENANT_HUMAN_SPEECH["latency_filler_cue_selection"])
+        assert settings["humanSpeechInheritedSources"]["latency_cue_probability"] == "tenant"
+
+    def test_import_into_a_different_tenant_restores_exactly(
+            self, client, nc_source, nc_package_text, super_admin):
+        suffix = nc_source["suffix"]
+        target_tid = new_id("tn")
+        nc_source["cleanup_ids"].append(target_tid)
+        pkg = _retenant(json.loads(nc_package_text)["data"],
+                        tenant_id=target_tid, suffix=suffix)
+        target_bot_id = pkg["resources"]["bots"][0]["id"]
+        assert target_bot_id != nc_source["bot_id"]
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=pkg))
+        assert report["tenantId"] == target_tid
+        assert report["created"]["tenant"] == 1
+        assert report["created"]["voice_bot_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=target_tid, bot_id=target_bot_id)
+            assert _canonical(bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+            # The source tenant (re-imported by the previous test) is untouched.
+            src_bot_hs, src_tenant_hs = _stored_human_speech(
+                session, tenant_id=nc_source["tenant_id"], bot_id=nc_source["bot_id"])
+            assert _canonical(src_bot_hs) == _canonical(_BOT_HUMAN_SPEECH)
+            assert _canonical(src_tenant_hs) == _canonical(_TENANT_HUMAN_SPEECH)
+        finally:
+            session.close()
+
+    def test_legacy_package_without_natural_conversation_keys_imports(
+            self, client, nc_source, nc_package_text, super_admin):
+        """An export written before the Natural Conversation tab existed: the
+        bot override carries only the older keys and the tenant settings row
+        predates the human_speech column entirely. It must import unchanged
+        (no keys invented, nothing rejected) and the runtime resolution must
+        fall through to the platform defaults for the newer keys."""
+        from shared.orchestration.naturalness import (
+            HUMAN_SPEECH_DEFAULTS, resolve_human_speech_with_sources,
+        )
+
+        suffix = nc_source["suffix"]
+        target_tid = new_id("tn")
+        nc_source["cleanup_ids"].append(target_tid)
+        pkg = _retenant(json.loads(nc_package_text)["data"],
+                        tenant_id=target_tid, suffix=f"legacy{suffix}")
+        legacy_bot_hs = {
+            k: v for k, v in _BOT_HUMAN_SPEECH.items()
+            if k not in _NATURAL_CONVERSATION_KEYS
+        }
+        pkg["resources"]["voice_bot_settings"][0]["human_speech"] = copy.deepcopy(legacy_bot_hs)
+        del pkg["resources"]["tenant_settings"]["human_speech"]
+        target_bot_id = pkg["resources"]["bots"][0]["id"]
+
+        report = _data(client.post(
+            f"{API}/tenants/import", headers=super_admin, json=pkg))
+        assert report["tenantId"] == target_tid
+        assert report["created"]["voice_bot_settings"] == 1
+        assert report["created"]["tenant_settings"] == 1
+
+        session = _db()
+        try:
+            bot_hs, tenant_hs = _stored_human_speech(
+                session, tenant_id=target_tid, bot_id=target_bot_id)
+            assert _canonical(bot_hs) == _canonical(legacy_bot_hs)
+            assert tenant_hs is None  # absent column value stays NULL → inherit
+        finally:
+            session.close()
+
+        effective, sources = resolve_human_speech_with_sources(tenant_hs, bot_hs)
+        for key in _NATURAL_CONVERSATION_KEYS:
+            assert effective[key] == HUMAN_SPEECH_DEFAULTS[key]
+            assert sources[key] == "platform"
+        assert effective["latency_filler_delay_ms"] == 1200
+        assert sources["latency_filler_delay_ms"] == "bot"
+        # The API path agrees with the shared resolver.
+        settings = _data(client.get(
+            f"{API}/bots/{target_bot_id}/voice-settings", headers=super_admin))
+        assert _canonical(settings["humanSpeech"]) == _canonical(legacy_bot_hs)
+        assert settings["humanSpeechEffective"]["latency_filler_kind"] == "breath"
+        assert settings["humanSpeechEffective"]["filler_audio_selection"] == {}

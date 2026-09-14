@@ -208,6 +208,11 @@ from voice_runtime.turn_metrics import TurnLatencyTracker
 
 logger = logging.getLogger(__name__)
 
+# Answerability gate for retrieval on a turn a tenant-configured KNOWLEDGE
+# intent already identified as a knowledge question (the intent is the gate;
+# retrieval only ranks passages). The platform default applies elsewhere.
+_INTENT_KB_MIN_SCORE = 0.15
+
 _HISTORY_MAX_TURNS = 20
 
 # Sentence boundary for the guardrail sentence-hold streaming mode (Latin
@@ -324,6 +329,19 @@ _CLARIFY_MERGE_WINDOW = 6.0
 # A caller utterance that ends in a question mark is a question whatever
 # the signal regexes make of it (dispatch-time acknowledgement context).
 _QUESTION_MARK_RE = re.compile(r"[?？]\s*$")
+# Latency-cue context (voiced cue on a long wait): courtesy and trouble
+# markers in the caller's own words, Hindi/Hinglish/English. Deterministic,
+# no model call — the cue must be planned the instant the turn closes.
+_POLITE_RE = re.compile(
+    r"(धन्यवाद|शुक्रिया|thank(?:s| you)|please|कृपया|plz|sorry|माफ़|माफ|excuse me|नमस्ते|namaste)",
+    re.IGNORECASE,
+)
+_CONCERN_RE = re.compile(
+    r"(नहीं (?:मिला|मिली|आया|आयी|हुआ|हुई|पहुँचा|पहुंचा)|nahi (?:mila|mili|aaya|aayi|hua|hui|pahuncha)"
+    r"|गलत|galat|problem|issue|समस्या|दिक्कत|dikkat|परेशान|pareshan|कट (?:गया|गए|गयी)|kat (?:gaya|gaye|gayi)"
+    r"|deduct|fraud|फ्रॉड|धोखा|dhokha|अरे|arre|damaged|टूटा|toota|leak|खराब|kharab)",
+    re.IGNORECASE,
+)
 # Question words anywhere in the utterance ("mera order kab aayega"). Whole
 # tokens bounded by whitespace/punctuation — never \b, which Devanagari
 # matras defeat.
@@ -943,14 +961,15 @@ class ConversationBrain(FrameProcessor):
         # Turn id the filler was armed with at dispatch; a re-arm after the
         # early acknowledgement keeps it (the wait is the same turn's).
         self._latency_filler_turn_id = 0
-        # Dispatch-time acknowledgement ("जी…"): spoken the moment the
-        # caller's turn closes, separate from the reply. While its audio is
-        # queued/playing it is NOT the reply — latency keeps waiting for the
-        # reply's first audio and caller speech over it is a continuation,
-        # not a barge-in. ``_early_ack_spoken_turn`` keeps a later tool
-        # preface from stacking a second acknowledgement onto it.
-        self._early_ack_pending = False
+        # The planner's voiced-cue decision for the dispatched turn (kept for
+        # the re-arm after an early acknowledgement).
+        self._latency_cue_plan = None
+        # Acknowledgements play as cached latency-filler PCM, never through
+        # the reply's TTS queue. Only actual playback consumes the per-turn
+        # allowance or suppresses a subsequent tool preface.
         self._early_ack_spoken_turn: int | None = None
+        if latency_filler is not None:
+            latency_filler.acknowledgement_hook = self._on_latency_ack_played
         # Most recent trusted caller-state signal. Accepted STT finals may set
         # a deterministic serious signal while the caller still owns the
         # floor; the orchestrator's validated signal replaces it at turn end.
@@ -1123,7 +1142,7 @@ class ConversationBrain(FrameProcessor):
             )
             if not resumed_before_reply and (
                 self._bot_speaking or self._reply_audio_started
-            ) and not self._backchannel_active and not self._early_ack_pending:
+            ) and not self._backchannel_active:
                 # A genuine interruption of audible speech: the policy records
                 # it, and the cancelled generation below guarantees no stale
                 # reply continues past this point. A caller talking over the
@@ -1191,15 +1210,6 @@ class ConversationBrain(FrameProcessor):
                 self._bot_speaking = True
                 await self.push_frame(frame, direction)
                 return
-            if self._early_ack_pending:
-                # The dispatch-time "जी…" reached the wire. The caller is
-                # still waiting for the answer: the latency measurement stays
-                # open and a caller who keeps talking is finishing a thought,
-                # not interrupting a reply.
-                self._bot_speaking = True
-                self._disarm_silence_timer()
-                await self.push_frame(frame, direction)
-                return
             # First audio of the reply reached the wire: this is the moment the
             # caller stops waiting, so it closes the turn's latency measurement.
             self._reply_audio_started = True
@@ -1217,18 +1227,6 @@ class ConversationBrain(FrameProcessor):
             self._bot_speaking = False
             if self._backchannel_active:
                 self._end_backchannel_window()
-            elif self._early_ack_pending:
-                # The acknowledgement finished; the reply's own audio will
-                # own the bot-speaking marks from here. The caller is still
-                # waiting: the latency filler (stood down for the ack) takes
-                # the floor back after a short beat.
-                self._early_ack_pending = False
-                if (
-                    self._generation_in_flight()
-                    and not self._reply_audio_started
-                    and self._open_turn_text
-                ):
-                    await self._arm_latency_filler(self._open_turn_text, resume=True)
             else:
                 self._latency.mark_bot_stopped_speaking()
                 if self._reply_tts_complete:
@@ -2248,11 +2246,9 @@ class ConversationBrain(FrameProcessor):
         # within the configured delay, a gender-matched breath fills the gap
         # (then, on a long wait, a voiced cue in the bot's own voice).
         await self._arm_latency_filler(text)
-        # And a person answers a closed turn with a short "जी…" within about
-        # a second — before they know what they will say. Spoken now, from
-        # the caller's own words, separate from the reply that follows.
-        self._early_ack_pending = False
-        await self._speak_early_ack(text)
+        # No transient TTS response may precede this generation. The latency
+        # processor owns any delayed acknowledgement and never waits for it
+        # to synthesize or finish before forwarding playable reply audio.
         # Remembered so a provider re-emitting this turn's transcript as the
         # prefix of the next final cannot answer the same words twice.
         self._last_dispatched_turn = (text, time.monotonic())
@@ -2972,6 +2968,91 @@ class ConversationBrain(FrameProcessor):
 
     # ── latency filler (human speech naturalness) ─────────────────────────
 
+    def _prefetch_decision_ready(self, text: str) -> bool:
+        """The speculative decision for ``text`` already succeeded — the reply
+        is one model call away, so no filler word should be planned for it."""
+        prefetch = self._decision_prefetch
+        return bool(
+            prefetch is not None
+            and prefetch[0] == text
+            and prefetch[1].done()
+            and not prefetch[1].cancelled()
+            and prefetch[1].exception() is None
+            and prefetch[1].result() is not None
+        )
+
+    def _latency_cue_context(self, text: str, decision: RouteDecision | None) -> str:
+        """What the caller just did, for choosing a voiced cue on a long wait.
+
+        Derived from their words alone (regex router + signal classifier, no
+        model call), in priority order: a knowledge/tool path → ``lookup``;
+        a question → ``thinking``; trouble in their words (complaint,
+        hardship, "नहीं मिला", "कट गया", "problem") → ``concern``; inside a
+        workflow, an answer to the bot's question → ``confirm`` (a plain
+        "हाँ" there is an answer, not agreement); an agreement signal →
+        ``affirm``; a stated fact or commitment (already paid, callback,
+        payment intent) → ``information``; courtesy words → ``polite``; a
+        longer statement → ``information``; else ``neutral``.
+        """
+        # This turn's own words only — the previous turn's signal must not
+        # colour the cue (a question after a complaint is still a question).
+        signal = classify_user_signal(text) or ""
+        if decision is not None and decision.kind == RouteKind.KNOWLEDGE:
+            return "lookup"
+        if (
+            signal == "question"
+            or _QUESTION_MARK_RE.search(text)
+            or _QUESTION_WORD_RE.search(text)
+        ):
+            return "thinking"
+        if signal in ("complaint", "hardship", "wrong_person") or _CONCERN_RE.search(text):
+            return "concern"
+        if self._active_workflow is not None:
+            return "confirm"
+        if signal == "affirm":
+            return "affirm"
+        if signal in ("already_paid", "payment_intent", "callback"):
+            return "information"
+        if _POLITE_RE.search(text):
+            return "polite"
+        if len(text.split()) >= 6:
+            return "information"
+        return "neutral"
+
+    def _plan_latency_cue(self, text: str):
+        """The planner's voiced-cue decision for the turn being dispatched
+        (None when the planner has no such method — stubs in tests)."""
+        planner = self._naturalness
+        plan_cue = getattr(planner, "plan_latency_cue", None)
+        if not callable(plan_cue):
+            return None
+        try:
+            decision = self._router.decide(
+                text, active_workflow=self._active_workflow,
+                allow_affirm_entry=not self._workflow_ever_routed,
+            ) if text else None
+        except Exception:  # noqa: BLE001 — decoration must never break a turn
+            decision = None
+        context = self._latency_cue_context(text, decision) if text else "neutral"
+        plan = plan_cue(
+            language=self._conversation_language,
+            context=context,
+            serious=is_serious_caller_state(self._latest_caller_signal),
+            critical=contains_critical_content(text),
+            turn_index=self._latency_filler_turn_id,
+            early_ack_spoken=False,
+            expected_fast=self._prefetch_decision_ready(text),
+            last_cue=getattr(self._latency_filler, "last_cue_played", None),
+        )
+        add_event = getattr(self._recorder, "add_event", None)
+        if add_event is not None:
+            add_event(
+                "latency_cue_planned", turn=self._latency_filler_turn_id, context=plan.context,
+                verbal=plan.verbal, reason=plan.reason, role=plan.role,
+                first=(plan.cue_ids[0] if plan.cue_ids else ""),
+            )
+        return plan
+
     async def _arm_latency_filler(self, text: str = "", *, resume: bool = False) -> None:
         """A turn was dispatched: the filler may cover the wait for its reply.
 
@@ -2990,10 +3071,27 @@ class ConversationBrain(FrameProcessor):
             return
         if not resume:
             self._latency_filler_turn_id = self._turn_counter + 1
+        gender = self._active_identity().gender
+        planner = self._naturalness
+        filler_kind = getattr(planner, "latency_filler_kind", "breath")
+        select_clips = getattr(planner, "filler_selection_for", None)
+        if not resume:
+            # Context-aware voiced-cue plan for this turn: whether a long wait
+            # may get a word at all, and which of the bot's allowed cues fit
+            # what the caller just said (best first).
+            self._latency_cue_plan = self._plan_latency_cue(text)
+        plan = self._latency_cue_plan
+        cue_selection = plan.as_selection() if plan is not None else None
+        # After a spoken acknowledgement the wait gets no second word: the
+        # re-armed schedule keeps only the breath-free tail and the spoken
+        # "wait" rung (its own permission).
+        allow_voiced = bool(plan.verbal) if plan is not None else True
+        if resume:
+            allow_voiced = False
         try:
             await filler.arm(
                 turn_id=self._latency_filler_turn_id,
-                gender=self._active_identity().gender,
+                gender=gender,
                 speech_stopped_at=self._latency.speech_stopped_at,
                 dispatched_at=self._latency.dispatched_at,
                 language=self._conversation_language,
@@ -3004,6 +3102,16 @@ class ConversationBrain(FrameProcessor):
                     or self._identifier_capture is not None
                 ),
                 resume=resume,
+                # Bot configuration: which sound covers the gap, which clips
+                # of it (always the active voice's gender) and which voiced
+                # "hmm" cues may follow. The processor rotates within them.
+                filler_kind=filler_kind,
+                filler_selection=(
+                    select_clips(filler_kind, gender) if callable(select_clips) else None
+                ),
+                cue_selection=cue_selection,
+                allow_voiced=allow_voiced,
+                acknowledgement=self._plan_early_ack(text) if not resume else None,
             )
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             logger.debug("latency filler could not be armed", exc_info=True)
@@ -3032,7 +3140,11 @@ class ConversationBrain(FrameProcessor):
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             logger.debug("latency filler could not be cancelled", exc_info=True)
 
-    # ── dispatch-time acknowledgement (human speech naturalness) ─────────
+    # ── latency acknowledgement (human speech naturalness) ───────────────
+
+    def _on_latency_ack_played(self, turn_id: int) -> None:
+        self._early_ack_spoken_turn = turn_id
+        self._naturalness.note_early_ack_played(turn_id)
 
     def _early_ack_context(self, text: str, decision: RouteDecision) -> str:
         """What the caller just did, from their words alone (no model call).
@@ -3053,8 +3165,8 @@ class ConversationBrain(FrameProcessor):
             return "question"
         return "answer"
 
-    async def _speak_early_ack(self, text: str) -> None:
-        """Acknowledge the closed caller turn NOW, separate from the reply.
+    def _plan_early_ack(self, text: str) -> dict | None:
+        """Plan an optional cached acknowledgement for the latency deadline.
 
         Withheld when the reply cannot be far (the speculative decision is
         already done), when the turn is a deterministic platform command
@@ -3062,7 +3174,9 @@ class ConversationBrain(FrameProcessor):
         the caller is dictating an identifier (the workflow consumes digits
         deterministically — a "जी" per chunk is noise), or while bot audio
         is still on the wire. Everything else is the planner's call:
-        probability, no consecutive turns, context, pool rotation.
+        probability, no consecutive turns, context, pool rotation. This never
+        queues TTS: the filler may play it only after the configured delay
+        while reply audio is still unavailable.
         """
         if self._closing or self._bot_speaking or not self._naturalness.enabled:
             return
@@ -3101,25 +3215,11 @@ class ConversationBrain(FrameProcessor):
             turn_index=turn_id,
             serious=is_serious_caller_state(self._latest_caller_signal),
             critical=contains_critical_content(text),
+            commit=False,
         )
         if not token:
             return
-        self._early_ack_pending = True
-        self._early_ack_spoken_turn = turn_id
-        # The acknowledgement's audio is TTS audio too: left armed, the
-        # filler would take it for the reply, cut for good and leave the rest
-        # of the wait uncovered. Stand down now; BotStoppedSpeaking re-arms
-        # once the "जी…" is over (if the reply still has not started).
-        await self._cancel_latency_filler("early_ack")
-        self._recorder.add_event(
-            "early_ack_played", turn=turn_id, context=context,
-            language=self._conversation_language,
-        )
-        logger.info(
-            "turn[%s] early acknowledgement spoken (turn=%d context=%s chars=%d)",
-            self._recorder.session_id, turn_id, context, len(token),
-        )
-        await self._speak_transient(token)
+        return {"text": token, "context": context}
 
     async def _speak_transient(self, text: str) -> None:
         """Push delivery-only speech (preface/backchannel) to TTS.
@@ -3144,7 +3244,6 @@ class ConversationBrain(FrameProcessor):
         self._disarm_silence_timer()
         await self._stop_backchannel_monitor()
         self._end_backchannel_window()
-        self._early_ack_pending = False
         await self._cancel_finalize()
         prefetch, self._decision_prefetch = self._decision_prefetch, None
         if prefetch is not None:
@@ -3478,6 +3577,10 @@ class ConversationBrain(FrameProcessor):
                 # slow provider turns into a doubled worst case.
                 classification = await self._classify_turn(text)
                 decision = self._apply_classification(decision, classification)
+        decision = self._router.apply_entry_fallback(
+            decision, active_workflow=self._active_workflow,
+            allow_affirm_entry=not self._workflow_ever_routed,
+        )
         if orchestrated is not None:
             # The validated decision is the single source of meaning for the
             # turn — the regex bank must not resurrect a signal the decision
@@ -3761,7 +3864,16 @@ class ConversationBrain(FrameProcessor):
                         extra_system=plan.instruction + tool_instruction,
                     )
             elif decision.kind == RouteKind.WORKFLOW and self._workflows is not None:
-                await self._handle_workflow(decision, text, started, signal=signal)
+                await self._handle_workflow(
+                    decision, text, started, signal=signal,
+                    classification=classification,
+                )
+            elif decision.reason == "entry_reprompt":
+                from shared.orchestration.phrases import entry_question_retry
+
+                await self._say(entry_question_retry(
+                    self._config.greeting, self._conversation_language,
+                ))
             elif decision.kind == RouteKind.CLARIFY and self._policy is not None:
                 # In a policy-managed call even a bare "जी" / "hmm" is context:
                 # a canned clarification here is what produced the "didn't
@@ -4557,6 +4669,7 @@ class ConversationBrain(FrameProcessor):
     async def _handle_workflow(
         self, decision: RouteDecision, text: str, started: float,
         signal: str | None = None,
+        classification: IntentClassification | None = None,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
         reset_state = False
@@ -4586,7 +4699,16 @@ class ConversationBrain(FrameProcessor):
             ),
             reset_state=reset_state,
             heard_nodes=list(self._heard_nodes),
+            llm=self._llm,
+            history=self._history,
         )
+        extraction_usage = result.get("extractionUsage")
+        if extraction_usage:
+            counters = self._recorder.usage
+            counters["llm_requests"] = counters.get("llm_requests", 0) + 1
+            for key in ("input_tokens", "output_tokens"):
+                usage_key = "llm_" + key
+                counters[usage_key] = counters.get(usage_key, 0) + extraction_usage.get(key, 0)
         workflow_slots = result.get("slots") or {}
         # Snapshot for the post-call structured summary: scalar slots only,
         # replaced (not merged) so a cleared/corrected answer is reflected.
@@ -4608,6 +4730,10 @@ class ConversationBrain(FrameProcessor):
         self._active_workflow = None if result["done"] else workflow_name
         self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)
+        turn_signal = result.get("signal") or (
+            classification.signal if classification is not None else None
+        ) or decision.signal or signal
+        kb_intent = self._knowledge_intent_in_turn(text, classification)
         if result.get("offScript"):
             # The workflow did NOT consume this turn (hardship, complaint,
             # question — nothing the current node has an edge for). The
@@ -4616,7 +4742,7 @@ class ConversationBrain(FrameProcessor):
             self._recorder.add_event(
                 "workflow_off_script",
                 workflow=workflow_name,
-                signal=result.get("signal") or decision.signal,
+                signal=turn_signal,
             )
             extra = (
                 self._context_response_instruction()
@@ -4625,9 +4751,52 @@ class ConversationBrain(FrameProcessor):
             )
             if self._policy is not None:
                 extra += self._policy.turn_instruction()
+            if self._knowledge is not None and self._config.kb_ids and (
+                kb_intent or turn_signal == "question"
+            ):
+                # An informational question while the flow waits (cv_56df956b0430:
+                # "what is the onboarding fee?" at the amount ask was answered
+                # by the persona alone — and refused as out of scope). The
+                # router keeps the turn in the workflow, so the KB route is
+                # applied HERE: retrieval grounds the off-script reply exactly
+                # like a standalone knowledge turn; the paused step is restated
+                # afterwards by the same instruction.
+                decision = RouteDecision(
+                    kind=RouteKind.KNOWLEDGE,
+                    intent=(classification.intent if classification else decision.intent),
+                    confidence=(classification.confidence if classification else 1.0),
+                    reason="kb_question_in_workflow", considered_kb=True,
+                    signal=turn_signal,
+                )
+                self._recorder.add_event(
+                    "workflow_kb_question", workflow=workflow_name,
+                    consumed=False, intent=decision.intent,
+                )
             await self._generate_reply(text, decision, started, extra_system=extra)
             return
         reply = result["reply"]
+        if result.get("knowledgeCovered") and kb_intent:
+            # The flow's own document step (e.g. the onboarding-fee explanation)
+            # answers the question this turn — no second, LLM-worded answer.
+            self._recorder.add_event(
+                "workflow_kb_question", workflow=workflow_name, consumed=True,
+                covered_by_flow=True,
+            )
+            kb_intent = None
+        if kb_intent and reply and self._knowledge is not None and self._config.kb_ids:
+            # WORKFLOW ANSWER + KB QUESTION in one breath ("nahi bataya tha,
+            # waise onboarding fee hoti kya hai?"): the flow consumed the answer
+            # and moved on; the question is answered first, from the KB, then
+            # the flow's own reply (its next pending question) follows.
+            kb_answer = await self._kb_answer_for_workflow_turn(kb_intent)
+            self._recorder.add_event(
+                "workflow_kb_question", workflow=workflow_name,
+                consumed=True, intent=(classification.intent if classification else None),
+                answered=bool(kb_answer),
+            )
+            if kb_answer:
+                reply = f"{kb_answer} {reply}"
+                result = {**result, "reply": reply}
         response_mode = str(result.get("responseMode") or RESPONSE_MODE_FIXED)
         if reply:
             # The nodes this reply speaks for: marked heard once its audio
@@ -5086,6 +5255,81 @@ class ConversationBrain(FrameProcessor):
             + lines
         )
 
+    def _knowledge_intent_in_turn(
+        self, text: str, classification: IntentClassification | None
+    ) -> str | None:
+        """The knowledge question carried by this turn (retrieval query), or None.
+
+        The classified intent (LLM/phrase) mapping to a ``knowledge`` route
+        makes the whole utterance the query; otherwise the router looks for a
+        question CLAUSE that names a knowledge topic ("… waise onboarding fee
+        hoti kya hai?"). Deliberately NOT a bare "question" signal: a consumed
+        verification answer phrased as a question ("sahi hai na?") must not
+        trigger retrieval — the off-script path handles plain questions.
+        """
+        if not self._config.kb_ids or self._knowledge is None:
+            return None
+        name = classification.intent if classification is not None else None
+        if name and not (classification and classification.below_threshold):
+            configured = next(
+                (i for i in (self._config.intents or []) if i.get("name") == name), None
+            )
+            if configured and str(configured.get("route") or "") == "knowledge":
+                return text
+        try:
+            return self._router.detect_knowledge_question(text)
+        except Exception:  # noqa: BLE001 — a matcher bug must not break the turn
+            logger.exception("knowledge question detection failed")
+            return None
+
+    async def _kb_answer_for_workflow_turn(self, text: str) -> str | None:
+        """One short KB-grounded answer to the question inside a consumed
+        workflow turn (caller language, no new question), or the localized
+        "not in my information" line when retrieval misses. None only on a
+        provider failure (the flow's reply then stands alone)."""
+        try:
+            result = await self._knowledge.search(
+                RetrievalRequest(
+                    tenant_id=self._config.tenant_id,
+                    kb_ids=self._config.kb_ids or None,
+                    bot_id=self._config.bot_id,
+                    query=text,
+                    min_score=_INTENT_KB_MIN_SCORE,
+                )
+            )
+        except Exception:  # noqa: BLE001 — retrieval failure: flow reply stands
+            logger.exception("kb retrieval failed for a workflow turn")
+            return None
+        self._recorder.usage["kb_searches"] += 1
+        self._recorder.add_event(
+            "kb_retrieval", kb_ids=result.kb_ids, answerable=result.answerable,
+            confidence=result.confidence, sources=len(result.sources),
+            duration_ms=result.duration_ms, in_workflow=True,
+        )
+        if (not result.answerable or not result.sources
+                or result.confidence < _INTENT_KB_MIN_SCORE):
+            return canned("wf_kb_miss", self._conversation_language)
+        context_lines = [
+            f"[{i + 1}] {sanitize_for_context(s.text)}" for i, s in enumerate(result.sources)
+        ]
+        label = language_label(self._conversation_language)
+        system = (
+            "You are a phone support agent. The caller's message contains an "
+            "informational question. Answer ONLY that question, in one or two "
+            "short spoken sentences, using ONLY the reference context below — "
+            "quote its facts, add nothing, and if the context does not cover the "
+            "question say that the available information does not specify it. "
+            "Do not ask any question, do not greet, do not mention tickets or "
+            "verification, do not repeat the caller's own statements."
+            + (f" Respond in natural spoken {label}." if label else "")
+            + "\nContext:\n" + "\n".join(context_lines)
+        )
+        generated = await self._constrained_generate(text, system)
+        answer = (generated or "").strip()
+        if not answer or len(answer) > 600:
+            return canned("wf_kb_miss", self._conversation_language)
+        return answer
+
     def _workflow_context_instruction(self, result: dict) -> str:
         """System-prompt suffix for an off-script turn inside a workflow.
 
@@ -5096,6 +5340,17 @@ class ConversationBrain(FrameProcessor):
         prompt = (result.get("nodePrompt") or "").strip()
         step = f' The flow is currently waiting on this step: "{prompt}".' if prompt else ""
         facts = collected_facts_block(result.get("slots") or {})
+        if result.get("awaitingKind") == "intent" and prompt:
+            # An "anything else?" hub: after answering the caller's question
+            # the bot must not recite the hub's question verbatim every time
+            # (cv_2c60d51f61fb: the same closing line after four answers).
+            step += (
+                " That step is an open follow-up prompt, not a required "
+                "question: after answering, either stop, or add ONE short "
+                "natural follow-up in your own words (e.g. 'और कुछ जानना "
+                "चाहेंगे?' / 'Anything else on this?') — never repeat the "
+                "step's wording verbatim, and vary it across turns."
+            )
         return facts + (
             "\n\n# Paused call flow (THIS turn)\n"
             "A structured call flow is active but the caller's last message "
@@ -5167,6 +5422,12 @@ class ConversationBrain(FrameProcessor):
                         kb_ids=self._config.kb_ids or None,
                         bot_id=self._config.bot_id,
                         query=text,
+                        # A tenant-configured knowledge intent already decided
+                        # this IS a KB question: retrieval only has to pick the
+                        # passages, so the answerability gate is relaxed (a
+                        # short clause like "upfront fee kya hai" scores under
+                        # the default gate on keyword retrieval).
+                        min_score=(_INTENT_KB_MIN_SCORE if decision.intent else None),
                     )
                 )
             retrieval_ms = result.duration_ms
@@ -5178,7 +5439,20 @@ class ConversationBrain(FrameProcessor):
                 sources=len(result.sources),
                 duration_ms=result.duration_ms,
             )
-            if result.answerable:
+            from shared.config import get_settings
+
+            gate = _INTENT_KB_MIN_SCORE if decision.intent else get_settings().retrieval_min_score
+            grounded = bool(result.answerable and result.sources) and (
+                result.confidence >= gate
+            )
+            if result.answerable and not grounded:
+                # Keyword retrieval can mark a barely-related chunk "answerable"
+                # at a confidence far under the gate ("aaj weather kaisa hai?"
+                # → the upfront-fee passage at 0.05): never ground on it.
+                self._recorder.add_event(
+                    "kb_retrieval_below_gate", confidence=result.confidence, gate=gate,
+                )
+            if grounded:
                 context_lines = [
                     f"[{i + 1}] ({s.document_name or s.document_id}"
                     + (f", page {s.page_number}" if s.page_number else "")
@@ -5188,7 +5462,12 @@ class ConversationBrain(FrameProcessor):
                 system = (
                     system
                     + "\n\nAnswer using ONLY the reference context below. Quote facts "
-                    "exactly; do not add information that is not in the context.\n"
+                    "exactly; do not add information that is not in the context. "
+                    "If the context does not answer what the caller asked (for "
+                    "example a refund, waiver, cancellation, exact amount or who "
+                    "decides something), say plainly that the available information "
+                    "does not specify it — never answer from general knowledge and "
+                    "never guess a policy.\n"
                     "Context:\n" + "\n".join(context_lines)
                 )
                 kb_sources = [

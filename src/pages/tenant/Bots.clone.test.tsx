@@ -19,6 +19,9 @@ vi.mock("@/services/api", () => ({
   cloneBot: vi.fn(),
   listLanguages: vi.fn(),
   simulateAction: vi.fn(),
+  archiveBot: vi.fn(),
+  restoreBot: vi.fn(),
+  deleteBot: vi.fn(),
 }));
 
 const toast = vi.fn();

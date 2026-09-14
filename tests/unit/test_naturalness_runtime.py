@@ -150,7 +150,7 @@ def assistant_history(brain):
 # ── brain: streamed-reply preface ────────────────────────────────────────
 
 
-async def test_early_acknowledgement_is_spoken_at_dispatch_separate_from_reply():
+async def test_fast_reply_has_no_dispatch_time_acknowledgement():
     llm = _StreamingLLMStub(["Aapka sawaal ", "samajh gaya, batata hoon."])
     brain = make_brain(
         llm=llm,
@@ -165,29 +165,29 @@ async def test_early_acknowledgement_is_spoken_at_dispatch_separate_from_reply()
 
     frames = brain._pushed
     texts = [f.text for f in frames if isinstance(f, TextFrame)]
-    # The first thing spoken is one short acknowledgement, in its OWN
-    # response envelope, closed before the reply's envelope opens — never
-    # glued to the front of the reply.
-    assert texts[0].endswith("…"), texts
-    assert len(texts[0].split()) <= 3
-    first_text = next(i for i, f in enumerate(frames) if isinstance(f, TextFrame))
-    assert isinstance(frames[first_text - 1], LLMFullResponseStartFrame)
-    assert isinstance(frames[first_text + 1], LLMFullResponseEndFrame)
-    # It was spoken BEFORE the turn handler even ran (dispatch time).
-    ack_event = brain._recorder.event_kinds().index("early_ack_played")
-    assert ack_event < brain._recorder.event_kinds().index("orchestration_turn")
-    # The reply itself carries no preface and is what history keeps.
+    # Only the semantic answer enters the shared TTS queue, even when an
+    # acknowledgement was configured with probability one.
+    assert "early_ack_played" not in brain._recorder.event_kinds()
     reply = assistant_history(brain)[-1]
     assert reply == "Aapka sawaal samajh gaya, batata hoon."
-    assert texts[1:] and not texts[1].endswith("… ")
+    assert "".join(texts) == reply
     event = dict(brain._recorder.events)["orchestration_turn"]
     assert event["human_speech_enabled"] is True
     assert event["naturalness"]["filler_used"] is False        # nothing glued
-    assert event["naturalness"]["early_ack_spoken"] is True
+    assert event["naturalness"]["early_ack_spoken"] is False
     await brain.cleanup()
 
 
-async def test_early_ack_audio_is_not_the_reply():
+def attach_latency_filler(brain):
+    from tests.unit.test_latency_filler import make_filler, _AcknowledgementCueStub
+
+    filler = make_filler(delay_ms=60, cue_library=_AcknowledgementCueStub(), recorder=brain._recorder)
+    filler.acknowledgement_hook = brain._on_latency_ack_played
+    brain._latency_filler = filler
+    return filler
+
+
+async def test_delayed_ack_audio_is_not_the_reply():
     brain = make_brain(
         llm=_StreamingLLMStub(["Theek hai."]),
         naturalness=planner({"acknowledgement_probability": 1.0}),
@@ -197,16 +197,16 @@ async def test_early_ack_audio_is_not_the_reply():
         await asyncio.sleep(0.5)
 
     brain._handle_turn = _slow_turn
+    filler = attach_latency_filler(brain)
     await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
     await settle_turn()
-    assert brain._early_ack_pending is True
+    await asyncio.sleep(0.08)
+    assert "early_ack_played" in brain._recorder.event_kinds()
+    assert filler.playing
     # Its audio must not close the latency measurement or count as the reply.
-    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
     assert brain._reply_audio_started is False
     assert brain._latency.bot_started_at is None
-    assert brain._bot_speaking is True
-    await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
-    assert brain._early_ack_pending is False
+    assert brain._bot_speaking is False
     # The reply's own audio owns the marks.
     await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
     assert brain._reply_audio_started is True
@@ -224,9 +224,11 @@ async def test_caller_continuing_over_the_ack_merges_instead_of_barging_in():
         await asyncio.sleep(0.5)
 
     brain._handle_turn = _slow_turn
+    filler = attach_latency_filler(brain)
     await brain.process_frame(transcript("haan bol raha hoon"), FrameDirection.DOWNSTREAM)
     await settle_turn()
-    await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.08)
+    assert filler.playing
     # The caller keeps talking over "जी…": a continuation of their thought,
     # rewound and merged — not an interruption of a reply nobody heard yet.
     await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
@@ -234,6 +236,7 @@ async def test_caller_continuing_over_the_ack_merges_instead_of_barging_in():
     assert "barge_in" not in kinds
     cancelled = [d for k, d in brain._recorder.events if k == "generation_cancelled"]
     assert cancelled and cancelled[-1]["reason"] == "late_transcript_merge"
+    assert not filler.armed
     await brain.cleanup()
 
 
@@ -268,10 +271,6 @@ async def test_early_ack_context_follows_the_callers_words():
         naturalness=planner({"acknowledgement_probability": 1.0}),
     )
 
-    async def _handle(text):
-        pass
-
-    brain._handle_turn = _handle
     for text, expected in (
         ("haan bol raha hoon", "answer"),
         ("mera order kab aayega", "question"),
@@ -279,10 +278,9 @@ async def test_early_ack_context_follows_the_callers_words():
     ):
         brain._recorder.events.clear()
         brain._naturalness._last_early_ack_turn = None   # isolate from anti-repetition
-        await brain.process_frame(transcript(text), FrameDirection.DOWNSTREAM)
-        await settle_turn()
-        played = [d for k, d in brain._recorder.events if k == "early_ack_played"]
-        assert played and played[0]["context"] == expected, (text, played)
+        planned = brain._plan_early_ack(text)
+        assert planned and planned["context"] == expected, (text, planned)
+        assert "early_ack_played" not in brain._recorder.event_kinds()
     await brain.cleanup()
 
 

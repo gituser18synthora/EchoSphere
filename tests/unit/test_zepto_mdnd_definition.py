@@ -87,11 +87,15 @@ def test_v3_flow_asks_reached_and_called_together_then_handover_then_cx():
     assert combined["variable"] == "m_reached_location"
     assert "location" in combined["question"] and "call" in combined["question"]
     assert any(c["variable"] == "m_called_customer" for c in combined["alsoCapture"])
-    # Guard-name follow-up only after a guard handover with no name known.
+    # The four-slot flow keeps names optional: a guard handover goes to CX.
     assert nodes["n_cond_guard"]["config"] == {
         "variable": "m_handover_recipient", "operator": "equals",
         "value": "guard / security"}
     assert {e["to"] for e in out["n_cond_guard"]} == {"n_cond_guard_name", "n_ask_cx"}
+    assert [e["to"] for e in out["n_ask_handover"]] == ["n_ask_cx"]
+    assert nodes["n_start"]["config"]["semanticSlots"] == "mdnd_v1"
+    assert any(e["from"] == "n_hub_verify" and e.get("label") == "correction"
+               and e["to"] == "n_ask_correction" for e in edges)
     # The CX-support question exists and feeds the verification hub.
     cx = nodes["n_ask_cx"]["config"]
     assert cx["variable"] == "m_cx_support_call" and "CX support" in cx["question"]
@@ -184,6 +188,25 @@ def mdnd_engine(monkeypatch):
     return engine
 
 
+@pytest.fixture()
+def mdnd_legacy_guard_engine(mdnd_engine, monkeypatch):
+    """Keep old in-flight guard-node extraction covered without requiring names
+    on new calls, whose graph deliberately bypasses this legacy branch."""
+    module = _config()[0]
+    nodes, edges = module["build_mdnd_workflow"]()
+    for node in nodes:
+        if node["id"] == "n_start":
+            node.pop("config", None)
+    for edge in edges:
+        if edge["from"] == "n_ask_handover":
+            edge["to"] = "n_cond_guard"
+    definition = {"id": "wf_mdnd_legacy", "version": 1, "name": "MDND legacy",
+                  "nodes": nodes, "edges": edges}
+    monkeypatch.setattr(wfe, "load_workflow_definition",
+                        lambda tenant_id, bot_id, name: definition)
+    return mdnd_engine
+
+
 async def _mdnd_turn(engine, text, session, **kwargs):
     return await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_x", bot_id="bot_x",
@@ -232,7 +255,7 @@ async def test_denied_recipient_at_verification_is_reasked_not_looped(mdnd_engin
     assert r["slots"]["m_called_customer"] == "yes (called the customer)"
     r = await _mdnd_turn(mdnd_engine, "security guard ko diya tha", session)
     assert r["slots"]["m_handover_recipient"] == "guard / security"
-    assert r["trace"][-1] == "n_ask_guard_name_known"
+    assert r["trace"][-1] == "n_hub_verify"
 
 
 def test_mdnd_line_has_no_onboarding_or_other_deduction_step():
@@ -280,7 +303,8 @@ async def _reach_guard_name_hub(engine, session):
     "हाँ मैंने नाम पूछा था उसका नाम था राजू",
     "haan pucha tha, guard ka naam Raju tha",
 ], ids=["uska-naam-hai", "naam-tha-X", "guard-ka-naam"])
-async def test_yes_with_the_name_never_asks_the_name(mdnd_engine, answer):
+async def test_yes_with_the_name_never_asks_the_name(mdnd_legacy_guard_engine, answer):
+    mdnd_engine = mdnd_legacy_guard_engine
     session = f"gn-{abs(hash(answer)) % 10000}"
     await _reach_guard_name_hub(mdnd_engine, session)
     # cv_df9a5a870b4e: the LLM labelled exactly this kind of answer 'clarify'.
@@ -291,7 +315,8 @@ async def test_yes_with_the_name_never_asks_the_name(mdnd_engine, answer):
     assert "बस इतना confirm" not in r["reply"]
 
 
-async def test_bare_yes_asks_the_name_and_stores_only_the_name(mdnd_engine):
+async def test_bare_yes_asks_the_name_and_stores_only_the_name(mdnd_legacy_guard_engine):
+    mdnd_engine = mdnd_legacy_guard_engine
     session = "gn-bare"
     await _reach_guard_name_hub(mdnd_engine, session)
     r = await _mdnd_turn(mdnd_engine, "haan pucha tha", session, signal="affirm")
@@ -301,7 +326,8 @@ async def test_bare_yes_asks_the_name_and_stores_only_the_name(mdnd_engine):
     assert r["trace"][-1] == "n_ask_cx"
 
 
-async def test_not_asked_skips_the_name(mdnd_engine):
+async def test_not_asked_skips_the_name(mdnd_legacy_guard_engine):
+    mdnd_engine = mdnd_legacy_guard_engine
     session = "gn-no"
     await _reach_guard_name_hub(mdnd_engine, session)
     r = await _mdnd_turn(mdnd_engine, "nahi pucha", session, signal="refusal")
@@ -594,11 +620,7 @@ async def test_cv_c98e4edcc350_english_replay_records_no_cx_call(mdnd_engine):
     await en("हाँ बोल रहा हूँ।", "affirm")
     await en("Actually I I called a customer and I reached the customer location. After customer confirmation, I am dead. Product with his guard", "clarify")
     r = await en("I already shared, I shared a product shared with the guard.", "question")
-    assert r["trace"][-1] == "n_ask_guard_name_known"
-    assert r["responseMustInclude"] == ["name"]                 # English literal for the English caller
-    r = await en("Yes, I ask. and God name is रोहन जी।")
-    assert r["slots"]["m_guard_name"] == "रोहन"                 # name taken from the yes-with-name answer
-    assert r["trace"][-1] == "n_ask_cx"                          # the name ask is skipped
+    assert r["trace"][-1] == "n_ask_cx"                          # guard names are optional
     r = await en("No, I didn't get any call from CX report.", "refusal")
     assert r["slots"]["m_cx_support_call"] == "no (no CX support call)"
     assert r["trace"][-1] == "n_hub_verify"
@@ -686,14 +708,14 @@ async def test_no_recipient_mentioned_asks_the_neutral_handover_question(mdnd_en
     assert "guard को ही" not in r["reply"]
 
 
-async def test_guard_mentioned_earlier_is_stored_and_the_name_follow_up_applies(mdnd_engine):
+async def test_guard_mentioned_earlier_is_stored_without_an_extra_name_question(mdnd_engine):
     """(2) An actual handover to the guard in the story is stored; the flow
-    moves to the guard-name follow-up, never re-asking the recipient."""
+    moves to the missing CX question, never re-asking the recipient or a name."""
     s = "guard"
     await _sig_turn(mdnd_engine, "haan bol raha hoon", s, "affirm")
     r = await _sig_turn(mdnd_engine, "location par gaya tha, call kiya tha, guard ko de diya tha", s, None)
     assert r["slots"]["m_handover_recipient"] == "guard / security"
-    assert r["trace"][-1] == "n_ask_guard_name_known"
+    assert r["trace"][-1] == "n_ask_cx"
     assert "किसको सौंपा" not in r["reply"]
 
 
@@ -1250,7 +1272,7 @@ async def test_person_handover_in_every_language_style(mdnd_engine, lang, text):
     fields = derive_structured_fields(_policy(), r["slots"])
     assert fields["handover_type"] == "person" and fields["hand_over_to"] == "security_guard"
     assert fields["drop_location"] is None
-    assert r["trace"][-1] == "n_ask_guard_name_known"
+    assert r["trace"][-1] == "n_ask_cx"
 
 
 @pytest.mark.parametrize("lang,text,place", [
@@ -1373,7 +1395,7 @@ async def test_correction_place_to_person_at_verify_clears_the_place(mdnd_engine
     assert "m_drop_location" not in r["slots"]
     assert r["slots"]["m_reached_location"] == YES_R and r["slots"]["m_called_customer"] == YES_C
     assert r["slots"]["m_cx_support_call"] == NO_CX
-    assert r["trace"][-1] == "n_ask_guard_name_known"            # only the new follow-up
+    assert r["trace"][-1] == "n_hub_verify"                     # all four answers are known
     assert _summary(r["slots"])["drop_location"] is None
 
 
@@ -1396,7 +1418,7 @@ async def test_cv_ee8fe14ab6d3_replay_correction_after_registration_is_applied(m
     को दिया था". The hub had no captures → off-script → the LLM improvised a
     guard confirmation while the slots kept the place; the post-call analyst
     then reported guard AND the place. Now the hub applies the correction and
-    the flow re-verifies through the guard-name follow-up."""
+    the flow re-verifies the four answers without asking for a guard's name."""
     s = "cv-ee8"
     await _sig_turn(mdnd_engine, "हां बोलिए।", s, "affirm")
     r = await _sig_turn(mdnd_engine, "मेरा पैसा कट गया।", s, "already_paid")
@@ -1413,10 +1435,8 @@ async def test_cv_ee8fe14ab6d3_replay_correction_after_registration_is_applied(m
     assert r.get("offScript") is not True
     assert r["slots"]["m_handover_recipient"] == "guard / security"
     assert "m_drop_location" not in r["slots"]
-    assert r["trace"][-1] == "n_ask_guard_name_known"
-    assert REACHED_Q not in r["reply"] and CALLED_Q not in r["reply"] and CX_Q not in r["reply"]
-    r = await _sig_turn(mdnd_engine, "नहीं पूछा", s, "refusal")
     assert r["trace"][-1] == "n_hub_verify"
+    assert REACHED_Q not in r["reply"] and CALLED_Q not in r["reply"] and CX_Q not in r["reply"]
     fields = _summary(r["slots"], proposed={"hand_over_to": "security_guard", "drop_location": "इन्वर्टर के ऊपर"})
     assert fields["hand_over_to"] == "security_guard" and fields["handover_type"] == "person"
     assert fields["drop_location"] is None
@@ -1492,12 +1512,8 @@ async def test_cv_fd720f2e9024_replay_story_after_a_partly_heard_readout(mdnd_en
     assert r["slots"]["m_called_customer"] == YES_C and r["slots"]["m_reached_location"] == YES_R
     assert r["slots"]["m_handover_recipient"] == "guard / security"
     assert r["slots"]["m_cx_support_call"] == YES_CX                # said in the story → not asked again
-    assert r["trace"][-1] in ("n_hub_verify", "n_ask_guard_name_known")
+    assert r["trace"][-1] == "n_hub_verify"
     assert CX_Q not in r["reply"]
-    if r["trace"][-1] == "n_ask_guard_name_known":
-        r = await mdnd_engine.handle_turn_detailed(
-            session_id=s, tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd_test", user_text="हाँ, राजू",
-            language="hi-IN", context_values=TICKET_CONTEXT, signal="affirm", heard_nodes=heard)
     assert r["trace"][-1] == "n_hub_verify"
     assert r["responseDirectives"] == [_config()[0]["MDND_VERIFY_DIRECTIVE_HEARD"]]
     assert "do NOT repeat the amount, the date or the order digits" in r["responseDirectives"][0]
@@ -1536,7 +1552,7 @@ async def test_correction_after_registration_wins_over_the_decline_edge(mdnd_eng
     r = await _sig_turn(mdnd_engine, "नहीं, मैंने इन्वर्टर पर नहीं रखा था, मैंने गार्ड को दिया था", s, "refusal")
     assert r["done"] is False and "n_msg_close" not in r["trace"]
     assert r["slots"]["m_handover_recipient"] == "guard / security" and "m_drop_location" not in r["slots"]
-    assert r["trace"][-1] == "n_ask_guard_name_known"
+    assert r["trace"][-1] == "n_hub_verify"
     # A plain decline still closes.
     s2 = "decline-plain"
     await _to_combined(mdnd_engine, s2, "hi")

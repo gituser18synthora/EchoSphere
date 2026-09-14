@@ -489,6 +489,31 @@ def invalidate_all_bot_configs_sync() -> None:
         logger.warning("platform-wide bot config cache flush failed")
 
 
+def select_greeting_variant(variants, language: str | None) -> str | None:
+    """The greeting content for the call's opening language.
+
+    Exact locale first ("en-IN"), then the same base language ("en-*"), then
+    the first variant that has content. ``variants`` is the authored list of
+    ``{"language": locale, "content": text}``.
+    """
+    usable = [
+        v for v in (variants or [])
+        if isinstance(v, dict) and str(v.get("content") or "").strip()
+    ]
+    if not usable:
+        return None
+    wanted = str(language or "").strip()
+    if wanted:
+        for variant in usable:
+            if str(variant.get("language") or "").strip().lower() == wanted.lower():
+                return variant["content"]
+        base = wanted.split("-", 1)[0].lower()
+        for variant in usable:
+            if str(variant.get("language") or "").split("-", 1)[0].lower() == base:
+                return variant["content"]
+    return usable[0]["content"]
+
+
 def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig:
     settings = get_settings()
     session = get_sessionmaker()()
@@ -496,6 +521,10 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         bot = session.get(VoiceBot, bot_id)
         if bot is None or bot.is_deleted:
             raise NotFoundError("Bot")
+        if bot.status == "archived":
+            # Parked bots take no traffic on any channel — including browser
+            # test sessions, which otherwise bypass the published requirement.
+            raise NotFoundError("Active configuration for this archived bot")
         if require_published and bot.status != "published":
             raise NotFoundError("Bot has no published release")
 
@@ -529,10 +558,19 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 None,
             )
             variants = (version.variants if version is not None else None) or []
-            for variant in variants:
-                if variant.get("content"):
-                    greeting = variant["content"]
-                    break
+            # The variant is chosen by the bot's DEFAULT language (voice-map
+            # "default", else its first configured language) — never by the
+            # authoring order, which spoke a Hindi greeting on a bot whose
+            # default had been switched to English (cv_10dd1b13a5e1).
+            preferred = ((vbs.language_voice_map or {}).get("default") if vbs else None)
+            if not preferred:
+                first_language = session.scalars(
+                    select(BotLanguage.language_code)
+                    .where(BotLanguage.bot_id == bot_id)
+                    .order_by(BotLanguage.language_code)
+                ).first()
+                preferred = first_language or ""
+            greeting = select_greeting_variant(variants, preferred)
 
         intents = [
             {
@@ -541,6 +579,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "samples": intent.samples or [],
                 "route": intent.route,
                 "confidence_threshold": intent.confidence_threshold,
+                "fallback_behavior": intent.fallback_behavior,
                 # Entity slots + tool binding feed the hybrid intent pipeline:
                 # the classifier extracts these keys; the tool executor
                 # validates against the bound connection.

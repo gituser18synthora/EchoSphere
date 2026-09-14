@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.bot_lifecycle import assert_bot_operational
 from backend.core.deps import assert_tenant_access, get_current_user, require_permission
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
@@ -124,6 +125,7 @@ def run_suite(
     scenario is marked as executed now; pass/fail keeps its previous result
     (a scenario that has never run passes vacuously only if it has steps)."""
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="run the regression suite")
     rows = db.scalars(
         select(TestScenario).where(
             TestScenario.bot_id == bot.id, TestScenario.is_deleted.is_(False)
@@ -188,6 +190,12 @@ _ENGLISH_WORDS = {
     "explain", "hello", "help", "how", "i", "is", "me", "my", "need",
     "please", "speak", "tell", "the", "this", "want", "what", "when",
     "where", "why", "would", "you", "your",
+    # Function words of a real English sentence that never occur in Roman
+    # Hinglish ("I think they said it was five hundred" must switch; a lone
+    # "yes"/"okay"/"amount" must not).
+    "they", "it", "was", "were", "been", "with", "from", "about", "that",
+    "there", "them", "have", "has", "had", "did", "does", "think", "said",
+    "told", "exactly", "deducted", "nothing", "else", "same", "correct",
 }
 
 
@@ -242,6 +250,18 @@ def _default_chat_language(db: Session, bot: VoiceBot) -> str:
         if variant is not None:
             return str(variant["language"])
     return bot.languages[0].language_code if bot.languages else "en-IN"
+
+
+def _testing_entry_retry(db: Session, bot: VoiceBot, language: str) -> str:
+    from shared.bot_config import select_greeting_variant
+    from shared.orchestration.phrases import entry_question_retry
+
+    prompt = db.scalar(select(Prompt).where(
+        Prompt.bot_id == bot.id, Prompt.type == "greeting", Prompt.is_deleted.is_(False),
+    ).limit(1))
+    version = _active_prompt_version(prompt) if prompt is not None else None
+    greeting = select_greeting_variant(version.variants if version else [], language) or ""
+    return entry_question_retry(greeting, language)
 
 
 def _testing_customer_context(
@@ -490,6 +510,7 @@ def _build_router(db: Session, bot: VoiceBot):
     return TurnRouter(
         intents=[{"name": i.name, "samples": i.samples or [], "route": i.route,
                   "confidence_threshold": i.confidence_threshold,
+                  "fallback_behavior": i.fallback_behavior,
                   "entities": i.entities or [],
                   "optional_entities": i.optional_entities or []} for i in intents],
         has_knowledge_bases=has_kbs,
@@ -507,6 +528,30 @@ async def _knowledge_reply(bot: VoiceBot, message: str) -> str | None:
     if result.answerable and result.sources:
         return result.sources[0].text[:400]
     return None
+
+
+# Mirrors voice_runtime.brain._INTENT_KB_MIN_SCORE.
+_INTENT_KB_MIN_SCORE = 0.15
+
+
+async def _knowledge_context(bot: VoiceBot, message: str, *, min_score: float | None = None) -> str | None:
+    """Every retrieved passage (as the live brain grounds on), or None on a miss."""
+    from shared.knowledge.schemas import RetrievalRequest
+    from shared.knowledge.service import get_knowledge_service
+    from shared.knowledge.security import sanitize_for_context
+
+    from shared.config import get_settings
+
+    result = await get_knowledge_service().search(
+        RetrievalRequest(tenant_id=bot.tenant_id, bot_id=bot.id, query=message,
+                         min_score=min_score)
+    )
+    gate = min_score if min_score is not None else get_settings().retrieval_min_score
+    if not (result.answerable and result.sources) or result.confidence < gate:
+        return None
+    return "\n".join(
+        f"[{i + 1}] {sanitize_for_context(s.text)}" for i, s in enumerate(result.sources[:4])
+    )
 
 
 @router.post("/bots/{bot_id}/testing/chat")
@@ -538,6 +583,7 @@ async def chat_test(
 
     started = time.perf_counter()
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="run a chat test")
     supported = [item.language_code for item in bot.languages]
     current_language = body.language or _default_chat_language(db, bot)
     conversation_language = detect_chat_language(
@@ -579,7 +625,9 @@ async def chat_test(
     guardrails = GuardrailEngine(effective_guardrails, compliance=compliance_policies)
     guardrails.begin_turn()
 
-    decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
+    turn_router = _build_router(db, bot)
+    decision = turn_router.decide(body.message, active_workflow=active_workflow)
+    decision = turn_router.apply_entry_fallback(decision, active_workflow=active_workflow)
     if (
         verified_context
         and decision.kind in (RouteKind.KNOWLEDGE, RouteKind.WORKFLOW)
@@ -629,6 +677,8 @@ async def chat_test(
             workflow_session = f"test:{bot.id}:{session}"
             register_session_engine(workflow_session, guardrails)
             try:
+                configured = _testing_system_prompt(db, bot, conversation_language,
+                                                    verified_context=verified_context)
                 result = await engine.handle_turn_detailed(
                     session_id=workflow_session,
                     tenant_id=bot.tenant_id,
@@ -639,6 +689,8 @@ async def chat_test(
                     initial_slots=verified_context,
                     context_values=runtime_ctx.prompt_values(),
                     reset_state=reset_subject,
+                    llm=configured[1] if configured else None,
+                    history=[message.model_dump() for message in body.messages],
                 )
             finally:
                 release_session_engine(workflow_session)
@@ -804,6 +856,8 @@ async def chat_test(
         reply = canned("safety", conversation_language)
     elif decision.kind == RouteKind.CALL_CONTROL:
         reply = f"(call control: {decision.action or 'acknowledged'})"
+    elif decision.reason == "entry_reprompt":
+        reply = _testing_entry_retry(db, bot, conversation_language)
     else:  # CHAT / CLARIFY / INTENT / TOOL — answer through the configured LLM.
         try:
             reply = await _testing_llm_reply(
@@ -989,6 +1043,7 @@ async def simulate_turn(
 
     started = time.monotonic()
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="simulate a turn")
     trace: dict = {
         "rawTranscript": body.message,
         "isFinal": body.is_final,
@@ -1193,7 +1248,8 @@ async def simulate_turn(
                 heard_state["heard"].append(node)
     heard_state["last"] = []
 
-    decision = _build_router(db, bot).decide(body.message, active_workflow=active_workflow)
+    turn_router = _build_router(db, bot)
+    decision = turn_router.decide(body.message, active_workflow=active_workflow)
     pipeline = HybridIntentPipeline(llm=llm, intents=intent_dicts, enabled=True)
     classification = await pipeline.classify(
         body.message, body.messages, active_workflow=active_workflow,
@@ -1206,6 +1262,7 @@ async def simulate_turn(
     # when the deterministic router only saw chat — a partner telling the
     # whole story in one breath rarely matches a short intent sample.
     decision = _upgrade_route_with_intent(decision, classification, intent_dicts)
+    decision = turn_router.apply_entry_fallback(decision, active_workflow=active_workflow)
     trace["routerDecision"] = {
         "route": decision.kind.value, "reason": decision.reason,
         "confidence": round(decision.confidence, 3),
@@ -1301,10 +1358,15 @@ async def simulate_turn(
                 session_id=f"sim:{bot.id}:{session}",
                 tenant_id=bot.tenant_id, bot_id=bot.id,
                 workflow_name=name, user_text=body.message,
-                language=body.language or None,
+                # The engine's canned strings ("didn't catch that", retry
+                # prefixes) follow the CONVERSATION language, as on a live
+                # call — not only an explicitly pinned request language.
+                language=simulation_language or None,
                 mock_tool_results=body.mock_tool_results or None,
                 context_values=runtime_ctx.prompt_values(),
                 heard_nodes=list(heard_state["heard"]),
+                llm=llm,
+                history=body.messages,
             )
             heard_state["last"] = [
                 str(node) for node in (result.get("spokenNodes") or []) if node
@@ -1338,16 +1400,92 @@ async def simulate_turn(
                     )
             except Exception:  # noqa: BLE001
                 pass
+            # Knowledge question inside the workflow turn — mirrors the brain
+            # (ConversationBrain._knowledge_intent_in_turn /
+            # _kb_answer_for_workflow_turn): a configured knowledge intent
+            # (LLM or sample match) means the KB answers first; a plain
+            # "question" signal on an off-script turn grounds the LLM reply.
+            kb_intent = _knowledge_intent_in_turn(
+                db, bot, body.message, classification, intent_dicts,
+            )
             if result.get("offScript"):
                 from shared.orchestration.response_modes import collected_facts_block
 
                 plan_instruction = policy.turn_instruction() if policy else ""
+                kb_block = ""
+                if kb_intent or signal == "question":
+                    kb_passage = await _knowledge_context(
+                        bot, kb_intent or body.message,
+                        min_score=(_INTENT_KB_MIN_SCORE if kb_intent else None),
+                    )
+                    trace["kb"] = {"attempted": True, "answerable": bool(kb_passage),
+                                   "consumed": False}
+                    if kb_passage:
+                        kb_block = (
+                            "\n\nThe caller asked an informational question. Answer it "
+                            "using ONLY the reference context below (quote its facts, "
+                            "add nothing); if the context does not answer it (refund, "
+                            "waiver, cancellation, exact amount, who decides), say the "
+                            "available information does not specify it — never answer "
+                            "from general knowledge. Then restate the pending step briefly.\n"
+                            f"Context:\n{kb_passage}"
+                        )
+                        trace["route"] = "workflow_off_script_kb"
+                    elif kb_intent:
+                        kb_block = (
+                            "\n\nThe caller asked an informational question the "
+                            "knowledge base does not cover: say the available "
+                            "information does not specify that detail, then restate "
+                            "the pending step briefly. Never invent policy."
+                        )
+                hub_note = ""
+                if result.get("awaitingKind") == "intent" and result.get("nodePrompt"):
+                    hub_note = (
+                        "\n\nThe flow is paused on an open follow-up prompt: \""
+                        + str(result.get("nodePrompt")) + "\". After answering the "
+                        "caller, either stop or add ONE short natural follow-up in "
+                        "your own words — never repeat that prompt verbatim."
+                    )
                 response_text = await _simulate_llm_reply(
                     llm, rendered_prompt + plan_instruction + tool_instruction
-                    + collected_facts_block(result.get("slots") or {}),
+                    + collected_facts_block(result.get("slots") or {}) + kb_block + hub_note,
                     body.messages, body.message,
                 )
-                trace["route"] = "workflow_off_script_llm"
+                trace.setdefault("route", "workflow_off_script_llm")
+                if trace["route"] == "workflow":
+                    trace["route"] = "workflow_off_script_llm"
+            elif kb_intent and result["reply"] and result.get("knowledgeCovered"):
+                trace["kb"] = {"attempted": False, "coveredByFlow": True, "consumed": True}
+                trace["route"] = "workflow_kb_covered"
+            elif kb_intent and result["reply"]:
+                # consumed answer + KB question in one breath: KB answer first
+                kb_passage = await _knowledge_context(bot, kb_intent, min_score=_INTENT_KB_MIN_SCORE)
+                trace["kb"] = {"attempted": True, "answerable": bool(kb_passage),
+                               "consumed": True}
+                if kb_passage:
+                    from shared.orchestration.response_modes import language_label
+
+                    label = language_label(body.language or None)
+                    kb_answer = await _simulate_llm_reply(
+                        llm,
+                        "You are a phone support agent. The caller's message contains "
+                        "an informational question. Answer ONLY that question, in one "
+                        "or two short spoken sentences, using ONLY the reference "
+                        "context below — quote its facts, add nothing, and if the "
+                        "context does not cover the question say that the available "
+                        "information does not specify it. Do not ask any question, do "
+                        "not greet, do not mention tickets or verification, do not "
+                        "repeat the caller's own statements."
+                        + (f" Respond in natural spoken {label}." if label else "")
+                        + f"\nContext:\n{kb_passage}",
+                        [], kb_intent,
+                    )
+                else:
+                    from shared.orchestration.phrases import canned
+
+                    kb_answer = canned("wf_kb_miss", body.language or "en")
+                response_text = f"{(kb_answer or '').strip()} {result['reply']}".strip()
+                trace["route"] = "workflow_kb"
             elif result.get("responseMode") == "llm_grounded" and result["reply"]:
                 # Same grounded delivery as the live brain / chat endpoint:
                 # generated wording, validated, authored text as fallback.
@@ -1401,10 +1539,44 @@ async def simulate_turn(
                 ):
                     response_text = grounded_text
                     trace["route"] = "workflow_llm_grounded"
+    if not response_text and decision.kind == RouteKind.KNOWLEDGE:
+        # Mirror the brain's knowledge route: retrieval-grounded generation
+        # (the persona alone must never answer tenant policy questions), in
+        # the simulated conversation language.
+        from shared.orchestration.response_modes import language_label
+
+        kb_passage = await _knowledge_context(
+            bot, body.message,
+            min_score=(_INTENT_KB_MIN_SCORE if decision.intent else None),
+        )
+        label = language_label(simulation_language or None)
+        trace["kb"] = {"attempted": True, "answerable": bool(kb_passage), "consumed": False}
+        if kb_passage:
+            tool_instruction += (
+                "\n\nAnswer using ONLY the reference context below. Quote facts "
+                "exactly; do not add information that is not in the context. If the "
+                "context does not answer what the caller asked (refund, waiver, "
+                "cancellation, exact amount, who decides), say plainly that the "
+                "available information does not specify it — never answer from "
+                "general knowledge."
+                + (f" Respond in natural spoken {label}." if label else "")
+                + "\nContext:\n" + kb_passage
+            )
+            trace["route"] = "knowledge"
+        else:
+            tool_instruction += (
+                "\n\nThe knowledge base has no entry for this message: say that the "
+                "available information does not specify that detail — never invent it."
+                + (f" Respond in natural spoken {label}." if label else "")
+            )
+            trace["route"] = "knowledge_miss"
     if not response_text:
         extra = (plan.instruction if plan else "") + tool_instruction
         trace.setdefault("route", decision.kind.value if decision.kind != RouteKind.WORKFLOW else "chat")
-        if decision.kind == RouteKind.CLARIFY and policy is None and not classification.intent:
+        if decision.reason == "entry_reprompt":
+            response_text = _testing_entry_retry(db, bot, simulation_language)
+            trace["route"] = "clarify"
+        elif decision.kind == RouteKind.CLARIFY and policy is None and not classification.intent:
             from shared.orchestration.phrases import canned
 
             response_text = canned("clarify", body.language or "en")
@@ -1425,6 +1597,20 @@ async def simulate_turn(
         trace["dispositionAfterTurn"] = policy.disposition()
     return ok(trace)
 
+
+
+def _knowledge_intent_in_turn(db, bot, message: str, classification, intent_dicts: list[dict]) -> str | None:
+    """Mirror of ConversationBrain._knowledge_intent_in_turn for simulation:
+    the knowledge question carried by the turn (retrieval query), or None."""
+    name = getattr(classification, "intent", None)
+    if name and not getattr(classification, "below_threshold", False):
+        configured = next((i for i in intent_dicts if i.get("name") == name), None)
+        if configured and str(configured.get("route") or "") == "knowledge":
+            return message
+    try:
+        return _build_router(db, bot).detect_knowledge_question(message)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict]):

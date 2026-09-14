@@ -81,6 +81,16 @@ the workflow active for the next turn.
 
 ## Adding a workflow
 
+For tenant bots, save a workflow definition through the Studio or
+`PUT /api/v1/bots/{bot_id}/workflow`. Its `nodes` and `edges` carry the business
+rules. A new tenant, question, API endpoint, language or outcome should not
+require another Python graph builder. The engine resolves the saved definition
+within the tenant and bot scope. Setup scripts are configuration templates,
+not separate runtime implementations.
+
+The Python builders below are legacy platform examples. Use them only when
+developing an engine capability that saved definitions cannot express:
+
 1. Write a builder `def build_my_graph(checkpointer) -> CompiledGraph` in
    `workflow_engine.py` (or a new module) using `StateGraph(WorkflowState)`.
 2. Register it in `_GRAPH_BUILDERS` under its route name.
@@ -89,6 +99,42 @@ the workflow active for the next turn.
    UI). `resolve_bot_config` ships active intents to the router automatically.
 4. Keep nodes fast and non-blocking; anything slow belongs behind the 10 s budget or
    in an external job.
+
+## Configuring corrections, comparisons and readbacks
+
+These options are interpreted by the shared engine; none depends on a tenant
+or bot ID. Configure them in each node's `config` JSON. They currently have no
+dedicated Studio form controls.
+
+| Option | Behavior |
+| --- | --- |
+| `alsoCapture[].invalidateSlots` | Clear listed dependent slots when that capture changes value or explicitly clears its own slot. Later explicit captures in the same utterance may refill them. Put premise fields before dependent fields. |
+| Condition `valueVariable` | Read the comparison value from another slot instead of a constant `value`. |
+| Condition `operator: "numeric_ne"` | True only when both slot values parse as numbers and differ. Missing or nonnumeric values do not establish a mismatch. |
+| Entity `matchCanonicalValues: false` | Match declared synonym phrases and patterns without implicitly treating synonym keys such as `yes` as evidence. A pending yes/no question still accepts a bare affirmation through its signal handler. |
+| `textByLanguage` | Map language prefixes such as `en` to authored node speech. Supported for the node's full question, prompt, text or message. |
+| `readback` | Map language prefixes to `intro`, `fields` and `question`; each field names a slot with either a `values` map or a `{value}` template. Absent values and per-field `omitValues` are skipped. Use `responseMode: "exact"` to preserve the assembled facts. Supply every supported call language. |
+| API `omitSlotValues` | Omit configured unknown-value sentinels from outgoing slot arguments while retaining them in conversation state. |
+
+Example correction capture:
+
+```json
+{
+  "variable": "quoted_amount",
+  "overwrite": true,
+  "invalidateSlots": ["amount_matches", "verification_status"],
+  "entity": {"dataType": "text", "regexPattern": "quoted ([0-9]+)"}
+}
+```
+
+Configure API contracts on the bot's API connection. `requestSchema` supports
+required fields, property types, enums and string patterns. `responseSchema`
+checks the response container type and these property constraints after an HTTP
+success and for mocked results. For example, require a ticket reference and a
+boolean `verification_recorded` whose enum is `[true]`. An HTTP 200 response
+that violates that contract follows the workflow's failure edge. This is a
+JSON Schema subset, not a full JSON Schema implementation. Existing connections
+without an authored response schema retain HTTP-based success evaluation.
 
 ## Tests
 

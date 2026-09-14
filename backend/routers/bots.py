@@ -23,12 +23,17 @@ from shared.providers.tts.delivery import strip_speed_params
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
-from backend.core.softdelete import guard_hard_delete, soft_delete
+from backend.core.bot_lifecycle import (
+    archive_bot,
+    is_archived,
+    permanently_delete_bot,
+    restore_bot,
+)
+from backend.core.softdelete import guard_hard_delete
 from shared.db.mysql import get_db
 from shared.models import (
     BotLanguage,
     ChannelConfig,
-    PhoneNumber,
     SupportedLanguage,
     Tenant,
     TenantSetting,
@@ -395,11 +400,29 @@ def update_bot(
         val = getattr(body, field)
         if val is not None:
             setattr(bot, field, val)
+    # Archive / restore are lifecycle transitions with side effects (channels,
+    # phone numbers, runtime cache). A status PATCH that crosses the archive
+    # boundary runs the same helpers as the dedicated endpoints so the two
+    # paths can never drift apart.
+    lifecycle_action: str | None = None
+    lifecycle_summary: dict = {}
     if body.status is not None and body.status != bot.status:
-        bot.status = body.status
-        if body.status == "published":
-            bot.published_at = datetime.now(timezone.utc)
-            bot.live_version = bot.version
+        if body.status == "archived":
+            lifecycle_summary = archive_bot(db, bot, user)
+            lifecycle_action = "Archived VoiceBot"
+        elif is_archived(bot):
+            if body.status != "draft":
+                raise ApiError(
+                    "An archived bot can only be restored to draft. Restore it "
+                    "first, then publish it again through the release flow.", 409,
+                )
+            lifecycle_summary = restore_bot(db, bot, user)
+            lifecycle_action = "Restored VoiceBot"
+        else:
+            bot.status = body.status
+            if body.status == "published":
+                bot.published_at = datetime.now(timezone.utc)
+                bot.live_version = bot.version
     if body.voice_id is not None:
         if body.voice_id and db.get(VoiceProfile, body.voice_id) is None:
             raise ApiError("Unknown voice profile.", 422)
@@ -425,13 +448,19 @@ def update_bot(
                 item.done = bool(body.readiness[item.item_key])
     bot.updated_by = user.id
     record_audit(
-        db, user=user, action="Updated VoiceBot", entity_type="voice_bot",
+        db, user=user, action=lifecycle_action or "Updated VoiceBot",
+        entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
         previous_value=before,
-        new_value={"name": bot.name, "status": bot.status, "voiceId": bot.voice_id},
+        new_value={"name": bot.name, "status": bot.status, "voiceId": bot.voice_id,
+                   **lifecycle_summary},
         request=request,
     )
     db.commit()
+    if lifecycle_action:
+        from shared.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(bot.tenant_id, bot.id)
     db.refresh(bot)
     return ok(_serialize_many(db, [bot])[0])
 
@@ -461,6 +490,77 @@ def recompute_bot_readiness(
     return ok(_serialize_many(db, [bot])[0])
 
 
+# ── Lifecycle: archive / restore / delete ─────────────────────────────────────
+#
+# Archive is reversible and visible (status="archived", is_deleted=0). Delete is
+# permanent from the product's point of view (is_deleted=1 tombstone). The two
+# never share a column value: an archived bot that is later deleted keeps
+# status="archived" but gains is_deleted=1, and every read path filters on the
+# flag first. See backend/core/bot_lifecycle.py for the side effects.
+
+
+def _invalidate_runtime(bot: VoiceBot) -> None:
+    # The runtime resolves bot configs cache-first (300s TTL) — without this a
+    # parked or deleted bot could keep serving inbound calls until the TTL
+    # expires.
+    from shared.bot_config import invalidate_bot_config_sync
+
+    invalidate_bot_config_sync(bot.tenant_id, bot.id)
+
+
+@router.post("/bots/{bot_id}/archive")
+def archive_bot_route(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Park a bot: no calls, messages or test sessions; channels deactivated;
+    phone numbers reserved for this bot; every piece of configuration kept."""
+    bot = _get_bot_checked(db, bot_id, user)
+    summary = archive_bot(db, bot, user)
+    record_audit(
+        db, user=user, action="Archived VoiceBot", entity_type="voice_bot",
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        previous_value={"status": summary["previousStatus"],
+                        "liveVersion": summary["previousLiveVersion"]},
+        new_value={"status": "archived",
+                   "channelsDisabled": summary["channelsDisabled"],
+                   "phoneNumbersReserved": summary["phoneNumbersReserved"]},
+        request=request,
+    )
+    db.commit()
+    _invalidate_runtime(bot)
+    return ok({"archived": True, "id": bot.id, "status": "archived",
+               "channelsDisabled": summary["channelsDisabled"],
+               "phoneNumbersReserved": summary["phoneNumbersReserved"]})
+
+
+@router.post("/bots/{bot_id}/restore")
+def restore_bot_route(
+    bot_id: str,
+    request: Request,
+    user: User = Depends(require_tenant_admin),
+    db: Session = Depends(get_db),
+):
+    """Archived -> draft with configuration and number relationship intact.
+    Channels stay deactivated and nothing is live until the bot is published."""
+    bot = _get_bot_checked(db, bot_id, user)
+    summary = restore_bot(db, bot, user)
+    record_audit(
+        db, user=user, action="Restored VoiceBot", entity_type="voice_bot",
+        entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
+        previous_value={"status": "archived"},
+        new_value={"status": "draft",
+                   "phoneNumbersReassigned": summary["phoneNumbersReassigned"]},
+        request=request,
+    )
+    db.commit()
+    _invalidate_runtime(bot)
+    return ok({"restored": True, "id": bot.id, "status": "draft",
+               "phoneNumbersReassigned": summary["phoneNumbersReassigned"]})
+
+
 @router.delete("/bots/{bot_id}")
 def delete_bot(
     bot_id: str,
@@ -469,50 +569,32 @@ def delete_bot(
     user: User = Depends(require_tenant_admin),
     db: Session = Depends(get_db),
 ):
+    """Permanently delete a bot (tombstone row, is_deleted=1).
+
+    The bot leaves every list including Archived, can never take traffic
+    again and has no restore action. Channels are archived + disabled, phone
+    numbers return to the platform pool, editable configuration is retired.
+    Conversations, transcripts, usage/billing and audit history are kept.
+    ``?hard=true`` is only an environment guard — the row is never purged."""
     bot = _get_bot_checked(db, bot_id, user)
     if hard:
         guard_hard_delete()
-
-    # Tear down the bot's live surfaces so it stops receiving traffic
-    # immediately: channels are archived + disabled (webhooks refuse them) and
-    # phone numbers return to the pool so other bots can claim them.
-    # Configuration children (prompts, intents, workflows, knowledge,
-    # scenarios) are retained under the soft-deleted bot on purpose — the
-    # archive contract is "configuration is retained".
-    channels = db.scalars(
-        select(ChannelConfig).where(
-            ChannelConfig.bot_id == bot.id, ChannelConfig.is_deleted.is_(False)
-        )
-    ).all()
-    for channel in channels:
-        channel.enabled = False
-        soft_delete(channel, user)
-    numbers = db.scalars(
-        select(PhoneNumber).where(
-            PhoneNumber.bot_id == bot.id, PhoneNumber.is_deleted.is_(False)
-        )
-    ).all()
-    for number in numbers:
-        number.bot_id = None
-        number.tenant_id = None
-        number.status = "available"
-        number.updated_by = user.id
-
-    soft_delete(bot, user)
+    summary = permanently_delete_bot(db, bot, user)
     record_audit(
-        db, user=user, action="Archived VoiceBot", entity_type="voice_bot",
+        db, user=user, action="Deleted VoiceBot", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
-        new_value={"channelsArchived": len(channels),
-                   "phoneNumbersReleased": len(numbers)},
+        previous_value={"status": summary["previousStatus"]},
+        new_value={"isDeleted": True,
+                   "channelsArchived": summary["channelsArchived"],
+                   "phoneNumbersReleased": summary["phoneNumbersReleased"],
+                   "configurationRetired": summary["configurationRetired"]},
         request=request,
     )
     db.commit()
-    # The runtime resolves bot configs cache-first (300s TTL) — without this,
-    # a deleted bot could keep serving inbound calls until the TTL expires.
-    from shared.bot_config import invalidate_bot_config_sync
-
-    invalidate_bot_config_sync(bot.tenant_id, bot.id)
-    return ok({"archived": True, "id": bot.id})
+    _invalidate_runtime(bot)
+    return ok({"deleted": True, "id": bot.id,
+               "channelsArchived": summary["channelsArchived"],
+               "phoneNumbersReleased": summary["phoneNumbersReleased"]})
 
 
 # ── Voice settings (tuning) ──────────────────────────────────────────────────

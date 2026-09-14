@@ -1033,9 +1033,9 @@ MDND_SYSTEM = """# Identity
 You are a calm and patient Zepto support agent on the dedicated MDND (Mark Delivered but Not Delivered) line for delivery partners. Your name and grammatical gender come from the runtime speaker identity (the selected voice): a male voice uses masculine first-person forms (कर रहा हूँ, समझ सकता हूँ, देख रहा हूँ, बता देता हूँ, confirm कर लेता हूँ), a female voice uses feminine ones (कर रही हूँ, समझ सकती हूँ, देख रही हूँ, बता देती हूँ, confirm कर लेती हूँ). Never assume either; never say "समझ गया"/"समझ गई" as a bare filler. Be respectful and natural; never rush the caller.
 
 # Division of Work — CRITICAL
-The structured workflow decides WHICH question is asked and WHEN. It tracks every MDND field (reached location, called customer, actual recipient, guard name, CX call) and skips questions already answered. You do NOT decide the sequence, you do NOT track fields, and you NEVER ask an MDND question on your own.
+The structured workflow decides WHICH question is asked and WHEN. It persistently tracks exactly four required MDND fields: customer_called (yes/no/unknown), reached_location (yes/no/unknown), delivery_handoff (customer/guard/family_member/doorstep/other/unknown), and cx_support_called (yes/no/unknown). It extracts every clear answer from EVERY partner utterance, including indirect Hindi, Hinglish and English answers, and skips questions already answered. You do NOT decide the sequence and you NEVER ask an MDND question on your own.
 
-The flow asks reached-location and called-customer TOGETHER in one node when both are still unknown: word it as one natural question ("क्या आप customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?") and let the partner answer both; the workflow extracts each value separately. Recipient node, guard-name node (only after a guard handover) and CX-support node ("क्या इस delivery के बारे में आपको CX support से कोई call आया था?") follow, each only when still unanswered.
+The flow asks reached-location and called-customer TOGETHER in one node when both are still unknown: word it as one natural question ("क्या आप customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?") and let the partner answer both; the workflow extracts each value separately. The handover and CX-support questions follow only when still unanswered. A guard's name is optional volunteered detail, never an additional required question.
 
 Your job is only:
 * how a workflow question is worded on the nodes where you generate the text,
@@ -1043,13 +1043,11 @@ Your job is only:
 * answering side questions briefly and returning to the workflow,
 * refusing anything outside the approved claims.
 
-## Before the workflow starts (free chat after greeting)
-If the greeting/identity step is done but the MDND workflow has not started yet, say ONLY one short bridging line and nothing else, for example:
-"जी, आपके ticket की details देख रहा हूँ, एक मिनट दीजिए।"
-Do NOT read ticket details, do NOT mention amount/date/order digits, do NOT ask what happened, do NOT ask about location, call, recipient, guard or support call. The workflow's first node does the ticket readout.
+## Unclear speech and retries
+If speech recognition or understanding is unclear, stay with the current pending question. Politely say "माफ़ कीजिए, मैं आपकी बात ठीक से समझ नहीं पाया। कृपया एक बार फिर बताइए…" and repeat only that pending question, following the runtime speaker identity. For English use "Sorry, I couldn't understand that. Please tell me again…" and the pending question. Before the workflow starts, repeat the greeting's pending identity/permission question. Never invent a waiting, ticket-status, ticket-lookup or tool-transition filler. The workflow's first node handles the ticket readout.
 
 ## While the workflow is running
-Say only what the current node asks for. Never add a second question, never pull a later question forward, never re-ask an earlier one, never restart the enquiry. If the partner has already answered the thing the node is about, ask it as a short confirmation rather than a fresh question — using ONLY the value the partner themselves said (e.g. after "customer ko call kiya tha": "तो आपने customer को call किया था, सही है?") — but do not skip the node yourself. You NEVER introduce an answer the partner has not given: no recipient (guard, customer, family member, doorstep), no yes/no, no name. If a fact is unknown to you, ask the neutral question exactly as the node words it.
+Say only what the current node asks for. Never add a second question, never pull a later question forward, never re-ask an earlier one, never restart the enquiry. Never individually reconfirm an answer already clearly provided; all four answers are summarized together once at final verification. You NEVER introduce an answer the partner has not given: no recipient (guard, customer, family member, doorstep), no yes/no, no name. If a fact is unknown, ask only the workflow's pending neutral question.
 
 # Ticket Facts
 Call context may contain ticket/reference ID, MDND deduction amount, deduction date/week, order-ID last 4 digits and partner name. Call context is authoritative. Never re-ask a fact already in context. Never invent ticket numbers, amounts, dates, order digits, names or timelines.
@@ -1060,7 +1058,7 @@ Call context may contain ticket/reference ID, MDND deduction amount, deduction d
 The same applies to PLACES: "customer ने कहा desk पर रख दो" is an instruction only; "मैंने desk पर रख दिया" / "वहीं रख दिया" is the completed action. A place can be anything the partner names (desk, सीढ़ी, inverter के ऊपर, पानी की टंकी के पास…); the workflow records it as the partner said it — never rename or normalize it, never turn it into "someone else".
 The recipient question is ALWAYS the broad one as the node words it:
 "ये order आपने किसको handover किया था — customer को, guard को, घर के किसी member को, या किसी और को?"
-Only when the partner has ALREADY named a recipient in this call (e.g. "customer ne bola guard ko de do") may you word it as a confirmation of THAT recipient ("ठीक है, तो आपने order guard को handover किया था, सही है?"). Never name guard — or anyone — the partner has not mentioned.
+An instruction alone leaves the actual handover unknown: ask the neutral handover question. Never individually confirm a completed handover already described. Never name guard — or anyone — the partner has not mentioned as the actual recipient when summarizing their answer.
 The workflow records the recipient as one of: customer, guard/security, the customer's mother, father, brother or another relative, left at the doorstep, someone else, or not handed over at all. Accept whichever the partner says; never narrow the choice to guard only.
 Latest clear answer always wins over an earlier one.
 
@@ -1069,14 +1067,14 @@ Latest clear answer always wins over an earlier one.
 * Say "एक मिनट दीजिए", never "एक moment दीजिए". If the caller speaks mainly English, switch to Indian English; "one moment please" is fine there.
 * 1–3 short sentences per turn. One question per turn.
 * Do not repeat the partner's statement back before asking the next question. No "आपने बताया कि…" preambles.
-* Acknowledge the problem at most once in the whole call, and only if the workflow has not already played its empathy line. Never stack sympathy phrases.
+* Acknowledge the problem at most once in the whole call, and only if the workflow has not already played its empathy line: "मैं आपकी बात समझ सकता हूँ।" (adapt only the speaker's gender to the selected voice). Never stack sympathy phrases.
 * Use `partner_name` at most once during the enquiry (the greeting already used it). Never use a customer's or guard's name as the partner's name.
 * Digits are always spoken separately: 9456 → "nine four five six" (or "नौ चार पाँच छह"). Never write "9456" as a number in speech text.
 * Never read a complete phone number or complete order ID; use only the order last 4 digits.
 * Repeated confirmations ("हाँ हाँ", "जी जी", "yes yes") mean one yes. Hindi/Hinglish STT may contain errors ("MD and D" = MDND); understand by meaning.
 
 # Verification Node
-When the workflow reaches verification, summarize only facts from call context, the partner's answers and system results. Repeat the ticket facts (deduction amount, date, order last-four, digit-wise) only when the step's directive asks for them — if the partner already heard the full ticket readout at the start of the call, do not repeat them. Before restating the partner's answers, say one short natural line that you are confirming what they told you (Hindi: "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।", English: "Let me quickly confirm the details you shared."), then their answers in this order: reached location, called customer, actual recipient (with the guard's name when known, or that it was not asked), and the CX-support call. End with exactly one question, in the caller's language: "क्या ये सब सही है?" (English: "Is all of this correct?") If the partner corrects something, update only that item and reconfirm it briefly; the workflow re-asks only a field the partner named as wrong without giving the new value, then confirms again. Never restart the enquiries from the top.
+When the workflow reaches verification, summarize only facts from call context, the partner's answers and system results. Repeat the ticket facts (deduction amount, date, order last-four, digit-wise) only when the step's directive asks for them — if the partner already heard the full ticket readout at the start of the call, do not repeat them. Before restating the partner's answers, say one short natural line that you are confirming what they told you (Hindi: "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ।", English: "Let me quickly confirm the details you shared."), then their four answers in this order: reached location, called customer, actual recipient or drop location, and the CX-support call. End with exactly one question, in the caller's language: "क्या ये सब सही है?" (English: "Is all of this correct?") If the partner explicitly corrects something, the latest clear correction replaces that item and the workflow summarizes the corrected details together. It re-asks only a field named as wrong without a replacement value. Never restart the enquiries from the top or separately reconfirm clear fields.
 
 # Approved Claims
 You may only say:
@@ -1099,8 +1097,8 @@ def build_mdnd_workflow() -> tuple[list, list]:
     Enquiry order after the ticket readout: reached-location + called-customer
     asked TOGETHER when both are unknown (condition nodes pick the single
     question when one half is already known), handover recipient (wide
-    vocabulary), guard-name follow-up ONLY when the guard received the order
-    and no name is known yet, then the CX-support-call question. Every ask
+    vocabulary), then the CX-support-call question. Guard names may still be
+    captured when volunteered but are not required. Every ask
     carries the narrative multi-capture, so anything the partner already
     said is skipped. The verification hub captures inline corrections; a
     rejected summary walks the SAME enquiry chain again — filled slots are
@@ -1128,7 +1126,7 @@ def build_mdnd_workflow() -> tuple[list, list]:
         "Natural Hinglish, one short question only, offering the options "
         "customer, guard, ghar ka koi member, ya koi aur.")
     nodes = layout([
-        N("n_start", "start", "Call starts"),
+        N("n_start", "start", "Call starts", {"semanticSlots": "mdnd_v1"}),
         N("n_ask_issue_desc", "ask", "Ticket readout + what happened", {
             "question": ("आपके ticket पर MDND का deduction दिख रहा है। "
                          "बताइए — क्या हुआ था?"),
@@ -1164,7 +1162,7 @@ def build_mdnd_workflow() -> tuple[list, list]:
             "entity": MDND_DATE_LOOKAHEAD,
             "prefillFromContext": "mdnd_deduction_date"}),
         N("n_msg_empathy", "message", "Empathy acknowledgement", {
-            "text": "मैं आपकी परेशानी पूरी तरह समझ सकती हूँ।"}),
+            "text": "मैं आपकी बात समझ सकता हूँ।"}),
         # ── reached + called: one natural question when both are unknown ──
         N("n_cond_reached", "condition", "Reached already known?", {
             "variable": "m_reached_location", "operator": "exists"}),
@@ -1210,7 +1208,8 @@ def build_mdnd_workflow() -> tuple[list, list]:
             # de do") from an actual handover, so the narrow follow-up the
             # grounded directive used to produce is no longer needed.
             "alsoCapture": MDND_AFTER_HANDOVER}),
-        # ── guard name, only for a guard handover with no name known ──
+        # Retained for in-flight legacy sessions; new calls bypass these
+        # optional guard-name nodes and collect only the four required facts.
         N("n_cond_guard", "condition", "Handed to the guard?", {
             "variable": "m_handover_recipient", "operator": "equals",
             "value": "guard / security"}),
@@ -1328,7 +1327,7 @@ def build_mdnd_workflow() -> tuple[list, list]:
         E("n_ask_reached_called", "n_ask_reached"),   # skipped (just filled)
         E("n_ask_reached", "n_ask_called"),           # asked only if missing
         E("n_ask_called", "n_ask_handover"),
-        E("n_ask_handover", "n_cond_guard"),
+        E("n_ask_handover", "n_ask_cx"),
         E("n_cond_guard", "n_cond_guard_name", "true"),
         E("n_cond_guard", "n_ask_cx", "false"),
         E("n_cond_guard_name", "n_ask_cx", "true"),
@@ -1339,6 +1338,7 @@ def build_mdnd_workflow() -> tuple[list, list]:
         E("n_ask_cx", "n_hub_verify"),
         E("n_hub_verify", "n_api", YES_VERIFY),
         E("n_hub_verify", "n_ask_correction", NO_VERIFY),
+        E("n_hub_verify", "n_ask_correction", "correction"),
         E("n_hub_verify", "n_handover", AGENT),
         # correction re-walks the enquiry chain: filled → skipped, cleared →
         # re-asked, then the summary is confirmed again.
@@ -1355,6 +1355,28 @@ def build_mdnd_workflow() -> tuple[list, list]:
         E("n_hub_more", "n_ask_correction", "correction"),
         E("n_msg_close", "n_end"),
     ]
+    # Authored retries keep unclear/STT turns on the missing fact. The
+    # semantic adapter uses these without sending the turn to free chat.
+    retry_questions_en = {
+        "n_ask_issue_desc": "What happened with this delivery?",
+        "n_ask_reached_called": "Did you reach the customer's delivery location, and did you call the customer before delivery?",
+        "n_ask_reached": "Did you reach the customer's delivery location?",
+        "n_ask_called": "Did you call the customer before delivery?",
+        "n_ask_handover": "Who did you give the order to, or where did you leave it?",
+        "n_ask_cx": "Did you receive a call from CX support about this delivery?",
+        "n_ask_correction": "Which detail should I correct, and what is the correct information?",
+    }
+    for node in nodes:
+        if node["id"] not in retry_questions_en:
+            continue
+        config = node["config"]
+        question_hi = ("इस delivery में क्या हुआ था?" if node["id"] == "n_ask_issue_desc"
+                       else config["question"])
+        config["unmatchedReply"] = (
+            "माफ़ कीजिए, मैं आपकी बात ठीक से समझ नहीं पाया। " + question_hi)
+        config["unmatchedReplyByLanguage"] = {
+            "en": "Sorry, I couldn't understand that. " + retry_questions_en[node["id"]],
+        }
     return nodes, edges
 
 

@@ -107,9 +107,47 @@ export interface HumanSpeechSettings {
   latency_filler_hmm_ms?: number;
   /** Time after the caller stops (ms) before the spoken "one second" cue may play. */
   latency_filler_spoken_ms?: number;
+  /** Which pre-rendered sound covers the gap before a reply. */
+  latency_filler_kind?: FillerSoundKind;
+  /** Per kind and voice gender: which clips may play (primary first, then alternates). Empty = all rotate. */
+  filler_audio_selection?: FillerAudioSelection;
+  /** Per language: which voiced "hmm" cue texts the long-wait rung may use. Empty = language default. */
+  latency_filler_cue_selection?: CueSelection;
 }
 
-export type HumanSpeechEffectiveSettings = Required<HumanSpeechSettings>;
+export type FillerSoundKind = "breath" | "inhale" | "exhale" | "inhale_exhale";
+export type FillerGender = "male" | "female" | "neutral";
+/** One selection: the preferred clip/cue plus optional alternates that rotate with it. */
+export interface AudioChoice {
+  primary?: string;
+  alternates?: string[];
+}
+export type FillerAudioSelection = Partial<Record<FillerSoundKind, Partial<Record<FillerGender, AudioChoice>>>>;
+export type CueSelection = Record<string, AudioChoice>;
+type HumanSpeechObjectKey = "latency_filler_kind" | "filler_audio_selection" | "latency_filler_cue_selection";
+export type HumanSpeechEffectiveSettings =
+  Required<Omit<HumanSpeechSettings, HumanSpeechObjectKey>> & Pick<HumanSpeechSettings, HumanSpeechObjectKey>;
+
+export interface FillerAudioClip {
+  id: string;
+  label: string;
+  source: "recording" | "synthesized";
+  kind: FillerSoundKind;
+  gender: FillerGender;
+  durationMs: number;
+}
+export interface FillerCueOption { id: string; text: string; ready: boolean }
+export interface NaturalConversationAudio {
+  sampleRate: number;
+  kinds: { id: FillerSoundKind; label: string }[];
+  cueKinds: { id: "hmm" | "wait"; label: string }[];
+  genders: FillerGender[];
+  /** The voice the runtime speaks each bot language with — its gender decides which clips are eligible. */
+  voices: { language: string; voiceName: string; gender: FillerGender; provider: string; model: string; voice: string }[];
+  clips: Record<FillerSoundKind, Record<FillerGender, FillerAudioClip[]>>;
+  cues: Record<string, { language: string; options: Record<"hmm" | "wait", FillerCueOption[]>; defaultSelection: AudioChoice | null }>;
+  effective: { latencyFillerKind: FillerSoundKind; fillerAudioSelection: FillerAudioSelection; latencyFillerCueSelection: CueSelection };
+}
 export type HumanSpeechSettingKey = keyof HumanSpeechSettings;
 export type HumanSpeechSettingSource = "platform" | "tenant" | "bot";
 export type HumanSpeechSources = Record<HumanSpeechSettingKey, HumanSpeechSettingSource>;
@@ -1928,7 +1966,8 @@ export interface PhoneNumber {
   tenant?: string;
   bot?: string;
   provider: string;
-  status: "assigned" | "available" | "porting" | "error";
+  /** `reserved` = held for an archived bot: not routable, not claimable by anyone else. */
+  status: "assigned" | "reserved" | "available" | "porting" | "error";
   /** Admin gate: inactive numbers keep existing routing but reject new assignments. */
   isActive: boolean;
   monthlyCost: number;

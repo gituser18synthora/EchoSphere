@@ -58,7 +58,33 @@ def _expects_digits(entity: dict[str, Any]) -> bool:
     if data_type in _DIGIT_DATA_TYPES:
         return True
     pattern = entity.get("regexPattern") or entity.get("regex_pattern") or ""
-    return bool(_DIGIT_PATTERN_HINT.search(str(pattern)))
+    if _DIGIT_PATTERN_HINT.search(str(pattern)):
+        return True
+    # The ordered ``regexPatterns`` list opts in the same way: a text entity
+    # whose contextual patterns capture a digit run ("500 rupees katega")
+    # must also match its spoken form ("paanch sau rupaye katega").
+    patterns = entity.get("regexPatterns") or entity.get("regex_patterns") or []
+    return any(_DIGIT_PATTERN_HINT.search(str(x)) for x in patterns if x)
+
+
+def _patterns_expect_digits(entity: dict[str, Any]) -> bool:
+    """Whether the entity's canonical ``synonymPatterns`` look for digit runs.
+
+    A yes/no-shaped lookahead such as amount_informed ("500 rupees katega" ⇒
+    yes) must also match the spoken form "paanch sau rupaye katega". This is
+    deliberately separate from :func:`_expects_digits`: it only widens the
+    extractor's spoken-number RETRY, never turns the ask into a numeric
+    identifier dictation (the entity's value is still a canonical word).
+    """
+    patterns = entity.get("synonymPatterns") or entity.get("synonym_patterns")
+    if not isinstance(patterns, dict):
+        return False
+    for alternatives in patterns.values():
+        if isinstance(alternatives, str):
+            alternatives = [alternatives]
+        if any(_DIGIT_PATTERN_HINT.search(str(x)) for x in alternatives or [] if x):
+            return True
+    return False
 
 
 # Bounds used when configuration provides none: wide enough for any real
@@ -194,7 +220,8 @@ def _match_entity_text(text: str, entity: dict[str, Any]) -> tuple[str | None, s
     synonyms = entity.get("synonyms") or {}
     lexicon: list[tuple[str, str]] = [(v, v) for v in allowed]
     for canonical, alts in (synonyms or {}).items():
-        lexicon.append((canonical, canonical))
+        if entity.get("matchCanonicalValues") is not False:
+            lexicon.append((canonical, canonical))
         for alt in alts or []:
             lexicon.append((alt, canonical))
     for surface, canonical in sorted(lexicon, key=lambda p: -len(p[0])):
@@ -229,7 +256,9 @@ def extract_entity(text: str, entity: dict[str, Any]) -> dict[str, Any]:
 
     # Spoken-number fallback, digit-expecting entities only: the raw
     # transcript may carry the value as digit words or spaced digit groups.
-    if matched_value is None and text and _expects_digits(entity):
+    if matched_value is None and text and (
+        _expects_digits(entity) or _patterns_expect_digits(entity)
+    ):
         from shared.orchestration.spoken_numbers import spoken_digit_text
 
         rewritten = spoken_digit_text(text)

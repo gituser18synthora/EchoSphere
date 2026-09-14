@@ -259,10 +259,17 @@ describe("VoiceTab — Per-language voices", () => {
   });
 
   it("save sends the language voice map unchanged and reloads the settings", async () => {
+    installDefaultMocks({
+      ...SETTINGS,
+      humanSpeech: { enabled: true, backchannel_probability: 0.25 },
+      humanSpeechInherited: { enabled: true },
+      humanSpeechInheritedSources: { enabled: "tenant" },
+    });
     const user = userEvent.setup();
     render(<VoiceTab bot={BOT} />);
     await screen.findByText("Hindi");
     await within(langRow("Hindi")).findByText("Anushka");
+    expect(screen.queryByTestId("human-speech-bot")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Save voice settings" }));
     await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
@@ -273,7 +280,21 @@ describe("VoiceTab — Per-language voices", () => {
         "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
       },
     });
-    await waitFor(() => expect(api.getVoiceSettings).toHaveBeenCalledTimes(2)); // draft reload
+    // Voice edits must never write back a stale Natural Conversation value.
+    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).not.toHaveProperty("humanSpeech");
+    await waitFor(() => expect(api.getVoiceSettings).toHaveBeenCalledTimes(2));
+  });
+
+  it("validates voice settings without submitting Natural Conversation overrides", async () => {
+    installDefaultMocks({ ...SETTINGS, humanSpeech: { backchannel_probability: 0.25 } });
+    vi.mocked(api.validateVoiceConfig).mockResolvedValue({ valid: true, errors: [], warnings: [] });
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    await within(langRow("Hindi")).findByText("Anushka");
+
+    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await waitFor(() => expect(api.validateVoiceConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.validateVoiceConfig).mock.calls[0][1]).not.toHaveProperty("humanSpeech");
   });
 
   it("keeps a readable name for platform-disabled languages and flags them", async () => {
@@ -496,7 +517,7 @@ describe("VoiceTab — Delivery tuning", () => {
     await user.click(screen.getByRole("button", { name: "Preview voice" }));
     const dialog = await screen.findByRole("dialog");
     // The modal explains exactly what the preview can and cannot apply.
-    expect(within(dialog).getByText(/synthesizes this text with the draft settings/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Generate uses the same delivery mapping as live calls/)).toBeInTheDocument();
     expect(within(dialog).getByText(/cannot rewrite this fixed sample text/)).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Generate" }));
@@ -599,5 +620,26 @@ describe("VoiceTab — LLM output length", () => {
     await userEvent.click(await screen.findByText("Advanced orchestration"));
     expect(screen.getByRole("switch", { name: "Goal Engine" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("Goal Engine is disabled")).toBeInTheDocument();
+  });
+});
+
+describe("VoiceTab — Natural Conversation cross-link", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    installDefaultMocks();
+  });
+
+  it("offers the Natural Conversation shortcut through the Studio navigator", async () => {
+    const open = vi.fn();
+    render(<VoiceTab bot={BOT} onOpenNaturalConversation={open} />);
+    await screen.findByText("Hindi");
+    await userEvent.click(screen.getByRole("button", { name: "Open Natural Conversation" }));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders no shortcut when the tab is used outside the Studio", async () => {
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+    expect(screen.queryByRole("button", { name: "Open Natural Conversation" })).not.toBeInTheDocument();
   });
 });

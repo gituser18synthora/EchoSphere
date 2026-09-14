@@ -194,3 +194,162 @@ only with an allowed value. `/testing/simulate` returns the same derivation
 per turn as `workflow.structuredSummary`. Suite:
 `env/bin/python zepto/tests/run_single_bot_scenarios.py MDND` (21/21;
 optional scenario filters, e.g. `MDND "MDND 15"`).
+
+## OUTBOUND OB-fee deduction verification bot (2026-09-10) — `zepto/setup/09_ob_deduction_outbound.py`
+
+Source of truth: `bot_POC/Zepto/OB/OB Deduction BOT.docx` (onboarding-fee KB +
+sample verification dialogue). The rider has ALREADY raised an onboarding-fee
+deduction ticket; the bot calls, gives the ticket context in the greeting and
+verifies conditionally — it never asks "how can I help you?".
+
+| Thing | Value |
+|---|---|
+| Bot | `bot_4b8d6fe95cb1` "Zepto OB Fee Deduction Verification (Outbound)" (published, 7/7) |
+| Workflow | `wf_fac5f8fae156` "Zepto OB fee deduction verification (outbound)" (29 nodes / 41 edges) |
+| Connection | `api_485496c6be7f` "Zepto Register OB Fee Verification" (bot-scoped, reserved `.example` host) |
+| KB | "Zepto OB Fee Deduction KB (document)" ← `zepto/docs/Zepto_OB_Fee_Deduction_Verification_KB.md` |
+| Channel | `+918047133655` · freeswitch (enabled) |
+| Languages / voice | hi-IN primary + en-IN — **copied verbatim from `bot_59a84478f155`** (sarvam saaras:v3 auto-detect STT, bulbul:v3 `vp-sv-ashutosh` for both locales, gpt-4o-mini, elevenlabs fallback, humanSpeech) |
+
+**Flow (condition-driven):** Q1 deduction explained? → (no → explain the fee
+from the document ONCE, `explanation_given_on_call`) → Q2 amount communicated?
+→ (yes → informed amount; no → actual deducted amount, no "does it match")
+→ Q3 deducted amount same as communicated? → (no → deducted amount + week) →
+grounded readback "क्या ये सब सही है?" with inline corrections / field clears
+(`n_ask_correction` self-skips, re-walk skips filled asks) → outcome message
+sets `verification_status` (`consistent` | `amount_mismatch` |
+`amount_not_communicated`, via message-node `setSlots`) → "anything else
+about this deduction?" (substantive answer consumed as `additional_concern`,
+declared `correction` edge re-verifies a changed fact) → api node → close
+("You're all set! Thanks for confirming.").
+
+Every ask carries the narrative `alsoCapture` set (bilingual negation-aware
+`synonymPatterns`, spoken-number retry), so one utterance can fill several
+fields and answered questions are skipped. Slots are the user-facing schema:
+`deduction_explained, amount_informed, informed_amount, deducted_amount,
+amount_matches, payment_mode, upfront_amount_paid, deduction_date_or_week,
+verification_status, additional_concern` (+ `explanation_given_on_call`,
+`ticket_type`). The api node adds `bot_id / tenant_id / session_id / workflow /
+conversation_language` (`includeMetadata`) and the dialer's `ticket_id` /
+`partner_id` (`contextArgs`). `goalPolicy.summaryFields` reports the same
+fields post-call with `allowLlm: false` everywhere (never guessed).
+
+Design decisions: a communicated amount ("500 katega bola tha") also counts as
+"deduction explained = yes"; amounts/week/payment mode are capture-only except
+the discrepancy branches; the greeting confirms the partner's identity so a
+bare "haan" routes into the flow without being swallowed by Q1 (Q1's own
+entity has no bare yes/no surfaces — bare answers resolve from the
+affirm/refusal signal). Not defined by the document (not implemented): any
+resolution for a mismatch or a non-communicated amount, fee amounts, store
+lists, refund/reversal rules, timelines.
+
+Tests: `env/bin/python zepto/tests/run_ob_deduction_scenarios.py` (15/15,
+hi/Hinglish/en, all branches, multi-answer, corrections, nulls, interruption,
+language switching, handover) and `tests/unit/test_zepto_ob_deduction_definition.py`
+(engine replay incl. the final API payload). Stages:
+`09_ob_deduction_outbound.py config|all|<stage>`.
+
+### 2026-09-11 review fix (cv_e4df054b5651)
+
+Root cause: `n_msg_explain` was `llm_grounded`; when it was walked together
+with the next ask, the brain sent BOTH through one constrained generation and
+the model returned only the question (the validator only checked "has a
+question mark" + length), so the document explanation was never spoken while
+`explanation_given_on_call` had already been recorded. Fixes: the explanation
+is now FIXED text (Hindi + `textByLanguage` en), the grounded validator rejects
+a multi-sentence script that collapses to under 40 % of its length
+(`_collapsed_to_question`), and the flow was reworked to EXTRACT → STATE →
+MISSING → NEXT: not explained → explain once → deducted amount (if unknown) →
+Q2 (if unknown); both figures known → `amount_matches` DERIVED (`numeric_eq` /
+`numeric_ne` + silent `setSlots`, spoken once when they differ) and Q3 never
+asked; a "same" answer that contradicts two differing figures is overridden;
+the payout-week question only on a confirmed mismatch; the shared
+deducted-amount ask exits via `n_cond_ded_next`. Inference "amount told ⇒
+deduction explained" applies only when answering Q1. Suite 21/21 (OB-13…18
+added: the review examples in Hinglish, English, mixed script).
+Note: admin@zepto.com set the bot's languageVoiceMap default to en-IN on
+2026-09-11 (English testing); hi-IN remains the intended primary — the suite
+pins the language per scenario. Greeting v3 (hand-authored: identity question
+first) is the published one and mirrored in stage 09.
+
+### 2026-09-11 (2) Default Language + Hindi wording (cv_10dd1b13a5e1)
+
+- `shared/bot_config.py`: the greeting variant is chosen by the bot's default
+  language (`languageVoiceMap.default`, else first bot language) via
+  `select_greeting_variant` — it used to take the first authored variant (Hindi)
+  regardless of the Default Language. Changing Default Language in the Voice tab
+  is now enough; the greeting/fixed texts are not language-hardcoded.
+- `shared/orchestration/voice_identity.py`: the speaker-grammar adapter regenders
+  habitual/modal forms (करती/सकती/जाती …) ONLY right before हूँ/हूं; it used to
+  rewrite every -ती form in any first-person sentence ("fee ली जाती है" → "जाता है").
+- Engine: retry re-asks use `textByLanguage`; a matcher ask that captures a
+  downstream field without an own value goes off-script instead of burning a
+  retry (`_captures_other_field`).
+- Script: natural Hinglish explanation ("Zepto join करने पर नए rider से onboarding
+  fee ली जाती है …"), English `textByLanguage` for every fixed/grounded-fallback
+  node (explain, outcomes, register hold, noted, readback prompt), readback
+  phrasing; `_W`/`_END_W` exclude the danda (STT ends sentences with "।", which is
+  inside the Devanagari block — "कट गए।" did not match); the deducted-amount ask
+  also captures Q2's answer; greeting text = published v4; stage `bot` no longer
+  overwrites voice settings on a re-run (`--reset-voice` to re-copy).
+- Voice E2E (browser channel, synthesized caller speech via Sarvam):
+  English default cv_580f0c746fdb / cv_c5e7ddfd3acf, Hindi default
+  cv_cb018a40fdde, Hinglish caller cv_0d77925f5b4a — greetings follow the
+  default, fixed texts follow the conversation language, structured summaries
+  correct. Harness: scratchpad `e2e_voice.py` (waits for the bot's audio
+  playout before the caller speaks; the caller gate drops audio inside the echo
+  guard otherwise).
+
+### 2026-09-11 (3) KB questions during the outbound flow (cv_56df956b0430)
+
+Root cause: with a workflow active, `TurnRouter.decide` routes every turn to
+the workflow (`active_workflow`), `_apply_classification` never upgrades a
+WORKFLOW decision, so a `policy_question` (route knowledge) classified by the
+LLM went to the engine → off-script → persona-only LLM reply ("I can only
+assist with the ticket"). No retrieval ran. Fix (platform, generic):
+- `TurnRouter.detect_knowledge_question(text)` — clause-level detection
+  (sentence/connector split: "waise", "aur", "but"…): a knowledge-intent sample
+  match, or a question-shaped clause naming a topic from the knowledge intents'
+  vocabulary; returns the clause as the retrieval query.
+- `ConversationBrain._handle_workflow`: off-script turn with a knowledge
+  intent / question signal → `RouteKind.KNOWLEDGE` generation (retrieval-
+  grounded, paused step restated); consumed turn + KB question →
+  `_kb_answer_for_workflow_turn` (retrieval + constrained answer in the caller
+  language, `wf_kb_miss` on a miss) prepended to the flow's reply. Events
+  `workflow_kb_question`, `kb_retrieval(in_workflow)`.
+- Engine: node `coversKnowledgeQuestion` → result `knowledgeCovered` (the
+  flow's own explanation counts as the KB answer; no double explanation).
+- Simulate mirrors all of it (`workflow_off_script_kb`, `workflow_kb`,
+  `workflow_kb_covered` routes; `_knowledge_context` = all passages).
+- Bot: `policy_question` intent (in_30d4265b0d33, route knowledge, threshold
+  0.5) extended to 45 Hindi/Hinglish/English phrasings; KB doc gained a
+  Hindi/Hinglish rendering of the same facts (keyword retrieval on the local
+  mock embedder); payment-mode capture is personal-statement-only (questions
+  never fill slots); `_DEDUCTED` covers STT "कट हुआ"/"बट".
+- Suite OB-19…OB-24 (standalone KB, KB mid-flow, mixed utterances, slot
+  confusion). Voice: cv_a7ab55eca496 (standalone KB at Q1), cv_2d58823dfc59
+  (Q1 no + KB), cv_f0e097a61048 (300/400 + store-fee KB).
+  Intent-confirmed knowledge questions retrieve with a relaxed gate (0.15 vs the
+  0.35 default); simulate's knowledge route is retrieval-grounded. Suite 27/27.
+  Negative pass: unsupported/unrelated/value questions never invent policy or fill
+  slots (OB-25…28); knowledge clause needs two topic words; below-gate retrievals dropped.
+
+### 2026-09-11 (4) conversational quality (cv_2c60d51f61fb)
+
+- Engine `readback` v2: per-locale `groups` (one natural sentence for related
+  slots, `requires`/`equals`/`absent`/`differ`/`same`, consumes its slots) before
+  per-field phrases; templates take `{slot}` and derived `{diff:a,b}` (₹100
+  difference spoken, never stored). Hub `correctionAck` (`{changes}` = the
+  changed slots' readback phrases, `variables` = leaf facts) acknowledges a
+  restated/changed value instead of "बस confirm करना है"; a changed steering
+  fact or an invalidated derived slot still re-walks. `awaitingKind` in the
+  result; `also_invalidated` audit; `regexPatterns`/`synonymPatterns` count as
+  ask matchers.
+- Brain/simulate: at an intent hub the off-script instruction forbids reciting
+  the hub prompt verbatim after answering (varied or no follow-up).
+- Analyst: narrative/important_facts follow the configured field order and
+  keep the most specific value ("last week, Monday").
+- Bot: weekday-aware date capture ("पिछले हफ्ते मंडे", "Monday"), grouped hi/en
+  readbacks, no "team will review" anywhere (prompt, directives, context), no
+  "updating your ticket" hold and no "not confirmed" closing (placeholder API →
+  "details noted"), summaryFields in conversation order with ticket_type last.

@@ -8,6 +8,7 @@ can render live transcripts and call events without decoding audio:
   client → server: {"type": "event", "name": "..."} (reserved)
 """
 
+import base64
 import json
 import time
 
@@ -24,6 +25,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.serializers.base_serializer import FrameSerializer
+from voice_runtime.frames import FillerAudioRawFrame, FillerClearFrame
 
 
 class RawPCMSerializer(FrameSerializer):
@@ -50,6 +52,15 @@ class RawPCMSerializer(FrameSerializer):
             OutputTransportMessageUrgentFrame,
         )
 
+        if isinstance(frame, FillerClearFrame):
+            return json.dumps({"type": "filler_clear", "owner": frame.owner.token})
+        if isinstance(frame, FillerAudioRawFrame):
+            if frame.owner is None or frame.owner.cancelled:
+                return None
+            return json.dumps({
+                "type": "filler_audio", "owner": frame.owner.token,
+                "audio": base64.b64encode(frame.audio).decode("ascii"),
+            })
         if isinstance(frame, OutputAudioRawFrame):
             return frame.audio
         # The urgent variant is a SystemFrame, NOT a subclass of the plain

@@ -1,0 +1,1742 @@
+{
+  "audited_at_utc": "2026-09-10T13:58:41.349617+00:00",
+  "scope": "Document/configuration audit, text simulations, intercepted workflow payloads and isolated tool response tests; no audio call or real ticket persistence tested.",
+  "bot_id": "bot_4b8d6fe95cb1",
+  "baseline": {
+    "unit_command": "env/bin/python -m pytest tests/unit/test_zepto_ob_deduction_definition.py -q",
+    "unit_passed": 18,
+    "unit_failed": 0,
+    "scenario_command": "env/bin/python -u zepto/tests/run_ob_deduction_scenarios.py -v",
+    "scenarios_passed": 15,
+    "scenarios_failed": 0
+  },
+  "configuration": {
+    "bot": {
+      "id": "bot_4b8d6fe95cb1",
+      "name": "Zepto OB Fee Deduction Verification (Outbound)",
+      "status": "published",
+      "tenantId": "tn_04250683f1b3",
+      "languages": [
+        "en-IN",
+        "hi-IN"
+      ]
+    },
+    "workflow": {
+      "id": "wf_fac5f8fae156",
+      "name": "Zepto OB fee deduction verification (outbound)",
+      "version": 5,
+      "status": "approved",
+      "issues": []
+    },
+    "node_count": 29,
+    "edge_count": 41,
+    "prompts": [
+      {
+        "type": "system",
+        "state": "published",
+        "publishedVersion": 2
+      },
+      {
+        "type": "greeting",
+        "state": "published",
+        "publishedVersion": 1
+      }
+    ],
+    "setup_matches": {
+      "system_prompt": true,
+      "greeting": true,
+      "nodes": true,
+      "edges_ignoring_generated_ids": true,
+      "summaryFields": true
+    },
+    "api": {
+      "id": "api_485496c6be7f",
+      "botId": "bot_4b8d6fe95cb1",
+      "name": "Zepto Register OB Fee Verification",
+      "description": "Registers the outbound OB-fee deduction VERIFICATION result on the partner's existing ticket: the flow's structured fields (deduction_explained, amount_informed, informed_amount, amount_matches, deducted_amount, payment_mode, upfront_amount_paid, deduction_date_or_week, verification_status, additional_concern) + bot/tenant/session ids, language, ticket_id, partner_id. Reserved .example host until the real endpoint exists; sample response in responseSchema.example.",
+      "method": "POST",
+      "url": "https://partner-support.zepto.example/api/v1/deduction-concerns/onboarding_fee/verification",
+      "authType": "none",
+      "secretRef": null,
+      "headers": {},
+      "queryParams": {},
+      "pathParams": {},
+      "bodyTemplate": {
+        "channel": "outbound_voice_bot",
+        "ticket_type": "onboarding_fee_deduction",
+        "concern_label": "Onboarding Fee deduction verification"
+      },
+      "requestSchema": {
+        "type": "object",
+        "required": [],
+        "properties": {
+          "bot_id": {
+            "type": "string"
+          },
+          "workflow": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          },
+          "partner_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "ticket_type": {
+            "type": "string"
+          },
+          "payment_mode": {
+            "type": "string"
+          },
+          "amount_matches": {
+            "type": "string"
+          },
+          "amount_informed": {
+            "type": "string"
+          },
+          "correction_note": {
+            "type": "string"
+          },
+          "deducted_amount": {
+            "type": "string"
+          },
+          "informed_amount": {
+            "type": "string"
+          },
+          "additional_concern": {
+            "type": "string"
+          },
+          "deduction_explained": {
+            "type": "string"
+          },
+          "upfront_amount_paid": {
+            "type": "string"
+          },
+          "verification_status": {
+            "type": "string"
+          },
+          "conversation_language": {
+            "type": "string"
+          },
+          "deduction_date_or_week": {
+            "type": "string"
+          },
+          "explanation_given_on_call": {
+            "type": "string"
+          }
+        }
+      },
+      "responseSchema": {
+        "type": "object",
+        "example": {
+          "status": "updated",
+          "ticket_id": "ZPT-OBF-70412",
+          "verification_recorded": true
+        },
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          },
+          "verification_recorded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "successCondition": "",
+      "successMessage": "",
+      "failureMessage": "",
+      "errorMapping": {},
+      "sensitiveMasks": [],
+      "allowedIntents": [],
+      "allowedWorkflows": [],
+      "isStateChanging": true,
+      "requireConfirmation": false,
+      "timeoutMs": 6000,
+      "retries": 1,
+      "responseMapping": [
+        {
+          "source": "ticket_id",
+          "target": "ticket_reference"
+        },
+        {
+          "source": "status",
+          "target": "ticket_update_status"
+        }
+      ],
+      "status": "untested",
+      "lastTestedAt": null,
+      "lastLatencyMs": 0,
+      "version": 1,
+      "updatedAt": "2026-09-10T16:25:59Z"
+    },
+    "runtime_context": {
+      "id": "rcs_542977326e9a",
+      "botId": "bot_4b8d6fe95cb1",
+      "name": "Ticket & partner facts (dialer)",
+      "sourceMode": "manual",
+      "apiConnectionId": null,
+      "responsePath": null,
+      "fields": [],
+      "allowAdditional": true,
+      "testPayload": {
+        "ticket_id": "ZPT-OBF-70412",
+        "partner_id": "ZP-88231",
+        "ticket_type": "onboarding_fee_deduction",
+        "line_concern": "Onboarding fee (OB fee) deduction ticket verification",
+        "partner_name": "Ravi Kumar",
+        "call_direction": "outbound",
+        "support_action": "Zepto Support verifies the onboarding fee deduction ticket with the partner and records the answers on the ticket for the team's follow-up"
+      },
+      "missingValuePolicy": "Never guess an onboarding fee amount, a deducted amount, a store, a date, a policy rule, a ticket number or a timeline. If a value is not in the context, in the partner's own words on this call, or in a system result from this call, do not state it.",
+      "domainPolicy": "generic",
+      "status": "active",
+      "configured": true
+    },
+    "summary_fields": [
+      {
+        "name": "ticket_type",
+        "type": "choice",
+        "label": "Ticket type",
+        "source": "ticket_type",
+        "options": [
+          "onboarding_fee_deduction"
+        ],
+        "allowLlm": false,
+        "description": "The concern type this outbound verification call handles."
+      },
+      {
+        "name": "deduction_explained",
+        "type": "yes_no",
+        "label": "Deduction explained at onboarding",
+        "source": "deduction_explained",
+        "allowLlm": false,
+        "description": "Was the onboarding-fee deduction explained to the rider during onboarding?"
+      },
+      {
+        "name": "explanation_given_on_call",
+        "type": "yes_no",
+        "label": "Onboarding fee explained on this call",
+        "source": "explanation_given_on_call",
+        "allowLlm": false,
+        "description": "Did the bot explain the onboarding fee on this call (only when the rider said it was not explained)?"
+      },
+      {
+        "name": "amount_informed",
+        "type": "yes_no",
+        "label": "Deduction amount communicated",
+        "source": "amount_informed",
+        "allowLlm": false,
+        "description": "Was the rider informed about the amount that would be deducted?"
+      },
+      {
+        "name": "informed_amount",
+        "type": "text",
+        "label": "Amount communicated (rupees)",
+        "source": "informed_amount",
+        "values": {
+          "not remembered": ""
+        },
+        "allowLlm": false,
+        "description": "The amount the rider says was communicated at onboarding."
+      },
+      {
+        "name": "amount_matches",
+        "type": "yes_no",
+        "label": "Deducted amount matches communicated amount",
+        "source": "amount_matches",
+        "allowLlm": false,
+        "description": "Is the amount actually deducted the same as the amount communicated?"
+      },
+      {
+        "name": "deducted_amount",
+        "type": "text",
+        "label": "Amount actually deducted (rupees)",
+        "source": "deducted_amount",
+        "values": {
+          "not remembered": ""
+        },
+        "allowLlm": false,
+        "description": "The amount the rider says was actually deducted from the payout."
+      },
+      {
+        "name": "payment_mode",
+        "type": "choice",
+        "label": "Onboarding fee payment mode",
+        "source": "payment_mode",
+        "options": [
+          "one_time",
+          "installments"
+        ],
+        "allowLlm": false,
+        "description": "Whether the rider paid the onboarding fee in one go or chose installments (only if mentioned)."
+      },
+      {
+        "name": "upfront_amount_paid",
+        "type": "text",
+        "label": "Upfront amount paid (rupees)",
+        "source": "upfront_amount_paid",
+        "allowLlm": false,
+        "description": "Upfront amount the rider says they paid at onboarding (only if mentioned)."
+      },
+      {
+        "name": "deduction_date_or_week",
+        "type": "text",
+        "label": "Deduction date / week",
+        "source": "deduction_date_or_week",
+        "values": {
+          "not remembered": ""
+        },
+        "allowLlm": false,
+        "description": "When the deduction appeared in the payout (only if mentioned or asked on a mismatch)."
+      },
+      {
+        "name": "verification_status",
+        "type": "choice",
+        "label": "Verification outcome",
+        "source": "verification_status",
+        "options": [
+          "consistent",
+          "amount_mismatch",
+          "amount_not_communicated"
+        ],
+        "allowLlm": false,
+        "description": "Outcome decided by the confirmed answers: consistent with onboarding information, a discrepancy between communicated and deducted amounts, or the amount was never communicated."
+      },
+      {
+        "name": "additional_concern",
+        "type": "text",
+        "label": "Additional concern about this deduction",
+        "source": "additional_concern",
+        "allowLlm": false,
+        "description": "Anything else the rider asked to be checked about this deduction, in their words."
+      }
+    ]
+  },
+  "live_probes": [
+    {
+      "name": "Hindi greeting acknowledgement",
+      "checks": [
+        {
+          "expectation": "Q1 remains unanswered",
+          "passed": true
+        }
+      ],
+      "turns": [
+        {
+          "input": "haan ji boliye",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "English greeting acknowledgement and language",
+      "checks": [
+        {
+          "expectation": "Q1 remains unanswered",
+          "passed": false
+        },
+        {
+          "expectation": "English response contains no Hindi script",
+          "passed": false
+        }
+      ],
+      "turns": [
+        {
+          "input": "Yes, speaking",
+          "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+          "language": "en-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed"
+            ],
+            "slots": {
+              "deduction_explained": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Contradictory numeric evidence",
+      "checks": [
+        {
+          "expectation": "500 informed and 700 deducted must not be accepted as matching",
+          "passed": false
+        }
+      ],
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan bataya tha",
+          "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed"
+            ],
+            "slots": {
+              "deduction_explained": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan 500 bataya tha",
+          "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_informed_amount",
+              "n_ask_amount_matches"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_amount_informed"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan, 700 kata hai",
+          "reply": "आपने जो बताया, उसे एक बार confirm कर लेती हूँ। आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, deduct होने वाला amount आपको बताया गया था, और जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "language": "hi-IN",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_matches",
+              "n_cond_matches_no",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "deducted_amount": "700"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_amount_informed",
+              "n_ask_amount_matches"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": "700",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Correction retracts amount communication",
+      "checks": [
+        {
+          "expectation": "Uncommunicated amount must not yield consistent outcome",
+          "passed": true
+        }
+      ],
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan bataya tha, 500 katega bola tha, utna hi kata",
+          "reply": "आपने जो बताया, उसे एक बार confirm कर लेती हूँ। आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, deduct होने वाला amount आपको बताया गया था, जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "language": "hi-IN",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_informed_amount",
+              "n_ask_amount_matches",
+              "n_cond_matches_no",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "nahi, amount nahi bataya tha",
+          "reply": "ठीक है — actually कितना amount deduct हुआ है?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_hub_verify",
+              "n_ask_correction",
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_deducted_amount"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_hub_verify"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan sahi hai",
+          "reply": "तो आपको बताया गया था कि पाँच सौ रुपये कटेंगे, और actually उतना ही कटा। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। \n\nक्या इस deduction के बारे में और कुछ चेक करना है?",
+          "language": "hi-IN",
+          "route": "workflow_off_script_llm",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_deducted_amount"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": true,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_hub_verify",
+              "n_ask_deducted_amount"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        }
+      ],
+      "check_limitation": "This partial check stopped at the numeric ask and only checked the stored status; it did not establish correctness. See retracted_amount_final_outcome below, which confirms the failure."
+    },
+    {
+      "name": "No explanation then matching amount",
+      "checks": [
+        {
+          "expectation": "Outcome respects prompt condition that all three answers are yes",
+          "passed": false
+        }
+      ],
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "nahi kisi ne nahi bataya tha",
+          "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+          "language": "hi-IN",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_cond_explanation_given",
+              "n_msg_explain",
+              "n_ask_amount_informed"
+            ],
+            "slots": {
+              "deduction_explained": "no",
+              "explanation_given_on_call": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "No",
+              "explanation_given_on_call": "Yes",
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan 500 bataya tha",
+          "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_informed_amount",
+              "n_ask_amount_matches"
+            ],
+            "slots": {
+              "deduction_explained": "no",
+              "explanation_given_on_call": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_msg_explain",
+              "n_ask_amount_informed"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "No",
+              "explanation_given_on_call": "Yes",
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan utna hi kata",
+          "reply": "आपने बताया कि onboarding के time आपको इस deduction के बारे में नहीं बताया गया था, deduct होने वाला amount आपको बताया गया था, वो पाँच सौ रुपये था, और जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "language": "hi-IN",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_matches",
+              "n_cond_matches_no",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "no",
+              "explanation_given_on_call": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_msg_explain",
+              "n_ask_amount_informed",
+              "n_ask_amount_matches"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "No",
+              "explanation_given_on_call": "Yes",
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan sahi hai",
+          "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_hub_verify",
+              "n_cond_out_matches",
+              "n_msg_consistent",
+              "n_hub_more"
+            ],
+            "slots": {
+              "deduction_explained": "no",
+              "explanation_given_on_call": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "ticket_type": "onboarding_fee_deduction",
+              "verification_status": "consistent"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_msg_explain",
+              "n_ask_amount_informed",
+              "n_ask_amount_matches",
+              "n_hub_verify"
+            ],
+            "structuredSummary": {
+              "ticket_type": "onboarding_fee_deduction",
+              "deduction_explained": "No",
+              "explanation_given_on_call": "Yes",
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": "consistent",
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unknown comparison readback",
+      "checks": [],
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan bataya tha par amount nahi bataya tha",
+          "reply": "ठीक है — actually कितना amount deduct हुआ है?",
+          "language": "hi-IN",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_deducted_amount"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "aath sau rupaye kate hain",
+          "reply": "आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, लेकिन deduct होने वाला amount आपको नहीं बताया गया था, और जो amount कटा वो उतना नहीं है। क्या ये सब सही है?",
+          "language": "hi-IN",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_deducted_amount",
+              "n_cond_out_informed",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "deducted_amount": "800"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_deducted_amount"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": "800",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "engine_probes": [
+    {
+      "name": "payload_known_amount",
+      "turns": [
+        "haan",
+        "haan bataya tha, 500 katega bola tha, utna hi kata",
+        "haan sahi hai",
+        "nahi"
+      ],
+      "done": true,
+      "payload_args": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "500",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "ticket_id": "AUDIT-TICKET-001",
+        "partner_id": "AUDIT-PARTNER-001",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_1805a45006",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN"
+      },
+      "http_body": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "500",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "ticket_id": "AUDIT-TICKET-001",
+        "partner_id": "AUDIT-PARTNER-001",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_1805a45006",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN",
+        "channel": "outbound_voice_bot",
+        "concern_label": "Onboarding Fee deduction verification"
+      },
+      "summary": {
+        "ticket_type": "onboarding_fee_deduction",
+        "deduction_explained": "Yes",
+        "explanation_given_on_call": null,
+        "amount_informed": "Yes",
+        "informed_amount": "500",
+        "amount_matches": "Yes",
+        "deducted_amount": null,
+        "payment_mode": null,
+        "upfront_amount_paid": null,
+        "deduction_date_or_week": null,
+        "verification_status": "consistent",
+        "additional_concern": null
+      },
+      "validation_errors": []
+    },
+    {
+      "name": "payload_unknown_amount",
+      "turns": [
+        "haan",
+        "haan",
+        "haan",
+        "yaad nahi hai exact",
+        "haan utna hi",
+        "sahi hai",
+        "nahi"
+      ],
+      "done": true,
+      "payload_args": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "not remembered",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "ticket_id": "AUDIT-TICKET-002",
+        "partner_id": "AUDIT-PARTNER-002",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_47d72331d6",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN"
+      },
+      "http_body": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "not remembered",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "ticket_id": "AUDIT-TICKET-002",
+        "partner_id": "AUDIT-PARTNER-002",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_47d72331d6",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN",
+        "channel": "outbound_voice_bot",
+        "concern_label": "Onboarding Fee deduction verification"
+      },
+      "summary": {
+        "ticket_type": "onboarding_fee_deduction",
+        "deduction_explained": "Yes",
+        "explanation_given_on_call": null,
+        "amount_informed": "Yes",
+        "informed_amount": null,
+        "amount_matches": "Yes",
+        "deducted_amount": null,
+        "payment_mode": null,
+        "upfront_amount_paid": null,
+        "deduction_date_or_week": null,
+        "verification_status": "consistent",
+        "additional_concern": null
+      },
+      "validation_errors": []
+    },
+    {
+      "name": "payload_missing_ticket",
+      "turns": [
+        "haan",
+        "haan bataya tha, 500 katega bola tha, utna hi kata",
+        "haan sahi hai",
+        "nahi"
+      ],
+      "done": true,
+      "payload_args": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "500",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_0e167d08a2",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN"
+      },
+      "http_body": {
+        "deduction_explained": "yes",
+        "amount_informed": "yes",
+        "informed_amount": "500",
+        "amount_matches": "yes",
+        "ticket_type": "onboarding_fee_deduction",
+        "verification_status": "consistent",
+        "bot_id": "bot_4b8d6fe95cb1",
+        "tenant_id": "tn_04250683f1b3",
+        "session_id": "ob_audit_engine_0e167d08a2",
+        "workflow": "Zepto OB fee deduction verification (outbound)",
+        "conversation_language": "hi-IN",
+        "channel": "outbound_voice_bot",
+        "concern_label": "Onboarding Fee deduction verification"
+      },
+      "summary": {
+        "ticket_type": "onboarding_fee_deduction",
+        "deduction_explained": "Yes",
+        "explanation_given_on_call": null,
+        "amount_informed": "Yes",
+        "informed_amount": "500",
+        "amount_matches": "Yes",
+        "deducted_amount": null,
+        "payment_mode": null,
+        "upfront_amount_paid": null,
+        "deduction_date_or_week": null,
+        "verification_status": "consistent",
+        "additional_concern": null
+      },
+      "validation_errors": []
+    }
+  ],
+  "contract_probes": [
+    {
+      "name": "empty_request_validation",
+      "args": {},
+      "errors": []
+    },
+    {
+      "name": "invalid_outcome_and_amount_validation",
+      "args": {
+        "verification_status": "anything",
+        "informed_amount": "banana"
+      },
+      "errors": []
+    },
+    {
+      "name": "http_200_business_failure",
+      "response_body": {
+        "status": "failed",
+        "verification_recorded": false
+      },
+      "executor_ok": true,
+      "executor_status": "ok",
+      "mapped": {
+        "ticket_update_status": "failed"
+      }
+    }
+  ],
+  "followup_probes": [
+    {
+      "name": "numeric_mismatch_final_outcome",
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan bataya tha",
+          "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed"
+            ],
+            "slots": {
+              "deduction_explained": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan 500 bataya tha",
+          "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_informed_amount",
+              "n_ask_amount_matches"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_amount_informed"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan, 700 kata hai",
+          "reply": "आपने जो बताया, उसे एक बार confirm कर लेती हूँ। आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, deduct होने वाला amount आपको बताया गया था, और जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_amount_matches",
+              "n_cond_matches_no",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "deducted_amount": "700"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_amount_informed",
+              "n_ask_amount_matches"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": "700",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan sahi hai",
+          "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_hub_verify",
+              "n_cond_out_matches",
+              "n_msg_consistent",
+              "n_hub_more"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "deducted_amount": "700",
+              "ticket_type": "onboarding_fee_deduction",
+              "verification_status": "consistent"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_ask_amount_informed",
+              "n_ask_amount_matches",
+              "n_hub_verify"
+            ],
+            "structuredSummary": {
+              "ticket_type": "onboarding_fee_deduction",
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": "700",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": "consistent",
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "retracted_amount_final_outcome",
+      "turns": [
+        {
+          "input": "haan",
+          "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_start",
+              "n_ask_explained"
+            ],
+            "slots": {},
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": null,
+              "explanation_given_on_call": null,
+              "amount_informed": null,
+              "informed_amount": null,
+              "amount_matches": null,
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan bataya tha, 500 katega bola tha, utna hi kata",
+          "reply": "आपने जो बताया, उसे एक बार confirm कर लेती हूँ। आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, deduct होने वाला amount आपको बताया गया था, जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_informed_amount",
+              "n_ask_amount_matches",
+              "n_cond_matches_no",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "yes",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "Yes",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "nahi, amount nahi bataya tha",
+          "reply": "ठीक है — actually कितना amount deduct हुआ है?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_hub_verify",
+              "n_ask_correction",
+              "n_ask_explained",
+              "n_cond_explained_no",
+              "n_ask_amount_informed",
+              "n_cond_amount_informed",
+              "n_ask_deducted_amount"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "informed_amount": "500",
+              "amount_matches": "yes"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "fixed",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_hub_verify"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": null,
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "800 kata hai",
+          "reply": "आपने जो बताया, उसे एक बार confirm कर लेती हूँ। आपने बताया कि onboarding के time आपको इस deduction के बारे में बताया गया था, deduct होने वाला amount आपको नहीं बताया गया था, और जो amount कटा वो उतना ही है। क्या ये सब सही है?",
+          "route": "workflow_llm_grounded",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_ask_deducted_amount",
+              "n_cond_out_informed",
+              "n_hub_verify"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "deducted_amount": "800"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_hub_verify",
+              "n_ask_deducted_amount"
+            ],
+            "structuredSummary": {
+              "ticket_type": null,
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": "800",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": null,
+              "additional_concern": null
+            }
+          }
+        },
+        {
+          "input": "haan sahi hai",
+          "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+          "route": "workflow",
+          "workflow": {
+            "name": "wf_fac5f8fae156",
+            "status": "collecting",
+            "nodeTrace": [
+              "n_hub_verify",
+              "n_cond_out_matches",
+              "n_msg_consistent",
+              "n_hub_more"
+            ],
+            "slots": {
+              "deduction_explained": "yes",
+              "amount_informed": "no",
+              "informed_amount": "500",
+              "amount_matches": "yes",
+              "deducted_amount": "800",
+              "ticket_type": "onboarding_fee_deduction",
+              "verification_status": "consistent"
+            },
+            "offScript": false,
+            "done": false,
+            "responseMode": "llm_grounded",
+            "heardNodes": [
+              "n_ask_explained",
+              "n_hub_verify",
+              "n_ask_deducted_amount"
+            ],
+            "structuredSummary": {
+              "ticket_type": "onboarding_fee_deduction",
+              "deduction_explained": "Yes",
+              "explanation_given_on_call": null,
+              "amount_informed": "No",
+              "informed_amount": "500",
+              "amount_matches": "Yes",
+              "deducted_amount": "800",
+              "payment_mode": null,
+              "upfront_amount_paid": null,
+              "deduction_date_or_week": null,
+              "verification_status": "consistent",
+              "additional_concern": null
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "/var/www/html/python/bot_POC/Zepto/OB/OB Deduction BOT.docx": "9030c7c729c3e1e53ef0fd08c589e1448406868ac4f3d6ccd73681d27fa6b5d4",
+    "zepto/setup/09_ob_deduction_outbound.py": "e77024571aab0d0e2f45c7861696978b5dfb8bda1154a798bd79640f01dc67d2",
+    "shared/orchestration/entity_extractor.py": "5f1ffda477f9549720d47f16671867a041c037c6c8f5f069fb8a4bb16b17eb52",
+    "shared/orchestration/workflow_engine.py": "5ab1826aecab2e2c8a47724a7b280b51fbbcf99e1eab7012a18b3c88c58ef7fe",
+    "shared/orchestration/tool_executor.py": "0b2335ba434148a908ec1b190a098c20c3f9c5d77ec4ed07b0ed6b05b8235fe8",
+    "backend/routers/testing.py": "28cd97eda1bad53ed0c6624991f578daf6e29145dc193fb4c3202ef80380b9d9"
+  }
+}
