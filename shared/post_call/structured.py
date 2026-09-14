@@ -176,6 +176,10 @@ def summary_fields_prompt_block(policy: BotGoalPolicy | None) -> str:
         "# Structured summary fields (REQUIRED — emit as \"structured_fields\")",
         "Report each field below with exactly one of its allowed values, or "
         "null when the transcript does not settle it. Never guess.",
+        "The fields are listed in conversation order: write the summary "
+        "narrative and important_facts in that same order, one concise clause "
+        "per settled field, and keep the most specific value the caller gave "
+        "(e.g. 'last week, Monday' — never reduce it to 'last week').",
     ]
     for spec in policy.summary_fields:
         if spec.type == "yes_no":

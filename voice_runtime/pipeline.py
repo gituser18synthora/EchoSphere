@@ -529,6 +529,7 @@ def build_tts_service(
     sample_rate: int = 24000,
     latency=None,
     naturalness=None,
+    filler_library=None,
 ):
     """TTS service from bot config: streaming router or segmented fallback."""
     tts_conf = config.tts or {}
@@ -553,7 +554,7 @@ def build_tts_service(
             # Rare planner-gated breath between sentences (pause mode),
             # matched to the engine voice's gender — same clips as the
             # pre-reply latency filler.
-            filler_library=get_filler_library(),
+            filler_library=filler_library if filler_library is not None else get_filler_library().new_session(),
         )
 
     # Delivery tuning for the segmented REST path: canonical speed overrides
@@ -623,7 +624,7 @@ def build_latency_filler(
         recorder=recorder,
         cue_library=(
             (cue_library if cue_library is not None else get_voiced_cue_library())
-            if ladder else None
+            if ladder or naturalness.config["acknowledgements"] else None
         ),
         hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
         spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
@@ -691,6 +692,9 @@ def build_voice_pipeline(
         config.human_speech,
         config_sources=config.human_speech_sources,
     )
+    # One call owns rotation and the recent-breath suppression clock. The
+    # latency filler and sentence breaths share it within this call only.
+    filler_library = get_filler_library().new_session()
     # Local Silero owns speech boundaries in the normal pipeline. Enabling
     # Sarvam server VAD at the same time produces duplicate start/stop frames;
     # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
@@ -705,7 +709,7 @@ def build_voice_pipeline(
     )
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
-        naturalness=naturalness,
+        naturalness=naturalness, filler_library=filler_library,
     )
     llm_provider = build_llm_provider(config)
     # Latency filler: a gender-matched breath from pre-rendered audio when a
@@ -713,7 +717,7 @@ def build_voice_pipeline(
     # cut the instant reply audio arrives (voice_runtime.latency_filler).
     latency_filler = build_latency_filler(
         naturalness, sample_rate=tts_sample_rate, recorder=recorder,
-        transport_kind=transport_kind,
+        transport_kind=transport_kind, library=filler_library,
     )
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply

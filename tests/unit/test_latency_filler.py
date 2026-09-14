@@ -45,7 +45,7 @@ from voice_runtime.latency_filler import (
     scale_pcm,
     synthesize_breath,
 )
-from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE
+from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE, FillerAudioRawFrame, FillerClearFrame
 from voice_runtime.pipeline import build_latency_filler
 from voice_runtime.voiced_cues import VoicedCueLibrary, trim_silence
 
@@ -280,6 +280,19 @@ class _CueStub:
         return np.full(n, level, dtype="<i2").tobytes()
 
 
+class _AcknowledgementCueStub(_CueStub):
+    def __init__(self, *, ready=True, clip_ms=600):
+        super().__init__(clip_ms=clip_ms)
+        self.ready = ready
+        self.ack_requests = []
+
+    def acknowledgement_clip(self, engine, language, text, sample_rate):
+        self.ack_requests.append((engine, language, text, sample_rate))
+        if not self.ready:
+            return b""
+        return np.full(int(sample_rate * self.clip_ms / 1000), 7000, dtype="<i2").tobytes()
+
+
 def make_filler(*, delay_ms=60, library=None, rate=RATE, recorder=None, lead_chunks=2,
                 cue_library=None, hmm_after_ms=None, spoken_after_ms=None):
     filler = LatencyFillerProcessor(
@@ -334,7 +347,7 @@ class TestLatencyFillerProcessor:
         await wait(0.25)
         frames = filler_audio(filler)
         assert frames, "breath never played"
-        assert all(type(f) is OutputAudioRawFrame for f in frames)   # never TTS audio
+        assert all(type(f) is FillerAudioRawFrame for f in frames)   # never TTS audio
         assert all(f.sample_rate == RATE and f.num_channels == 1 for f in frames)
         assert b"".join(f.audio for f in frames)[:2] == np.int16(1000).tobytes()
         assert not any(isinstance(f, BotStartedSpeakingFrame) for f, _ in filler.pushed)
@@ -367,29 +380,25 @@ class TestLatencyFillerProcessor:
         await filler.process_frame(frame, DOWN)
         index = [f for f, _ in filler.pushed].index(frame)
         await wait(0.15)
-        # Exactly one 20 ms taper chunk lands BEFORE the reply frame (a breath
-        # ending, not a click), then nothing but reply audio after it.
+        # No extra filler tail is queued ahead of already-playable audio.
         assert all(
             isinstance(f, TTSAudioRawFrame) for f, _ in filler.pushed[index:]
         )
-        assert len(filler_audio(filler)) == before + 1
-        taper = filler_audio(filler)[-1]
-        assert filler.pushed[index - 1][0] is taper
-        assert len(taper.audio) == int(RATE * 0.02) * 2
-        levels = samples(taper.audio)
-        assert levels[0] > 900 and abs(levels[-1]) < 60      # fades 1000 → 0
+        assert len(filler_audio(filler)) == before
+        clear = filler.pushed[index - 1][0]
+        assert isinstance(clear, FillerClearFrame)
+        assert clear.owner is filler_audio(filler)[0].owner and clear.owner.cancelled
         cut = filler._recorder.data("latency_filler_cut")
         assert cut and cut[0]["reason"] == "tts_audio" and cut[0]["played_ms"] > 50
         assert not filler.playing
 
-    async def test_pacing_is_real_time_with_a_small_lead(self):
+    async def test_pacing_has_no_filler_lookahead(self):
         filler = make_filler(delay_ms=10, library=_ShortLibrary(clip_ms=400), lead_chunks=2)
         await filler.arm(turn_id=1, gender="neutral")
         await wait(0.11)   # ~100 ms into playback
         pushed = len(filler_audio(filler))
-        # ≈ 5 chunks of 20 ms elapsed + 2 chunks of lead (+ jitter), never the
-        # whole clip at once.
-        assert 4 <= pushed <= 9, pushed
+        # Only chunks due in real time, even with the legacy lead argument.
+        assert 4 <= pushed <= 6, pushed
         await wait(0.45)
         assert len(filler_audio(filler)) == 400 // 20
         total = sum(len(f.audio) for f in filler_audio(filler))
@@ -588,7 +597,7 @@ class TestEscalationLadder:
         assert filler.fillers_unneeded == 0  # the breath WAS needed
         assert not filler.armed
 
-    async def test_reply_audio_mid_cue_cuts_with_a_taper(self, monkeypatch):
+    async def test_reply_audio_mid_cue_cuts_without_adding_a_tail(self, monkeypatch):
         filler = self.make(monkeypatch, cue_library=_CueStub(clip_ms=400))
         await filler.arm(turn_id=2, gender="female", language="hi-IN")
         await wait(0.16)
@@ -629,31 +638,83 @@ class TestEscalationLadder:
         await wait(0.25)
         assert windows == [True, False, True, False]
 
-    async def test_tts_start_before_a_rung_holds_it_and_the_reply_cuts_silently(
+    async def test_tts_start_before_a_rung_keeps_it_eligible_until_reply_audio(
         self, monkeypatch
     ):
-        # Synthesis requested (TTSStartedFrame) before the hmm deadline: the
-        # hmm never starts (a 200 ms chopped cue is a grunt), the reply audio
-        # then disarms; the breath that DID play keeps this from "unneeded".
-        filler = self.make(monkeypatch, hmm=250, spoken=350)
+        # A provider may stall after synthesis starts, even between rungs.
+        filler = self.make(monkeypatch, cue_library=_CueStub(clip_ms=400), hmm=250, spoken=800)
         filler._library = _ShortLibrary(clip_ms=60)
         await filler.arm(turn_id=1, gender="male", language="hi-IN")
         await wait(0.15)  # breath done
         await filler.process_frame(TTSStartedFrame(), DOWN)
         await wait(0.2)   # hmm deadline passes
-        assert filler.rungs_played["hmm"] == 0
-        skipped = filler._recorder.data("latency_filler_skipped")
-        assert skipped == [{"turn": 1, "rung": "hmm", "reason": "reply_imminent"}]
+        assert filler.rungs_played["hmm"] == 1 and filler.playing
+        assert filler._recorder.data("latency_filler_skipped") == []
+        await filler.process_frame(tts_audio(), DOWN)
+        assert filler._recorder.data("latency_filler_cut")[0]["reason"] == "tts_audio"
         assert not filler.armed
         assert filler.fillers_unneeded == 0
 
-    async def test_tts_start_before_the_breath_means_no_filler_at_all(self):
-        filler = make_filler(delay_ms=40)
-        await filler.arm(turn_id=1, gender="male")
+    @pytest.mark.parametrize("acknowledgements", [False, True])
+    async def test_tts_start_before_the_deadline_keeps_the_configured_threshold(self, acknowledgements):
+        filler = make_filler(delay_ms=100, library=_ShortLibrary(clip_ms=600),
+                             cue_library=_AcknowledgementCueStub())
+        ack = {"text": "जी…"} if acknowledgements else None
+        await filler.arm(turn_id=1, gender="male", acknowledgement=ack)
+        started = TTSStartedFrame()
+        await filler.process_frame(started, DOWN)
+        assert filler.pushed[-1][0] is started
+        await wait(0.04)
+        assert filler_audio(filler) == [] and filler.armed
+        # Repeated starts must not reset the speech-end deadline either.
         await filler.process_frame(TTSStartedFrame(), DOWN)
-        await wait(0.1)
-        assert filler_audio(filler) == []
-        assert filler._recorder.data("latency_filler_skipped")[0]["reason"] == "reply_imminent"
+        await wait(0.08)
+        assert filler.playing
+        played = filler._recorder.data("latency_filler_played")
+        assert len(played) == 1 and 95 <= played[0]["waited_ms"] < 140
+        assert played[0]["sound"] == ("acknowledgement" if acknowledgements else "breath")
+        reply = tts_audio()
+        await filler.process_frame(reply, DOWN)
+        await wait(0.05)
+        assert filler.pushed[-1][0] is reply and not filler.armed
+
+    @pytest.mark.parametrize("audio", [b"", b"\x00"])
+    @pytest.mark.parametrize("acknowledgements", [False, True])
+    async def test_audio_without_a_complete_pcm_sample_does_not_signal_readiness(self, audio, acknowledgements):
+        filler = make_filler(delay_ms=30, library=_ShortLibrary(clip_ms=600),
+                             cue_library=_AcknowledgementCueStub())
+        ack = {"text": "जी…"} if acknowledgements else None
+        await filler.arm(turn_id=1, gender="male", acknowledgement=ack)
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        empty = TTSAudioRawFrame(audio=audio, sample_rate=RATE, num_channels=1)
+        await filler.process_frame(empty, DOWN)
+        assert filler.pushed[-1][0] is empty and filler.armed
+        await wait(0.06)
+        assert filler.playing
+        await filler.process_frame(empty, DOWN)
+        assert filler.playing and filler._recorder.data("latency_filler_cut") == []
+        # Readiness is PCM availability, not speech/amplitude detection.
+        reply = TTSAudioRawFrame(audio=b"\x00\x00", sample_rate=RATE, num_channels=1)
+        await filler.process_frame(reply, DOWN)
+        assert filler.pushed[-1][0] is reply and not filler.armed
+        await wait(0.05)
+        assert filler.pushed[-1][0] is reply
+
+    async def test_tts_start_during_previous_reply_deferral_does_not_release_the_filler(self, monkeypatch):
+        monkeypatch.setattr(latency_filler_module, "_RESUME_GAP_S", 0.01)
+        filler = make_filler(delay_ms=20, library=_ShortLibrary(clip_ms=600))
+        await filler.process_frame(BotStartedSpeakingFrame(), UP)
+        await filler.arm(turn_id=1, gender="male")
+        await wait(0.04)
+        assert filler._armed.deferred
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.03)
+        assert filler_audio(filler) == [] and filler.armed and filler._armed.deferred
+        await filler.process_frame(BotStoppedSpeakingFrame(), UP)
+        await wait(0.04)
+        assert filler.playing
+        await filler.process_frame(tts_audio(), DOWN)
+        assert not filler.armed
 
     async def test_tts_start_during_a_playing_rung_lets_it_run_until_audio(self, monkeypatch):
         filler = self.make(monkeypatch, cue_library=_CueStub(clip_ms=400), delay=10)
@@ -690,12 +751,15 @@ class TestEscalationLadder:
         pushed = [f for f, _ in filler.pushed]
         markers = [i for i, f in enumerate(pushed) if isinstance(f, OutputTransportMessageFrame)]
         assert len(markers) == 1
-        assert pushed[markers[0]].message == {"type": AUDIO_FLUSH_MESSAGE_TYPE}
+        assert pushed[markers[0]].message == {
+            "type": AUDIO_FLUSH_MESSAGE_TYPE,
+            "filler_owner": filler_audio(filler)[0].owner.token,
+        }
         # After the last audio chunk, never before it.
         last_audio = max(i for i, f in enumerate(pushed) if isinstance(f, OutputAudioRawFrame))
         assert markers[0] > last_audio
         # Each further completed rung gets its own marker.
-        await wait(0.25)
+        await wait(0.30)
         assert sum(isinstance(f, OutputTransportMessageFrame) for f, _ in filler.pushed) == 3
 
     async def test_a_cut_clip_sends_no_flush_marker(self):
@@ -974,44 +1038,144 @@ class TestBrainWiring:
         await caller_turn(brain, "मेरा नंबर 9876543210 है")
         assert filler.arms[-1]["allow_spoken"] is False
 
-    async def test_early_ack_stands_the_filler_down_and_bot_silence_rearms_it(self):
+    async def test_dispatch_plans_ack_without_putting_it_in_the_reply_tts_queue(self):
         filler = _FillerStub()
         brain = make_brain(filler)
         brain._naturalness = SpeechNaturalnessPlanner({"acknowledgement_probability": 1.0})
         await caller_turn(brain)
-        # The "जी…" went to TTS; the armed breath was cancelled for it.
-        assert brain._early_ack_pending is True
-        assert filler.cancels[-1] == "early_ack"
+        assert filler.arms[0]["acknowledgement"]["text"]
+        assert filler.cancels[-1] == "new_turn"
         assert len(filler.arms) == 1
-        # The ack's audio comes and goes while the reply is still generating.
-        brain._generation = asyncio.get_running_loop().create_task(asyncio.sleep(1))
-        try:
-            await brain.process_frame(BotStartedSpeakingFrame(), UP)
-            assert brain._reply_audio_started is False  # the ack is not the reply
-            await brain.process_frame(BotStoppedSpeakingFrame(), UP)
-            assert brain._early_ack_pending is False
-            assert len(filler.arms) == 2
-            rearmed = filler.arms[1]
-            assert rearmed["resume"] is True and rearmed["turn_id"] == filler.arms[0]["turn_id"]
-        finally:
-            brain._generation.cancel()
+        assert not any(isinstance(f, (TTSStartedFrame, TTSAudioRawFrame)) for f in brain._pushed)
+        assert not any(kind == "early_ack_played" for kind, _ in brain._recorder.events)
+        assert brain._early_ack_spoken_turn is None
+        assert brain._naturalness._last_early_ack_turn is None
+        filler.acknowledgement_hook(1)
+        assert brain._early_ack_spoken_turn == 1
+        assert brain._naturalness._last_early_ack_turn == 1
+        assert brain._reply_audio_started is False
+        await brain.cleanup()
 
     async def test_no_rearm_when_the_reply_already_speaks_or_is_done(self):
         filler = _FillerStub()
         brain = make_brain(filler)
         brain._naturalness = SpeechNaturalnessPlanner({"acknowledgement_probability": 1.0})
         await caller_turn(brain)
-        assert brain._early_ack_pending is True
+        assert filler.arms[0]["acknowledgement"]
         # Generation finished (nothing in flight): nothing to cover any more.
         await brain.process_frame(BotStartedSpeakingFrame(), UP)
+        assert brain._reply_audio_started is True
         await brain.process_frame(BotStoppedSpeakingFrame(), UP)
         assert len(filler.arms) == 1
+        await brain.cleanup()
 
     async def test_brain_without_a_filler_dispatches_unchanged(self):
         brain = make_brain(None)
         await caller_turn(brain)
         assert brain.handled == ["हाँ बोल रहा हूँ"]
         assert brain._latency_filler is None
+
+    async def test_arm_carries_the_bot_sound_selection_for_the_active_gender(self):
+        filler = _FillerStub()
+        brain = make_brain(filler)
+        brain._naturalness = SpeechNaturalnessPlanner({
+            "acknowledgement_probability": 0.0,
+            "latency_filler_kind": "inhale_exhale",
+            "filler_audio_selection": {
+                "inhale_exhale": {
+                    "female": {"primary": "synth:inhale_exhale:female:2", "alternates": ["synth:inhale_exhale:female:1"]},
+                    "male": {"primary": "synth:inhale_exhale:male:3"},
+                },
+            },
+            "latency_filler_cue_selection": {"hi": {"primary": "achha", "alternates": ["ji"]}},
+        })
+        await caller_turn(brain)
+        armed = filler.arms[0]
+        # The active voice is female: only the female choice travels with the turn.
+        assert armed["gender"] == "female" and armed["filler_kind"] == "inhale_exhale"
+        assert armed["filler_selection"] == {
+            "primary": "synth:inhale_exhale:female:2", "alternates": ["synth:inhale_exhale:female:1"],
+        }
+        # "हाँ बोल रहा हूँ" is an agreement: of the bot's allowed cues (अच्छा…,
+        # जी…) only the polite one fits — "अच्छा…" would sound like taking in
+        # new information — so the per-turn preference carries "ji" alone.
+        assert armed["cue_selection"] == {"primary": "ji", "alternates": []}
+        assert "allow_voiced" in armed
+
+    async def test_default_config_arms_breath_without_a_clip_selection(self):
+        filler = _FillerStub()
+        brain = make_brain(filler)
+        brain._naturalness = SpeechNaturalnessPlanner({"acknowledgement_probability": 0.0})
+        await caller_turn(brain)
+        armed = filler.arms[0]
+        assert armed["filler_kind"] == "breath" and armed["filler_selection"] is None
+        # No bot cue choice → the planner ranks the whole language pool for
+        # the context: a short neutral statement gets the thinking/polite
+        # cues only — never "ठीक है…", "उँ-हूँ…", "अच्छा…" or "ओह…".
+        assert armed["cue_selection"]["primary"] == "hmm"
+        assert set(armed["cue_selection"]["alternates"]) <= {"hoon", "ji"}
+
+    async def test_cue_context_follows_the_caller_words(self):
+        """The brain derives the turn context from the caller's words alone
+        and the planner ranks the allowed cues for it (event
+        ``latency_cue_planned``)."""
+        filler = _FillerStub()
+        brain = make_brain(filler)
+        brain._naturalness = SpeechNaturalnessPlanner({
+            "acknowledgement_probability": 0.0, "latency_cue_probability": 1.0,
+        })
+        cases = [
+            ("मेरा order नहीं मिला अभी तक", "concern", ("hmm", "oh")),
+            ("callback kab aayega?", "thinking", ("hmm",)),
+            ("यह कितने दिन में हो जाएगा", "thinking", ("hmm",)),
+            ("धन्यवाद जी", "polite", ("ji",)),
+            ("हाँ जी सही है", "affirm", ("un_hoon",)),
+            ("मैंने order guard को दे दिया था और customer ने बोला था रख दो", "information", ("achha",)),
+            ("मैं देख रहा हूँ", "neutral", ("hmm",)),
+        ]
+        for text, expected, firsts in cases:
+            plan = brain._plan_latency_cue(text)
+            assert plan.context == expected, (text, plan)
+            assert plan.verbal and plan.cue_ids[0] in firsts, (text, plan)
+            planned = [d for k, d in brain._recorder.events if k == "latency_cue_planned"][-1]
+            assert planned["context"] == expected and planned["first"] == plan.cue_ids[0]
+        # Inside a workflow a plain "हाँ" answers the bot's question → confirm.
+        brain._active_workflow = "wf_1"
+        assert brain._plan_latency_cue("हाँ जी सही है").context == "confirm"
+        brain._active_workflow = None
+        # A dictated identifier keeps the wait to a breath; so does a
+        # serious caller state for anything agreement-flavoured.
+        plan = brain._plan_latency_cue("मेरा नंबर 9876543210 है")
+        assert plan.verbal is False and plan.reason == "critical_content"
+        brain._latest_caller_signal = "complaint"
+        plan = brain._plan_latency_cue("हाँ जी सही है")
+        assert "un_hoon" not in plan.cue_ids and "theek_hai" not in plan.cue_ids
+        await brain.cleanup()
+
+    async def test_dispatch_passes_the_plan_to_the_filler(self):
+        filler = _FillerStub()
+        brain = make_brain(filler)
+        brain._naturalness = SpeechNaturalnessPlanner({
+            "acknowledgement_probability": 0.0, "latency_cue_probability": 1.0,
+        })
+        await caller_turn(brain, "मेरा नंबर 9876543210 है")
+        assert filler.arms[-1]["allow_voiced"] is False
+        planned = [d for k, d in brain._recorder.events if k == "latency_cue_planned"][-1]
+        assert planned["reason"] == "critical_content" and planned["turn"] == filler.arms[-1]["turn_id"]
+
+    async def test_skipped_ack_does_not_consume_next_turn_allowance(self):
+        filler = _FillerStub()
+        brain = make_brain(filler)
+        brain._naturalness = SpeechNaturalnessPlanner({
+            "acknowledgement_probability": 1.0, "latency_cue_probability": 1.0,
+        })
+        assert brain._plan_early_ack("हाँ बोल रहा हूँ")
+        brain._turn_counter = 1
+        assert brain._plan_early_ack("मुझे जानकारी चाहिए")
+        filler.acknowledgement_hook(2)
+        brain._turn_counter = 2
+        assert brain._plan_early_ack("हाँ बोल रहा हूँ") is None
+        await brain.cleanup()
 
 
 # ── pipeline construction ────────────────────────────────────────────────
@@ -1044,7 +1208,12 @@ class TestPipelineBuilder:
             SpeechNaturalnessPlanner({"latency_filler_ladder": False}), sample_rate=8000,
             library=FillerClipLibrary(None), cue_library=cues,
         )
-        assert not off.ladder_enabled and off._cue_library is None
+        assert not off.ladder_enabled and off._cue_library is cues
+        all_voiced_off = build_latency_filler(
+            SpeechNaturalnessPlanner({"latency_filler_ladder": False, "acknowledgements": False}),
+            sample_rate=8000, library=FillerClipLibrary(None), cue_library=cues,
+        )
+        assert all_voiced_off._cue_library is None
 
     def test_flush_marker_only_for_telephony(self):
         library = FillerClipLibrary(None)
@@ -1068,3 +1237,335 @@ class TestPipelineBuilder:
         assert processor.delay_ms == 900
         assert processor._sample_rate == 8000
         assert processor._recorder is recorder
+
+
+# ── clip kinds, ids and per-bot selection (Natural Conversation audio) ────
+
+
+class TestDelayedAcknowledgement:
+    async def test_ack_has_no_audio_lookahead(self):
+        filler = make_filler(delay_ms=0, cue_library=_AcknowledgementCueStub())
+        await filler.arm(turn_id=1, gender="female", acknowledgement={"text": "जी…"})
+        await wait(0.005)
+        assert len(filler_audio(filler)) == 1  # one due 20 ms chunk, no queued lead
+        await filler.cancel()
+
+    async def test_ready_reply_before_threshold_skips_ack(self):
+        cues = _AcknowledgementCueStub()
+        filler = make_filler(delay_ms=100, cue_library=cues)
+        played = []
+        filler.acknowledgement_hook = played.append
+        await filler.arm(turn_id=1, gender="female", acknowledgement={"text": "जी…"})
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.02)
+        assert filler_audio(filler) == []
+        reply = TTSAudioRawFrame(audio=b"\x01\x02" * 320, sample_rate=RATE, num_channels=1)
+        await filler.process_frame(reply, DOWN)
+        # A later synthesis notification cannot resurrect the skipped ack.
+        await filler.process_frame(TTSStartedFrame(), DOWN)
+        await wait(0.12)
+        assert filler_audio(filler) == []
+        assert played == []
+        assert any(frame is reply for frame, _ in filler.pushed)
+        assert not filler.armed
+
+    async def test_delayed_ack_is_cancelled_without_a_taper_ahead_of_ready_reply(self):
+        filler = make_filler(delay_ms=60, cue_library=_AcknowledgementCueStub())
+        played, windows = [], []
+        filler.acknowledgement_hook = played.append
+        filler.cue_window_hook = windows.append
+        await filler.arm(turn_id=2, gender="female", acknowledgement={"text": "जी…"})
+        await wait(0.03)
+        assert filler_audio(filler) == []
+        await wait(0.06)
+        assert filler.playing and played == [2]
+        assert windows == [True]
+        before = len(filler.pushed)
+        reply = TTSAudioRawFrame(audio=b"\x01\x02" * 320, sample_rate=RATE, num_channels=1)
+        await filler.process_frame(reply, DOWN)
+        await wait(0.08)
+        tail = [frame for frame, _ in filler.pushed[before:]]
+        assert len(tail) == 2 and isinstance(tail[0], FillerClearFrame) and tail[1] is reply
+        assert windows[-1] is False
+        assert not filler.armed
+
+    async def test_cold_ack_falls_back_without_waiting_for_its_audio(self):
+        filler = make_filler(delay_ms=20, cue_library=_AcknowledgementCueStub(ready=False))
+        played = []
+        filler.acknowledgement_hook = played.append
+        await filler.arm(turn_id=1, gender="male", acknowledgement={"text": "जी…"})
+        await wait(0.04)
+        assert filler_audio(filler)
+        assert played == []
+        assert filler._library.requests == [("male", RATE)]
+        await filler.cancel()
+
+    async def test_ack_playback_withholds_a_second_hmm_cue(self):
+        cues = _AcknowledgementCueStub(clip_ms=40)
+        filler = make_filler(delay_ms=20, cue_library=cues, hmm_after_ms=80)
+        await filler.arm(turn_id=1, gender="female", acknowledgement={"text": "जी…"})
+        await wait(0.1)
+        assert filler.rungs_played == {"breath": 1, "hmm": 0, "wait": 0}
+        assert cues.requests == []
+        assert not filler.armed
+
+    async def test_pending_ack_render_never_blocks_playable_response(self):
+        release = asyncio.Event()
+        renders = []
+
+        async def renderer(engine, language, text):
+            renders.append(text)
+            await release.wait()
+            return b"\x00\x20" * 1600, RATE
+
+        cues = VoicedCueLibrary(renderer=renderer)
+        filler = make_filler(delay_ms=60, cue_library=cues)
+        engine = {"provider": "sarvam", "voice": "anushka"}
+        await filler.arm(turn_id=1, gender="female", engine=engine, language="hi-IN",
+                         acknowledgement={"text": "जी…"})
+        await wait(0.01)
+        assert renders == ["जी…"] and not release.is_set()
+        reply = TTSAudioRawFrame(audio=b"\x01\x02" * 320, sample_rate=RATE, num_channels=1)
+        await asyncio.wait_for(filler.process_frame(reply, DOWN), timeout=0.1)
+        assert filler.pushed[-1][0] is reply and filler_audio(filler) == []
+        release.set()
+        await asyncio.gather(*cues._tasks.values())
+        await wait(0.08)
+        assert filler_audio(filler) == []  # late render cannot resurrect this turn
+        assert cues.acknowledgement_clip(engine, "hi-IN", "जी…", RATE)
+        assert renders == ["जी…"]
+
+
+class TestFillerSoundKinds:
+    def test_every_kind_and_gender_synthesizes_short_quiet_audio(self):
+        for kind in ("exhale", "inhale_exhale"):
+            for gender in GENDERS:
+                x = samples(synthesize_breath(gender, RATE, kind=kind))
+                duration_ms = x.size / RATE * 1000.0
+                if kind == "exhale":
+                    assert 450 <= duration_ms <= 700, (kind, gender, duration_ms)
+                else:
+                    assert 750 <= duration_ms <= 1100, (kind, gender, duration_ms)
+                assert dbfs(float(np.max(np.abs(x)))) <= -12.0
+                assert abs(x[:8]).max() < 100 and abs(x[-8:]).max() < 100
+
+    def test_exhale_is_front_loaded_and_inhale_exhale_has_two_swells(self):
+        exhale = samples(synthesize_breath("male", RATE, kind="exhale"))
+        window = RATE // 20
+        env = np.array([np.abs(exhale[i:i + window]).mean() for i in range(0, exhale.size - window, window)])
+        assert env.argmax() < env.size * 0.45          # quick onset, long tail
+        both = samples(synthesize_breath("male", RATE, kind="inhale_exhale"))
+        env = np.array([np.abs(both[i:i + window]).mean() for i in range(0, both.size - window, window)])
+        mid = env.size // 3
+        assert env[:mid].max() > 0 and env[mid + 1:].max() > 0
+        assert env[mid - 1:mid + 2].min() < 0.5 * min(env[:mid].max(), env[mid + 1:].max())  # the hold
+
+    def test_kind_from_filename_covers_the_new_kinds(self, tmp_path):
+        assert kind_from_filename(tmp_path / "exhale_female_2.wav") == "exhale"
+        assert kind_from_filename(tmp_path / "inhale_exhale_male.wav") == "inhale_exhale"
+        assert kind_from_filename(tmp_path / "InhaleExhale-neutral.wav") == "inhale_exhale"
+        assert kind_from_filename(tmp_path / "inhale_male.wav") == "inhale"
+        assert kind_from_filename(tmp_path / "breath_male.wav") == "breath"
+
+    def test_catalog_ids_labels_and_preview_render(self, tmp_path):
+        (tmp_path / "exhale_female_soft.wav").write_bytes(_tone_wav(RATE, 300, 900))
+        library = FillerClipLibrary(tmp_path)
+        female = library.catalog("exhale", "female", RATE)
+        assert female == [{
+            "id": "file:exhale_female_soft.wav", "label": "Exhale female soft",
+            "source": "recording", "kind": "exhale", "gender": "female", "durationMs": 300,
+        }]
+        male = library.catalog("exhale", "male", RATE)
+        assert [c["id"] for c in male] == [f"synth:exhale:male:{i}" for i in (1, 2, 3)]
+        assert all(c["source"] == "synthesized" for c in male)
+        assert library.render_clip("file:exhale_female_soft.wav", RATE)
+        assert library.render_clip("synth:exhale:male:2", RATE) == synthesize_breath("male", RATE, variant=1, kind="exhale")
+        assert library.render_clip("synth:exhale:male:9", RATE) == b""
+
+    def test_selection_rotates_primary_first_and_only_within_the_gender(self):
+        library = FillerClipLibrary(None)
+        choice = {"primary": "synth:breath:male:3", "alternates": ["synth:breath:male:1"]}
+        order = []
+        for _ in range(4):
+            assert library.clip("male", RATE, selection=choice)
+            order.append(library.last_clip_id)
+        assert order == ["synth:breath:male:3", "synth:breath:male:1"] * 2
+        # A selection naming another gender's or kind's clips is not honoured:
+        # the voice's own clips rotate instead (never a cross-gender breath).
+        assert library.clip("female", RATE, kind="exhale", selection={"primary": "synth:breath:male:1"})
+        assert library.last_clip_id == "synth:exhale:female:1"
+        assert library.selected_sources("breath", "male", None) == library.sources_for("male", "breath")
+
+    def test_single_selected_clip_always_plays_and_a_bad_file_falls_back(self, tmp_path):
+        (tmp_path / "breath_male_good.wav").write_bytes(_tone_wav(RATE, 200, 800))
+        (tmp_path / "breath_male_bad.wav").write_bytes(b"not a wav")
+        library = FillerClipLibrary(tmp_path)
+        for _ in range(3):
+            library.clip("male", RATE, selection={"primary": "file:breath_male_good.wav"})
+            assert library.last_clip_id == "file:breath_male_good.wav"
+        library.clip("male", RATE, selection={"primary": "file:breath_male_bad.wav"})
+        assert library.last_clip_id == "file:breath_male_good.wav"    # every male clip that renders
+
+
+class _KwLibrary(_ShortLibrary):
+    """Records the keyword arguments the processor passes."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.kwargs = []
+        self.last_clip_id = None
+
+    def clip(self, gender, sample_rate, **kwargs):
+        self.kwargs.append(kwargs)
+        self.last_clip_id = f"synth:{kwargs.get('kind', 'breath')}:{gender}:1"
+        return super().clip(gender, sample_rate)
+
+
+class _SelectingCueStub(_CueStub):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.selections = []
+        self.last_cue_id = None
+
+    def warm(self, engine, language, selection=None):
+        self.warmed.append((engine, language, selection))
+
+    def clip(self, engine, language, kind, sample_rate, selection=None):
+        self.selections.append((kind, selection))
+        self.last_cue_id = (selection or {}).get("primary") if kind == "hmm" else "wait"
+        return super().clip(engine, language, kind, sample_rate)
+
+
+class TestProcessorHonoursTheBotSelection:
+    async def test_default_arm_keeps_the_legacy_library_call(self):
+        library = _KwLibrary()
+        filler = make_filler(delay_ms=40, library=library)
+        await filler.arm(turn_id=1, gender="female")
+        await wait(0.25)
+        assert library.kwargs == [{}]                      # kind/selection not passed
+        played = filler._recorder.data("latency_filler_played")[0]
+        assert played["sound"] == "breath" and played["rung"] == "breath"
+
+    async def test_selected_kind_and_clips_reach_the_library(self):
+        library = _KwLibrary()
+        filler = make_filler(delay_ms=40, library=library)
+        choice = {"primary": "synth:exhale:male:2", "alternates": ["synth:exhale:male:1"]}
+        await filler.arm(turn_id=2, gender="male", filler_kind="exhale", filler_selection=choice)
+        await wait(0.25)
+        assert library.kwargs == [{"kind": "exhale", "selection": choice}]
+        played = filler._recorder.data("latency_filler_played")[0]
+        assert played["rung"] == "breath" and played["sound"] == "exhale"
+        assert played["clip"] == "synth:exhale:male:1"
+        assert played["gender"] == "male"
+
+    async def test_unknown_kind_degrades_to_breath(self):
+        library = _KwLibrary()
+        filler = make_filler(delay_ms=40, library=library)
+        await filler.arm(turn_id=3, gender="male", filler_kind="sigh")
+        await wait(0.25)
+        assert library.kwargs == [{}]
+
+    async def test_reply_before_the_delay_plays_nothing_whatever_is_selected(self):
+        library = _KwLibrary()
+        filler = make_filler(delay_ms=200, library=library)
+        await filler.arm(turn_id=4, gender="female", filler_kind="inhale_exhale",
+                         filler_selection={"primary": "synth:inhale_exhale:female:1"})
+        await wait(0.05)
+        await filler.process_frame(tts_audio(), DOWN)
+        await wait(0.3)
+        assert library.kwargs == [] and filler_audio(filler) == []
+        assert filler.fillers_unneeded == 1
+
+    async def test_reply_audio_cuts_a_selected_clip_and_caller_speech_cancels_it(self):
+        library = _KwLibrary(clip_ms=400)
+        filler = make_filler(delay_ms=40, library=library)
+        await filler.arm(turn_id=5, gender="male", filler_kind="exhale")
+        await wait(0.15)
+        assert filler.playing
+        await filler.process_frame(tts_audio(), DOWN)
+        cut = filler._recorder.data("latency_filler_cut")
+        assert cut and cut[0]["reason"] == "tts_audio" and cut[0]["rung"] == "breath"
+        assert not filler.armed
+        # Fresh turn: the caller talking over the clip disarms it as before.
+        await filler.arm(turn_id=6, gender="male", filler_kind="exhale")
+        await wait(0.15)
+        await filler.process_frame(UserStartedSpeakingFrame(), UP)
+        assert filler._recorder.data("latency_filler_cut")[-1]["reason"] == "caller_speech"
+
+    async def test_cue_selection_is_passed_to_the_voiced_cue_library(self):
+        cues = _SelectingCueStub()
+        filler = make_filler(delay_ms=40, cue_library=cues, hmm_after_ms=60, spoken_after_ms=80)
+        choice = {"primary": "achha", "alternates": ["ji"]}
+        await filler.arm(turn_id=7, gender="male", language="hi-IN",
+                         engine={"provider": "sarvam"}, cue_selection=choice)
+        await wait(2.6)   # breath → ≥1 s → hmm → ≥1 s → wait (minimum rung gap)
+        assert cues.warmed == [({"provider": "sarvam"}, "hi-IN", choice)]
+        kinds = [k for k, _ in cues.selections]
+        assert "hmm" in kinds and "wait" in kinds
+        assert dict(cues.selections)["hmm"] == choice
+        assert dict(cues.selections)["wait"] is None
+        hmm = [d for d in filler._recorder.data("latency_filler_played") if d["rung"] == "hmm"]
+        assert hmm and hmm[0]["cue"] == "achha" and hmm[0]["sound"] == "hmm"
+
+
+class TestVoicedGate:
+    async def test_voiced_withheld_keeps_the_breath_and_the_spoken_wait_rung(self):
+        cues = _SelectingCueStub()
+        filler = make_filler(delay_ms=40, cue_library=cues, hmm_after_ms=60, spoken_after_ms=80)
+        await filler.arm(turn_id=1, gender="male", language="hi-IN", engine={"provider": "sarvam"},
+                         cue_selection={"primary": "hoon", "alternates": []}, allow_voiced=False)
+        await wait(2.6)
+        rungs = [d["rung"] for d in filler._recorder.data("latency_filler_played")]
+        assert rungs == ["breath", "wait"]
+        skipped = filler._recorder.data("latency_filler_skipped")
+        assert skipped and skipped[0]["rung"] == "hmm" and skipped[0]["reason"] == "voiced_withheld"
+        assert filler.last_cue_played is None
+
+    async def test_played_cue_is_remembered_for_the_next_plan(self):
+        cues = _SelectingCueStub()
+        filler = make_filler(delay_ms=40, cue_library=cues, hmm_after_ms=60, spoken_after_ms=None)
+        await filler.arm(turn_id=1, gender="male", language="hi-IN", engine={"provider": "sarvam"},
+                         cue_selection={"primary": "achha", "alternates": ["ji"]})
+        await wait(1.5)
+        assert filler.last_cue_played == "achha"
+
+
+class TestVoicedCueSelection:
+    @staticmethod
+    def renderer(calls):
+        async def render(engine, language, text):
+            calls.append(text)
+            n = RATE // 8 + 40 * len(text)
+            return np.full(n, 5000, dtype="<i2").tobytes(), RATE
+        return render
+
+    def test_cue_choices_default_selected_and_unknown_ids(self):
+        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm") == [("hmm", "हम्म…")]
+        assert VoicedCueLibrary.cue_choices("hi-IN", "wait", {"primary": "x"}) == [("ek_second", "एक सेकंड…")]
+        assert VoicedCueLibrary.cue_choices(
+            "hi-IN", "hmm", {"primary": "achha", "alternates": ["bogus", "ji"]}
+        ) == [("achha", "अच्छा…"), ("ji", "जी…")]
+        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm", {"primary": "bogus"}) == [("hmm", "हम्म…")]
+        assert VoicedCueLibrary.cue_choices("fr-FR", "hmm", {"primary": "hmm"}) == []
+
+    async def test_preferred_cue_plays_first_and_unrendered_ones_are_skipped(self, tmp_path):
+        calls = []
+        lib = VoicedCueLibrary(tmp_path, renderer=self.renderer(calls))
+        engine = {"provider": "sarvam", "voice": "shubh"}
+        choice = {"primary": "achha", "alternates": ["ji"]}
+        assert lib.clip(engine, "hi-IN", "hmm", RATE, selection=choice) == b""
+        await lib.wait_ready(engine, "hi-IN", selection=choice)
+        assert sorted(calls) == ["अच्छा…", "जी…"]
+        # The selection is a preference order (the planner's ranking for the
+        # turn), not a rotation: the best rendered cue plays every time.
+        for _ in range(3):
+            assert lib.clip(engine, "hi-IN", "hmm", RATE, selection=choice)
+            assert lib.last_cue_id == "achha"
+        # A preferred cue that is not rendered yet yields to the next one.
+        assert lib.clip(engine, "hi-IN", "hmm", RATE, selection={"primary": "hoon", "alternates": ["ji"]})
+        assert lib.last_cue_id == "ji"
+        assert lib.ready(engine, "hi-IN", "hmm", "ji") and not lib.ready(engine, "hi-IN", "hmm", "hoon")
+        # render_now delivers a not-yet-rendered option (preview path) once.
+        pcm = await lib.render_now(engine, "hi-IN", "hmm", "hoon", 24000)
+        assert pcm and calls.count("हूँ…") == 1
+        assert await lib.render_now(engine, "hi-IN", "hmm", "nope", 24000) == b""

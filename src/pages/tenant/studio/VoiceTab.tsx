@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AudioSettings, LanguageVoiceOverride, ModelLanguagesInfo, ProviderInfo,
-  HumanSpeechSettings,
   Prompt, ProviderModelInfo, ProviderSettings, ProviderTestResult, RuntimeContextConfig,
   TtsPreviewResult, VoiceBot, VoiceCapability, VoiceOption, VoiceSettings, VoiceTuning,
 } from "@/types/domain";
@@ -25,10 +24,6 @@ import {
 import { Icon } from "@/components/Icon";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
 import { DictionaryField } from "@/components/PronunciationDictionaries";
-import {
-  HumanSpeechSettingsEditor,
-  validateHumanSpeechOverrides,
-} from "@/components/HumanSpeechSettings";
 import { useApp } from "@/state/AppContext";
 
 /* ---------- helpers ---------- */
@@ -227,7 +222,11 @@ type TestState = Record<string, { busy: boolean; result: ProviderTestResult | nu
 
 /* ============================================================ */
 
-export default function VoiceTab({ bot }: { bot: VoiceBot }) {
+export default function VoiceTab({ bot, onOpenNaturalConversation }: {
+  bot: VoiceBot;
+  /** Studio passes its tab navigator so the cross-link honours unsaved-change guards. */
+  onOpenNaturalConversation?: () => void;
+}) {
   const { toast, hasPermission } = useApp();
   const canManage = hasPermission("manage_voices") || hasPermission("bots.manage");
   const noPermTitle = canManage ? undefined : "Requires the manage_voices permission";
@@ -261,7 +260,6 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     browser: { codec: "linear16", sampleRate: 16000 },
     telephony: { codec: "mulaw", sampleRate: 8000 },
   });
-  const [humanSpeech, setHumanSpeech] = useState<HumanSpeechSettings>({});
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
   const [saveErrors, setSaveErrors] = useState<string[]>([]);
@@ -337,7 +335,6 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
       browser: { codec: "linear16", sampleRate: s.audioSettings?.browser?.sampleRate ?? 16000 },
       telephony: { codec: s.audioSettings?.telephony?.codec ?? "mulaw", sampleRate: 8000 },
     });
-    setHumanSpeech(s.humanSpeech ?? {});
   }, [settingsQ.data, bot.languages]);
 
   /* ---- prefetch models/voices for everything currently selected ---- */
@@ -603,6 +600,8 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
 
   /* ---- validate / save ---- */
 
+  // Natural Conversation owns humanSpeech. Omit it from both validation and
+  // save so this page cannot overwrite changes made in that tab.
   const assembleConfig = () => ({
     sttProvider: stt.provider, sttModel: stt.model, sttLanguage: stt.language, sttSettings: stt.settings,
     llmProvider: llm.provider, llmModel: llm.model, llmSettings: llm.settings,
@@ -610,18 +609,10 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
     languageVoiceMap: langMap,
     fallbackProvider: fallback.provider, fallbackModel: fallback.model, fallbackVoice: fallback.voice,
     audioSettings: audio,
-    humanSpeech,
   });
 
   const validate = async () => {
     setValidating(true); setSaveErrors([]); setSaveWarnings([]); setWarningsFromSave(false);
-    const localErrors = validateHumanSpeechOverrides(humanSpeech);
-    if (localErrors.length) {
-      setSaveErrors(localErrors);
-      toast("Natural conversation settings are outside the allowed bounds", "error");
-      setValidating(false);
-      return;
-    }
     try {
       const r = await validateVoiceConfig(bot.id, assembleConfig());
       setSaveErrors(r.errors);
@@ -637,13 +628,6 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
 
   const save = async () => {
     setSaving(true); setSaveErrors([]); setSaveWarnings([]); setWarningsFromSave(false);
-    const localErrors = validateHumanSpeechOverrides(humanSpeech);
-    if (localErrors.length) {
-      setSaveErrors(localErrors);
-      toast("Natural conversation settings are outside the allowed bounds", "error");
-      setSaving(false);
-      return;
-    }
     /* Empty strings (not nulls) clear overrides server-side; settings objects are sent whole. */
     const payload: Partial<VoiceSettings> = {
       voiceId: tts.voice || null,
@@ -657,7 +641,7 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
         setWarningsFromSave(true);
         toast(`Saved with warnings: ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`, "info");
       } else {
-        toast("Voice settings saved to draft — publish to make them live");
+        toast("Voice settings saved. Published bots use them for new calls.");
       }
       settingsQ.reload();
     } catch (e) {
@@ -916,19 +900,6 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
               hint="How calm or lively replies feel; native voice support varies by provider."
               onChange={(v) => setTuning((t) => ({ ...t, energy: v }))} />
           </SectionCard>
-
-          {settingsQ.data?.humanSpeechInherited && settingsQ.data.humanSpeechInheritedSources && (
-            <SectionCard title="Natural conversation" sub="Sparse bot overrides with tenant/platform inheritance">
-              <HumanSpeechSettingsEditor
-                scope="bot"
-                override={humanSpeech}
-                inherited={settingsQ.data.humanSpeechInherited}
-                inheritedSources={settingsQ.data.humanSpeechInheritedSources}
-                disabled={!canManage}
-                onChange={setHumanSpeech}
-              />
-            </SectionCard>
-          )}
 
           {/* 4 — Per-language voices */}
           <SectionCard title="Per-language voices" sub="Override which engine answers in each language">
@@ -1202,6 +1173,17 @@ export default function VoiceTab({ bot }: { bot: VoiceBot }) {
           <ul style={{ margin: 0, paddingLeft: 16 }}>{saveWarnings.map((w) => <li key={w}>{w}</li>)}</ul>
         </Callout>
       )}
+      <div className="row-between gap-12" style={{ flexWrap: "wrap" }}>
+        <p className="t-micro" style={{ margin: 0 }}>
+          Saving applies these settings to new calls for published bots. Active calls keep their current settings.
+          {" "}Fillers, acknowledgements, backchannels and pauses live in the Natural Conversation tab.
+        </p>
+        {onOpenNaturalConversation && (
+          <Button size="sm" icon="arrow-right" onClick={onOpenNaturalConversation}>
+            Open Natural Conversation
+          </Button>
+        )}
+      </div>
       <div className="row gap-12" style={{ justifyContent: "flex-end" }}>
         <Button
           icon="check-circle" onClick={() => void validate()} busy={validating}

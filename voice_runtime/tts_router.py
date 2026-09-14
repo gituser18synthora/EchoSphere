@@ -293,7 +293,11 @@ class StreamingTTSRouter(TTSService):
         # Optional voice_runtime.latency_filler.FillerClipLibrary: the source
         # of the rare in-reply breath (pause mode, planner-gated), matched to
         # the engine's catalog voice gender.
-        self._filler_library = filler_library
+        self._filler_library = (
+            filler_library.new_session()
+            if hasattr(filler_library, "new_session") and not getattr(filler_library, "_session_local", False)
+            else filler_library
+        )
         self._first_audio_timeout = first_audio_timeout
 
         self._providers: dict[tuple, StreamingTTSProvider] = {}
@@ -1007,9 +1011,16 @@ class StreamingTTSRouter(TTSService):
             return
         pieces = [silence_pcm(self.sample_rate, gap_ms)]
         if breath_before and self._filler_library is not None:
+            gender = state.engine.get("voice_gender") or "neutral"
+            # The bot's clip choice for the in-reply inhale (None → every
+            # clip of the voice's gender rotates).
+            select_clips = getattr(self._naturalness, "filler_selection_for", None)
+            selection = (
+                select_clips(_SENTENCE_BREATH_KIND, gender) if callable(select_clips) else None
+            )
             breath = self._filler_library.clip(
-                state.engine.get("voice_gender") or "neutral", self.sample_rate,
-                kind=_SENTENCE_BREATH_KIND,
+                gender, self.sample_rate, kind=_SENTENCE_BREATH_KIND,
+                **({"selection": selection} if selection else {}),
             )
             if breath:
                 pieces += [breath, silence_pcm(self.sample_rate, _SENTENCE_BREATH_BEAT_MS)]

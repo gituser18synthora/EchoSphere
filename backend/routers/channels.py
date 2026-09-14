@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.bot_lifecycle import assert_bot_operational
 from backend.core.deps import (
     assert_tenant_access,
     get_current_user,
@@ -455,6 +456,9 @@ def upsert_channel(
     server-derived: a saved channel is `configured` until a connection test
     promotes it to `live` (or demotes it to `failed`)."""
     bot = _bot_checked(db, bot_id, user)
+    # Saving a channel claims phone numbers and re-arms webhooks; a parked bot
+    # keeps its channels exactly as they were until it is restored.
+    assert_bot_operational(bot, action="edit its channels")
     if channel_type not in CHANNEL_TYPES:
         raise NotFoundError("Channel type")
     config = _validate_config(channel_type, body.config or {})
@@ -529,6 +533,7 @@ def activate_channel(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="activate a channel")
     row = _load_configured_channel(db, bot, channel_type)
     if not row.config:
         raise ApiError("Configure the channel before activating it.", 422)
@@ -761,6 +766,7 @@ async def test_channel(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="test a channel connection")
     row = _load_configured_channel(db, bot, channel_type)
     result = await _run_channel_test(db, bot, row)
     row.last_test = {"at": datetime.now(timezone.utc).isoformat() + "Z",

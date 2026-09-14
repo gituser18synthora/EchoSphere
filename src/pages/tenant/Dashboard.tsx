@@ -79,7 +79,7 @@ export default function TenantDashboard() {
           </div>
           <div className="col" style={{ padding: 14, gap: 8 }}>
             {botsQ.loading && <CardSkeleton rows={4} />}
-            {(botsQ.data ?? []).slice(0, 4).map((b) => (
+            {(botsQ.data ?? []).filter((b) => b.status !== "archived").slice(0, 4).map((b) => (
               <button key={b.id} className="row gap-12 card-pad-sm" style={{ border: "1px solid var(--hairline)", borderRadius: 10, textAlign: "left" }} onClick={() => navigate(`/t/bots/${b.id}/overview`)}>
                 <span className="icon-tile brand" style={{ width: 32, height: 32 }}><Icon name="bot" size={15} /></span>
                 <span className="grow">

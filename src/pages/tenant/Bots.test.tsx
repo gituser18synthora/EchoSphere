@@ -10,6 +10,9 @@ vi.mock("@/services/api", () => ({
   listLanguages: vi.fn(),
   createBot: vi.fn(),
   simulateAction: vi.fn(),
+  archiveBot: vi.fn(),
+  restoreBot: vi.fn(),
+  deleteBot: vi.fn(),
 }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),

@@ -39,6 +39,18 @@ from .voice_identity import VoiceIdentity, adapt_authored_speaker_grammar
 # Configuration
 # --------------------------------------------------------------------------
 
+# Pre-rendered filler sound kinds (voice_runtime.latency_filler). The
+# pre-reply gap sound and the in-reply sentence breath draw from one clip
+# library keyed by kind and by the active voice's catalog gender.
+FILLER_SOUND_KINDS = ("breath", "inhale", "exhale", "inhale_exhale")
+FILLER_SOUND_LABELS = {
+    "breath": "Soft breath",
+    "inhale": "Short inhale",
+    "exhale": "Short exhale",
+    "inhale_exhale": "Inhale-exhale",
+}
+FILLER_GENDERS = ("male", "female", "neutral")
+
 HUMAN_SPEECH_DEFAULTS: dict = {
     # Feature switches
     "enabled": True,
@@ -59,8 +71,8 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "sentence_breaths": True,
     # Tunables (probabilities are per-opportunity, 0..1)
     "thinking_filler_probability": 0.25,
-    # Dispatch-time acknowledgement ("जी…", "ठीक है…", "हम्म…") spoken right
-    # after the caller stops; a hard no-consecutive-turns rule sits on top.
+    # Acknowledgement ("जी…", "ठीक है…", "हम्म…") eligible at the latency
+    # deadline; a hard no-consecutive-turns rule sits on top.
     "acknowledgement_probability": 0.5,
     "tool_ack_probability": 0.9,
     "backchannel_probability": 0.35,
@@ -83,6 +95,25 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "latency_filler_ladder": True,
     "latency_filler_hmm_ms": 3500,
     "latency_filler_spoken_ms": 5000,
+    # Which pre-rendered sound covers the pre-reply gap (the ladder's first
+    # rung): one of FILLER_SOUND_KINDS. The in-reply sentence breath always
+    # uses the short inhale.
+    "latency_filler_kind": "breath",
+    # Which clips of the library the runtime may play, per kind and per voice
+    # gender: {kind: {gender: {"primary": clip_id, "alternates": [clip_id…]}}}.
+    # The primary plays first in a call, then the alternates rotate with it.
+    # Empty → every available clip of the voice's gender rotates (the
+    # pre-selection behaviour).
+    "filler_audio_selection": {},
+    # Which voiced cue texts the ladder's "hmm" rung may use, per language:
+    # {lang: {"primary": cue_id, "alternates": [cue_id…]}} (see
+    # ladder_cue_options). Empty → the language's default cue and its first
+    # alternate rotate.
+    "latency_filler_cue_selection": {},
+    # Chance that a LONG wait gets a voiced cue at all (per opportunity) once
+    # the breath has played; below it the wait stays a breath — a person does
+    # not put a word into every silence.
+    "latency_cue_probability": 0.7,
 }
 
 _BOOL_KEYS = (
@@ -94,7 +125,7 @@ _PROBABILITY_KEYS = (
     "thinking_filler_probability", "acknowledgement_probability",
     "tool_ack_probability", "backchannel_probability",
     "micro_pause_probability", "self_correction_probability",
-    "sentence_breath_probability",
+    "sentence_breath_probability", "latency_cue_probability",
 )
 _INT_KEYS = {
     "min_long_turn_for_backchannel_ms": (1000, 60_000),
@@ -107,6 +138,93 @@ _INT_KEYS = {
     "latency_filler_hmm_ms": (2000, 8000),
     "latency_filler_spoken_ms": (3000, 12000),
 }
+_CHOICE_KEYS = {"latency_filler_kind": FILLER_SOUND_KINDS}
+# Nested selection maps: {name: … {name: {"primary", "alternates"}}} with the
+# given number of string-key levels above the choice.
+_SELECTION_KEYS = {"filler_audio_selection": 2, "latency_filler_cue_selection": 1}
+_SELECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.:,()\-]{0,120}$")
+_MAX_ALTERNATES = 8
+
+
+def _normalize_choice(value: object) -> dict | None:
+    """``{"primary": id, "alternates": [ids]}`` cleaned (primary never
+    repeated among the alternates, duplicates dropped, capped); ``{}`` for an
+    empty choice; None when malformed."""
+    if not isinstance(value, dict):
+        return None
+    primary = value.get("primary")
+    if primary == "":
+        primary = None
+    if primary is not None and (
+        not isinstance(primary, str) or not _SELECTION_ID_RE.match(primary)
+    ):
+        return None
+    alternates = value.get("alternates")
+    if alternates is None:
+        alternates = []
+    if not isinstance(alternates, list) or any(
+        not isinstance(item, str) or not _SELECTION_ID_RE.match(item) for item in alternates
+    ):
+        return None
+    cleaned: list[str] = []
+    for item in alternates:
+        if item != primary and item not in cleaned:
+            cleaned.append(item)
+    if primary is None and not cleaned:
+        return {}
+    out: dict = {"alternates": cleaned[:_MAX_ALTERNATES]}
+    if primary is not None:
+        out["primary"] = primary
+    return out
+
+
+def normalize_selection(value: object, *, depth: int) -> dict | None:
+    """Clean a nested selection map (``depth`` string-key levels above each
+    choice). Empty choices are dropped so ``{}`` means "no selection".
+    Returns None when the shape is not a selection at all."""
+    if not isinstance(value, dict):
+        return None
+    out: dict = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or len(key) > 40:
+            return None
+        cleaned = (
+            normalize_selection(item, depth=depth - 1) if depth > 1
+            else _normalize_choice(item)
+        )
+        if cleaned is None:
+            return None
+        if cleaned:
+            out[key] = cleaned
+    return out
+
+
+def selection_choice(selection: object, *path: str) -> dict | None:
+    """The ``{"primary", "alternates"}`` choice at ``path`` inside a cleaned
+    selection map, or None when nothing is selected there."""
+    node: object = selection
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    if isinstance(node, dict) and (node.get("primary") or node.get("alternates")):
+        return node
+    return None
+
+
+def selection_ids(choice: dict | None) -> list[str]:
+    """Primary first, then alternates — the runtime's rotation order."""
+    if not choice:
+        return []
+    ids: list[str] = []
+    primary = choice.get("primary")
+    if primary:
+        ids.append(str(primary))
+    for item in choice.get("alternates") or []:
+        if item and item not in ids:
+            ids.append(str(item))
+    return ids
+
 
 # The first caller reply after the greeting carries the call's highest
 # response latency (cold decision/LLM/knowledge paths, first prompt compile):
@@ -144,6 +262,25 @@ def validate_human_speech(value: object) -> list[str]:
                 problems.append(f"'{key}' must be an integer")
             elif not low <= item <= high:
                 problems.append(f"'{key}' must be between {low} and {high}")
+        elif key in _CHOICE_KEYS:
+            if not isinstance(item, str) or item not in _CHOICE_KEYS[key]:
+                problems.append(
+                    f"'{key}' must be one of {', '.join(_CHOICE_KEYS[key])}"
+                )
+        elif key in _SELECTION_KEYS:
+            cleaned = normalize_selection(item, depth=_SELECTION_KEYS[key])
+            if cleaned is None:
+                problems.append(
+                    f"'{key}' must map names to {{primary, alternates}} choices"
+                )
+            elif key == "filler_audio_selection":
+                for kind, genders in cleaned.items():
+                    if kind not in FILLER_SOUND_KINDS:
+                        problems.append(f"'{key}': unknown sound kind '{kind}'")
+                        continue
+                    for gender in genders:
+                        if gender not in FILLER_GENDERS:
+                            problems.append(f"'{key}': unknown gender '{gender}'")
         else:
             problems.append(f"unknown key '{key}'")
     return problems
@@ -178,6 +315,13 @@ def resolve_human_speech(*layers: dict | None) -> dict:
                     merged[key] = min(high, max(low, int(value)))
                 except (TypeError, ValueError):
                     pass
+            elif key in _CHOICE_KEYS:
+                if isinstance(value, str) and value in _CHOICE_KEYS[key]:
+                    merged[key] = value
+            elif key in _SELECTION_KEYS:
+                cleaned = normalize_selection(value, depth=_SELECTION_KEYS[key])
+                if cleaned is not None:
+                    merged[key] = cleaned
     return merged
 
 
@@ -214,6 +358,15 @@ def resolve_human_speech_with_sources(
                         key in _INT_KEYS
                         and not isinstance(value, bool)
                         and isinstance(value, int)
+                    )
+                    or (
+                        key in _CHOICE_KEYS
+                        and isinstance(value, str)
+                        and value in _CHOICE_KEYS[key]
+                    )
+                    or (
+                        key in _SELECTION_KEYS
+                        and normalize_selection(value, depth=_SELECTION_KEYS[key]) is not None
                     )
                 )
                 if valid:
@@ -332,7 +485,7 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         "acknowledgement": ("Achha...", "Ji...", "Theek hai...", "Haan ji...",
                             "Ji, main samajh raha hoon...", "Samajh gaya...",
                             "Theek hai, samajh gaya.", "Koi baat nahi..."),
-        # Dispatch-time acknowledgements (plan_early_ack): one short token,
+        # Dispatch-planned latency acknowledgements: one short token,
         # chosen by what the caller just did. "हाँ…" is deliberately absent —
         # after a statement it reads as agreement, not as listening.
         "ack_answer": ("जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…", "जी, ठीक है…"),
@@ -486,23 +639,141 @@ _LEADING_ACK_RE = re.compile(
 # announces a moment more — only ever after the breath and the hmm, when the
 # reply is provably slow, and never on critical/serious turns.
 LADDER_CUE_KINDS = ("hmm", "wait")
+# Per language and rung: (cue_id, text) options. The FIRST entry is the
+# language's neutral default. The operator chooses which cues a bot MAY use
+# (``latency_filler_cue_selection``: primary = neutral default, alternates =
+# the rest of the allowed set) and previews each rendered in the bot's own
+# voice; which one a long wait actually gets is decided per turn from the
+# caller's words (``plan_latency_cue``): never a fixed sequence, never the
+# previous cue again, never a word at all on most waits. Every option is
+# gender-neutral and semantically light — a cue acknowledges that the caller
+# was heard, never that the bot agrees; the role table below keeps
+# confirmation-flavoured cues ("ठीक है…", "उँ-हूँ…") away from complaints.
+_LADDER_CUE_POOLS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
+    "hi": {
+        "hmm": (
+            ("hmm", "हम्म…"), ("hoon", "हूँ…"), ("achha", "अच्छा…"), ("ji", "जी…"),
+            ("theek_hai", "ठीक है…"), ("un_hoon", "उँ-हूँ…"), ("oh", "ओह…"),
+        ),
+        "wait": (("ek_second", "एक सेकंड…"),),
+    },
+    "en": {
+        "hmm": (
+            ("hmm", "Hmm…"), ("mm_hmm", "Mm-hmm…"), ("okay", "Okay…"),
+            ("right", "Right…"), ("i_see", "I see…"), ("oh", "Oh…"),
+        ),
+        "wait": (("one_second", "One second…"),),
+    },
+    "gu": {"hmm": (("hmm", "હમ્મ…"),), "wait": (("wait", "એક ક્ષણ…"),)},
+    "ml": {"hmm": (("hmm", "ഹും…"),), "wait": (("wait", "ഒരു നിമിഷം…"),)},
+    "mr": {"hmm": (("hmm", "हं…"),), "wait": (("wait", "एक क्षण…"),)},
+    "pa": {"hmm": (("hmm", "ਹੂੰ…"),), "wait": (("wait", "ਇੱਕ ਪਲ…"),)},
+    "ta": {"hmm": (("hmm", "ம்…"),), "wait": (("wait", "ஒரு நிமிடம்…"),)},
+    "te": {"hmm": (("hmm", "హ్మ్…"),), "wait": (("wait", "ఒక్క క్షణం…"),)},
+    "ur": {"hmm": (("hmm", "ہمم…"),), "wait": (("wait", "ایک لمحہ…"),)},
+}
+# Default text per language and rung (the first pool entry).
 _LADDER_CUES: dict[str, dict[str, str]] = {
-    "hi": {"hmm": "हम्म…", "wait": "एक सेकंड…"},
-    "en": {"hmm": "Hmm…", "wait": "One second…"},
-    "gu": {"hmm": "હમ્મ…", "wait": "એક ક્ષણ…"},
-    "ml": {"hmm": "ഹും…", "wait": "ഒരു നിമിഷം…"},
-    "mr": {"hmm": "हं…", "wait": "एक क्षण…"},
-    "pa": {"hmm": "ਹੂੰ…", "wait": "ਇੱਕ ਪਲ…"},
-    "ta": {"hmm": "ம்…", "wait": "ஒரு நிமிடம்…"},
-    "te": {"hmm": "హ్మ్…", "wait": "ఒక్క క్షణం…"},
-    "ur": {"hmm": "ہمم…", "wait": "ایک لمحہ…"},
+    lang: {kind: options[0][1] for kind, options in pools.items()}
+    for lang, pools in _LADDER_CUE_POOLS.items()
 }
 
 
 def ladder_cue(language: str | None, kind: str) -> str:
-    """The fixed cue text for ``kind`` in ``language`` ("" when the language
+    """The default cue text for ``kind`` in ``language`` ("" when the language
     has no pool — never a cross-language cue)."""
     return _LADDER_CUES.get(base_language(language), {}).get(kind, "")
+
+
+def ladder_cue_options(language: str | None, kind: str) -> list[dict]:
+    """Every cue option for ``kind`` in ``language``: ``[{"id", "text"}, …]``,
+    default first."""
+    return [
+        {"id": cue_id, "text": text}
+        for cue_id, text in _LADDER_CUE_POOLS.get(base_language(language), {}).get(kind, ())
+    ]
+
+
+def ladder_cue_text(language: str | None, kind: str, cue_id: str | None) -> str:
+    """The text of one cue option ("" when the id is unknown for that
+    language/rung)."""
+    for option in _LADDER_CUE_POOLS.get(base_language(language), {}).get(kind, ()):
+        if option[0] == cue_id:
+            return option[1]
+    return ""
+
+
+def default_cue_selection(language: str | None) -> dict | None:
+    """The cues a bot MAY use when it selects nothing: the whole pool of the
+    language (neutral default first). Which one plays is a per-turn,
+    context-driven decision (``plan_latency_cue``). None without a pool."""
+    options = ladder_cue_options(language, "hmm")
+    if not options:
+        return None
+    return {"primary": options[0]["id"], "alternates": [o["id"] for o in options[1:]]}
+
+
+# What each voiced cue conveys, per language. The planner ranks the allowed
+# cues for the turn's context by these roles — a table of MEANINGS, not a
+# fixed mapping from context to one cue.
+#   thinking      a beat of thought while working something out
+#   positive_ack  warm agreement-flavoured acknowledgement ("उँ-हूँ…")
+#   information   "I've taken that in" after the caller gave details ("अच्छा…")
+#   polite        a courteous acknowledgement ("जी…")
+#   confirm       "understood / noted" after an answer to a question ("ठीक है…")
+#   concern       a soft reaction to unexpected or troubling news ("ओह…")
+_CUE_ROLES: dict[str, dict[str, str]] = {
+    "hi": {"hmm": "thinking", "hoon": "thinking", "achha": "information", "ji": "polite",
+           "theek_hai": "confirm", "un_hoon": "positive_ack", "oh": "concern"},
+    "en": {"hmm": "thinking", "mm_hmm": "positive_ack", "okay": "confirm", "right": "polite",
+           "i_see": "information", "oh": "concern"},
+}
+LATENCY_CUE_CONTEXTS = (
+    "lookup", "thinking", "information", "confirm", "affirm", "polite", "concern", "neutral",
+)
+# Role preference per turn context (best first). Roles absent for a context
+# are never used there: after a complaint nothing that could read as
+# agreement or acceptance; after a plain statement nothing that sounds like
+# surprise.
+_CUE_CONTEXT_ROLES: dict[str, tuple[str, ...]] = {
+    "lookup": ("thinking", "polite"),
+    "thinking": ("thinking", "polite"),
+    "information": ("information", "confirm", "polite", "thinking"),
+    "confirm": ("confirm", "information", "polite", "thinking"),
+    "affirm": ("positive_ack", "polite", "confirm", "thinking"),
+    "polite": ("polite", "positive_ack", "thinking"),
+    "concern": ("concern", "thinking", "polite"),
+    "neutral": ("thinking", "polite"),
+}
+# In a serious caller state (complaint, refusal, hardship…) only these roles
+# are ever voiced, whatever the context looked like.
+_SERIOUS_CUE_ROLES = ("concern", "thinking", "polite")
+# "ओह…" is a reaction, not a filler: at most once per call, and even then
+# only on a minority of concern turns.
+_CONCERN_CUE_PROBABILITY = 0.4
+
+
+@dataclass
+class LatencyCuePlan:
+    """The planner's decision for one long wait's voiced cue.
+
+    ``verbal`` — may a voiced cue play at all this turn (else the wait stays
+    a breath); ``cue_ids`` — the bot's allowed cues in preference order for
+    this turn (best first; the processor plays the first one already
+    rendered); ``reason`` — why ``verbal`` is False (telemetry).
+    """
+
+    verbal: bool
+    cue_ids: list[str] = field(default_factory=list)
+    context: str = "neutral"
+    reason: str = ""
+    role: str = ""
+
+    def as_selection(self) -> dict | None:
+        if not self.cue_ids:
+            return None
+        return {"primary": self.cue_ids[0], "alternates": list(self.cue_ids[1:])}
+
 
 
 def normalize_spoken_variant(text: str) -> str:
@@ -599,6 +870,8 @@ class SpeechNaturalnessPlanner:
         self._last_preface_turn: int | None = None
         self._last_early_ack_turn: int | None = None
         self._last_early_ack_reason = ""
+        # "ओह…" is a one-per-call reaction (plan_latency_cue).
+        self._oh_used = False
         self._last_backchannel_monotonic: float | None = None
         self._backchannels_played = 0
         self._last_backchannel_suppression_reason = ""
@@ -652,6 +925,122 @@ class SpeechNaturalnessPlanner:
     @property
     def latency_filler_spoken_ms(self) -> int:
         return int(self._config["latency_filler_spoken_ms"])
+
+    @property
+    def latency_filler_kind(self) -> str:
+        """Which pre-rendered sound covers the pre-reply gap."""
+        kind = str(self._config.get("latency_filler_kind") or "breath")
+        return kind if kind in FILLER_SOUND_KINDS else "breath"
+
+    def filler_selection_for(self, kind: str, gender: str) -> dict | None:
+        """The bot's clip choice for ``kind``/``gender`` (primary + alternates),
+        or None when every clip of that gender may rotate."""
+        return selection_choice(self._config.get("filler_audio_selection"), kind, gender)
+
+    def cue_selection_for(self, language: str | None) -> dict | None:
+        """The cues the bot MAY voice on a long wait in ``language`` (primary
+        = neutral default, alternates = the rest of the allowed set), else the
+        language's whole pool. None when the language has no cue pool. Which
+        of them a turn gets is ``plan_latency_cue``'s decision."""
+        chosen = selection_choice(
+            self._config.get("latency_filler_cue_selection"), base_language(language)
+        )
+        return chosen if chosen else default_cue_selection(language)
+
+    @property
+    def latency_cue_probability(self) -> float:
+        return float(self._config.get("latency_cue_probability", 0.7))
+
+    def plan_latency_cue(self, *, language: str, context: str = "neutral",
+                         serious: bool = False, critical: bool = False,
+                         turn_index: int = 0, early_ack_spoken: bool = False,
+                         expected_fast: bool = False,
+                         last_cue: str | None = None) -> LatencyCuePlan:
+        """Decide, for the turn just dispatched, whether a LONG wait may get a
+        voiced cue and which of the bot's allowed cues fit it best.
+
+        Decision order:
+
+        1. **Is a word needed at all?** No voiced cue when the language has
+           no pool, when the turn already got a spoken acknowledgement (one
+           voice, not two), when the caller dictated critical content
+           (amounts, identifiers, OTPs — the reply must be the next thing
+           they hear), when the reply is expected quickly, and on a share of
+           turns by ``latency_cue_probability`` — most long waits stay a
+           breath.
+        2. **Which word?** The bot's allowed cues are ranked by the roles that
+           fit ``context`` (what the caller just did: ``lookup``/``thinking``,
+           ``information``, ``confirm``, ``affirm``, ``polite``, ``concern``,
+           ``neutral``); in a serious caller state only thinking / polite /
+           concern roles survive, so nothing sounds like agreement with a
+           complaint. "ओह…" (concern) is used sparingly: at most once per call,
+           on a minority of concern turns. The previously voiced cue is never
+           first again while an alternative exists.
+
+        The processor plays the first cue in ``cue_ids`` that is already
+        rendered, so the order is a preference, not a sequence.
+        """
+        lang = base_language(language)
+        options = ladder_cue_options(language, "hmm")
+        if context not in LATENCY_CUE_CONTEXTS:
+            context = "neutral"
+        if last_cue == "oh":
+            self._oh_used = True
+        plan = LatencyCuePlan(verbal=False, context=context)
+        if not options:
+            plan.reason = f"no_pool_language:{lang or '?'}"
+            return plan
+        selection = self.cue_selection_for(language) or {}
+        pool_ids = [o["id"] for o in options]
+        allowed = [cue for cue in selection_ids(selection) if cue in pool_ids] or pool_ids
+        roles = _CUE_ROLES.get(lang, {cue: "thinking" for cue in pool_ids})
+        preferred_roles = _CUE_CONTEXT_ROLES[context]
+        if serious:
+            preferred_roles = tuple(r for r in _SERIOUS_CUE_ROLES if r in preferred_roles) or ("thinking", "polite")
+        # Rank: role preference first, pool order within a role; roles the
+        # context does not list are dropped (an emotionally wrong cue is
+        # worse than a breath).
+        ranked: list[str] = []
+        for role in preferred_roles:
+            if role == "concern":
+                if self._oh_used or self._rng.random() >= _CONCERN_CUE_PROBABILITY:
+                    continue
+            ranked.extend(cue for cue in allowed if roles.get(cue) == role and cue not in ranked)
+        if last_cue in ranked and len(ranked) > 1:
+            ranked.remove(last_cue)
+            ranked.append(last_cue)
+        plan.cue_ids = ranked
+        plan.role = roles.get(ranked[0], "") if ranked else ""
+        if not ranked:
+            plan.reason = "no_fitting_cue"
+            return plan
+        if not self.latency_fillers_enabled or not self._config.get("latency_filler_ladder", True):
+            plan.reason = "disabled"
+            return plan
+        if early_ack_spoken:
+            plan.reason = "ack_already_spoken"
+            return plan
+        if critical:
+            plan.reason = "critical_content"
+            return plan
+        if expected_fast:
+            plan.reason = "reply_expected_fast"
+            return plan
+        probability = self.latency_cue_probability
+        if serious:
+            probability *= 0.5
+        if turn_index == 1:
+            probability = min(1.0, probability * _FIRST_REPLY_PREFACE_BOOST)
+        if self._rng.random() >= probability:
+            plan.reason = "roll"
+            return plan
+        plan.verbal = True
+        return plan
+
+    def note_latency_cue_played(self, cue_id: str | None) -> None:
+        """Telemetry from the processor: which voiced cue a wait got."""
+        if cue_id == "oh":
+            self._oh_used = True
 
     @property
     def configuration_level(self) -> str:
@@ -737,9 +1126,8 @@ class SpeechNaturalnessPlanner:
         Only TOOL routes receive a preface here ("ek minute, check karta
         hoon…", spoken before the lookup runs — it masks real dead air and
         names what is happening). Acknowledgements and thinking beats are
-        planned at DISPATCH instead (:meth:`plan_early_ack`), a second or
-        more before any reply text exists; glued to the front of the reply
-        they arrived too late to bridge anything and doubled as a delay.
+        planned at dispatch (:meth:`plan_early_ack`) and played from cached
+        audio only if the latency deadline is reached before reply audio.
         ``early_ack_spoken`` keeps a tool preface from stacking onto one.
         """
         plan = TurnSpeechPlan()
@@ -805,8 +1193,8 @@ class SpeechNaturalnessPlanner:
         pool_key = ""
         if route_kind != "tool":
             # The acknowledgement for this turn was decided at dispatch
-            # (plan_early_ack) and has already been heard, or deliberately
-            # withheld; nothing is glued to the front of the reply.
+            # (plan_early_ack); the latency processor decides whether it is
+            # needed. Nothing is glued to the front of the reply.
             suppression = "dispatch_ack_path"
         elif self._rng.random() < cfg["tool_ack_probability"]:
             # A lookup is about to run: a spoken "let me check" both sounds
@@ -844,12 +1232,15 @@ class SpeechNaturalnessPlanner:
 
     def plan_early_ack(self, *, language: str, identity: VoiceIdentity | None = None,
                        context: str = "answer", turn_index: int = 0,
-                       serious: bool = False, critical: bool = False) -> str:
+                       serious: bool = False, critical: bool = False,
+                       commit: bool = True) -> str:
         """One short spoken acknowledgement for the turn just dispatched.
 
-        Spoken by the brain the moment the caller's turn closes — about a
-        second after they stop — while the decision layer and the model are
-        still working, and always SEPARATE from the reply. ``context`` is
+        Planned when the caller's turn closes, then eligible only after the
+        latency filler's configured delay while reply audio is unavailable.
+        With ``commit=False``, the runtime calls ``note_early_ack_played`` only
+        when cached audio actually plays; skipped fast turns do not consume
+        the no-consecutive-turns allowance. ``context`` is
         what the caller just did, derived deterministically from their words:
 
         * ``answer``   — a statement or an answer: "जी…", "ठीक है…", "अच्छा…"
@@ -904,9 +1295,13 @@ class SpeechNaturalnessPlanner:
         token = self._pick(lang, _EARLY_ACK_POOLS[context], identity)
         if not token:
             return _withhold("no_pool_variant")
-        self._last_early_ack_turn = turn_index
+        if commit:
+            self.note_early_ack_played(turn_index)
         self._last_early_ack_reason = ""
         return token
+
+    def note_early_ack_played(self, turn_index: int) -> None:
+        self._last_early_ack_turn = turn_index
 
     @property
     def last_early_ack_reason(self) -> str:

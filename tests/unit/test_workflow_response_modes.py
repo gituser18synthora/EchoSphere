@@ -598,3 +598,39 @@ class TestFreeTextFirstAskConsumesTheEntryStory:
         assert result["reply"] == "Tell me what happened?"
         assert result["nodePrompt"] == "Tell me what happened?"
         assert result["spokenNodes"] == ["story"]
+
+
+class TestGroundedShrinkGuard:
+    """A multi-sentence informational script must not collapse into its question."""
+
+    SCRIPT = ("ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। "
+              "Zepto join करते समय हर नए rider से एक onboarding fee ली जाती है, जो store "
+              "के हिसाब से अलग हो सकती है। ये fee एक बार में या installments में deduct "
+              "होती है। क्या आपको बताया गया था कि कितना amount deduct होगा?")
+
+    def test_only_the_question_is_rejected(self):
+        from shared.orchestration.response_modes import validate_grounded_reply
+
+        assert validate_grounded_reply(
+            self.SCRIPT, "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+            "hi-IN", require_question=True,
+        ) is False
+
+    def test_a_full_rewrite_still_passes(self):
+        from shared.orchestration.response_modes import validate_grounded_reply
+
+        rewrite = ("समझ गया, आपको onboarding पर ये नहीं बताया गया था। Zepto join करते समय "
+                   "हर नए rider से onboarding fee ली जाती है, जो store के हिसाब से अलग और "
+                   "बदलती रहती है — एक बार में या हर हफ्ते के payout से installments में। "
+                   "क्या आपको बताया गया था कि कितना amount deduct होगा?")
+        assert validate_grounded_reply(
+            self.SCRIPT, rewrite, "hi-IN", require_question=True,
+        ) is True
+
+    def test_short_scripts_are_not_judged_by_length(self):
+        from shared.orchestration.response_modes import validate_grounded_reply
+
+        assert validate_grounded_reply(
+            "तो जो details आपने बताईं, वो मैंने note कर लीं — क्या ये सब सही है?",
+            "क्या ये सही है?", "hi-IN", require_question=True,
+        ) is True

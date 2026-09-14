@@ -39,15 +39,20 @@ would need unsafe look-ahead or risk replaying text already sent to TTS. Rare
 self-correction remains available only for an explicitly enabled, non-critical
 direct/full-text response.
 
-## Dispatch-time acknowledgements
+## Latency acknowledgements
 
-A person answers a closed turn with a short "जी…" within about a second —
-before they know what they will say. EchoSphere does the same at dispatch, the
-moment the caller's turn closes: one short token, spoken in its own TTS
-envelope, always separate from the reply and never glued to its front (a
-preface that waits for the decision layer arrives too late to bridge anything
-and only delays the answer). The token follows what the caller just did,
-derived deterministically from their words with no model call:
+The main response starts processing at turn dispatch. A short acknowledgement
+is planned separately and becomes eligible only at `latency_filler_delay_ms`
+(default 1500 ms from speech end). It uses the existing voiced-cue cache and
+latency-filler processor, never the answer's TTS queue. If response audio wins
+the race, the acknowledgement is skipped. A missing cached clip is rendered
+in the background; the first filler stage uses its configured breath instead
+of waiting. A ready acknowledgement replaces that breath and suppresses the
+following `hmm` stage. It streams without an audio look-ahead cushion and
+stops generating immediately at reply audio, without adding a taper chunk.
+
+The token follows what the caller just did, derived deterministically from
+their words with no model call:
 
 | Caller just… | Context | Tokens (hi) |
 |---|---|---|
@@ -59,7 +64,8 @@ derived deterministically from their words with no model call:
 Control: `acknowledgements` on/off; `acknowledgement_probability` (default 0.5,
 ×1.5 on the first reply after the greeting, the slowest turn of a call); a
 hard rule that no two consecutive turns get one (no call opens every reply with
-"जी"); pool rotation with no-repeat; exactly one token, never stacked; nothing
+"जी"); skipped acknowledgements do not consume that allowance; pool rotation
+with no-repeat; exactly one token, never stacked; nothing
 for greetings, hang-up/transfer/safety turns, dictated identifier chunks (the
 workflow consumes digits deterministically), unsupported languages, or when
 the speculative decision already succeeded (the reply is one routing step
@@ -74,7 +80,7 @@ caller who keeps talking over it is finishing a thought (rewind and merge),
 not interrupting a reply nobody has heard yet.
 
 Tool lookups keep their own timely preface ("ek minute, main check karta
-hoon…"), spoken right before the lookup runs; when a dispatch acknowledgement
+hoon…"), spoken right before the lookup runs; when a latency acknowledgement
 already opened the turn, variants that begin with an acknowledgement word are
 skipped so nothing stacks.
 
@@ -127,14 +133,18 @@ speech the latency probe recorded (dispatch time when unknown).
 
 Rules, in priority order (`voice_runtime/latency_filler.py`):
 
-- **Never delays the reply.** The clip streams to the transport in 20 ms
-  chunks at real-time pace with two chunks of lead, so at most ~40 ms of
-  breath is ever queued ahead of reply audio. The processor sits between the
-  TTS service and the output transport and cuts the breath the instant the
-  first `TTSAudioRawFrame` passes through, adding one 20 ms taper chunk so
-  the breath ends as a breath rather than a click; replies that start before
-  the deadline never get a filler at all.
-- **Invisible to turn bookkeeping.** Chunks are plain `OutputAudioRawFrame`s,
+- **Response priority and owned cleanup.** Filler streams as owned 20 ms
+  chunks with no look-ahead. The first `TTSAudioRawFrame` containing a
+  complete PCM sample retires its owner at processor ingress. The producer
+  stops, matching queued filler is discarded, and no extra cutoff chunk is
+  appended. Ownership survives producer completion and transport chunking;
+  filler never enters the response's partial PCM buffer or streaming
+  resampler. Fast replies before the configured deadline still skip filler.
+  Browser packets carry a unique call/turn token; `filler_clear` stops only
+  its sources, with at most a 2 ms fade for a currently sounding source and
+  no added scheduling lead before the response. Device-rendered samples
+  and already-sent telephony packets remain outside server cleanup.
+- **Invisible to turn bookkeeping.** Chunks subclass `OutputAudioRawFrame`,
   which pipecat's output transport does not treat as bot speech, so no
   `BotStartedSpeakingFrame` fires: latency spans, the barge-in/merge
   discriminator, the word-confirmed barge-in gate and the audio gate's echo
@@ -144,34 +154,31 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
 - **One schedule per dispatched turn.** The brain arms the processor at
   dispatch and every cancellation path (barge-in, late-final merge, hang-up,
   teardown) disarms it; caller speech, interruptions and reply audio passing
-  through cut it too. Two cases keep the wait covered instead of dropping it:
-  a dispatch-time acknowledgement ("जी…", TTS audio like the reply) stands the
-  filler down (`early_ack`) and the brain re-arms it the moment the
-  acknowledgement's `BotStoppedSpeakingFrame` arrives, if the reply is still
-  generating and has produced no audio (`resume`: the breath rung is skipped —
-  the bot just spoke, and an audible breath 0.7 s after "जी…" was heard as two
-  fillers back to back — and the voiced ladder rungs follow their schedule,
-  held at least 1.2 s off the acknowledgement; without a ladder nothing is
-  re-armed); and a rung whose deadline falls while the previous reply's tail is
+  through cut it too. A latency acknowledgement uses this same schedule and
+  emits plain output PCM, so it neither disarms the filler as fake reply audio
+  nor needs a `BotStoppedSpeakingFrame` to re-arm it. A rung whose deadline
+  falls while the previous reply's tail is
   still audible is **deferred** (`latency_filler_deferred`) to the bot's next
   silence plus the same gap, not skipped.
-- **Telephony packetization.** The FreeSWITCH/Vaani serializers send outbound
-  PCM in 200 ms packets and flush a partial packet only on
-  `BotStoppedSpeakingFrame`, which plain filler audio never produces — so a
-  completed breath's last <200 ms used to sit in the buffer and play glued to
-  the front of the reply one or two seconds later (heard on phone calls, never
-  in the browser, as the breath "repeating"). On telephony the processor now
-  follows every completed clip with an `audio_flush` transport message (ordered
-  behind the clip's audio) that the serializers answer by sending the tail at
-  once, and the serializers additionally retire any remnant older than the
-  ramp idle gap (0.5 s) instead of prepending it to the next utterance
-  (`stale_audio_dropped` counter).
+- **Telephony packetization.** Owned filler bypasses the FreeSWITCH/Vaani
+  200 ms speech buffer and first-packet ramp, leaving as individual 20 ms
+  native packets. It cannot be prepended to response PCM. Its tagged
+  completion marker does not flush unrelated speech; legacy untagged flushes
+  retain their behavior. Third-party serializers receive filler resampled
+  separately to native 8 kHz, without contaminating response resampler
+  history. No stream-wide `killAudio`/`clear` is sent for filler cleanup:
+  these APIs cannot selectively revoke one owner's remote audio and could
+  remove valid speech. Packets already accepted by the socket, remote jitter
+  buffers and device playback therefore remain an unavoidable boundary.
 - **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
   `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
   still not speaking, a short "हम्म…" in the bot's OWN voice follows at
   `latency_filler_hmm_ms` (default 3500, 2000–8000) and a spoken "एक सेकंड…"
   at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
-  from the caller's end of speech with at least 1 s of quiet between rungs. Once the reply's synthesis is requested (`TTSStartedFrame`) no new rung starts (`reply_imminent`) — a cue chopped 200 ms in by the reply is a grunt, not a cue — and the TTS router withholds the in-reply sentence inhale for 6 s after any latency rung started (`sentence_breath_suppressed`, `recent_latency_filler`), so a reply never carries two breaths back to back.
+  from the caller's end of speech with at least 1 s of quiet between rungs.
+  `TTSStartedFrame` does not suppress a rung while playable audio is still
+  pending. The TTS router withholds the in-reply sentence inhale for 6 s after
+  any latency rung started (`sentence_breath_suppressed`, `recent_latency_filler`).
   Cue texts are fixed per language (`ladder_cue`), gender-neutral, rendered
   ONCE per (provider, model, voice, language) through the provider's REST
   `synthesize`, trimmed of lead/tail silence, faded, normalized under the reply's level (≈−25 dBFS RMS, peaks ≤ −10 dBFS) and
@@ -181,7 +188,7 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   a render, never bills a per-turn TTS call, and a failed render is remembered
   for five minutes. Cues are plain output audio like the breath (no
   bot-speaking flips, fully interruptible, a `TTSAudioRawFrame` mid-cue
-  tapers it); because a voiced cue is loud enough to echo, the processor opens
+  cancels it); because a voiced cue is loud enough to echo, the processor opens
   the caller audio gate's backchannel shield for its duration. The spoken rung
   is withheld (`spoken_withheld`) when the caller's words carry critical
   content (amounts, identifiers, OTPs, dates), a serious caller state
@@ -198,6 +205,66 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   voices, front-loaded so a reply landing 200–300 ms in still cuts an audible
   breath); `python scripts/export_filler_audio.py` writes those as WAVs for
   audition. A file that fails to decode falls back to the synthesized breath.
+- **Choosing the sounds (Natural Conversation tab).** The library holds four
+  sound kinds — `breath` (soft, trailing off), `inhale` (short, rising; also
+  the in-reply sentence breath), `exhale` (quick onset, long soft tail) and
+  `inhale_exhale` (a full quiet cycle) — each per gender, from operator
+  recordings named with the kind and gender token (`exhale_female_2.wav`,
+  `inhale_exhale_male.wav`) or synthesized. `latency_filler_kind` picks which
+  kind covers the pre-reply gap (default `breath`; the ladder's first rung
+  keeps its `breath` name in events, with `sound`/`clip` saying what played).
+  `filler_audio_selection` — `{kind: {gender: {primary, alternates}}}` —
+  narrows a kind/gender to chosen clips: the primary plays first in a call and
+  the alternates rotate with it, never the same clip twice in a row while
+  more than one is selected; empty means every clip of the gender rotates.
+  Runtime eligibility always follows the active voice's catalog gender: a
+  selection naming another gender's or kind's clips is ignored (the voice's
+  own clips rotate) and logged once. `latency_filler_cue_selection` —
+  `{lang: {primary, alternates}}` — says which of the "hmm" rung's voiced cue
+  texts a bot MAY use (`ladder_cue_options`: Hindi हम्म… / हूँ… / अच्छा… / जी… /
+  ठीक है… / उँ-हूँ… / ओह…, English Hmm… / Mm-hmm… / Okay… / Right… / I see… /
+  Oh…; primary = the neutral default, alternates = the rest of the allowed
+  set; with no selection the whole pool is allowed). The Studio's Natural
+  Conversation tab lists every clip and cue with a Play control that streams
+  the exact bytes the runtime plays (`GET /bots/{id}/natural-conversation/
+  audio`, `…/audio/clip?id=`, `…/audio/cue?language=&kind=&id=` — cues are
+  rendered on first preview into the same cache the calls read), a
+  male/female/neutral filter (default: the bot's own voice gender) and
+  primary/alternate selectors; all three keys are ordinary `humanSpeech`
+  overrides (platform → tenant → bot, strict validation on save).
+- **Context-aware voiced cues (`SpeechNaturalnessPlanner.plan_latency_cue`).**
+  Which cue a long wait actually gets — and whether it gets a word at all —
+  is decided per turn when the brain arms the filler, from the caller's own
+  words (regex router + signal classifier, no model call), never from a
+  fixed sequence. Step one, *is a word needed*: no voiced cue when the turn
+  already got a dispatch-time acknowledgement (one voice, not two — the
+  re-arm after "जी…" carries `allow_voiced=False`), when the caller dictated
+  critical content (amounts, identifiers, OTPs), when the reply is expected
+  quickly (speculative decision already done), when the language has no
+  pool, and on a share of turns by `latency_cue_probability` (default 0.7,
+  halved in a serious caller state, boosted on the first reply) — most long
+  waits stay a breath, which is the right filler when only latency needs
+  covering. Step two, *which word*: the bot's allowed cues are ranked by the
+  ROLE each conveys (`_CUE_ROLES`: thinking हम्म…/हूँ…, information अच्छा…,
+  confirm ठीक है…, polite जी…, positive_ack उँ-हूँ…, concern ओह…) against the
+  turn context the brain derived (`_latency_cue_context`): knowledge/tool
+  path → `lookup`; a question → `thinking`; trouble in the words (complaint,
+  hardship, "नहीं मिला", "कट गया", "problem") → `concern`; an answer to the
+  workflow's question → `confirm`; an agreement → `affirm`; a stated fact or
+  commitment → `information`; courtesy words → `polite`; a longer statement →
+  `information`; else `neutral`. Roles a context does not list are never
+  voiced there (no "ठीक है…" after a question, no "ओह…" after a plain
+  statement); in a serious caller state only thinking / polite / concern
+  survive, so nothing sounds like agreement with a complaint; "ओह…" is a
+  reaction, not a filler — at most once per call and on a minority of
+  concern turns. The previously voiced cue (`last_cue_played`) never leads
+  again while an alternative exists. The processor receives the ranking as
+  a preference order and plays the first cue already rendered
+  (`voiced_withheld` in `latency_filler_skipped` when the plan said no word;
+  `latency_cue_planned` records context/verbal/reason/role/first per turn).
+  The same rule set governs the dispatch-time acknowledgement
+  (`plan_early_ack`: answer/question/lookup/neutral pools, no consecutive
+  turns, probability), so the two never stack.
 
 Telemetry on the conversation event stream, every event carrying `rung`
 (`breath` | `hmm` | `wait`): `latency_filler_played` (`turn`, `gender`,
@@ -205,6 +272,6 @@ Telemetry on the conversation event stream, every event carrying `rung`
 `caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
 cancellation reason, `played_ms`), `latency_filler_completed`,
 `latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
-(`no_clip` | `spoken_withheld` | `reply_imminent` | `after_early_ack`). The per-turn `naturalness_trace` log carries
+(`no_clip` | `spoken_withheld` | `voiced_withheld` | `after_early_ack`). The per-turn `naturalness_trace` log carries
 `latency_filler_enabled` and `latency_fillers_played` (all rungs); the
 processor's `rungs_played` counts per kind.

@@ -300,6 +300,22 @@ def grounded_delivery_instruction(
     return "\n".join(lines)
 
 
+_SENTENCE_END = re.compile(r"[.!?।]+")
+_MIN_SCRIPT_SENTENCES_FOR_SHRINK_GUARD = 3
+_MAX_SHRINK_RATIO = 0.4
+
+
+def _collapsed_to_question(script: str, generated: str) -> bool:
+    """True when a long informational script came back as (almost) only its
+    question — fewer than 40% of the script's characters while the script
+    had three or more sentences. Short scripts (a bare question, a
+    two-sentence readout) are never judged by length."""
+    sentences = [s for s in _SENTENCE_END.split(script or "") if s.strip()]
+    if len(sentences) < _MIN_SCRIPT_SENTENCES_FOR_SHRINK_GUARD:
+        return False
+    return len(generated or "") < _MAX_SHRINK_RATIO * len(script or "")
+
+
 def validate_grounded_reply(
     script: str,
     generated: str,
@@ -336,6 +352,12 @@ def validate_grounded_reply(
     if _MARKDOWNISH.search(generated):
         return False
     if require_question and "?" not in generated:
+        return False
+    if require_question and _collapsed_to_question(script, generated):
+        # A multi-sentence script (an explanation followed by the pending
+        # question) rewritten as little more than the question lost the
+        # flow's informational content (cv_e4df054b5651: the onboarding-fee
+        # explanation vanished, only "kitna amount deduct hoga?" was spoken).
         return False
     if not all(run in generated for run in _DIGIT_RUNS.findall(script)):
         return False

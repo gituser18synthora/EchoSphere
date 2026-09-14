@@ -34,7 +34,13 @@ from shared.audio.pcm import (
     resample_pcm,
     wav_to_pcm,
 )
-from shared.orchestration.naturalness import LADDER_CUE_KINDS, ladder_cue
+from shared.orchestration.naturalness import (
+    LADDER_CUE_KINDS,
+    ladder_cue,
+    ladder_cue_options,
+    ladder_cue_text,
+    selection_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +116,14 @@ class VoicedCueLibrary:
         self._resampled: dict[tuple[str, int], bytes] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._failed_at: dict[str, float] = {}
+        # The cue id most recently handed out (telemetry).
+        self.last_cue_id: str | None = None
         self.renders = 0
         self.render_failures = 0
+
+    def new_session(self) -> VoicedCueSession:
+        """A call's selection history, sharing only audio/render caches."""
+        return VoicedCueSession(self)
 
     # -- keys -----------------------------------------------------------
 
@@ -125,30 +137,82 @@ class VoicedCueLibrary:
             )
         )
 
-    def _key(self, engine: dict | None, language: str, kind: str) -> str:
-        text = ladder_cue(language, kind)
+    def _key(self, engine: dict | None, language: str, kind: str, text: str | None = None) -> str:
+        text = ladder_cue(language, kind) if text is None else text
         digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
         return f"{self.engine_key(engine, language)}_{kind}_{digest}"
+
+    @staticmethod
+    def cue_choices(language: str, kind: str, selection: dict | None = None) -> list[tuple[str, str]]:
+        """``[(cue_id, text), …]`` in preference order: the ``selection``
+        handed down for the "hmm" rung (the planner's per-turn ranking of the
+        bot's allowed cues, best first; ids unknown to the language are
+        dropped), else the language default alone. Wait options are the
+        language's allowed wait pool (currently one phrase per language)."""
+        options = ladder_cue_options(language, kind)
+        if not options:
+            return []
+        if kind != "hmm":
+            return [(option["id"], option["text"]) for option in options]
+        if not selection:
+            # No selection → the language default only (the planner supplies
+            # the default rotation, see SpeechNaturalnessPlanner.cue_selection_for).
+            return [(options[0]["id"], options[0]["text"])]
+        picked = [
+            (cue_id, ladder_cue_text(language, kind, cue_id))
+            for cue_id in selection_ids(selection)
+            if ladder_cue_text(language, kind, cue_id)
+        ]
+        return picked or [(options[0]["id"], options[0]["text"])]
 
     def _disk_path(self, key: str) -> Path | None:
         return (self._cache_dir / f"{key}.wav") if self._cache_dir is not None else None
 
     # -- public API -----------------------------------------------------
 
-    def clip(self, engine: dict | None, language: str, kind: str, sample_rate: int) -> bytes:
-        """The cached clip at ``sample_rate``, or b"" when none is ready.
+    def acknowledgement_clip(
+        self, engine: dict | None, language: str, text: str, sample_rate: int,
+    ) -> bytes:
+        """A planned acknowledgement from the existing background-render cache.
 
-        Never blocks: a missing clip schedules a background render (once)
-        and returns nothing for this turn.
+        A cache miss starts rendering and returns immediately. This must never
+        use the reply's streaming TTS connection or wait for synthesis.
         """
-        if kind not in LADDER_CUE_KINDS or sample_rate <= 0 or not ladder_cue(language, kind):
+        if not text or sample_rate <= 0:
             return b""
-        key = self._key(engine, language, kind)
+        return self._cached_clip(engine, language, "ack", text, sample_rate)
+
+    def clip(
+        self, engine: dict | None, language: str, kind: str, sample_rate: int,
+        selection: dict | None = None,
+    ) -> bytes:
+        """The best READY cue clip for this turn at ``sample_rate``, or b""
+        when none is ready.
+
+        ``selection`` is a preference order (the planner's ranking for the
+        turn, best first): the first cue already rendered plays; unrendered
+        ones are skipped, never waited for. Never blocks: missing clips
+        schedule a background render (once) and this turn gets nothing when
+        none of the preferred cues is ready.
+        """
+        if kind not in LADDER_CUE_KINDS or sample_rate <= 0:
+            return b""
+        for cue_id, text in self.cue_choices(language, kind, selection):
+            pcm = self._cached_clip(engine, language, kind, text, sample_rate)
+            if pcm:
+                self.last_cue_id = cue_id
+                return pcm
+        return b""
+
+    def _cached_clip(
+        self, engine: dict | None, language: str, kind: str, text: str, sample_rate: int,
+    ) -> bytes:
+        key = self._key(engine, language, kind, text)
         cached = self._clips.get(key)
         if cached is None:
             cached = self._load_from_disk(key)
         if cached is None:
-            self._schedule_render(key, engine, language, kind)
+            self._schedule_render(key, engine, language, kind, text)
             return b""
         pcm, rate = cached
         if not pcm:
@@ -161,26 +225,57 @@ class VoicedCueLibrary:
             self._resampled[(key, sample_rate)] = out
         return out
 
-    def ready(self, engine: dict | None, language: str, kind: str) -> bool:
-        key = self._key(engine, language, kind)
+    def ready(self, engine: dict | None, language: str, kind: str, cue_id: str | None = None) -> bool:
+        text = ladder_cue_text(language, kind, cue_id) if cue_id else ladder_cue(language, kind)
+        if not text:
+            return False
+        key = self._key(engine, language, kind, text)
         cached = self._clips.get(key)
         if cached is None:
             cached = self._load_from_disk(key)
         return bool(cached and cached[0])
 
-    def warm(self, engine: dict | None, language: str) -> None:
-        """Start rendering every cue of ``language`` for ``engine`` that is
-        not cached yet (fire-and-forget; safe to call per turn)."""
+    def warm(self, engine: dict | None, language: str, selection: dict | None = None) -> None:
+        """Start rendering every cue of ``language`` the bot may play for
+        ``engine`` that is not cached yet (fire-and-forget; safe per turn)."""
         for kind in LADDER_CUE_KINDS:
-            if ladder_cue(language, kind):
-                self.clip(engine, language, kind, 16000)
+            for _cue_id, text in self.cue_choices(language, kind, selection):
+                self._cached_clip(engine, language, kind, text, 16000)
 
-    async def wait_ready(self, engine: dict | None, language: str, timeout: float = 15.0) -> None:
+    async def wait_ready(
+        self, engine: dict | None, language: str, timeout: float = 15.0,
+        selection: dict | None = None,
+    ) -> None:
         """Await pending renders for ``language`` (tests / warm-up scripts)."""
-        keys = [self._key(engine, language, kind) for kind in LADDER_CUE_KINDS]
+        keys = [
+            self._key(engine, language, kind, text)
+            for kind in LADDER_CUE_KINDS
+            for _cue_id, text in self.cue_choices(language, kind, selection)
+        ]
         pending = [self._tasks[k] for k in keys if k in self._tasks and not self._tasks[k].done()]
         if pending:
             await asyncio.wait(pending, timeout=timeout)
+
+    async def render_now(
+        self, engine: dict | None, language: str, kind: str, cue_id: str | None,
+        sample_rate: int, timeout: float = _RENDER_TIMEOUT_S + 3.0,
+    ) -> bytes:
+        """The clip for one cue option, rendering it first if needed (preview
+        path: the very bytes the runtime will play, from the same cache)."""
+        text = ladder_cue_text(language, kind, cue_id) if cue_id else ladder_cue(language, kind)
+        if kind not in LADDER_CUE_KINDS or not text or sample_rate <= 0:
+            return b""
+        pcm = self._cached_clip(engine, language, kind, text, sample_rate)
+        if pcm:
+            return pcm
+        key = self._key(engine, language, kind, text)
+        task = self._tasks.get(key)
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                return b""
+        return self._cached_clip(engine, language, kind, text, sample_rate)
 
     # -- rendering ------------------------------------------------------
 
@@ -198,7 +293,9 @@ class VoicedCueLibrary:
         self._clips[key] = (pcm, rate)
         return self._clips[key]
 
-    def _schedule_render(self, key: str, engine: dict | None, language: str, kind: str) -> None:
+    def _schedule_render(
+        self, key: str, engine: dict | None, language: str, kind: str, text: str | None = None,
+    ) -> None:
         task = self._tasks.get(key)
         if task is not None and not task.done():
             return
@@ -209,10 +306,14 @@ class VoicedCueLibrary:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # no loop (sync caller outside the pipeline): nothing to do
-        self._tasks[key] = loop.create_task(self._render(key, dict(engine or {}), language, kind))
+        self._tasks[key] = loop.create_task(
+            self._render(key, dict(engine or {}), language, kind, text)
+        )
 
-    async def _render(self, key: str, engine: dict, language: str, kind: str) -> None:
-        text = ladder_cue(language, kind)
+    async def _render(
+        self, key: str, engine: dict, language: str, kind: str, text: str | None = None,
+    ) -> None:
+        text = ladder_cue(language, kind) if text is None else text
         try:
             pcm, rate = await asyncio.wait_for(
                 self._renderer(engine, language, text), timeout=_RENDER_TIMEOUT_S
@@ -257,6 +358,51 @@ class VoicedCueLibrary:
         return normalize_level(
             pcm, target_rms_dbfs=CUE_TARGET_RMS_DBFS.get(kind, -25.0)
         )
+
+
+class VoicedCueSession:
+    """Selection state owned by one call; rendering stays on the library.
+
+    Cache methods are bound to the shared library, so background render
+    tasks neither hold this session alive nor mutate another call's picks.
+    """
+
+    _session_local = True
+
+    def __init__(self, library: VoicedCueLibrary) -> None:
+        self._library = library
+        self.last_cue_id: str | None = None
+        self._last_cues: dict[tuple[str, str], str] = {}
+
+    def __getattr__(self, name: str):
+        return getattr(self._library, name)
+
+    def clear_history(self) -> None:
+        self.last_cue_id = None
+        self._last_cues.clear()
+
+    def clip(
+        self, engine: dict | None, language: str, kind: str, sample_rate: int,
+        selection: dict | None = None,
+    ) -> bytes:
+        if kind not in LADDER_CUE_KINDS or sample_rate <= 0:
+            return b""
+        choices = self._library.cue_choices(language, kind, selection)
+        history_key = (self._library.engine_key(engine, language), kind)
+        previous = self._last_cues.get(history_key)
+        # Keep the planner's contextual preference order. A repeated cue is
+        # still valid if every alternative is unavailable; never wait for a
+        # render or substitute a cue excluded by this turn's context.
+        choices = [pair for pair in choices if pair[0] != previous] + [
+            pair for pair in choices if pair[0] == previous
+        ]
+        for cue_id, text in choices:
+            pcm = self._library._cached_clip(engine, language, kind, text, sample_rate)
+            if pcm:
+                self.last_cue_id = cue_id
+                self._last_cues[history_key] = cue_id
+                return pcm
+        return b""
 
 
 async def default_renderer(engine: dict, language: str, text: str) -> tuple[bytes, int]:

@@ -1,5 +1,5 @@
 /* Studio tab registry: tabs carrying permission codes are shown only when the
-   session holds one of them. Overview, Knowledge, Prompts, Voice, Workflows
+   session holds one of them. Overview, Knowledge, Prompts, Voice, Natural Conversation, Workflows
    and Testing are open to every tenant role — the Tenant User working set.
    Turn Detection is Tenant Admin-only; the remaining restricted tabs use
    management permissions. (The API independently enforces every rule.) */
@@ -18,15 +18,15 @@ describe("Studio tab permission gating", () => {
   it("shows every tab when the session holds all permissions (admin)", () => {
     const ids = visibleStudioTabs(() => true, "tenant_admin").map((t) => t.id);
     expect(ids).toEqual([
-      "overview", "knowledge", "prompts", "voice", "turn-detection", "intents", "apis",
+      "overview", "knowledge", "prompts", "voice", "natural-conversation", "turn-detection", "intents", "apis",
       "workflows", "channels", "testing", "analytics", "publish",
     ]);
   });
 
-  it("shows exactly the six allowed sections to a tenant user", () => {
+  it("shows the allowed sections to a tenant user, including Natural Conversation", () => {
     const ids = visibleStudioTabs((c) => TENANT_USER_PERMS.includes(c), "tenant_user").map((t) => t.id);
     expect(ids).toEqual([
-      "overview", "knowledge", "prompts", "voice", "workflows", "testing",
+      "overview", "knowledge", "prompts", "voice", "natural-conversation", "workflows", "testing",
     ]);
   });
 });

@@ -242,3 +242,18 @@ def resolve_phrase(
 def canned(key: str, locale: str | None = None) -> str:
     """The canned phrase for ``key`` in the caller's current language."""
     return resolve_phrase(_PHRASES, key, locale)
+
+
+def entry_question_retry(greeting: str, locale: str | None = None) -> str:
+    """Repeat only the authored greeting's pending question after unclear STT."""
+    import re
+
+    sentences = re.split(r"(?<=[।.!?])\s*", greeting or "")
+    question = next((part.strip() for part in reversed(sentences)
+                     if part.strip().endswith("?")), "")
+    if not question:
+        return canned("clarify", locale)
+    prefix = ("माफ़ कीजिए, मैं आपकी बात ठीक से समझ नहीं पाया। "
+              if (locale or "").startswith("hi") else
+              "Sorry, I couldn't understand that. ")
+    return prefix + question

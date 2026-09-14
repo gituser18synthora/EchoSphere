@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.audit import record_audit
+from backend.core.bot_lifecycle import assert_bot_operational
 from backend.core.deps import (
     SUPER_ADMIN,
     assert_tenant_access,
@@ -122,6 +123,7 @@ def create_release(
     db: Session = Depends(get_db),
 ):
     bot = _bot_checked(db, bot_id, user)
+    assert_bot_operational(bot, action="create a release")
     existing = _open_release(db, bot.id)
     if existing is not None:
         raise ApiError(
@@ -173,6 +175,11 @@ def update_release_stage(
         raise ApiError(f"A release in stage '{row.stage}' cannot move to '{body.stage}'.", 422)
 
     bot = db.get(VoiceBot, row.bot_id)
+    if bot is None or bot.is_deleted:
+        raise NotFoundError("VoiceBot")
+    # An archived bot's releases are frozen: restore the bot (-> draft) before
+    # moving anything towards published.
+    assert_bot_operational(bot, action="change its release stage")
     before = {"stage": row.stage}
 
     # Every forward move re-evaluates the gate so the UI always shows the

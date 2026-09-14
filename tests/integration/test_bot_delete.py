@@ -1,11 +1,13 @@
-"""Bot Delete (archive): DELETE /bots/{id}.
+"""Bot Delete (permanent): DELETE /bots/{id}.
 
-Deleting a bot must take it out of service immediately — soft-deleted (gone
-from lists), channels archived + disabled, phone numbers released back to the
-pool, runtime config cache invalidated — while RETAINING its configuration
-children (prompts, intents, workflows, knowledge, scenarios, context schema)
-and history (conversations, usage) under the soft-deleted bot. Tenant-shared
-resources are never touched. Cross-tenant access is a sanitized 404.
+Delete is the irreversible counterpart of Archive. The bot row becomes a
+tombstone (is_deleted=1, workflow status preserved) that no tenant API returns
+— not even under the Archived filter — and that has no restore action. Channels
+are archived + disabled, phone numbers return to the platform pool, editable
+configuration (workflows, prompts, intents, bot knowledge, scenarios, context
+schemas, bot APIs) is retired, and the runtime config cache is invalidated.
+History (conversations, usage, audit) and tenant-shared resources are never
+touched. Cross-tenant access is a sanitized 404.
 """
 
 import uuid
@@ -317,6 +319,7 @@ class TestDeleteAccess:
             if get_settings().allow_hard_delete:
                 assert response.status_code == 200
                 assert bot.is_deleted is True
+                assert bot.status == "draft"  # tombstone keeps its last status
             else:
                 # Guard fires before any mutation.
                 assert response.status_code == 403
@@ -390,22 +393,48 @@ class TestDeleteFlow:
         return response.json()["data"]
 
     def test_response_shape(self, deleted, workspace):
-        assert deleted == {"archived": True, "id": workspace["bot_id"]}
+        assert deleted == {"deleted": True, "id": workspace["bot_id"],
+                           "channelsArchived": 2, "phoneNumbersReleased": 1}
 
-    def test_bot_disappears_from_list_and_detail(self, client, deleted, workspace):
+    def test_bot_disappears_from_every_list_and_detail(self, client, deleted, workspace):
+        for query in ("", "&status=archived", "&status=published"):
+            listing = client.get(
+                f"{API}/bots?pageSize=200{query}", headers=workspace["admin"])
+            ids = [b["id"] for b in listing.json()["data"]]
+            assert workspace["bot_id"] not in ids, query
         listing = client.get(f"{API}/bots?pageSize=200", headers=workspace["admin"])
-        ids = [b["id"] for b in listing.json()["data"]]
-        assert workspace["bot_id"] not in ids
-        assert workspace["guard_bot_id"] in ids  # the other bot is untouched
+        assert workspace["guard_bot_id"] in [b["id"] for b in listing.json()["data"]]
         detail = client.get(
             f"{API}/bots/{workspace['bot_id']}", headers=workspace["admin"])
         assert detail.status_code == 404
+        for path in ("workflow", "channels", "prompts", "releases", "scenarios"):
+            response = client.get(
+                f"{API}/bots/{workspace['bot_id']}/{path}", headers=workspace["admin"])
+            assert response.status_code == 404, path
 
-    def test_bot_row_soft_deleted(self, deleted, workspace):
+    def test_bot_row_is_a_tombstone(self, deleted, workspace):
         state = _bot_state(workspace["bot_id"])
         assert state["is_deleted"] is True
-        assert state["status"] == "archived"
+        assert state["status"] == "published"  # preserved: the tombstone says what it was
         assert state["deleted_by"] == workspace["admin_id"]
+
+    def test_no_restore_archive_or_edit_for_a_deleted_bot(self, client, deleted, workspace):
+        bot_id = workspace["bot_id"]
+        for path in ("restore", "archive"):
+            response = client.post(f"{API}/bots/{bot_id}/{path}", headers=workspace["admin"])
+            assert response.status_code == 404, path
+        patch = client.patch(
+            f"{API}/bots/{bot_id}", headers=workspace["admin"], json={"status": "draft"})
+        assert patch.status_code == 404
+        publish = client.post(
+            f"{API}/bots/{bot_id}/releases", headers=workspace["admin"],
+            json={"version": "v9.9.9"})
+        assert publish.status_code == 404
+        session = client.post(
+            f"{API}/voice-sessions", headers=workspace["admin"],
+            json={"botId": bot_id, "channel": "browser"})
+        assert session.status_code == 404
+        assert _bot_state(bot_id)["is_deleted"] is True
 
     def test_channels_archived_and_disabled(self, deleted, workspace):
         session = _db()
@@ -440,9 +469,10 @@ class TestDeleteFlow:
         with pytest.raises(NotFoundError):
             _load_config_sync(workspace["bot_id"], True)
 
-    def test_configuration_children_retained(self, deleted, workspace):
-        """The archive contract: configuration and history are RETAINED under
-        the soft-deleted bot (not hard-wiped), just unreachable via the API."""
+    def test_editable_configuration_retired_history_kept(self, deleted, workspace):
+        """Rows are never purged (history references them) but the bot's
+        editable configuration is soft-deleted so nothing can surface it;
+        conversation history and context data stay exactly as they were."""
         session = _db()
         try:
             for model, row_id in (
@@ -452,16 +482,33 @@ class TestDeleteFlow:
                 (KnowledgeSource, workspace["bot_kb_id"]),
                 (TestScenario, workspace["scenario_id"]),
                 (RuntimeContextSchema, workspace["schema_id"]),
-                (RuntimeContextRecord, workspace["record_id"]),
                 (ApiConnection, workspace["bot_api_id"]),
-                (ConversationSession, workspace["conversation_id"]),
             ):
                 row = session.get(model, row_id)
                 assert row is not None, model.__name__
-                if hasattr(row, "is_deleted"):
-                    assert row.is_deleted is False, model.__name__
+                assert row.is_deleted is True, model.__name__
+            for model, row_id in (
+                (RuntimeContextRecord, workspace["record_id"]),
+                (ConversationSession, workspace["conversation_id"]),
+            ):
+                row = session.get(model, row_id)
+                assert row is not None and row.is_deleted is False, model.__name__
         finally:
             session.close()
+
+    def test_tenant_level_listings_no_longer_show_the_bot_config(self, client, deleted, workspace):
+        knowledge = client.get(f"{API}/knowledge?pageSize=200", headers=workspace["admin"])
+        kb_ids = [k["id"] for k in knowledge.json()["data"]]
+        assert workspace["bot_kb_id"] not in kb_ids
+        assert workspace["tenant_kb_id"] in kb_ids  # shared knowledge survives
+        workflows = client.get(f"{API}/workflows", headers=workspace["admin"])
+        assert workspace["workflow_id"] not in [w["id"] for w in workflows.json()["data"]]
+
+    def test_history_still_names_the_deleted_bot(self, client, deleted, workspace):
+        conversations = client.get(
+            f"{API}/conversations?pageSize=200", headers=workspace["admin"])
+        by_id = {c["id"]: c for c in conversations.json()["data"]}
+        assert by_id[workspace["conversation_id"]]["bot"] == workspace["bot_name"]
 
     def test_tenant_shared_resources_untouched(self, deleted, workspace):
         session = _db()
@@ -488,12 +535,19 @@ class TestDeleteFlow:
         session = _db()
         try:
             row = session.scalar(select(AuditLog).where(
-                AuditLog.action == "Archived VoiceBot",
+                AuditLog.action == "Deleted VoiceBot",
                 AuditLog.entity_id == workspace["bot_id"]))
             assert row is not None
             assert row.tenant_id == workspace["tenant_id"]
+            assert row.previous_value["status"] == "published"
             assert row.new_value["channelsArchived"] == 2
             assert row.new_value["phoneNumbersReleased"] == 1
+            assert row.new_value["configurationRetired"]["workflows"] == 1
+            assert row.new_value["configurationRetired"]["knowledgeSources"] == 1
+            # No archive audit row: Delete and Archive are distinct actions.
+            assert session.scalar(select(AuditLog).where(
+                AuditLog.action == "Archived VoiceBot",
+                AuditLog.entity_id == workspace["bot_id"])) is None
         finally:
             session.close()
 
@@ -510,3 +564,27 @@ class TestDeleteFlow:
         )
         assert response.status_code == 200
         assert response.json()["data"]["description"] == "still editable"
+
+
+class TestDeleteArchivedBot:
+    def test_archived_bot_can_be_deleted_and_leaves_the_archive(self, client, workspace):
+        created = client.post(
+            f"{API}/bots", headers=workspace["admin"],
+            json={"name": f"Parked Then Deleted {workspace['suffix']}"},
+        ).json()["data"]
+        assert client.post(f"{API}/bots/{created['id']}/archive",
+                           headers=workspace["admin"]).status_code == 200
+        archived = client.get(
+            f"{API}/bots?status=archived&pageSize=200", headers=workspace["admin"])
+        assert created["id"] in [b["id"] for b in archived.json()["data"]]
+
+        response = client.delete(f"{API}/bots/{created['id']}", headers=workspace["admin"])
+        assert response.status_code == 200
+        state = _bot_state(created["id"])
+        assert state["is_deleted"] is True
+        assert state["status"] == "archived"  # what it was when deleted
+        archived = client.get(
+            f"{API}/bots?status=archived&pageSize=200", headers=workspace["admin"])
+        assert created["id"] not in [b["id"] for b in archived.json()["data"]]
+        assert client.post(f"{API}/bots/{created['id']}/restore",
+                           headers=workspace["admin"]).status_code == 404

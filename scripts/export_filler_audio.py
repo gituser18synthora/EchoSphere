@@ -2,13 +2,14 @@
 
     python scripts/export_filler_audio.py [--out storage/filler_audio/synthesized] [--rate 24000]
 
-Writes ``breath_<gender>_<variant>.wav`` for every gender/variant the runtime
-would synthesize. The output directory is a SUBDIRECTORY of the asset
+Writes ``<kind>_<gender>_<variant>.wav`` (kinds: breath, inhale, exhale,
+inhale_exhale) for every gender/variant the runtime would synthesize. The output directory is a SUBDIRECTORY of the asset
 directory on purpose: the runtime scans only top-level ``*.wav`` files of
 ``filler_audio_dir`` (default ``storage/filler_audio``), so these exports are
 never mistaken for operator recordings. To replace the synthesized breath for
 a gender, drop 16-bit PCM WAV recordings named ``filler_male_1.wav`` /
-``breath_female.wav`` / ``filler_neutral.wav`` into that top-level directory.
+``breath_female.wav`` / ``filler_neutral.wav`` (and ``inhale_*`` / ``exhale_*`` /
+``inhale_exhale_*`` for the other kinds) into that top-level directory.
 """
 
 from __future__ import annotations

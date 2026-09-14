@@ -440,6 +440,36 @@ _UNSAFE = re.compile(
 )
 
 
+# ── knowledge questions inside other utterances ─────────────────────────────
+# Clause boundaries: sentence punctuation and the connectors callers use to
+# append a question to an answer ("… waise …", "… aur …", "… but …").
+_CLAUSE_SPLIT = re.compile(
+    r"[.?!।]+|(?<!\w)(?:waise|vaise|aur|and|but|lekin|magar|phir|also|वैसे|और|लेकिन|मगर|फिर)(?!\w)",
+    re.I,
+)
+# Question shape in Hindi / Hinglish / English (a "?" counts too).
+_QUESTION_MARKERS = re.compile(
+    r"\?|(?<!\w)(?:kya|kyu|kyun|kyon|kaise|kab|kitn[aei]|kaun|kahan|kis|what|why|how|when|"
+    r"which|where|is|are|can|could|do|does|will|would|should|explain|tell|batao|bataiye|"
+    r"क्या|क्यों|क्यूँ|क्यूं|कैसे|कब|कितन[ाीे]|कौन|कहाँ|कहां|किस|बताओ|बताइए|समझाओ)(?!\w)",
+    re.I,
+)
+# Function words that never identify a knowledge TOPIC.
+_KNOWLEDGE_STOP_TOKENS = frozenset({
+    "hai", "hain", "hota", "hoti", "hote", "hoga", "hogi", "the", "and", "for",
+    "with", "from", "this", "that", "these", "those", "same", "every", "mera",
+    "mere", "meri", "main", "mujhe", "aap", "aapko", "kar", "karta", "karti",
+    "karte", "sakta", "sakti", "sakte", "liye", "mein", "me", "se", "ka", "ki",
+    "ke", "ko", "par", "pe", "ye", "yeh", "wo", "woh", "hu", "hoon", "tha",
+    "thi", "the", "gaya", "gayi", "gaye", "raha", "rahi", "rahe", "kata",
+    "kati", "kate", "cut", "kab", "kaise", "kya", "kyu", "kyun", "not", "was",
+    "were", "been", "have", "has", "had", "will", "your", "you", "our", "one",
+    "होती", "होता", "होते", "हैं", "है", "क्या", "क्यों", "कैसे", "मेरे", "मेरा", "मेरी",
+    "लिए", "सभी", "दे", "सकते", "सकता", "सकती", "रही", "रहा", "गया", "गई", "कब",
+    "कटेगा", "कटती", "काटी", "जाती", "जाता", "किस",
+})
+
+
 # ── intent sample matching ───────────────────────────────────────────────────
 # Samples match WHOLE WORDS, never mid-word substrings ("yes" must not fire
 # inside "yesterday", "हाँ" not inside "कहाँ"). Tokenization is deliberately
@@ -518,6 +548,24 @@ class TurnRouter:
             r"\b(" + "|".join(re.escape(k) for k in kb_keywords) + r")\b", re.I
         ) if kb_keywords else None
         self._has_kbs = has_knowledge_bases
+        # Topic vocabulary of the tenant's KNOWLEDGE intents (their sample
+        # phrases, minus function/question words): a clause that asks a
+        # question AND names one of these topics is a knowledge question even
+        # when it sits inside a workflow answer ("nahi bataya tha, waise
+        # onboarding fee hoti kya hai?") — see detect_knowledge_question.
+        vocab: set[str] = set()
+        for intent in self._intents:
+            if str(intent.get("route") or "") != "knowledge":
+                continue
+            for sample in intent.get("samples") or []:
+                for token in match_tokens(str(sample)):
+                    # Devanagari words are short in code points ("फी" = STT's
+                    # spelling of fee is two), so the length floor is script-aware.
+                    floor = 2 if any("\u0900" <= ch <= "\u097f" for ch in token) else 3
+                    if len(token) >= floor and token not in _KNOWLEDGE_STOP_TOKENS \
+                            and not _QUESTION_MARKERS.fullmatch(token):
+                        vocab.add(token)
+        self._knowledge_vocab = vocab
         self._workflows = workflows or {}
         self._affirm_entry = self._derive_affirm_entry()
 
@@ -529,6 +577,45 @@ class TurnRouter:
         among its samples is, by the author's own declaration, the opening
         confirmation intent. Nothing bot- or tenant-specific lives here."""
         return self._affirm_entry
+
+    def apply_entry_fallback(
+        self,
+        decision: RouteDecision,
+        *,
+        active_workflow: str | None = None,
+        allow_affirm_entry: bool = True,
+    ) -> RouteDecision:
+        """Keep an unclear opening reply on its configured pending question.
+
+        Run after semantic intent routing: a meaningful workflow, knowledge,
+        handoff or call-control decision must win. Only an opening intent that
+        explicitly declares ``fallback_behavior=clarify`` opts in. The caller
+        of this method speaks the pending opening question with a short
+        clarification, without invoking the free-chat system prompt.
+        """
+        if (
+            active_workflow is not None
+            or not allow_affirm_entry
+            or self._affirm_entry is None
+            or decision.kind not in (RouteKind.CHAT, RouteKind.CLARIFY)
+        ):
+            return decision
+        entry_name, _ = self._affirm_entry
+        configured = next(
+            (intent for intent in self._intents if intent.get("name") == entry_name),
+            None,
+        )
+        if not configured or configured.get("fallback_behavior") != "clarify":
+            return decision
+        return RouteDecision(
+            kind=RouteKind.CLARIFY,
+            confidence=decision.confidence,
+            reason="entry_reprompt",
+            action="repeat_entry_question",
+            intent=entry_name,
+            considered_kb=decision.considered_kb,
+            signal=decision.signal,
+        )
 
     def _derive_affirm_entry(self) -> tuple[str, str] | None:
         candidates: dict[str, str] = {}
@@ -700,6 +787,41 @@ class TurnRouter:
 
         return RouteDecision(kind=RouteKind.CHAT, confidence=0.6, reason="default_chat",
                              considered_kb=self._has_kbs)
+
+    def detect_knowledge_question(self, text: str) -> str | None:
+        """The clause of ``text`` that asks a tenant-knowledge question, or None.
+
+        Callers regularly fold a question into an answer ("300 bola tha but
+        400 cut gaya. Waise har store ki fee same hoti hai kya?"). The
+        utterance is split into clauses; a clause is a knowledge question when
+        a knowledge-route intent sample matches it, or when it is shaped like a
+        question AND names a topic from the knowledge intents' vocabulary.
+        Returns that clause (the retrieval query). Bots without knowledge
+        bases never return a clause.
+        """
+        if not self._has_kbs:
+            return None
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+        clauses = [c.strip() for c in _CLAUSE_SPLIT.split(stripped) if c and c.strip()]
+        if not clauses:
+            clauses = [stripped]
+        for clause in clauses:
+            matched = self._match_intent(clause)
+            if matched is not None and str(matched[1] or "") == "knowledge":
+                return clause
+        if self._knowledge_vocab:
+            for clause in clauses:
+                if not _QUESTION_MARKERS.search(clause):
+                    continue
+                # At least TWO distinct topic words: one shared word ("store"
+                # in "store manager ka number kya hai?") is not a knowledge
+                # question — that turn belongs to the ordinary off-script path.
+                hits = {t for t in match_tokens(clause) if t in self._knowledge_vocab}
+                if len(hits) >= 2:
+                    return clause
+        return None
 
     def _match_intent(self, text: str) -> tuple[str, str | None, float] | None:
         """Best configured intent for the utterance, as (name, route, confidence).

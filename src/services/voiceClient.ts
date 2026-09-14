@@ -8,8 +8,9 @@
      `session_config` message (never a hardcoded rate — the worker streams
      whatever the bot's audio settings say, e.g. 16 kHz, and playing that at
      an assumed 24 kHz is fast, pitch-shifted and choppy).
-   - Interruption clears the queue and suppresses any stale audio frames
-     until the next bot reply actually starts.
+   - Interruption retires old filler owners and clears playback. Untagged
+     stale TTS stays suppressed until the next bot reply actually starts;
+     a fresh turn's owned latency filler can cover its wait independently.
    - Text frames are JSON: {type:"session_config"|"transcript"|"bot_text"|
      "language"|"error"} and {type:"event",name:...}. */
 
@@ -89,6 +90,14 @@ export interface PlaybackContextLike {
   destination: AudioNode;
   createBuffer(channels: number, length: number, sampleRate: number): AudioBuffer;
   createBufferSource(): AudioBufferSourceNode;
+  createGain(): GainNode;
+}
+
+interface ScheduledAudio {
+  owner?: string;
+  startsAt: number;
+  endsAt: number;
+  gain?: GainNode;
 }
 
 /** Gapless sequential scheduler for Int16 PCM chunks at a fixed sample rate.
@@ -99,7 +108,11 @@ export interface PlaybackContextLike {
     in the past. `stop()` cancels everything queued (barge-in). */
 export class PcmPlaybackQueue {
   private playhead = 0;
-  private active = new Set<AudioBufferSourceNode>();
+  private active = new Map<AudioBufferSourceNode, ScheduledAudio>();
+  private retiring = new Map<AudioBufferSourceNode, ScheduledAudio>();
+  private fillerOwners = new Set<string>();
+  private clearedFillers = new Set<string>();
+  private responsePriority = false;
 
   constructor(
     private ctx: PlaybackContextLike,
@@ -107,9 +120,11 @@ export class PcmPlaybackQueue {
     private leadSeconds = 0.04,
   ) {}
 
-  enqueue(buf: ArrayBuffer): void {
+  enqueue(buf: ArrayBuffer, fillerOwner?: string): void {
+    if (fillerOwner && this.clearedFillers.has(fillerOwner)) return;
     const samples = Math.floor(buf.byteLength / 2);
     if (samples <= 0) return;
+    if (fillerOwner) this.fillerOwners.add(fillerOwner);
     const int16 = new Int16Array(buf, 0, samples);
     const f32 = new Float32Array(samples);
     for (let i = 0; i < samples; i++) f32[i] = int16[i] / 32768;
@@ -117,26 +132,87 @@ export class PcmPlaybackQueue {
     audio.copyToChannel(f32, 0);
     const src = this.ctx.createBufferSource();
     src.buffer = audio;
-    src.connect(this.ctx.destination);
-    const startAt = Math.max(this.playhead, this.ctx.currentTime + this.leadSeconds);
+    const gain = fillerOwner ? this.ctx.createGain() : undefined;
+    if (gain) {
+      src.connect(gain);
+      gain.connect(this.ctx.destination);
+    } else {
+      src.connect(this.ctx.destination);
+    }
+    // A response following a filler clear starts at the available playhead.
+    // The ordinary network-gap lead must not reintroduce a filler handoff gap.
+    const lead = !fillerOwner && this.responsePriority ? 0 : this.leadSeconds;
+    const startAt = Math.max(this.playhead, this.ctx.currentTime + lead);
     src.start(startAt);
     this.playhead = startAt + samples / this.sampleRate;
-    this.active.add(src);
-    src.onended = () => this.active.delete(src);
+    this.active.set(src, { owner: fillerOwner, startsAt: startAt, endsAt: this.playhead, gain });
+    src.onended = () => {
+      gain?.disconnect();
+      this.active.delete(src);
+      if (this.active.size === 0) this.responsePriority = false;
+    };
+  }
+
+  /** Clear one latency filler without touching any other scheduled audio.
+      The server sends this before the first binary PCM of the real reply on
+      the same ordered socket, so that reply has not yet been scheduled. */
+  clearFiller(owner: string): void {
+    this.clearedFillers.add(owner);
+    this.fillerOwners.delete(owner);
+    let removed = false;
+    let boundary = this.ctx.currentTime;
+    for (const [src, audio] of this.active) {
+      if (audio.owner !== owner) continue;
+      // Only the currently sounding source needs a tiny gain ramp to avoid
+      // a discontinuity. Future sources are discarded immediately. The real
+      // response starts at this same <=2 ms boundary, never under the ramp.
+      const sounding = audio.startsAt <= this.ctx.currentTime && audio.endsAt > this.ctx.currentTime;
+      const stopAt = sounding ? Math.min(audio.endsAt, this.ctx.currentTime + 0.002) : this.ctx.currentTime;
+      if (sounding && audio.gain) {
+        audio.gain.gain.setValueAtTime(1, this.ctx.currentTime);
+        audio.gain.gain.linearRampToValueAtTime(0, stopAt);
+      }
+      this.retiring.set(src, audio);
+      src.onended = () => {
+        audio.gain?.disconnect();
+        this.retiring.delete(src);
+      };
+      try {
+        src.stop(stopAt);
+      } catch {
+        /* already stopped */
+      }
+      this.active.delete(src);
+      boundary = Math.max(boundary, stopAt);
+      removed = true;
+    }
+    if (!removed) return;
+    this.playhead = boundary;
+    for (const audio of this.active.values()) {
+      this.playhead = Math.max(this.playhead, audio.endsAt);
+    }
+    this.responsePriority = true;
   }
 
   /** Stop and discard everything scheduled (used on interruption). */
   stop(): void {
-    for (const src of this.active) {
+    // Include owners whose last source has ended: a late chunk from that
+    // interrupted turn must never resurrect playback.
+    for (const owner of this.fillerOwners) this.clearedFillers.add(owner);
+    this.fillerOwners.clear();
+    for (const [src, audio] of [...this.active, ...this.retiring]) {
       src.onended = null;
       try {
         src.stop();
       } catch {
         /* already stopped */
       }
+      audio.gain?.disconnect();
     }
     this.active.clear();
+    this.retiring.clear();
     this.playhead = 0;
+    this.responsePriority = false;
   }
 
   get activeCount(): number {
@@ -234,17 +310,21 @@ export class VoiceClient {
         if (message) this.callbacks.onError?.(message);
         this.callbacks.onClose?.();
       };
-      ws.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data as unknown);
+      ws.onmessage = (ev: MessageEvent) => {
+        if (this.ws === ws && !this.stopped) this.handleMessage(ev.data as unknown);
+      };
       this.ws = ws;
     });
   }
 
   /** Exposed for tests — routes a raw WS payload through the client. */
   handleMessage(data: unknown): void {
+    if (this.stopped) return;
     if (typeof data === "string") {
       let msg: { type?: string; text?: string; name?: string; message?: string;
                  language?: string; sampleRate?: number; at?: string;
-                 user_text?: string; bot_text?: string } & VoiceSessionConfig;
+                 user_text?: string; bot_text?: string; owner?: string;
+                 audio?: string } & VoiceSessionConfig;
       try {
         msg = JSON.parse(data) as typeof msg;
       } catch {
@@ -252,6 +332,22 @@ export class VoiceClient {
       }
       if (msg.type === "session_config") {
         this.applySessionConfig(msg);
+      } else if (msg.type === "filler_clear" && typeof msg.owner === "string" && msg.owner) {
+        this.ensurePlayback().clearFiller(msg.owner);
+      } else if (msg.type === "filler_audio" && typeof msg.owner === "string" && msg.owner
+                 && typeof msg.audio === "string") {
+        // Owners are unique per call/arm. On this ordered socket the server
+        // retires old owners before interruption; stop() tombstones all known
+        // owners as well. A fresh latency filler need not wait for bot_text,
+        // while unowned stale TTS stays behind the existing interruption gate.
+        try {
+          const decoded = atob(msg.audio);
+          const pcm = new Uint8Array(decoded.length);
+          for (let i = 0; i < decoded.length; i++) pcm[i] = decoded.charCodeAt(i);
+          this.ensurePlayback().enqueue(pcm.buffer, msg.owner);
+        } catch {
+          /* malformed filler packet */
+        }
       } else if (msg.type === "transcript" && msg.text) {
         this.callbacks.onTranscript?.(msg.text, msg.at);
       } else if (msg.type === "bot_text" && msg.text) {

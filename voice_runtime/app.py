@@ -266,7 +266,6 @@ async def _run_call(
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
-        FastAPIWebsocketTransport,
     )
 
     from shared.knowledge.service import get_knowledge_service
@@ -471,7 +470,9 @@ async def _run_call(
         )
 
     media_serializer = serializer or RawPCMSerializer()
-    transport = FastAPIWebsocketTransport(
+    from voice_runtime.filler_transport import FillerWebsocketTransport
+
+    transport = FillerWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,

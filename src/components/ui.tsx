@@ -36,7 +36,7 @@ const chipTone: Record<string, string> = {
   indexed: "good", indexing: "info", failed: "critical", pending: "neutral", stale: "warning",
   healthy: "good", degraded: "warning", failing: "critical", untested: "neutral",
   live: "good", configured: "info", testing: "warning", not_configured: "neutral",
-  connected: "good", available: "neutral", error: "critical",
+  connected: "good", available: "neutral", reserved: "warning", error: "critical",
   pending_approval: "warning",
   needs_samples: "warning", disabled: "neutral",
   acknowledged: "info", resolved: "good",
@@ -190,6 +190,48 @@ export function ConfirmModal({ open, onClose, onConfirm, title, body, confirmLab
       }
     >
       <div className="t-sub" style={{ fontSize: 13.5 }}>{body}</div>
+    </Modal>
+  );
+}
+
+/* ---------- Typed confirmation (irreversible actions) ----------
+   The destructive button stays disabled until the user types the exact
+   confirmation text — the extra friction that separates "Delete" from a
+   reversible action like "Archive". */
+export function TypedConfirmModal({ open, onClose, onConfirm, title, body, confirmLabel = "Delete", confirmText, busy }: {
+  open: boolean; onClose: () => void; onConfirm: () => void;
+  title: string; body: ReactNode; confirmLabel?: string;
+  /** Exact text the user must type before the destructive button enables. */
+  confirmText: string; busy?: boolean;
+}) {
+  const [typed, setTyped] = useState("");
+  useEffect(() => { if (!open) setTyped(""); }, [open]);
+  const matches = typed.trim() === confirmText.trim();
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={title}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" onClick={onConfirm} busy={busy} disabled={!matches}>{confirmLabel}</Button>
+        </>
+      }
+    >
+      <div className="col gap-16">
+        <div className="t-sub" style={{ fontSize: 13.5 }}>{body}</div>
+        <Field label={`Type ${confirmText} to confirm`}>
+          <input
+            className="input"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={confirmText}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+      </div>
     </Modal>
   );
 }
