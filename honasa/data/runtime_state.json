@@ -9,6 +9,46 @@
       "whatsapp_link_sent": true,
       "whatsapp_number_masked": "XXXXXX1001",
       "created_at": "2026-08-31T12:04:49+00:00"
+    },
+    {
+      "request_id": "RR-432889E2",
+      "order_id": "7001007",
+      "issue_type": "defective_expired",
+      "resolution": "replacement",
+      "details": "Hello I would prefer a refund",
+      "whatsapp_link_sent": true,
+      "whatsapp_number_masked": "XXXXXX1007",
+      "created_at": "2026-09-09T11:43:52+00:00"
+    },
+    {
+      "request_id": "RR-C9BE82AF",
+      "order_id": "7001012",
+      "issue_type": "missing_item",
+      "resolution": "return",
+      "details": "Hello Virajal",
+      "whatsapp_link_sent": true,
+      "whatsapp_number_masked": "XXXXXX1012",
+      "created_at": "2026-09-09T11:51:55+00:00"
+    },
+    {
+      "request_id": "RR-7B0BA434",
+      "order_id": "7001011",
+      "issue_type": "damaged",
+      "resolution": "replacement",
+      "details": "Ya it was Dhamako",
+      "whatsapp_link_sent": true,
+      "whatsapp_number_masked": "XXXXXX1011",
+      "created_at": "2026-09-09T12:50:03+00:00"
+    },
+    {
+      "request_id": "RR-797BB2F1",
+      "order_id": "7001011",
+      "issue_type": "damaged",
+      "resolution": "return",
+      "details": "Yeah, it was a derma co tube which is torn. And it is leaking.",
+      "whatsapp_link_sent": true,
+      "whatsapp_number_masked": "XXXXXX1011",
+      "created_at": "2026-09-10T09:57:50+00:00"
     }
   ],
   "tracking_links": [
@@ -47,6 +87,51 @@
       "courier_name": "Blue Dart",
       "awb": "BD4501201002",
       "sent_at": "2026-09-08T10:30:30+00:00"
+    },
+    {
+      "link_id": "TL-0CACAF6F",
+      "order_id": "7001002",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1002",
+      "courier_name": "Blue Dart",
+      "awb": "BD4501201002",
+      "sent_at": "2026-09-09T10:49:10+00:00"
+    },
+    {
+      "link_id": "TL-CBE5B307",
+      "order_id": "7001002",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1002",
+      "courier_name": "Blue Dart",
+      "awb": "BD4501201002",
+      "sent_at": "2026-09-09T11:21:43+00:00"
+    },
+    {
+      "link_id": "TL-A6312F16",
+      "order_id": "7001002",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1002",
+      "courier_name": "Blue Dart",
+      "awb": "BD4501201002",
+      "sent_at": "2026-09-09T12:41:48+00:00"
+    },
+    {
+      "link_id": "TL-7322C53A",
+      "order_id": "7001002",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1002",
+      "courier_name": "Blue Dart",
+      "awb": "BD4501201002",
+      "sent_at": "2026-09-10T10:40:19+00:00"
+    },
+    {
+      "link_id": "TL-7CEE3B0F",
+      "order_id": "7001011",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1011",
+      "courier_name": "Xpressbees",
+      "awb": "XB3401201011",
+      "sent_at": "2026-09-10T10:54:58+00:00"
     }
   ],
   "escalations": []
