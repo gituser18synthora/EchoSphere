@@ -511,7 +511,7 @@ class TestLatencyFillerConfig:
         assert planner({"latency_filler_ladder": False}).latency_filler_ladder_enabled is False
         assert planner({"latency_filler_hmm_ms": 4000}).latency_filler_hmm_ms == 4000
         assert planner({"latency_filler_spoken_ms": 6000}).latency_filler_spoken_ms == 6000
-        assert ladder_cue("hi-IN", "hmm") == "हम्म…" and ladder_cue("en-US", "wait") == "One second…"
+        assert ladder_cue("hi-IN", "hmm") == "Hmm…" and ladder_cue("en-US", "wait") == "One second…"
         assert ladder_cue("fr-FR", "hmm") == "" and ladder_cue("hi-IN", "sigh") == ""
 
     def test_sources_follow_precedence_for_the_new_keys(self):
@@ -756,9 +756,9 @@ class TestFillerAudioSelectionConfig:
         assert sources["latency_filler_cue_selection"] == "platform"
 
     def test_cue_pools_keep_the_default_text_first(self):
-        assert ladder_cue("hi-IN", "hmm") == "हम्म…"
+        assert ladder_cue("hi-IN", "hmm") == "Hmm…"
         options = ladder_cue_options("hi-IN", "hmm")
-        assert options[0] == {"id": "hmm", "text": "हम्म…"}
+        assert options[0] == {"id": "hmm", "text": "Hmm…"}
         assert {o["id"] for o in options} == {"hmm", "hoon", "achha", "ji", "theek_hai", "un_hoon", "oh"}
         assert ladder_cue_text("hi-IN", "hmm", "un_hoon") == "उँ-हूँ…"
         assert ladder_cue_text("hi-IN", "hmm", "nope") == "" and ladder_cue_options("fr-FR", "hmm") == []

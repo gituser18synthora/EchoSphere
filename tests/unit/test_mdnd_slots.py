@@ -236,3 +236,64 @@ async def test_real_model_semantic_regressions():
         if result.failed or result.patch != expected:
             failures.append((case, expected, result))
     assert not failures, failures
+
+
+# ── Deterministic evidence gate ──────────────────────────────────────────────
+# A verbatim quote is necessary but not sufficient: it must talk about the
+# field. Live cv_2e2d8c7ce20d-style failures — the model answering the bot's
+# OWN improvised confirmation ("haan, ye sahi hai") with a recipient, or
+# carrying a customer-call negative into the CX field — must not reach state.
+
+async def test_bare_yes_never_answers_the_handover_field():
+    text = "हाँ, ये सही है।"
+    llm = _provider({"delivery_handoff": "family_member"}, {"delivery_handoff": text},
+                    recipient_detail="mother")
+    result = await _extract(llm, text, pending_variable="m_handover_recipient",
+                            pending_question="ये order आपने किसको सौंपा था?")
+    assert result.patch == {} and result.recipient_detail is None
+
+
+async def test_bare_yes_answers_only_the_pending_yes_no_field():
+    text = "हाँ"
+    patch = {"customer_called": "yes", "cx_support_called": "yes", "reached_location": "yes"}
+    llm = _provider(patch, {key: text for key in patch})
+    result = await _extract(llm, text, pending_variable="m_cx_support_call",
+                            pending_question="क्या आपको CX support से कोई call आया था?")
+    assert result.patch == {"cx_support_called": "yes"}
+
+
+async def test_bare_yes_at_the_combined_question_answers_both_halves():
+    text = "haan"
+    patch = {"customer_called": "yes", "reached_location": "yes", "cx_support_called": "yes"}
+    llm = _provider(patch, {key: text for key in patch})
+    result = await _extract(
+        llm, text, pending_variable="m_reached_location",
+        pending_question="क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?")
+    assert result.patch == {"customer_called": "yes", "reached_location": "yes"}
+
+
+async def test_bare_yes_at_a_hub_creates_no_delivery_fact():
+    text = "yes, all correct"
+    patch = {"customer_called": "yes", "reached_location": "yes"}
+    llm = _provider(patch, {key: text for key in patch})
+    result = await _extract(llm, text, pending_variable="", pending_question="Is all of this correct?")
+    assert result.patch == {}
+
+
+async def test_a_customer_call_negative_is_not_cx_evidence():
+    text = "नहीं, कस्टमर को कॉल नहीं किया था।"
+    patch = {"customer_called": "no", "cx_support_called": "no"}
+    llm = _provider(patch, {key: text for key in patch})
+    result = await _extract(llm, text, pending_variable="m_called_customer",
+                            pending_question="क्या आपने customer को call किया था?")
+    assert result.patch == {"customer_called": "no"}
+
+
+async def test_field_words_in_the_quote_are_accepted_whatever_is_pending():
+    text = "सीएक्स सपोर्ट से मुझे कॉल आया था और मैंने गार्ड को हैंडओवर कर दिया था"
+    patch = {"cx_support_called": "yes", "delivery_handoff": "guard"}
+    llm = _provider(patch, {"cx_support_called": "सीएक्स सपोर्ट से मुझे कॉल आया था",
+                            "delivery_handoff": "गार्ड को हैंडओवर कर दिया था"})
+    result = await _extract(llm, text, pending_variable="m_reached_location",
+                            pending_question="क्या आप customer की location पर पहुंचे थे?")
+    assert result.patch == patch

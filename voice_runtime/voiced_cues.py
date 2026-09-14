@@ -1,4 +1,4 @@
-"""Voiced latency cues: "हम्म…" / "एक सेकंड…" in the bot's own voice, pre-rendered.
+"""Voiced latency cues: "Hmm…" / "एक सेकंड…" in the bot's own voice, pre-rendered.
 
 The breath (voice_runtime.latency_filler) covers the first second of a long
 wait; when the reply is still not speaking, the escalation ladder plays a

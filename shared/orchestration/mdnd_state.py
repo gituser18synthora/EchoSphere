@@ -28,6 +28,23 @@ def enabled(definition):
                for node in (definition or {}).get("nodes") or [])
 
 
+def llm_extraction_enabled(definition):
+    """Whether the per-turn LLM slot extractor runs for this definition.
+
+    ``semanticSlots: mdnd_v1`` alone enables the deterministic state guards
+    (never summarize incomplete slots, grounded summary fallback). The LLM
+    extractor is a separate opt-in — ``semanticExtraction: "llm"`` on the same
+    node — because it adds a model round-trip to every workflow turn and its
+    patches are only as reliable as the model; the authored matchers stay the
+    baseline either way.
+    """
+    return any(
+        (node.get("config") or {}).get("semanticSlots") == "mdnd_v1"
+        and str((node.get("config") or {}).get("semanticExtraction") or "").lower() == "llm"
+        for node in (definition or {}).get("nodes") or []
+    )
+
+
 def canonical_slots(slots):
     result = {}
     for name, legacy in FIELDS.items():
@@ -44,14 +61,22 @@ def canonical_slots(slots):
 
 
 def merge_extraction(slots, result, audit, node):
-    """Apply validated facts/retractions atomically; absence never erases."""
+    """Apply validated facts/retractions atomically; absence never erases.
+
+    Returns the legacy slot names the extractor decided this turn (patched
+    or explicitly retracted) — the caller shields exactly those from the
+    authored keyword captures, nothing else.
+    """
     before = dict(slots)
     patch = result.get("patch") or {}
     retracted = set(result.get("explicit_retractions") or [])
+    decided: set[str] = set()
     for name, value in patch.items():
         if name not in FIELDS:
             continue
         legacy = FIELDS[name]
+        if value != "unknown" or name in retracted:
+            decided.add(legacy)
         if value == "unknown":
             if name not in retracted:
                 continue
@@ -86,6 +111,9 @@ def merge_extraction(slots, result, audit, node):
                       "evidence": (result.get("evidence") or {}).get(
                           next((k for k, v in FIELDS.items() if v == key), ""), "")})
     slots.update(canonical_slots(slots))
+    if "m_handover_recipient" in decided:
+        decided.add("m_drop_location")
+    return decided
 
 
 def summary_fallback(slots, language):
@@ -129,9 +157,17 @@ def summary_fallback(slots, language):
             "क्या ये सब सही है?")
 
 
-def semantic_node(node):
-    """Prevent legacy keyword captures from overwriting semantic decisions."""
+def semantic_node(node, decided=None):
+    """Prevent legacy keyword captures from overwriting semantic decisions.
+
+    Only the slots the extractor decided THIS turn (``decided``) are shielded;
+    fields it said nothing about keep their deterministic matchers, so a
+    missed, failed or timed-out extraction never silences the authored
+    patterns. ``decided=None`` keeps the original behaviour (shield every
+    controlled slot).
+    """
+    shielded = CONTROLLED if decided is None else set(decided)
     config = dict(node.get("config") or {})
     config["alsoCapture"] = [spec for spec in config.get("alsoCapture") or []
-                             if spec.get("variable") not in CONTROLLED]
+                             if spec.get("variable") not in shielded]
     return {**node, "config": config}

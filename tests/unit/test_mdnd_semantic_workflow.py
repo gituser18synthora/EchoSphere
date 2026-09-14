@@ -25,6 +25,11 @@ ALL = {"customer_called": "yes", "reached_location": "yes",
 def collector(monkeypatch):
     config = runpy.run_path("zepto/setup/06_single_bots.py")
     nodes, edges = config["build_mdnd_workflow"]()
+    # The per-turn LLM extractor is a separate opt-in on top of the state
+    # guards (``semanticSlots``): these tests exercise the extractor path.
+    for node in nodes:
+        if node["id"] == "n_start":
+            node["config"]["semanticExtraction"] = "llm"
     definition = {"id": "wf_semantic_mdnd", "name": "MDND", "version": 1,
                   "nodes": nodes, "edges": edges}
     monkeypatch.setattr(wfe, "load_workflow_definition", lambda *args: definition)
@@ -113,7 +118,9 @@ async def test_latest_correction_during_collection_and_summary(collector):
 
 
 async def test_retraction_only_reasks_named_field(collector):
-    await turn(collector, "All four answers", ALL)
+    # A patch is accepted only with a quote that names the field (evidence
+    # gate) — the utterance must really carry all four answers.
+    await turn(collector, "customer ko call kiya tha, location par gaya tha, door par rakh diya, CX se call aaya", ALL)
     r = await turn(collector, "CX वाला गलत है", {"cx_support_called": "unknown"},
                    explicit_retractions=["cx_support_called"])
     assert r["trace"][-1] == "n_ask_cx"

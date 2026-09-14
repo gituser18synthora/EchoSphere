@@ -127,6 +127,87 @@ def _normalized(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).casefold().split())
 
 
+# Deterministic evidence gate. A patch is accepted only when its verbatim
+# quote actually talks about the field: a model that carries a stored value
+# or an assistant's own question into the patch ("हाँ, ये सही है" after the
+# bot improvised "guard को handover किया था, सही है?") produces a quote with
+# none of the field's words — rejected. A bare yes/no quote is evidence only
+# for the yes/no field the PENDING ask is about (the combined arrival+call
+# question names both). The handover field is never answered by a bare yes/no.
+_FIELD_EVIDENCE_TOKENS = {
+    "customer_called": re.compile(
+        r"call|कॉल|काल|phone|fone|फोन|फ़ोन|ring|rang|dial|baat|बात|contact|संपर्क|"
+        r"laga|लगा|uthaya|उठाया|pick", re.IGNORECASE),
+    "reached_location": re.compile(
+        r"location|लोकेशन|address|एड्रेस|ghar|घर|home|house|gate|गेट|society|सोसाइटी|"
+        r"building|बिल्डिंग|flat|फ्लैट|floor|फ्लोर|door|darwaz|दरवाज|pahunch|pahuch|"
+        r"pohanch|pohonch|पहुंच|पहुँच|पोहच|gaya|gayi|gaye|गया|गई|गए|jaakar|jaake|jake|"
+        r"जाके|जाकर|wahan|wahaan|wahi|वहाँ|वहां|वहीं|udhar|उधर|reach|went|arriv|there|"
+        r"spot|स्पॉट|jagah|जगह|place|desk|डेस्क|table|टेबल|upar|ऊपर|neeche|नीचे|paas|पास|"
+        r"delivery\s*(?:point|address)|customer\s*ke|कस्टमर\s*के", re.IGNORECASE),
+    "delivery_handoff": re.compile(
+        r"guard|गार्ड|गाड|घाट|security|सिक्योरिटी|watchman|वॉचमैन|chowkidar|chaukidar|"
+        r"चौकीदार|customer|कस्टमर|grahak|ग्राहक|mummy|mumma|mammi|mommy|maa\b|maan\b|"
+        r"mata|mother|mom\b|मम्मी|माँ|मां|माता|मदर|papa|pappa|pita|father|dad|baap|पापा|"
+        r"पिता|बाप|फादर|bhai|bhaiya|brother|bro\b|भाई|भैया|ब्रदर|family|parivaar|परिवार|"
+        r"member|मेंबर|wale|wala|वाले|वाला|rishted|relative|रिश्तेदार|sister|behe?n|बहन|"
+        r"didi|दीदी|wife|biwi|patni|बीवी|पत्नी|husband|pati|पति|uncle|अंकल|aunt|आंटी|"
+        r"chach|चाच|mama|mami|मामा|मामी|dada|dadi|nana|nani|दादा|दादी|नाना|नानी|beta|beti|"
+        r"बेटा|बेटे|बेटी|bacch|बच्च|kisi|किसी|koi\s*aur|कोई\s*और|neighbo|padosi|padosan|"
+        r"पड़ोसी|पड़ोसन|dost|friend|दोस्त|roommate|flatmate|रूममेट|reception|रिसेप्शन|"
+        r"aadmi|आदमी|someone|somebody|person|door|darwaz|दरवाज|gate|गेट|bahar|बाहर|"
+        r"saamne|samne|सामने|desk|डेस्क|table|टेबल|inverter|इन्वर्टर|seedhi|सीढ़ी|tanki|"
+        r"टंकी|shoe|rack|रैक|rakh|रख|chho?d|छोड़|left|kept|placed|put\b|dropped|hand|"
+        r"हैंड|हैण्ड|हैन्ड|handover|saunp|सौंप|pakd|पकड़|thama|थमा|diya|दिया|dedi|de\s*di|"
+        r"दे\s*दी|gave|give|given|deliver|डिलीवर|wapas|वापस|return|brought\s*back|"
+        r"nahi\s*diya|नहीं\s*दिया|not\s*hand|couldn'?t\s*hand|didn'?t\s*hand", re.IGNORECASE),
+    "cx_support_called": re.compile(
+        r"\bcx\b|c\.x|सीएक्स|सी\s*एक्स|सी\s*ऐक्स|support|सपोर्ट|customer\s*care|कस्टमर\s*केयर|"
+        r"zepto|ज़ेप्टो|जेप्टो|ज़ेपटो|company|कंपनी|team|टीम|office|ऑफिस|helpline|हेल्पलाइन|"
+        r"executive|एक्ज़ीक्यूटिव|एग्जीक्यूटिव", re.IGNORECASE),
+}
+_BARE_YES_NO = re.compile(
+    r"^[\s,.।!?…\-]*(?:(?:haan|han|ha|haa|hanji|ji|jee|yes|yeah|yep|yup|ok|okay|theek|sahi|"
+    r"bilkul|nahi|nahin|nai|na|no|nope|not|हाँ|हां|हा|हाँजी|जी|हाँ\s*जी|जी\s*हाँ|ठीक|सही|"
+    r"बिल्कुल|बिलकुल|नहीं|नही|ना|है|hai|tha|था|correct|right|dono|both|दोनों|bhi|भी)"
+    r"[\s,.।!?…\-]*)+$", re.IGNORECASE)
+# Which pending ask a bare yes/no may answer: the ask must name the field —
+# (must-match, must-not-match). The CX question also says "call", so the
+# customer-call field additionally needs "customer" and no CX/support word.
+_CX_WORDS = r"\bcx\b|c\.x|सीएक्स|सी\s*एक्स|support|सपोर्ट"
+_PENDING_ASK_TOKENS = {
+    "customer_called": (re.compile(r"(?=.*(?:call|कॉल|phone|फोन))(?=.*(?:customer|कस्टमर|ग्राहक))",
+                                   re.IGNORECASE | re.DOTALL),
+                        re.compile(_CX_WORDS, re.IGNORECASE)),
+    "reached_location": (re.compile(r"location|लोकेशन|address|एड्रेस|पहुंच|पहुँच|reach", re.IGNORECASE), None),
+    "cx_support_called": (re.compile(_CX_WORDS, re.IGNORECASE), None),
+}
+
+
+def _evidence_supports(field: str, quote: str, *, pending_field: str | None,
+                       pending_question: str) -> bool:
+    """Whether ``quote`` (verbatim from the caller's words) can carry ``field``."""
+    tokens = _FIELD_EVIDENCE_TOKENS.get(field)
+    if tokens is not None and tokens.search(quote):
+        return True
+    if field == "delivery_handoff" or not _BARE_YES_NO.match(quote):
+        return False
+    # A bare yes/no: only for the yes/no field the pending ASK is about. At an
+    # intent hub (summary confirmation, identity gate) there is no pending
+    # field — a "yes" there confirms, it does not create a delivery fact.
+    if pending_field is None:
+        return False
+    if pending_field == field:
+        return True
+    rule = _PENDING_ASK_TOKENS.get(field)
+    if rule is None or not pending_question:
+        return False
+    must, must_not = rule
+    if not must.search(pending_question):
+        return False
+    return must_not is None or not must_not.search(pending_question)
+
+
 def _quoted_span(value: Any, text: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -135,7 +216,8 @@ def _quoted_span(value: Any, text: str) -> str | None:
 
 
 def _validate_response(raw: str, text: str, *, input_tokens: int = 0,
-                       output_tokens: int = 0) -> MDNDExtraction:
+                       output_tokens: int = 0, pending_field: str | None = None,
+                       pending_question: str = "") -> MDNDExtraction:
     usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
     try:
         content = raw.strip()
@@ -161,9 +243,16 @@ def _validate_response(raw: str, text: str, *, input_tokens: int = 0,
         if value == "unknown" and key not in retractions:
             continue
         quote = _quoted_span(data["evidence"].get(key), text)
-        if quote is not None:
-            patch[key] = value
-            evidence[key] = quote
+        if quote is None:
+            continue
+        if value != "unknown" and not _evidence_supports(
+            key, quote, pending_field=pending_field, pending_question=pending_question,
+        ):
+            # The quote is real but says nothing about this field: the model
+            # carried a stored value or the bot's own words into the patch.
+            continue
+        patch[key] = value
+        evidence[key] = quote
 
     handoff = patch.get("delivery_handoff")
     drop_location = recipient_detail = None
@@ -225,8 +314,11 @@ async def extract_mdnd_slots(
         return MDNDExtraction(failed=True, failure_reason="timeout")
     except Exception:  # noqa: BLE001 — caller keeps its pending question
         return MDNDExtraction(failed=True, failure_reason="provider_error")
+    pending_field = _PENDING_VARIABLES.get(pending_variable, pending_variable)
     return _validate_response(
         result.text, text,
         input_tokens=int(getattr(result, "input_tokens", 0) or 0),
         output_tokens=int(getattr(result, "output_tokens", 0) or 0),
+        pending_field=pending_field if pending_field in MDND_SLOT_VALUES else None,
+        pending_question=pending_question or "",
     )

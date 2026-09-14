@@ -741,7 +741,7 @@ def build_voice_pipeline(
         else None
     )
     if latency_filler is not None and audio_gate is not None:
-        # A voiced ladder cue ("हम्म…") is bot audio the gate's echo guard
+        # A voiced ladder cue ("Hmm…") is bot audio the gate's echo guard
         # does not see (no bot-speaking state flips for it): shield its echo
         # the way mid-caller-turn backchannels are shielded.
         latency_filler.cue_window_hook = (

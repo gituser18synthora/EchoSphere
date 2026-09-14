@@ -573,7 +573,7 @@ _RESUME_GAP_S = 0.7
 # as two fillers back to back).
 _AFTER_ACK_GAP_S = 1.2
 # Minimum quiet between two rungs (the next rung's schedule may be earlier):
-# a breath and a "हम्म…" less than a second apart read as one stuttered noise.
+# a breath and a "Hmm…" less than a second apart read as one stuttered noise.
 _MIN_RUNG_GAP_S = 1.0
 
 
@@ -626,7 +626,7 @@ class LatencyFillerProcessor(FrameProcessor):
 
     Escalation ladder (``hmm_after_ms`` / ``spoken_after_ms``, measured like
     ``delay_ms`` from the caller's end of speech): when the breath has played
-    and the reply is STILL not speaking, a short "हम्म…" in the bot's voice
+    and the reply is STILL not speaking, a short "Hmm…" in the bot's voice
     follows, then a spoken "एक सेकंड…" — each rung only if its clip is already
     rendered (``cue_library``), the spoken rung only when the brain allowed it
     for this turn (never on critical/serious content). A rung whose deadline
