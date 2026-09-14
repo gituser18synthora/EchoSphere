@@ -163,3 +163,18 @@ async def test_extractor_not_called_for_unflagged_workflow(collector):
     next(node for node in definition["nodes"] if node["kind"] == "start")["config"] = {}
     await turn(collector, "हाँ बोलिए")
     llm.generate.assert_not_awaited()
+
+
+def test_summary_fallback_names_the_recorded_relative_not_a_generic_member():
+    """The deterministic confirmation speaks the recipient the partner named
+    ("customer की माँ"), never a generic household member for a named relative."""
+    from shared.orchestration.mdnd_state import summary_fallback
+    slots = {"m_called_customer": "no (did not call)", "m_reached_location": "yes (reached the location)",
+             "m_handover_recipient": "mother", "m_cx_support_call": "yes (received CX support call)"}
+    hi, en = summary_fallback(slots, "hi-IN"), summary_fallback(slots, "en-IN")
+    assert "customer की माँ को" in hi and "किसी member" not in hi
+    assert "the customer's mother" in en and "family member" not in en
+    slots["m_handover_recipient"] = "relative (other)"
+    assert "customer के घर के किसी member" in summary_fallback(slots, "hi-IN")
+    slots["m_handover_recipient"] = "guard / security"
+    assert "order guard को सौंपा था" in summary_fallback(slots, "hi-IN")

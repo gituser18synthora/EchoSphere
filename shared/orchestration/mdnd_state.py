@@ -126,10 +126,17 @@ def summary_fallback(slots, language):
                           ("customer_called", "reached_location", "cx_support_called"))
     target = facts["delivery_handoff"]
     place = slots.get("m_drop_location")
+    # The recorded recipient, not just its class: "customer की माँ" — never a
+    # generic "family member" when the partner named the relative.
+    recipient = str(slots.get("m_handover_recipient") or "")
     if english:
         handoff = {"customer": "you handed the order to the customer",
-                   "guard": "you handed the order to security",
-                   "family_member": "you handed the order to a family member",
+                   "guard": "you handed the order to the security guard",
+                   "family_member": {
+                       "mother": "you handed the order to the customer's mother",
+                       "father": "you handed the order to the customer's father",
+                       "brother": "you handed the order to the customer's brother",
+                   }.get(recipient, "you handed the order to a member of the customer's household"),
                    "doorstep": "you left the order at the doorstep",
                    "other": "you handed the order to another person"}[target]
         if place and target in ("doorstep", "other"):
@@ -143,9 +150,13 @@ def summary_fallback(slots, language):
                 "Is all of this correct?")
     handoff = {"customer": "order customer को सौंपा था",
                "guard": "order guard को सौंपा था",
-               "family_member": "order customer के घर के किसी member को सौंपा था",
+               "family_member": {
+                   "mother": "order customer की माँ को सौंपा था",
+                   "father": "order customer के पिता को सौंपा था",
+                   "brother": "order customer के भाई को सौंपा था",
+               }.get(recipient, "order customer के घर के किसी member को सौंपा था"),
                "doorstep": "order doorstep पर रखा था",
-               "other": "order किसी अन्य व्यक्ति को सौंपा था"}[target]
+               "other": "order किसी और को सौंपा था"}[target]
     if place and target in ("doorstep", "other"):
         handoff = f"order {place} रखा था"
     if slots.get("m_handover_recipient") == "not handed over":
