@@ -1580,8 +1580,13 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         semantic = state.get("mdnd_extraction") if mdnd_enabled else None
         semantic_active = isinstance(semantic, dict)
         semantic_answers = bool(semantic_active and semantic.get("patch"))
+        # Slots the semantic extractor DECIDED this turn: only those are shielded
+        # from the authored keyword captures; every other field still gets the
+        # deterministic matchers (the extractor may miss, fail or time out).
+        semantic_decided: set[str] = set()
         if semantic_active:
-            mdnd_state.merge_extraction(slots, semantic, audit, awaiting or current)
+            semantic_decided = mdnd_state.merge_extraction(
+                slots, semantic, audit, awaiting or current)
             audit.append({"action": "mdnd_extraction", "node": awaiting or current,
                           "failed": bool(semantic.get("failed")),
                           "fields": list((semantic.get("patch") or {}).keys()),
@@ -1589,7 +1594,8 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                           "output_tokens": semantic.get("output_tokens", 0)})
 
         def turn_node(node):
-            effective = mdnd_state.semantic_node(node) if semantic_active else node
+            effective = (mdnd_state.semantic_node(node, semantic_decided)
+                         if semantic_active else node)
             if mdnd_enabled and node.get("id") == "n_hub_verify":
                 summary = mdnd_state.summary_fallback(slots, lang)
                 if summary:
@@ -2211,6 +2217,13 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                                       "node": current, "variable": variable})
                         entry_text = hub_text = ""
                         consumed = str(config.get("consumedReply") or "").strip()
+                        if consumed and current in heard_nodes:
+                            # The caller already heard this node's reply
+                            # (the ticket readout) earlier in the call — a
+                            # re-entry must not read the same facts again.
+                            audit.append({"action": "consumed_reply_skipped",
+                                          "node": current, "reason": "already_heard"})
+                            consumed = ""
                         if consumed:
                             consumed_config = {
                                 **config,
@@ -2652,7 +2665,7 @@ class WorkflowEngine:
             snapshot = await graph.aget_state(thread)
             previous = dict(getattr(snapshot, "values", None) or {})
             self._pre_turn[thread["configurable"]["thread_id"]] = (
-                graph, previous
+                graph, previous, user_text
             )
         except Exception:  # noqa: BLE001 — rollback is best-effort bookkeeping
             self._pre_turn.pop(thread["configurable"]["thread_id"], None)
@@ -2668,7 +2681,7 @@ class WorkflowEngine:
             "mdnd_extraction": None,
         }
         from shared.orchestration import mdnd_state
-        if llm is not None and mdnd_state.enabled(definition):
+        if llm is not None and mdnd_state.llm_extraction_enabled(definition):
             from dataclasses import asdict
             from shared.orchestration.mdnd_slots import extract_mdnd_slots
 
@@ -2768,19 +2781,34 @@ class WorkflowEngine:
             }) else False,
         }
 
-    async def rollback_last_turn(self, *, session_id: str, workflow_name: str) -> bool:
+    async def rollback_last_turn(self, *, session_id: str, workflow_name: str,
+                                 user_text: str | None = None) -> bool:
         """Restore the workflow state from before the most recent turn.
 
         Used when the brain rewinds a turn whose reply never reached the caller
         (late transcript merge): the merged utterance will run as ONE turn
         against the state the flow was in before the fragment. Returns False
         when nothing is known about the thread.
+
+        ``user_text`` — the text of the turn being rewound. The snapshot kept
+        here is the one taken before the LAST turn that reached this thread;
+        when the caller rewinds a different turn (a fragment cancelled before
+        it reached the workflow), the snapshot is stale and restoring it would
+        rewind the flow by whole turns — nothing is restored and the entry is
+        kept for the turn it belongs to.
         """
         thread_id = f"{session_id}:{workflow_name}"
-        entry = self._pre_turn.pop(thread_id, None)
+        entry = self._pre_turn.get(thread_id)
         if entry is None:
             return False
-        graph, previous = entry
+        graph, previous, snapshot_text = entry
+        if user_text is not None and (snapshot_text or "").strip() != user_text.strip():
+            logger.warning(
+                "workflow rollback skipped for %s: snapshot belongs to another turn",
+                thread_id,
+            )
+            return False
+        self._pre_turn.pop(thread_id, None)
         thread = {"configurable": {"thread_id": thread_id}}
         try:
             current = await graph.aget_state(thread)

@@ -551,7 +551,7 @@ def levels(filler):
 
 
 class TestEscalationLadder:
-    """Breath → "हम्म…" → "एक सेकंड…" on a long wait; each rung only when the
+    """Breath → "Hmm…" → "एक सेकंड…" on a long wait; each rung only when the
     reply is still not speaking, cues only when already rendered."""
 
     def make(self, monkeypatch, *, cue_library=None, hmm=90, spoken=150, delay=30):
@@ -851,7 +851,7 @@ class TestVoicedCueLibrary:
         engine = {"provider": "sarvam", "model": "bulbul:v2", "voice": "shubh"}
         assert lib.clip(engine, "hi-IN", "hmm", 8000) == b""  # never blocks
         await lib.wait_ready(engine, "hi-IN")
-        assert calls == [(engine, "hi-IN", "हम्म…")]
+        assert calls == [(engine, "hi-IN", "Hmm…")]
         clip = lib.clip(engine, "hi-IN", "hmm", 8000)
         assert clip and len(clip) < 0.5 * 8000 * 2  # trimmed, resampled to 8 kHz
         assert lib.clip(engine, "hi-IN", "hmm", RATE) != clip
@@ -1540,12 +1540,12 @@ class TestVoicedCueSelection:
         return render
 
     def test_cue_choices_default_selected_and_unknown_ids(self):
-        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm") == [("hmm", "हम्म…")]
+        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm") == [("hmm", "Hmm…")]
         assert VoicedCueLibrary.cue_choices("hi-IN", "wait", {"primary": "x"}) == [("ek_second", "एक सेकंड…")]
         assert VoicedCueLibrary.cue_choices(
             "hi-IN", "hmm", {"primary": "achha", "alternates": ["bogus", "ji"]}
         ) == [("achha", "अच्छा…"), ("ji", "जी…")]
-        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm", {"primary": "bogus"}) == [("hmm", "हम्म…")]
+        assert VoicedCueLibrary.cue_choices("hi-IN", "hmm", {"primary": "bogus"}) == [("hmm", "Hmm…")]
         assert VoicedCueLibrary.cue_choices("fr-FR", "hmm", {"primary": "hmm"}) == []
 
     async def test_preferred_cue_plays_first_and_unrendered_ones_are_skipped(self, tmp_path):

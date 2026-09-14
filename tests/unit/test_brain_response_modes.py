@@ -511,10 +511,54 @@ class TestWorkflowRollbackOnLateMerge:
         stub = _RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
         brain = make_brain(stub, _LLMStub())          # active workflow "modes_flow"
         await brain._handle_turn("okay")
-        assert brain._open_turn_workflow == ("modes_flow", "modes_flow")
+        assert brain._open_turn_workflow == ("modes_flow", "modes_flow", "okay")
         brain._open_turn_text = "okay"
         await brain._rollback_open_turn()
-        assert stub.rollbacks == [{"session_id": "s-test", "workflow_name": "modes_flow"}]
+        assert stub.rollbacks == [{"session_id": "s-test", "workflow_name": "modes_flow",
+                                   "user_text": "okay"}]
         assert brain._active_workflow == "modes_flow"               # restored to the pre-turn value
         assert "workflow_turn_rolled_back" in brain._recorder.event_kinds()
         assert brain._pending_segments == ["okay"]
+
+
+class TestWorkflowRollbackMarkerBelongsToOneTurn:
+    """cv_edbfbb5141a4 / cv_2e2d8c7ce20d: the workflow marker of an EARLIER
+    turn survived and a late-final merge of a fragment that never reached the
+    workflow rolled the flow back by whole turns (ticket readout spoken twice)."""
+
+    class _RollbackStub(_WorkflowStub):
+        def __init__(self, result):
+            super().__init__(result)
+            self.rollbacks = []
+
+        async def rollback_last_turn(self, **kwargs):
+            self.rollbacks.append(kwargs)
+            return True
+
+    async def test_marker_carries_the_turn_text_and_is_cleared_by_a_non_merge_cancel(self):
+        stub = self._RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())
+        await brain._handle_turn("okay")
+        assert brain._open_turn_workflow == ("modes_flow", "modes_flow", "okay")
+        await brain._cancel_generation("barge_in")
+        assert brain._open_turn_workflow is None
+        brain._open_turn_text = "okay"
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == []                                  # nothing to rewind
+
+    async def test_new_dispatch_drops_the_previous_turn_marker(self):
+        stub = self._RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
+        brain = make_brain(stub, _LLMStub())
+        await brain._handle_turn("okay")
+        assert brain._open_turn_workflow is not None
+        # A new turn is dispatched; its generation is cancelled by a late-final
+        # merge BEFORE it reaches the workflow (classification still running).
+        brain._pending_segments = ["the product"]
+        await brain._consume_pending_turn()
+        assert brain._open_turn_workflow is None                     # marker belongs to no turn yet
+        await brain._cancel_generation("late_transcript_merge")
+        await brain._rollback_open_turn()
+        assert stub.rollbacks == []                                  # the flow is NOT rewound
+        assert brain._active_workflow == "modes_flow"
+        assert brain._pending_segments == ["the product"]            # the text is merged, not lost
+        await brain.cleanup()

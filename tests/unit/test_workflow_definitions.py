@@ -2246,3 +2246,35 @@ class TestReadbackGroupsAndCorrectionAck:
         assert r["awaitingKind"] == "intent"
         r = await _turn(engine, "haan sahi hai", session="ack-1", name="ack")
         assert r["done"] is True
+
+
+class TestRollbackBelongsToOneTurn:
+    """The pre-turn snapshot belongs to the LAST turn that reached the thread.
+    A late-final merge that rewinds a different turn (a fragment cancelled
+    during classification, before it reached the workflow) must not restore
+    that stale snapshot — live cv_edbfbb5141a4 / cv_2e2d8c7ce20d rewound the
+    flow to before entry and read the ticket facts twice."""
+    FLOW = TestRollbackLastTurn.FLOW
+
+    async def _turn(self, engine, text, session):
+        return await engine.handle_turn_detailed(
+            session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="rb", user_text=text)
+
+    async def test_mismatched_turn_text_rolls_nothing_back(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "rb-3")                        # entry turn → story asked
+        rolled = await engine.rollback_last_turn(
+            session_id="rb-3", workflow_name="rb", user_text="a fragment that never reached the flow")
+        assert rolled is False
+        r = await self._turn(engine, "the guard took it", "rb-3")      # still at the story ask
+        assert r["slots"]["story"] == "the guard took it" and r["nodePrompt"] == "Who received it?"
+
+    async def test_matching_turn_text_still_rolls_back(self, engine, monkeypatch):
+        monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: self.FLOW)
+        await self._turn(engine, "hi", "rb-4")
+        await self._turn(engine, "okay", "rb-4")
+        assert await engine.rollback_last_turn(session_id="rb-4", workflow_name="rb", user_text="okay") is True
+        r = await self._turn(engine, "okay, the guard took it", "rb-4")
+        assert r["slots"]["story"] == "okay, the guard took it"
+        # the snapshot is consumed by a successful rollback
+        assert await engine.rollback_last_turn(session_id="rb-4", workflow_name="rb", user_text="nope") is False

@@ -447,7 +447,9 @@ _CX_SRC = r"(?:the\s+)?(?:cx|c\.x\.|customer\s+support|support|zepto)(?:\s+(?:te
 _NEG = r"(?:didn'?t|did\s+not|never|not|haven'?t|have\s+not|no)"
 _CX_SRC_HI = (r"(?:cx|c\.x\.|सीएक्स|सी\s*एक्स|customer\s*support|support|सपोर्ट|"
               r"कस्टमर\s*सपोर्ट|zepto|ज़ेप्टो|जेप्टो)(?:\s*(?:team|टीम))?")
-_CX_FROM_HI = r"\s*(?:ki\s*taraf\s*se|की\s*तरफ़?\s*से|se|से|ka|का|ne|ने)\s*"
+_CX_FROM_HI = (r"\s*(?:ki\s*taraf\s*se|की\s*तरफ़?\s*से|se|से|ka|का|ne|ने)\s*"
+               # "CX support से मुझे call आया था" (cv_edbfbb5141a4)
+               r"(?:mujhe|mujhko|mereko|mere\s*ko|mere\s*paas|mere\s*pass|मुझे|मुझको|मेरेको|मेरे\s*को|मेरे\s*पास)?\s*")
 _CALL_HI = r"(?:bhi\s*|भी\s*)?(?:koi\s*|कोई\s*)?(?:call|कॉल|phone|फोन|फ़ोन)\s*(?:bhi\s*|भी\s*)?"
 MDND_CX_NARRATIVE_PATTERNS = {
     # Only when CX/support is named: a narrative "customer didn't pick up my
@@ -663,13 +665,26 @@ MDND_GUARD_NAME_NOT_ASKED = {
 _OBJ = r"(?:(?!nahi\b|nahin\b|नहीं|नही|mat\b|मत)\S+\s+){0,3}?"
 _TO = (r"\s*(?:ji\s*|जी\s*)?(?:ko|को|ke\s*(?:haath|hath|paas|pass)(?:\s*(?:mein|me|में))?"
        r"|के\s*(?:हाथ|पास)(?:\s*में)?)\s*")
+# "handover" as partners say it and as STT writes it: "हैंडओवर", "हैंड ओवर",
+# "हैंडोवर", "हैंडवर्क" (Sarvam for "handover" — cv_edbfbb5141a4), followed by
+# "kiya / kar diya / kar liya / kar di (tha)"; every form optional-tailed so
+# "guard ko handover" alone still counts. Never a bare "kiya": "guard ko call
+# kiya" is not a handover.
+_HANDOVER_WORD = (r"(?:handover|hand\s*over|handed\s*over|handwork|"
+                  r"हैंडओवर|हैंड\s*ओवर|हैंडोवर|हैण्ड\s*ओवर|हैण्डओवर|हैन्ड\s*ओवर|हैन्डओवर|हैंडवर्क|हैंडओर)")
+_HANDOVER_TAIL = (r"(?:\s*(?:kiya|kar\s*(?:diya|liya|di|dia)|kar\s*ke|"
+                  r"किया|कर\s*(?:दिया|लिया|दी)|करके))?(?:\s*(?:tha|thi|था|थी))?")
 _HANDED = (r"(?:de\s*diya|de\s*di|dedi|dediya|diya\s*tha|diya|di\s*thi|di\b|"
-           r"handover(?:\s*(?:kiya|kar\s*diya))?|hand(?:ed)?\s*over|"
+           # a handover word directly followed by a negation is a DENIAL of
+           # that recipient ("guard ko handover nahi kiya"), never a handover
+           + _HANDOVER_WORD + r"(?!\s*(?:nahi|nahin|नहीं|नही))" + _HANDOVER_TAIL + r"|"
            r"saunp(?:a|i|\s*diya|\s*di)|pakd?a\s*diya|thama\s*diya|"
            r"दे\s*दिया|दे\s*दी|दिया\s*था|दिया|दी\s*थी|दी(?![\wऀ-ॿ])|"
-           r"सौंप(?:ा|ी|\s*दिया|\s*दी)|पकड़ा\s*दिया|थमा\s*दिया|"
-           r"हैंडओवर(?:\s*(?:किया|कर\s*दिया))?)")
-_EN_GAVE = r"(?:gave|handed|delivered)\s+(?:it\s+|the\s+(?:order|product|parcel)\s+)?(?:over\s+)?to\s+(?:the\s+|his\s+|her\s+|customer'?s\s+)?"
+           r"सौंप(?:ा|ी|\s*दिया|\s*दी)|पकड़ा\s*दिया|थमा\s*दिया)")
+# "gave it to the customer's mother": a determiner AND a possessive may both
+# precede the recipient.
+_EN_GAVE = (r"(?:gave|handed|delivered)\s+(?:it\s+|the\s+(?:order|product|parcel)\s+)?(?:over\s+)?to\s+"
+            r"(?:(?:the|his|her|their)\s+)?(?:customer['’]?s\s+)?")
 
 
 def _handover_pattern(recipient_terms: str) -> str:
@@ -693,7 +708,8 @@ _RECIPIENT_TERMS = {
 }
 _EN_RECIPIENT = {
     "guard / security": r"(?:security\s+)?guard|watchman|security",
-    "customer (direct)": r"customer",
+    # "gave it to the customer's mother" is the MOTHER, not the customer
+    "customer (direct)": r"customer(?!['’]s\b)",
     "mother": r"mother|mom|mummy",
     "father": r"father|dad|papa",
     "brother": r"brother",
@@ -764,7 +780,11 @@ MDND_RECIPIENT_PATTERNS = {
     # Listed FIRST so "kisi ko nahi diya" is never read as a handover.
     "not handed over": [
         r"(?:kisi\s*ko\s*(?:bhi\s*)?nahi\s*(?:diya|de\s*paya|saunpa)|किसी\s*को\s*(?:भी\s*)?नहीं\s*(?:दिया|दे\s*पाया|सौंपा)"
-        r"|handover\s*nahi\s*(?:hua|kiya|kar\s*paya)|हैंडओवर\s*नहीं\s*(?:हुआ|किया|कर\s*पाया)"
+        # A negated handover right after a recipient ("guard ko handover nahi
+        # kiya tha, mummy ko kiya") denies THAT recipient (MDND_RECIPIENT_DENIED
+        # clears it); only an unaddressed "handover nahi hua" means no handover.
+        r"|(?<!को\s)(?<!ko\s)(?<!ही\s)(?<!hi\s)(?<!भी\s)(?<!bhi\s)(?<!पास\s)(?<!paas\s)(?<!pass\s)"
+        + _HANDOVER_WORD + r"\s*(?:nahi|nahin|नहीं|नही)\s*(?:hua|kiya|kar\s*paya|हुआ|किया|कर\s*पाया)"
         # NOT "deliver nahi hua / डिलीवर नहीं हुआ": that is how partners quote the
         # MDND mark itself ("mark hua ki product deliver nahi hua" —
         # cv_fd720f2e9024), not their own action.
@@ -835,7 +855,8 @@ _ALL_RECIPIENT_TERMS = "|".join(_RECIPIENT_TERMS.values())
 MDND_RECIPIENT_DENIED = {
     "dataType": "text",
     "synonymPatterns": {"clear": [
-        rf"(?:{_ALL_RECIPIENT_TERMS}){_TO}(?:\S+\s+){{0,2}}?(?:nahi|nahin|नहीं|नही)\s*(?:{_HANDED}|de\b|दे(?![\wऀ-ॿ])|saunpa|सौंपा)",
+        rf"(?:{_ALL_RECIPIENT_TERMS}){_TO}(?:\S+\s+){{0,2}}?(?:nahi|nahin|नहीं|नही)\s*"
+        rf"(?:{_HANDED}|de\b|दे(?![\wऀ-ॿ])|saunpa|सौंपा|kiya|किया|kar\s*(?:diya|liya|di)|कर\s*(?:दिया|लिया|दी))",
         r"(?:did\s*not|didn'?t)\s+(?:give|hand)\s+(?:it\s+)?(?:over\s+)?to\s+(?:the\s+|his\s+|her\s+)?(?:" + "|".join(_EN_RECIPIENT.values()) + r")",
     ]},
 }

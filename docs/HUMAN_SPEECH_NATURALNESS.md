@@ -57,9 +57,9 @@ their words with no model call:
 | Caller just… | Context | Tokens (hi) |
 |---|---|---|
 | gave an answer or a statement | `answer` | "जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…" |
-| asked a question | `question` | "हम्म…", "जी…", "अच्छा…" — never "ठीक है", which would sound like an answer |
+| asked a question | `question` | "Hmm…", "जी…", "अच्छा…" — never "ठीक है", which would sound like an answer |
 | asked something the knowledge base answers | `lookup` | "एक सेकंड…", "देख रहा/रही हूँ…" |
-| is in a serious state (complaint, refusal, hardship, wrong person, agent request) or dictated amounts/identifiers | `neutral` | "जी…", "हम्म…" only, at half probability — "ठीक है" after a refusal reads as acceptance |
+| is in a serious state (complaint, refusal, hardship, wrong person, agent request) or dictated amounts/identifiers | `neutral` | "जी…", "Hmm…" only, at half probability — "ठीक है" after a refusal reads as acceptance |
 
 Control: `acknowledgements` on/off; `acknowledgement_probability` (default 0.5,
 ×1.5 on the first reply after the greeting, the slowest turn of a call); a
@@ -172,7 +172,7 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   buffers and device playback therefore remain an unavoidable boundary.
 - **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
   `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
-  still not speaking, a short "हम्म…" in the bot's OWN voice follows at
+  still not speaking, a short "Hmm…" in the bot's OWN voice follows at
   `latency_filler_hmm_ms` (default 3500, 2000–8000) and a spoken "एक सेकंड…"
   at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
   from the caller's end of speech with at least 1 s of quiet between rungs.
@@ -221,7 +221,7 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   selection naming another gender's or kind's clips is ignored (the voice's
   own clips rotate) and logged once. `latency_filler_cue_selection` —
   `{lang: {primary, alternates}}` — says which of the "hmm" rung's voiced cue
-  texts a bot MAY use (`ladder_cue_options`: Hindi हम्म… / हूँ… / अच्छा… / जी… /
+  texts a bot MAY use (`ladder_cue_options`: Hindi Hmm… / हूँ… / अच्छा… / जी… /
   ठीक है… / उँ-हूँ… / ओह…, English Hmm… / Mm-hmm… / Okay… / Right… / I see… /
   Oh…; primary = the neutral default, alternates = the rest of the allowed
   set; with no selection the whole pool is allowed). The Studio's Natural
@@ -245,7 +245,7 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   halved in a serious caller state, boosted on the first reply) — most long
   waits stay a breath, which is the right filler when only latency needs
   covering. Step two, *which word*: the bot's allowed cues are ranked by the
-  ROLE each conveys (`_CUE_ROLES`: thinking हम्म…/हूँ…, information अच्छा…,
+  ROLE each conveys (`_CUE_ROLES`: thinking Hmm…/हूँ…, information अच्छा…,
   confirm ठीक है…, polite जी…, positive_ack उँ-हूँ…, concern ओह…) against the
   turn context the brain derived (`_latency_cue_context`): knowledge/tool
   path → `lookup`; a question → `thinking`; trouble in the words (complaint,

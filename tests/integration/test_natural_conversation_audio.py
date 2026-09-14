@@ -93,7 +93,7 @@ class TestCatalog:
         assert data["voices"][0]["gender"] in ("male", "female", "neutral")
         # Voiced cue options per base language, default first, with defaults.
         hi = data["cues"]["hi"]
-        assert hi["options"]["hmm"][0]["text"] == "हम्म…"
+        assert hi["options"]["hmm"][0]["text"] == "Hmm…"
         assert {"id", "text", "ready"} <= set(hi["options"]["hmm"][0])
         assert hi["defaultSelection"]["primary"] == "hmm" and "oh" in hi["defaultSelection"]["alternates"]
         assert data["effective"]["latencyFillerKind"] == "breath"

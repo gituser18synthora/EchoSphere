@@ -71,7 +71,7 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "sentence_breaths": True,
     # Tunables (probabilities are per-opportunity, 0..1)
     "thinking_filler_probability": 0.25,
-    # Acknowledgement ("जी…", "ठीक है…", "हम्म…") eligible at the latency
+    # Acknowledgement ("जी…", "ठीक है…", "Hmm…") eligible at the latency
     # deadline; a hard no-consecutive-turns rule sits on top.
     "acknowledgement_probability": 0.5,
     "tool_ack_probability": 0.9,
@@ -88,7 +88,7 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "latency_filler_delay_ms": 1500,
     # Escalation ladder for LONG waits: when the breath has played and the
     # reply still has not started, a short voiced cue in the bot's own voice
-    # ("हम्म…") follows at ``latency_filler_hmm_ms`` after the caller stopped,
+    # ("Hmm…") follows at ``latency_filler_hmm_ms`` after the caller stopped,
     # and a spoken "एक सेकंड…" at ``latency_filler_spoken_ms``. Cues are
     # rendered once per voice and cached (voice_runtime.voiced_cues); the
     # spoken rung is withheld on critical/serious turns.
@@ -489,10 +489,13 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         # chosen by what the caller just did. "हाँ…" is deliberately absent —
         # after a statement it reads as agreement, not as listening.
         "ack_answer": ("जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…", "जी, ठीक है…"),
-        "ack_question": ("हम्म…", "जी…", "अच्छा…"),
-        "ack_lookup": ("एक सेकंड…", "जी, एक सेकंड…", "हम्म… देख रहा हूँ…",
+        # The thinking filler is "Hmm…" in Latin script for every language
+        # (operator decision 2026-09-14): TTS renders it as the same neutral
+        # hum, while "हम्म…" was read as a word.
+        "ack_question": ("Hmm…", "जी…", "अच्छा…"),
+        "ack_lookup": ("एक सेकंड…", "जी, एक सेकंड…", "Hmm… देख रहा हूँ…",
                        "एक सेकंड, देख रहा हूँ…"),
-        "ack_neutral": ("जी…", "हम्म…"),
+        "ack_neutral": ("जी…", "Hmm…"),
         "checking": (
             "Ek minute, main check karta hoon...",
             "Achha... ek minute, main check karta hoon.",
@@ -652,7 +655,8 @@ LADDER_CUE_KINDS = ("hmm", "wait")
 _LADDER_CUE_POOLS: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {
     "hi": {
         "hmm": (
-            ("hmm", "हम्म…"), ("hoon", "हूँ…"), ("achha", "अच्छा…"), ("ji", "जी…"),
+            # "Hmm…" (Latin) for Hindi too — never "हम्म…" (operator decision).
+            ("hmm", "Hmm…"), ("hoon", "हूँ…"), ("achha", "अच्छा…"), ("ji", "जी…"),
             ("theek_hai", "ठीक है…"), ("un_hoon", "उँ-हूँ…"), ("oh", "ओह…"),
         ),
         "wait": (("ek_second", "एक सेकंड…"),),
@@ -1244,13 +1248,13 @@ class SpeechNaturalnessPlanner:
         what the caller just did, derived deterministically from their words:
 
         * ``answer``   — a statement or an answer: "जी…", "ठीक है…", "अच्छा…"
-        * ``question`` — a question: a beat of thought ("हम्म…"), never
+        * ``question`` — a question: a beat of thought ("Hmm…"), never
           "ठीक है" (which would sound like an answer)
         * ``lookup``   — a knowledge question a retrieval will answer:
           "एक सेकंड…", "देख रहा हूँ…"
         * ``neutral``  — anything sensitive: a serious caller state
           (complaint, refusal, hardship…) or dictated amounts/identifiers.
-          Only listening tokens ("जी…", "हम्म…") at half probability;
+          Only listening tokens ("जी…", "Hmm…") at half probability;
           "ठीक है"/"अच्छा" after a refusal would read as acceptance.
 
         Control: never on two consecutive turns (a hard rule — no call

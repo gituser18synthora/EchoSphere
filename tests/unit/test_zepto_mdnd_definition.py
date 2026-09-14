@@ -838,7 +838,10 @@ def test_mdnd_only_behaviour_is_unchanged():
 # ═════════════════════════════════════════════════════════════════════════════
 
 REACHED_Q = "location पर पहुंचे"          # wording of every reached question
-CALLED_Q = "customer को call किया"        # wording of every called question
+# The interrogative form: the deterministic confirmation summary legitimately
+# SAYS "आपने customer को call किया था," — only the question with its "?" is a
+# re-ask.
+CALLED_Q = "customer को call किया था?"    # wording of every called question
 HANDOVER_Q = "किसको सौंपा"                # wording of the handover question
 CX_Q = "CX support से कोई call"           # wording of the CX question
 YES_R, NO_R = "yes (reached the location)", "no (did not reach the location)"
@@ -1568,3 +1571,112 @@ def test_guard_name_never_keeps_the_danda():
     names = _config()[0]["MDND_GUARD_NAME_LOOKAHEAD"]
     assert _value(names, "गार्ड को दे दीजिए जिसका नाम है राजू। तो मैंने राजू के हाथ में दिया") == "राजू"
     assert _value(names, "guard ka naam Ramesh tha।") == "Ramesh"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# cv_edbfbb5141a4 / cv_2e2d8c7ce20d (2026-09-14, live): the whole story in one
+# breath must fill every field it answers — in Hindi, Hinglish and English —
+# and a re-entry after a late-final merge must not read the ticket facts again.
+# ═════════════════════════════════════════════════════════════════════════════
+
+CV_EDB_STORY = ("हाँ, ये मुझे पता है। अरे मैं प्रोडक्ट डिलीवरी करने प्रोडक्ट के घर मतलब कस्टमर के घर से गया था और "
+                "कस्टमर को कॉल भी किया था तो कस्टमर ने बोला कि जो मेरा प्रोडक्ट है गार्ड को दे दो। तो मैं प्रोडक्ट "
+                "गार्ड को ही हैंडवर्क कर लिया था। और क्या कहते हैं, सीएक्स सपोर्ट से मुझे कॉल आया था और ये सब सारी "
+                "बातें मैंने सीएक्स सपोर्ट पे भी। बताया था। और फिर भी अभी तक मेरा जो एमडीएमटी मांग हुआ है उसका पैसा "
+                "रिपोर्ट नहीं हुआ।")
+CV_2E2D_STORY = ("प्रोडक्ट डिलीवर कर दिया, मतलब कि मैं कस्टमर के लोकेशन पर जाके। वो ने डिलीवर किया था। तो कस्टमर ने "
+                 "मुझे बोला कि प्रोडक्ट मेरी मम्मी को दे दो, तो मैं उनकी मम्मी को ही हैंड ओवर कर दिया था और फिर भी मेरा "
+                 "एनडीएनडी मार्क लिया।")
+READOUT_FACTS = "MDND का deduction दिख रहा है"
+
+
+async def test_cv_edbfbb5141a4_story_fills_all_four_fields_in_one_turn(mdnd_engine):
+    """Live: "guard ko hi handwork kar liya" (STT for handover) and "CX support se
+    MUJHE call aaya" were both missed → handover asked, CX asked, LLM improvised."""
+    s = "cv-edb"
+    await _sig_turn(mdnd_engine, "हाँ बोलिए।", s, "affirm")
+    r = await _sig_turn(mdnd_engine, CV_EDB_STORY, s, "question")
+    assert r["slots"]["m_reached_location"] == YES_R and r["slots"]["m_called_customer"] == YES_C
+    assert r["slots"]["m_handover_recipient"] == "guard / security"
+    assert r["slots"]["m_cx_support_call"] == YES_CX
+    assert r["trace"][-1] == "n_hub_verify"                       # nothing left to ask
+    assert HANDOVER_Q not in r["reply"] and CX_Q not in r["reply"]
+    assert_no_reask(r)
+
+
+async def test_cv_edbfbb5141a4_denied_guard_with_the_new_recipient_becomes_mother(mdnd_engine):
+    """Live: "गार्ड को हैंडओवर नहीं किया था, कस्टमर की मम्मी को हैंडओवर किया था" was read
+    as 'not handed over' (the generic negated-handover pattern won) and the
+    summary kept saying guard until a second correction."""
+    s = "cv-edb-corr"
+    await _sig_turn(mdnd_engine, "हाँ बोलिए।", s, "affirm")
+    r = await _sig_turn(mdnd_engine, CV_EDB_STORY, s, "question")
+    assert r["trace"][-1] == "n_hub_verify"
+    r = await _sig_turn(
+        mdnd_engine,
+        "हाँ, यह सब सही है। नहीं नहीं, अरे थोड़ा सा मुझे इसमें अपडेट करना है। कि मैंने प्रोडक्ट जो है ना गार्ड को "
+        "हैंडओवर नहीं किया था, प्रोडक्ट मैंने कस्टमर की मम्मी को हैंडओवर किया था।",
+        s, "clarify",
+    )
+    assert r["slots"]["m_handover_recipient"] == "mother"
+    assert r["slots"]["m_cx_support_call"] == YES_CX               # untouched by the correction
+    assert r["trace"][-1] == "n_hub_verify" and CX_Q not in r["reply"]
+    assert "कौन सी बात सही नहीं" not in r["reply"]
+
+
+async def test_cv_2e2d8c7ce20d_story_fills_reached_and_mother_and_asks_only_the_call(mdnd_engine):
+    """Live: "unki mummy ko hi HAND OVER kar diya tha" (space inside handover)
+    was missed → the handover question was asked after the story."""
+    s = "cv-2e2d"
+    await _sig_turn(mdnd_engine, "हाँ जी बोलिए।", s, None)
+    r = await _sig_turn(mdnd_engine, CV_2E2D_STORY, s, None)
+    assert r["slots"]["m_reached_location"] == YES_R
+    assert r["slots"]["m_handover_recipient"] == "mother"
+    assert "m_called_customer" not in r["slots"]                  # not stated → asked, not guessed
+    assert r["trace"][-1] == "n_ask_called" and HANDOVER_Q not in r["reply"]
+    r = await _sig_turn(mdnd_engine, "नहीं, कस्टमर को कॉल नहीं किया था।", s, "refusal")
+    assert r["slots"]["m_called_customer"] == NO_C
+    assert r["trace"][-1] == "n_ask_cx" and HANDOVER_Q not in r["reply"]   # CX is never skipped
+    r = await _sig_turn(mdnd_engine, "हाँ, कॉल आया था।", s, "affirm")
+    assert r["slots"]["m_cx_support_call"] == YES_CX and r["trace"][-1] == "n_hub_verify"
+    assert_no_reask(r)
+
+
+@pytest.mark.parametrize("lang,story,recipient", [
+    ("hg", "main customer ke ghar gaya tha, customer ko call bhi kiya tha, usne bola guard ko de do to "
+           "maine guard ko hi handover kar liya tha, aur CX support se mujhe call aaya tha", "guard / security"),
+    ("hg", "customer ki location par jaake deliver kiya, customer ko call kiya to usne bola meri mummy ko de do, "
+           "to maine unki mummy ko hi hand over kar diya tha, CX support ka call bhi aaya tha", "mother"),
+    ("en", "I reached the customer's location and called the customer. He told me to give it to the guard, "
+           "so I handed it over to the guard, and I got a call from CX support as well.", "guard / security"),
+    ("en", "I went to the customer's location and called him; he said give it to my mother, so I gave it to "
+           "the customer's mother. CX support also called me.", "mother"),
+    ("hi", "मैं कस्टमर की लोकेशन पर गया था, कस्टमर को कॉल भी किया था, कस्टमर ने कहा गार्ड को दे दो तो मैंने गार्ड "
+           "को हैंडओवर कर दिया था, और सीएक्स सपोर्ट से मुझे कॉल आया था", "guard / security"),
+])
+async def test_full_story_in_every_language_style_goes_straight_to_confirmation(mdnd_engine, lang, story, recipient):
+    s = f"story-{lang}-{abs(hash(story)) % 10000}"
+    await _lang_turn(mdnd_engine, OPENER[lang], s, "affirm", LANGS[lang])
+    r = await _lang_turn(mdnd_engine, story, s, None, LANGS[lang])
+    assert r["slots"]["m_reached_location"] == YES_R and r["slots"]["m_called_customer"] == YES_C
+    assert r["slots"]["m_handover_recipient"] == recipient
+    assert r["slots"]["m_cx_support_call"] == YES_CX
+    assert r["trace"][-1] == "n_hub_verify"
+    assert_no_reask(r)
+
+
+async def test_reentry_story_does_not_read_the_ticket_facts_the_caller_already_heard(mdnd_engine):
+    """A story that ENTERS the flow speaks the facts-only readout (consumedReply)
+    — unless the caller already heard the readout node earlier in the call
+    (a re-entry after a late-final merge): then the facts are not repeated."""
+    fresh = await mdnd_engine.handle_turn_detailed(
+        session_id="reentry-fresh", tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd_test",
+        user_text=CV_2E2D_STORY, language="hi-IN", context_values=TICKET_CONTEXT, heard_nodes=[])
+    assert READOUT_FACTS in fresh["reply"]                        # first time: facts spoken once
+    heard = await mdnd_engine.handle_turn_detailed(
+        session_id="reentry-heard", tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd_test",
+        user_text=CV_2E2D_STORY, language="hi-IN", context_values=TICKET_CONTEXT,
+        heard_nodes=["n_ask_issue_desc"])
+    assert READOUT_FACTS not in heard["reply"]
+    assert heard["slots"]["m_handover_recipient"] == "mother" and heard["trace"][-1] == "n_ask_called"
+    assert "क्या हुआ था" not in heard["reply"]                    # the story is still the answer

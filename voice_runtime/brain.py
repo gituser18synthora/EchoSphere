@@ -818,7 +818,9 @@ class ConversationBrain(FrameProcessor):
         self._reply_cut: dict | None = None
         # The workflow turn the open (rewindable) user turn ran, if any:
         # (workflow name, previous active workflow) — restored on rollback.
-        self._open_turn_workflow: tuple[str, str | None] | None = None
+        # (workflow name, previously active workflow, the turn's text) for the
+        # dispatched turn that reached the workflow this turn — None otherwise.
+        self._open_turn_workflow: tuple[str, str | None, str] | None = None
         # Turn taking: STT segments buffered until the turn controller closes
         # the user's turn (see module docstring). Finalization is debounced by
         # ``finalize_grace`` so straggler STT finals merge into ONE turn.
@@ -2095,10 +2097,11 @@ class ConversationBrain(FrameProcessor):
             # (an ask consumed the fragment): rewind it too, or the merged
             # utterance lands on the wrong step and the reply that never
             # played is lost for good (cv_30327c49bb47).
-            name, previous_active = workflow_turn
+            name, previous_active, turn_text = workflow_turn
             try:
                 rolled = await self._workflows.rollback_last_turn(
                     session_id=self._recorder.session_id, workflow_name=name,
+                    user_text=turn_text,
                 )
             except Exception:  # noqa: BLE001 — never fail the merge
                 rolled = False
@@ -2259,6 +2262,14 @@ class ConversationBrain(FrameProcessor):
         # text existed nowhere and the continuation ran without its first
         # half. The turn record fills in once _handle_turn builds it.
         self._open_turn_text, self._open_turn_record = text, None
+        # The workflow marker belongs to ONE dispatched turn: it is set only
+        # when THIS turn reaches the workflow. A marker left over from an
+        # earlier turn made a late-final merge rewind the flow to a state
+        # from turns ago (cv_edbfbb5141a4 / cv_2e2d8c7ce20d: the story's
+        # first fragment was cancelled during classification, the stale
+        # entry-turn marker rolled the workflow back to before entry, and
+        # the merged story re-entered the flow — ticket readout spoken twice).
+        self._open_turn_workflow = None
         self._generation = self.create_task(self._handle_turn(text))
         # A turn that ends WITHOUT speaking (empty reply, provider failure)
         # would otherwise never re-arm the silence ladder; BotStarted cancels
@@ -2445,6 +2456,7 @@ class ConversationBrain(FrameProcessor):
             # cancellation (barge-in, hang-up, cleanup) must not leave markers
             # a later merge could mistake for the current utterance.
             self._open_turn_text = self._open_turn_record = None
+            self._open_turn_workflow = None
         if generation is None or generation.done():
             return
         if generation is asyncio.current_task():
@@ -3150,7 +3162,7 @@ class ConversationBrain(FrameProcessor):
         """What the caller just did, from their words alone (no model call).
 
         A knowledge question gets a lookup beat ("एक सेकंड…"), any other
-        question a beat of thought ("हम्म…"), a statement or answer a plain
+        question a beat of thought ("Hmm…"), a statement or answer a plain
         acknowledgement ("जी…", "ठीक है…"). A serious caller state or
         dictated amounts/identifiers degrade to neutral listening tokens
         inside the planner (see plan_early_ack).
@@ -4683,7 +4695,7 @@ class ConversationBrain(FrameProcessor):
                 verified_slots = self._runtime_context.workflow_values()
                 if verified_slots:
                     initial_slots = verified_slots
-        self._open_turn_workflow = (workflow_name, self._active_workflow)
+        self._open_turn_workflow = (workflow_name, self._active_workflow, text)
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,

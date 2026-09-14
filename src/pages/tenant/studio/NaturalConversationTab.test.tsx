@@ -26,7 +26,7 @@ const AUDIO_CATALOG = {
     }))]),
   )])),
   cues: { hi: { language: "hi-IN", options: {
-    hmm: [{ id: "hmm", text: "हम्म…", ready: true }, { id: "hoon", text: "हूँ…", ready: false }, { id: "achha", text: "अच्छा…", ready: false }],
+    hmm: [{ id: "hmm", text: "Hmm…", ready: true }, { id: "hoon", text: "हूँ…", ready: false }, { id: "achha", text: "अच्छा…", ready: false }],
     wait: [{ id: "ek_second", text: "एक सेकंड…", ready: true }],
   }, defaultSelection: { primary: "hmm", alternates: ["hoon"] } } },
   effective: { latencyFillerKind: "breath", fillerAudioSelection: {}, latencyFillerCueSelection: {} },

@@ -37,7 +37,7 @@ const CATALOG = {
     neutral: [clip(kind, "neutral", 1)],
   }])),
   cues: { hi: { language: "hi-IN", options: {
-    hmm: [{ id: "hmm", text: "हम्म…", ready: true }, { id: "hoon", text: "हूँ…", ready: false }, { id: "achha", text: "अच्छा…", ready: false }],
+    hmm: [{ id: "hmm", text: "Hmm…", ready: true }, { id: "hoon", text: "हूँ…", ready: false }, { id: "achha", text: "अच्छा…", ready: false }],
     wait: [{ id: "ek_second", text: "एक सेकंड…", ready: true }],
   }, defaultSelection: { primary: "hmm", alternates: ["hoon"] } } },
   effective: { latencyFillerKind: "breath", fillerAudioSelection: {}, latencyFillerCueSelection: {} },
@@ -150,8 +150,8 @@ describe("FillerAudioLibrary", () => {
     const user = userEvent.setup();
     const onChange = renderLibrary();
     await screen.findByTestId("filler-audio-library");
-    expect(screen.getByTestId("cue-rotation-hi")).toHaveTextContent("Chosen by context among: हम्म…, हूँ…");
-    expect(screen.getByRole("radio", { name: "Neutral default: Thinking cue (long wait) · hi-IN · हम्म…" })).toBeChecked();
+    expect(screen.getByTestId("cue-rotation-hi")).toHaveTextContent("Chosen by context among: Hmm…, हूँ…");
+    expect(screen.getByRole("radio", { name: "Neutral default: Thinking cue (long wait) · hi-IN · Hmm…" })).toBeChecked();
     await user.click(screen.getByRole("radio", { name: "Neutral default: Thinking cue (long wait) · hi-IN · अच्छा…" }));
     expect(onChange).toHaveBeenLastCalledWith({
       latency_filler_cue_selection: { hi: { primary: "achha", alternates: ["hoon"] } },
