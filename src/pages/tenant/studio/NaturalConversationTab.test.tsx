@@ -39,7 +39,7 @@ const BOT = { id: "bot_1", status: "published" } as VoiceBot;
 const inherited: HumanSpeechEffectiveSettings = {
   enabled: true, thinking_fillers: true, acknowledgements: true, backchannels: true,
   prosody_variation: true, gender_agreement: true, micro_pauses: true, self_correction: false,
-  latency_fillers: true, sentence_breaths: true, latency_filler_ladder: true,
+  latency_fillers: true, sentence_breaths: true, latency_filler_ladder: true, adaptive_latency_cues: false,
   thinking_filler_probability: 0.25, acknowledgement_probability: 0.4,
   tool_ack_probability: 0.9, backchannel_probability: 0.35, micro_pause_probability: 0.45,
   self_correction_probability: 0.01, sentence_breath_probability: 0.2,

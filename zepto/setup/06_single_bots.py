@@ -1171,17 +1171,17 @@ def build_mdnd_workflow() -> tuple[list, list]:
             "question": "MDND का deduction amount कितना था?",
             "variable": "m_deduction_amount",
             "entity": MDND_AMOUNT_LOOKAHEAD,
-            "prefillFromContext": "mdnd_deduction_amount"}),
+            "prefillFromContext": "mdnd_deduction_amount", "prefillOnly": True}),
         N("n_ask_order", "ask", "Missing order last four", {
             "question": "Order ID के last 4 digits क्या हैं?",
             "variable": "m_order_last4",
             "entity": MDND_ORDER_ENTITY,
-            "prefillFromContext": "mdnd_order_last4"}),
+            "prefillFromContext": "mdnd_order_last4", "prefillOnly": True}),
         N("n_ask_date", "ask", "Missing deduction date", {
             "question": "यह MDND deduction किस date या week में हुआ था?",
             "variable": "m_deduction_date",
             "entity": MDND_DATE_LOOKAHEAD,
-            "prefillFromContext": "mdnd_deduction_date"}),
+            "prefillFromContext": "mdnd_deduction_date", "prefillOnly": True}),
         N("n_msg_empathy", "message", "Empathy acknowledgement", {
             "text": "मैं आपकी बात समझ सकता हूँ।"}),
         # ── reached + called: one natural question when both are unknown ──
@@ -2064,6 +2064,8 @@ def configure_bot(c: httpx.Client, state: dict, spec: dict) -> None:
          "confidenceThreshold": 0.7, "route": "handoff",
          "handoffEnabled": True},
     ]
+    if spec["state_key"] == "BOT_MDND":
+        next(item for item in intents if item["name"] == "start_enquiries")["fallbackBehavior"] = "clarify"
     existing_intents = {i["name"]: i["id"]
                         for i in check(c.get(f"/bots/{bot_id}/intents"),
                                        "list intents")}

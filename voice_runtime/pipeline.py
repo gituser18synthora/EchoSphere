@@ -628,6 +628,7 @@ def build_latency_filler(
         ),
         hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
         spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
+        voiced_cue_gap_ms=300 if ladder and naturalness.config.get("adaptive_latency_cues") else 0,
         # Telephony serializers packetize outbound PCM; a completed clip's
         # tail must be flushed explicitly or it plays ahead of the next reply.
         emit_flush_marker=transport_kind == "telephony",

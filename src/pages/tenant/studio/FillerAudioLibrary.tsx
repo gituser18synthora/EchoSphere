@@ -178,6 +178,7 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
   const selectionOverridden = Object.prototype.hasOwnProperty.call(override, "filler_audio_selection");
   const cueSelection: CueSelection = override.latency_filler_cue_selection ?? inherited.latency_filler_cue_selection ?? {};
   const cueOverridden = Object.prototype.hasOwnProperty.call(override, "latency_filler_cue_selection");
+  const adaptiveCues = override.adaptive_latency_cues ?? inherited.adaptive_latency_cues ?? false;
 
   const setKind = (next: FillerSoundKind) => onChange({ ...override, latency_filler_kind: next });
   const inheritKind = () => {
@@ -386,7 +387,9 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
           {cueOverridden && <Button size="sm" variant="ghost" disabled={disabled} onClick={inheritCues}>Inherit</Button>}
         </div>
         <p className="t-micro" style={{ margin: 0 }}>
-          When the reply still has not started after the breath, a short cue in the bot&apos;s own voice may follow, then a spoken wait cue.
+          {adaptiveCues
+            ? "If the reply is still pending, one contextual cue or breath may play 1.5–2.5 seconds after the caller stops. A started voiced cue finishes with a 300 ms gap before the answer; breaths stop when the answer is ready. Caller interruptions always stop playback. A spoken wait cue may follow on a longer wait. "
+            : "When the reply still has not started after the breath, a short cue in the bot’s own voice may follow, then a spoken wait cue. "}
           Tick the cues this bot is allowed to use; the runtime decides per turn whether a word is needed at all and which allowed cue fits
           what the caller just said (thinking, information given, confirmation, agreement, courtesy, concern). Never a fixed sequence, never the
           same cue twice in a row. The neutral default is used when nothing more specific fits. Previews are rendered once with the bot&apos;s voice

@@ -35,7 +35,7 @@ async def test_all_fields_are_accepted_even_while_customer_call_is_pending():
     assert result.patch == patch
     assert result.drop_location == "at the door"
     assert result.understood and not result.failed
-    assert (result.input_tokens, result.output_tokens) == (25, 12)
+    assert (result.input_tokens, result.output_tokens, result.requests) == (100, 48, 4)
 
 
 async def test_prompt_receives_entire_utterance_state_and_bounded_reference_history():
@@ -45,12 +45,16 @@ async def test_prompt_receives_entire_utterance_state_and_bounded_reference_hist
     history = [{"role": "user", "content": str(i) + "x" * 1000} for i in range(12)]
     history.append({"role": "system", "content": "not conversation evidence"})
     await _extract(llm, text, slots=slots, history=history)
-    request = json.loads(llm.generate.call_args.args[0][0]["content"])
-    assert request["latest_partner_utterance"] == text
-    assert request["stored_slots"] == {"customer_called": "yes", "delivery_handoff": "doorstep"}
-    assert request["pending_variable"] == "customer_called"
-    assert len(request["recent_history"]) <= 6
-    assert all(len(item["content"]) <= 800 for item in request["recent_history"])
+    requests = [json.loads(call.args[0][0]["content"]) for call in llm.generate.call_args_list]
+    assert {item["target_field"] for item in requests} == {
+        "customer_called", "reached_location", "delivery_handoff", "cx_support_called"}
+    for request in requests:
+        assert request["latest_partner_utterance"] == text
+        assert "unrelated" not in request["stored_slots"]
+        assert set(request["stored_slots"]) <= {request["target_field"]}
+        assert request["pending_variable"] == "customer_called"
+        assert len(request["recent_history"]) <= 6
+        assert all(len(item["content"]) <= 800 for item in request["recent_history"])
     assert slots["unrelated"] == "secret" and len(history) == 13
 
 
@@ -159,6 +163,7 @@ async def test_intelligible_complaint_is_distinct_from_unclear_speech(understood
 # These assert the model's interpretation, not a mock's prewritten answers.
 # Cases run on the same event loop as the configured provider's HTTP client.
 SEMANTIC_CASES = [
+    ("customer_negative_not_cx", "नहीं, कस्टमर को कॉल नहीं किया था।", "क्या आपने customer को call किया था?", "m_called_customer", {}, {"customer_called": "no"}),
     ("cv_365673967604", "असल में customer को call किया था, customer ने मुझे बताया कि product मेरे घर के सामने रख दो तो मैंने वहीं पर product रख दिया। मुझे CX support से call आया था।",
      "क्या हुआ था?", "m_issue_description", {},
      {"customer_called": "yes", "reached_location": "yes", "delivery_handoff": "doorstep", "cx_support_called": "yes"}),
@@ -232,6 +237,7 @@ async def test_real_model_semantic_regressions():
         result = await extract_mdnd_slots(
             llm, text=text, slots=slots, pending_question=question,
             pending_variable=variable, timeout_seconds=6.0,
+            pending_fields=("reached_location", "customer_called") if case == "joint_yes" else None,
         )
         if result.failed or result.patch != expected:
             failures.append((case, expected, result))
@@ -268,6 +274,7 @@ async def test_bare_yes_at_the_combined_question_answers_both_halves():
     llm = _provider(patch, {key: text for key in patch})
     result = await _extract(
         llm, text, pending_variable="m_reached_location",
+        pending_fields=("reached_location", "customer_called"),
         pending_question="क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?")
     assert result.patch == {"customer_called": "yes", "reached_location": "yes"}
 
@@ -278,15 +285,6 @@ async def test_bare_yes_at_a_hub_creates_no_delivery_fact():
     llm = _provider(patch, {key: text for key in patch})
     result = await _extract(llm, text, pending_variable="", pending_question="Is all of this correct?")
     assert result.patch == {}
-
-
-async def test_a_customer_call_negative_is_not_cx_evidence():
-    text = "नहीं, कस्टमर को कॉल नहीं किया था।"
-    patch = {"customer_called": "no", "cx_support_called": "no"}
-    llm = _provider(patch, {key: text for key in patch})
-    result = await _extract(llm, text, pending_variable="m_called_customer",
-                            pending_question="क्या आपने customer को call किया था?")
-    assert result.patch == {"customer_called": "no"}
 
 
 async def test_field_words_in_the_quote_are_accepted_whatever_is_pending():

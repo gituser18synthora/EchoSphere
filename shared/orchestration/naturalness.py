@@ -93,6 +93,9 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     # rendered once per voice and cached (voice_runtime.voiced_cues); the
     # spoken rung is withheld on critical/serious turns.
     "latency_filler_ladder": True,
+    # Opt-in per bot: choose one initial sound at a contextual 1.5–2.5 s
+    # deadline instead of requiring breath -> quiet gap -> voiced cue.
+    "adaptive_latency_cues": False,
     "latency_filler_hmm_ms": 3500,
     "latency_filler_spoken_ms": 5000,
     # Which pre-rendered sound covers the pre-reply gap (the ladder's first
@@ -119,7 +122,7 @@ HUMAN_SPEECH_DEFAULTS: dict = {
 _BOOL_KEYS = (
     "enabled", "thinking_fillers", "acknowledgements", "backchannels",
     "prosody_variation", "gender_agreement", "micro_pauses", "self_correction",
-    "latency_fillers", "sentence_breaths", "latency_filler_ladder",
+    "latency_fillers", "sentence_breaths", "latency_filler_ladder", "adaptive_latency_cues",
 )
 _PROBABILITY_KEYS = (
     "thinking_filler_probability", "acknowledgement_probability",
@@ -772,6 +775,7 @@ class LatencyCuePlan:
     context: str = "neutral"
     reason: str = ""
     role: str = ""
+    delay_ms: int | None = None
 
     def as_selection(self) -> dict | None:
         if not self.cue_ids:
@@ -991,6 +995,20 @@ class SpeechNaturalnessPlanner:
         if last_cue == "oh":
             self._oh_used = True
         plan = LatencyCuePlan(verbal=False, context=context)
+        adaptive = bool(self._config.get("adaptive_latency_cues"))
+        if adaptive:
+            # Lookup/question turns benefit from an earlier listening cue;
+            # short confirmations leave more room for a direct reply. This
+            # is a playback opportunity, never a delay added to the answer.
+            plan.delay_ms = {
+                "lookup": 1500, "thinking": 1800, "information": 2000,
+                "concern": 2000, "neutral": 2200, "confirm": 2500,
+                "affirm": 2500, "polite": 2500,
+            }[context]
+            if expected_fast:
+                # A completed decision is not playable audio. Give its TTS
+                # time, but don't suppress the cue forever if synthesis stalls.
+                plan.delay_ms = 2500
         if not options:
             plan.reason = f"no_pool_language:{lang or '?'}"
             return plan
@@ -1027,7 +1045,7 @@ class SpeechNaturalnessPlanner:
         if critical:
             plan.reason = "critical_content"
             return plan
-        if expected_fast:
+        if expected_fast and not adaptive:
             plan.reason = "reply_expected_fast"
             return plan
         probability = self.latency_cue_probability

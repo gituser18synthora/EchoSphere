@@ -592,10 +592,13 @@ async def chat_test(
     session = body.session_id or f"ct_{uuid.uuid4().hex[:12]}"
     redis = get_redis()
     active_key = f"wftest:{bot.id}:{session}"
+    started_key = active_key + ":started"
+    workflow_ever_routed = False
     verified_key = f"wftest:verified:{bot.id}:{session}"
     verified_context: dict | None = None
     try:
         active_workflow = await redis.get(active_key)
+        workflow_ever_routed = bool(await redis.get(started_key))
         if isinstance(active_workflow, bytes):
             active_workflow = active_workflow.decode()
         stored_verified_context = await redis.get(verified_key)
@@ -627,7 +630,9 @@ async def chat_test(
 
     turn_router = _build_router(db, bot)
     decision = turn_router.decide(body.message, active_workflow=active_workflow)
-    decision = turn_router.apply_entry_fallback(decision, active_workflow=active_workflow)
+    decision = turn_router.apply_entry_fallback(
+        decision, active_workflow=active_workflow, allow_affirm_entry=not workflow_ever_routed,
+    )
     if (
         verified_context
         and decision.kind in (RouteKind.KNOWLEDGE, RouteKind.WORKFLOW)
@@ -675,6 +680,10 @@ async def chat_test(
                     pass
             engine = get_workflow_engine()
             workflow_session = f"test:{bot.id}:{session}"
+            try:
+                await redis.set(started_key, "1", ex=_CHAT_SESSION_TTL_SECONDS)
+            except Exception:  # noqa: BLE001 — cache failure must not block a turn
+                pass
             register_session_engine(workflow_session, guardrails)
             try:
                 configured = _testing_system_prompt(db, bot, conversation_language,
@@ -1219,6 +1228,8 @@ async def simulate_turn(
 
     redis = get_redis()
     active_key = f"wftest:{bot.id}:{session}"
+    started_key = active_key + ":started"
+    workflow_ever_routed = False
     # Delivery feedback mirror for text simulation: which workflow nodes the
     # simulated caller "heard". Every reply counts as heard unless the NEXT
     # turn is flagged ``interrupted`` (the Testing Studio barge-in switch) —
@@ -1228,6 +1239,7 @@ async def simulate_turn(
     heard_state: dict = {"heard": [], "last": []}
     try:
         active_workflow = await redis.get(active_key)
+        workflow_ever_routed = bool(await redis.get(started_key))
         if isinstance(active_workflow, bytes):
             active_workflow = active_workflow.decode()
         raw_heard = await redis.get(heard_key)
@@ -1261,8 +1273,13 @@ async def simulate_turn(
     # confidently classified intent that maps to a workflow starts it even
     # when the deterministic router only saw chat — a partner telling the
     # whole story in one breath rarely matches a short intent sample.
-    decision = _upgrade_route_with_intent(decision, classification, intent_dicts)
-    decision = turn_router.apply_entry_fallback(decision, active_workflow=active_workflow)
+    decision = _upgrade_route_with_intent(
+        decision, classification, intent_dicts, entry_router=turn_router,
+        allow_affirm_entry=not workflow_ever_routed and active_workflow is None,
+    )
+    decision = turn_router.apply_entry_fallback(
+        decision, active_workflow=active_workflow, allow_affirm_entry=not workflow_ever_routed,
+    )
     trace["routerDecision"] = {
         "route": decision.kind.value, "reason": decision.reason,
         "confidence": round(decision.confidence, 3),
@@ -1389,6 +1406,7 @@ async def simulate_turn(
             trace["route"] = "workflow"
             response_text = result["reply"]
             try:
+                await redis.set(started_key, "1", ex=_CHAT_SESSION_TTL_SECONDS)
                 if result["done"]:
                     await redis.delete(active_key)
                     await redis.delete(heard_key)
@@ -1613,7 +1631,8 @@ def _knowledge_intent_in_turn(db, bot, message: str, classification, intent_dict
         return None
 
 
-def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict]):
+def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict],
+                               *, entry_router=None, allow_affirm_entry=True):
     """Mirror of the brain's LLM-intent → workflow routing for simulation.
 
     Only non-committal routes are upgraded; an active workflow keeps its turn.
@@ -1629,12 +1648,28 @@ def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict
     ):
         return decision
     name = classification.intent
+    scoped_entry = entry_router is not None and entry_router.apply_entry_fallback(
+        RouteDecision(kind=RouteKind.CHAT)
+    ).reason == "entry_reprompt"
+    if (scoped_entry and not name and classification.signal == "affirm" and allow_affirm_entry
+            and decision.kind in (RouteKind.CHAT, RouteKind.CLARIFY)):
+        entry_name, action = entry_router.affirm_entry
+        return RouteDecision(kind=RouteKind.WORKFLOW, intent=entry_name, action=action,
+                             confidence=classification.confidence, signal="affirm",
+                             reason="llm_affirm_entry_workflow")
     if not name or classification.below_threshold:
         return decision
     configured = next((i for i in intent_dicts if i.get("name") == name), None)
     if not configured:
         return decision
     route = str(configured.get("route") or "")
+    if scoped_entry and route in ("knowledge", "handoff"):
+        return RouteDecision(
+            kind=RouteKind.KNOWLEDGE if route == "knowledge" else RouteKind.HANDOFF,
+            intent=name, confidence=classification.confidence, signal=classification.signal,
+            action="transfer" if route == "handoff" else None,
+            considered_kb=route == "knowledge", reason=f"llm_intent_{route}",
+        )
     workflow_id = configured.get("workflow_id")
     action = None
     if route.startswith("workflow:"):

@@ -52,7 +52,7 @@ async def turn(collector, text, patch=None, session="semantic", **extra):
     }, ensure_ascii=False))
     return await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd",
-        user_text=text, language="hi-IN", context_values=CONTEXT,
+        user_text=text, language=kwargs.pop("language", "hi-IN"), context_values=kwargs.pop("context_values", CONTEXT),
         llm=llm, **kwargs,
     )
 
@@ -163,6 +163,37 @@ async def test_extractor_not_called_for_unflagged_workflow(collector):
     next(node for node in definition["nodes"] if node["kind"] == "start")["config"] = {}
     await turn(collector, "हाँ बोलिए")
     llm.generate.assert_not_awaited()
+
+
+async def test_no_handover_is_preserved_in_legacy_reporting(collector):
+    r = await turn(collector, "किसी को नहीं दिया, order मेरे पास है", {**ALL, "delivery_handoff": "other"},
+                   handoff_type="not_handed_over", recipient_detail="किसी को नहीं दिया")
+    assert r["slots"]["m_handover_recipient"] == "not handed over"
+    assert "किसी को सौंपा या कहीं छोड़ा नहीं था" in r["reply"]
+    assert r["trace"][-1] == "n_hub_verify"
+
+
+async def test_missing_ticket_metadata_never_adds_required_questions(collector):
+    r = await turn(collector, "I called, reached and left it at the door. CX called", ALL,
+                   kwargs={"context_values": {}})
+    assert r["trace"][-1] == "n_hub_verify"
+    assert not set(r["spokenNodes"]) & {"n_ask_amount", "n_ask_order", "n_ask_date"}
+
+
+async def test_retraction_during_later_question_revisits_only_missing_fact(collector):
+    await turn(collector, "I called, reached and left it at the door", {k:v for k,v in ALL.items() if k != "cx_support_called"})
+    r = await turn(collector, "The customer call detail is wrong; CX did call",
+                   {"customer_called": "unknown", "cx_support_called": "yes"},
+                   explicit_retractions=["customer_called"])
+    assert r["trace"][-1] == "n_ask_called"
+    assert r["slots"]["delivery_handoff"] == "doorstep"
+
+
+async def test_english_unclear_retry_is_contextual(collector):
+    await turn(collector, "Yes", kwargs={"language": "en-IN"})
+    r = await turn(collector, "um garbled", kwargs={"language": "en-IN"})
+    assert "What happened with this delivery?" in r["reply"]
+    assert "Sorry" in r["reply"] and r["responseMode"] == "fixed"
 
 
 def test_summary_fallback_names_the_recorded_relative_not_a_generic_member():

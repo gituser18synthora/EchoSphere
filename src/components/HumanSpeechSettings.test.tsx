@@ -34,6 +34,7 @@ const inherited: HumanSpeechEffectiveSettings = {
   max_backchannels_per_call: 4,
   latency_filler_delay_ms: 1500,
   latency_filler_ladder: true,
+  adaptive_latency_cues: false,
   latency_filler_hmm_ms: 3500,
   latency_filler_spoken_ms: 5000,
 };

@@ -1144,6 +1144,20 @@
 .mselect-clear:hover { text-decoration: underline; }
 :root[data-theme="dark"] .mselect-clear { color: var(--brand-300); }
 
+/* The language editor contains just one field. Keep its options in normal
+   flow so the modal grows with the list instead of clipping the popover. */
+.edit-languages-selector { width: 100%; }
+.edit-languages-selector .mselect-control { min-height: 46px; padding: 8px 12px; }
+.edit-languages-selector .mselect-pop { position: static; margin-top: 8px; }
+.edit-languages-selector .mselect-search { padding: 10px; }
+.edit-languages-selector .mselect-search > svg { left: 20px; }
+.edit-languages-selector .mselect-search .input { height: 40px; font-size: 14px; }
+.edit-languages-selector .mselect-list { max-height: min(320px, 40vh); padding: 6px; }
+.edit-languages-selector .mselect-option { min-height: 48px; gap: 12px; padding: 10px; }
+.edit-languages-selector .mselect-box { width: 20px; height: 20px; }
+.edit-languages-selector .mselect-opt-label { font-size: 14px; }
+.edit-languages-selector .mselect-opt-sub { font-size: 12px; }
+
 /* ---------- Schema-driven provider parameters ---------- */
 /* A parameter whose value differs from its schema default gets an inline
    reset affordance, anchored to the field's label row. */

@@ -3062,6 +3062,7 @@ class ConversationBrain(FrameProcessor):
                 "latency_cue_planned", turn=self._latency_filler_turn_id, context=plan.context,
                 verbal=plan.verbal, reason=plan.reason, role=plan.role,
                 first=(plan.cue_ids[0] if plan.cue_ids else ""),
+                delay_ms=getattr(plan, "delay_ms", None),
             )
         return plan
 
@@ -3123,6 +3124,7 @@ class ConversationBrain(FrameProcessor):
                 ),
                 cue_selection=cue_selection,
                 allow_voiced=allow_voiced,
+                cue_after_ms=getattr(plan, "delay_ms", None),
                 acknowledgement=self._plan_early_ack(text) if not resume else None,
             )
         except Exception:  # noqa: BLE001 — decoration must never break a turn
@@ -4717,7 +4719,7 @@ class ConversationBrain(FrameProcessor):
         extraction_usage = result.get("extractionUsage")
         if extraction_usage:
             counters = self._recorder.usage
-            counters["llm_requests"] = counters.get("llm_requests", 0) + 1
+            counters["llm_requests"] = counters.get("llm_requests", 0) + extraction_usage.get("requests", 1)
             for key in ("input_tokens", "output_tokens"):
                 usage_key = "llm_" + key
                 counters[usage_key] = counters.get(usage_key, 0) + extraction_usage.get(key, 0)
