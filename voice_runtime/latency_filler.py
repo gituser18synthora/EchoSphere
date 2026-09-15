@@ -12,8 +12,9 @@ real reply audio arrives.
 Design constraints, in priority order:
 
 * **Response priority.** The clip streams in owned 20 ms chunks at real-time
-  pace without look-ahead. Playable response audio retires its owner and
-  clears queued filler before response playback; no cutoff tail is added.
+  pace without look-ahead. Playable response audio cuts breaths immediately.
+  Adaptive voiced cues finish with a short silence before response playback;
+  caller interruptions always retire their audio and any waiting response.
   Remote telephony packets already sent cannot be selectively recalled.
 * **Invisible to turn bookkeeping.** Chunks subclass ``OutputAudioRawFrame``
   — pipecat's output transport flips bot-speaking state only for
@@ -578,6 +579,13 @@ _MIN_RUNG_GAP_S = 1.0
 
 
 @dataclass
+class _VoicedHandoff:
+    owner: FillerAudioOwner
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
+    failed: bool = False
+
+
+@dataclass
 class _ArmedTurn:
     turn_id: int
     gender: str
@@ -614,6 +622,9 @@ class _ArmedTurn:
     # breath only at the same deadline, and only when its cached PCM is ready.
     acknowledgement: dict | None = None
     playing_acknowledgement: bool = False
+    cue_after_s: float | None = None
+    reply_pending: bool = False
+    cue_window_open: bool = False
 
 
 class LatencyFillerProcessor(FrameProcessor):
@@ -622,7 +633,8 @@ class LatencyFillerProcessor(FrameProcessor):
     The brain arms it per dispatched turn (``arm``) and disarms it on every
     cancellation (``cancel``); reply audio, interruptions, caller speech and
     bot-speaking frames passing through disarm/cut it on their own. The
-    processor never withholds or alters a frame.
+    processor leaves response PCM unchanged. With voiced-cue completion on,
+    only a started word and its ordered silence can hold the first reply PCM.
 
     Escalation ladder (``hmm_after_ms`` / ``spoken_after_ms``, measured like
     ``delay_ms`` from the caller's end of speech): when the breath has played
@@ -632,7 +644,8 @@ class LatencyFillerProcessor(FrameProcessor):
     for this turn (never on critical/serious content). A rung whose deadline
     falls while the bot is still audibly speaking (previous reply's tail) is
     deferred to the bot's next silence instead of being dropped. Synthesis
-    start alone does not suppress a rung: playable PCM retires the filler.
+    start alone does not suppress a rung: playable PCM retires breaths and
+    stops further rungs. Started voiced cues can finish before the reply.
     Every rung start is noted on the clip library so the TTS router
     withholds an in-reply inhale right after a pre-reply breath.
     """
@@ -650,6 +663,7 @@ class LatencyFillerProcessor(FrameProcessor):
         hmm_after_ms: int | None = None,
         spoken_after_ms: int | None = None,
         emit_flush_marker: bool = False,
+        voiced_cue_gap_ms: int = 0,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -659,6 +673,9 @@ class LatencyFillerProcessor(FrameProcessor):
         # Keep ownership after producer completion: its last chunks may
         # still be in a transport/browser queue when reply audio arrives.
         self._output_owners: list[FillerAudioOwner] = []
+        self._voiced_cue_gap_ms = max(0, int(voiced_cue_gap_ms))
+        self._voiced_handoff: _VoicedHandoff | None = None
+        self._reply_handoff_owner: FillerAudioOwner | None = None
         self._delay_s = max(0.0, float(delay_ms) / 1000.0)
         self._library = (
             library.new_session()
@@ -748,6 +765,7 @@ class LatencyFillerProcessor(FrameProcessor):
         cue_selection: dict | None = None,
         allow_voiced: bool = True,
         acknowledgement: dict | None = None,
+        cue_after_ms: int | None = None,
     ) -> None:
         """A reply is now in flight for ``turn_id``.
 
@@ -785,8 +803,15 @@ class LatencyFillerProcessor(FrameProcessor):
             cue_selection=dict(cue_selection) if cue_selection else None,
             allow_voiced=bool(allow_voiced),
             acknowledgement=dict(acknowledgement) if acknowledgement else None,
+            cue_after_s=(
+                min(2500, max(1500, cue_after_ms)) / 1000.0
+                if cue_after_ms is not None and "hmm" in self._rung_delays_s and not resume
+                else None
+            ),
         )
         self._armed = armed
+        if armed.cue_after_s is not None:
+            armed.fire_at = max(origin + armed.cue_after_s, now)
         if armed.acknowledgement and self._cue_library is not None:
             # Prime the existing cache without awaiting a render or touching
             # the answer's TTS queue. Playback remains behind the deadline.
@@ -810,16 +835,22 @@ class LatencyFillerProcessor(FrameProcessor):
 
     # -- internals -----------------------------------------------------
 
-    def _retire_output_owners(self) -> None:
+    def _retire_output_owners(self, preserve: FillerAudioOwner | None = None) -> None:
         # Shared identities also invalidate frames already handed downstream.
         # Retire before any await, including Pipecat's interruption handling.
-        if self._armed is not None:
+        if self._armed is not None and self._armed.owner is not preserve:
             self._armed.owner.cancel()
         for owner in self._output_owners:
-            owner.cancel()
+            if owner is not preserve:
+                owner.cancel()
+        if self._voiced_handoff is not None and self._voiced_handoff.owner is not preserve:
+            self._voiced_handoff.owner.cancel()
+        if self._reply_handoff_owner is not None and self._reply_handoff_owner is not preserve:
+            self._reply_handoff_owner.cancel()
 
-    async def _cut(self, reason: str) -> None:
-        self._retire_output_owners()
+    async def _cut(self, reason: str, *, preserve: FillerAudioOwner | None = None) -> None:
+        self._retire_output_owners(preserve)
+        self._voiced_handoff = None
         owners, self._output_owners = self._output_owners, []
         armed, self._armed = self._armed, None
         task, self._task = self._task, None
@@ -833,12 +864,15 @@ class LatencyFillerProcessor(FrameProcessor):
         # Production may already have finished while playback is buffered.
         # Always clear those owners, even without an active task/armed turn.
         for owner in owners:
-            await self.push_frame(FillerClearFrame(owner))
+            if owner is not preserve:
+                await self.push_frame(FillerClearFrame(owner))
         if armed is None:
             return
         if armed.playing_since is None:
             if reason == "tts_audio" and not armed.rungs_played:
                 self.fillers_unneeded += 1
+            return
+        if armed.owner is preserve:
             return
         self._end_cue_window(armed)
         played_ms = (time.monotonic() - armed.playing_since) * 1000.0
@@ -901,11 +935,13 @@ class LatencyFillerProcessor(FrameProcessor):
         if (armed.rung_kind != "breath" or armed.playing_acknowledgement) and self.cue_window_hook is not None:
             try:
                 self.cue_window_hook(True)
+                armed.cue_window_open = True
             except Exception:  # noqa: BLE001
                 logger.debug("latency-filler: cue window hook failed", exc_info=True)
 
     def _end_cue_window(self, armed: _ArmedTurn) -> None:
-        if (armed.rung_kind != "breath" or armed.playing_acknowledgement) and self.cue_window_hook is not None:
+        if armed.cue_window_open and self.cue_window_hook is not None:
+            armed.cue_window_open = False
             try:
                 self.cue_window_hook(False)
             except Exception:  # noqa: BLE001
@@ -913,7 +949,14 @@ class LatencyFillerProcessor(FrameProcessor):
 
     async def _run(self, armed: _ArmedTurn) -> None:
         try:
-            for index, kind in enumerate(RUNGS):
+            # Adaptive turns have ONE initial opportunity: a ready contextual
+            # acknowledgement/cue, or a breath if no eligible cue is ready.
+            # Never queue a breath in front of the 1.5–2.5 s cue window.
+            adaptive = armed.cue_after_s is not None
+            for index, kind in enumerate(("hmm", "wait") if adaptive else RUNGS):
+                if armed.reply_pending:
+                    return
+                adaptive_first = adaptive and index == 0
                 if kind not in self._rung_delays_s:
                     return
                 armed.rung, armed.rung_kind = index, kind
@@ -932,7 +975,7 @@ class LatencyFillerProcessor(FrameProcessor):
                             else _MIN_RUNG_GAP_S
                         ),
                     )
-                if kind == "hmm" and not armed.allow_voiced:
+                if kind == "hmm" and not armed.allow_voiced and not adaptive_first:
                     # The planner decided this wait stays a breath (an
                     # acknowledgement already spoke, critical content, a fast
                     # reply expected, or simply not every silence gets a word).
@@ -949,7 +992,23 @@ class LatencyFillerProcessor(FrameProcessor):
                     return
                 if not await self._wait_for_rung(armed):
                     return
-                clip = self._rung_clip(armed, kind)
+                if adaptive_first:
+                    clip = self._acknowledgement_clip(armed)
+                    if clip:
+                        kind = "breath"  # Existing acknowledgement bookkeeping.
+                        armed.playing_acknowledgement = True
+                    else:
+                        clip = self._rung_clip(armed, "hmm") if armed.allow_voiced else b""
+                        if not clip:
+                            self._event(
+                                "adaptive_cue_fallback", turn=armed.turn_id,
+                                reason="no_ready_cue" if armed.allow_voiced else "voiced_withheld",
+                            )
+                            kind = "breath"
+                            clip = self._rung_clip(armed, kind)
+                    armed.rung_kind = kind
+                else:
+                    clip = self._rung_clip(armed, kind)
                 if not clip:
                     self._event(
                         "latency_filler_skipped", turn=armed.turn_id, rung=kind,
@@ -958,6 +1017,15 @@ class LatencyFillerProcessor(FrameProcessor):
                     continue
                 armed.clip_ms = len(clip) / (self._sample_rate * 2) * 1000.0
                 armed.clip = clip
+                voiced = None
+                if self._voiced_cue_gap_ms and (kind != "breath" or armed.playing_acknowledgement):
+                    voiced = _VoicedHandoff(armed.owner)
+                    self._voiced_handoff = voiced
+                    # Ordered silence travels with the cue through output
+                    # queues, so the audible gap survives browser/telephony
+                    # buffering. It elapses even if the answer isn't ready;
+                    # a later answer never gets another sleep added to it.
+                    armed.clip += b"\x00\x00" * int(self._sample_rate * self._voiced_cue_gap_ms / 1000)
                 armed.next_offset = 0
                 armed.playing_since = time.monotonic()
                 if armed.owner not in self._output_owners:
@@ -1008,11 +1076,23 @@ class LatencyFillerProcessor(FrameProcessor):
                 self._event(
                     "latency_filler_completed", turn=armed.turn_id, rung=kind,
                     played_ms=round(armed.clip_ms, 1),
+                    gap_ms=self._voiced_cue_gap_ms if voiced else 0,
                 )
+                if voiced is not None:
+                    voiced.finished.set()
                 armed.rungs_played.append(kind)
                 armed.playing_since = None
                 armed.clip = b""
+        except Exception:
+            logger.warning("latency-filler: playback failed", exc_info=True)
         finally:
+            voiced = self._voiced_handoff
+            if voiced is not None and voiced.owner is armed.owner and not voiced.finished.is_set():
+                # A failed/cancelled producer must never leave a reply waiter
+                # hanging. External cancellation is still distinguished by
+                # the owner's flag; a clip failure simply releases the reply.
+                voiced.failed = True
+                voiced.finished.set()
             # Retirement can reach a paced producer before the data-frame
             # handler reaches _cut(). Keep that turn for cancellation metrics
             # and cleanup; it did not naturally complete its clip.
@@ -1056,7 +1136,11 @@ class LatencyFillerProcessor(FrameProcessor):
         chunk_bytes = self._chunk_bytes()
         clip = armed.clip
         remainder = len(clip) % (chunk_bytes * 2)
-        if remainder:
+        voiced = self._voiced_handoff
+        has_voiced_gap = voiced is not None and voiced.owner is armed.owner
+        word_bytes = round(armed.clip_ms * rate / 1000) * 2
+        word_ended = False
+        if remainder and not has_voiced_gap:
             clip = clip + b"\x00" * (chunk_bytes * 2 - remainder)
             armed.clip = clip
         chunk_s = chunk_bytes / (rate * 2)
@@ -1070,6 +1154,12 @@ class LatencyFillerProcessor(FrameProcessor):
                 await asyncio.sleep(wait)
             if armed.owner.cancelled:
                 return
+            if has_voiced_gap and not word_ended and offset >= word_bytes:
+                word_ended = True
+                # Silence needs no voiced echo shield. Release the caller's
+                # gate during the gap so fresh speech can interrupt promptly.
+                self._end_cue_window(armed)
+                self._event("voiced_cue_word_completed", turn=armed.turn_id, clip_ms=armed.clip_ms)
             armed.next_offset = offset + chunk_bytes
             await self.push_frame(
                 FillerAudioRawFrame(
@@ -1080,14 +1170,49 @@ class LatencyFillerProcessor(FrameProcessor):
 
     # -- pipeline plumbing ---------------------------------------------
 
+    def _notice_reply_audio(self) -> None:
+        """Freeze the ladder at PCM ingress, including before data processing."""
+        if self._armed is not None:
+            self._armed.reply_pending = True
+        voiced = self._voiced_handoff
+        if voiced is None or voiced.owner.cancelled:
+            # More PCM can arrive while the first packet is being forwarded.
+            # That is still the same reply, not a cancellation of its cue.
+            pending = self._reply_handoff_owner
+            if pending is None or pending.cancelled:
+                self._retire_output_owners()
+
+    async def _finish_voiced_handoff(self, voiced: _VoicedHandoff) -> bool:
+        """Wait only for an already-started cue/gap; caller cancellation wins."""
+        started = time.monotonic()
+        finished = asyncio.create_task(voiced.finished.wait())
+        cancelled = asyncio.create_task(voiced.owner.cancelled_event.wait())
+        try:
+            await asyncio.wait((finished, cancelled), return_when=asyncio.FIRST_COMPLETED)
+            valid = not voiced.owner.cancelled and self._voiced_handoff is voiced
+            if valid:
+                self._event(
+                    "voiced_cue_reply_handoff", turn=voiced.owner.turn_id,
+                    held_ms=round((time.monotonic() - started) * 1000, 1),
+                    gap_ms=self._voiced_cue_gap_ms,
+                    cue_failed=voiced.failed,
+                )
+            return valid
+        finally:
+            finished.cancel()
+            cancelled.cancel()
+            await asyncio.gather(finished, cancelled, return_exceptions=True)
+
     async def queue_frame(self, frame, direction=FrameDirection.DOWNSTREAM, callback=None):
-        # Retire queued filler as soon as playable audio enters this
-        # processor, not after it has waited in Pipecat's data-frame queue.
-        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, CancelFrame)) or (
+        # Mark readiness at ingress, before Pipecat's data-frame queue:
+        # cut breaths/pending cues, but let an already-started word finish.
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, CancelFrame)):
+            self._retire_output_owners()
+        elif (
             direction == FrameDirection.DOWNSTREAM
             and isinstance(frame, TTSAudioRawFrame) and frame.num_frames > 0
         ):
-            self._retire_output_owners()
+            self._notice_reply_audio()
         await super().queue_frame(frame, direction, callback)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -1102,9 +1227,27 @@ class LatencyFillerProcessor(FrameProcessor):
             # Readiness means at least one complete PCM sample frame. An
             # empty packet or TTSStartedFrame (synthesis requested) leaves
             # the configured filler deadline intact while the provider waits.
-            # Cut BEFORE forwarding playable audio so no filler follows it.
-            if frame.num_frames > 0:
-                await self._cut("tts_audio")
+            # Finish a started voiced cue or cut a breath before forwarding.
+            if frame.num_frames > 0 and direction == FrameDirection.DOWNSTREAM:
+                self._notice_reply_audio()
+                voiced = self._voiced_handoff
+                if voiced is not None:
+                    ready = await self._finish_voiced_handoff(voiced)
+                    if not ready or voiced.owner.cancelled or self._voiced_handoff is not voiced:
+                        return  # Never forward a reply cancelled during the cue/gap.
+                    # The output queue owns the finished cue and its silence.
+                    # Clearing that owner here would chop buffered audio again.
+                    self._reply_handoff_owner = voiced.owner
+                    try:
+                        await self._cut("tts_audio", preserve=voiced.owner)
+                        if not voiced.owner.cancelled:
+                            await self.push_frame(frame, direction)
+                    finally:
+                        if self._reply_handoff_owner is voiced.owner:
+                            self._reply_handoff_owner = None
+                    return
+                else:
+                    await self._cut("tts_audio")
         elif isinstance(frame, InterruptionFrame):
             # The output is being stopped globally. Do not depend on a later
             # BotStoppedSpeakingFrame to release a new turn's filler deadline.

@@ -31,6 +31,7 @@ const BOOL_FIELDS: { key: HumanSpeechSettingKey; label: string; help: string }[]
   { key: "latency_fillers", label: "Latency fillers", help: "Play a short breath matched to the voice's gender when a reply has not started speaking within the delay below; it stops the instant real speech starts and never holds the reply back." },
   { key: "sentence_breaths", label: "Sentence breaths", help: "In pause mode, allow a rare soft breath before a long or verification sentence inside a reply. At most one per reply, never after every sentence." },
   { key: "latency_filler_ladder", label: "Latency filler ladder", help: "On a long wait, follow the breath with a short \"Hmm…\" and then a spoken \"एक सेकंड…\" in the bot's own voice (rendered once per voice). The spoken cue is withheld on critical or sensitive turns." },
+  { key: "adaptive_latency_cues", label: "Adaptive thinking cues", help: "With the latency filler ladder enabled, choose one contextual cue or breath 1.5–2.5 seconds after the caller stops. Fast replies skip it. A voiced cue that has started finishes with a 300 ms gap before the answer. Caller interruptions stop both immediately. Replaces the initial breath and fixed thinking-cue delay." },
 ];
 
 const NUMBER_FIELDS: {
@@ -52,7 +53,7 @@ const NUMBER_FIELDS: {
   { key: "min_gap_between_backchannels_ms", label: "Minimum backchannel gap (ms)", min: 2000, max: 120000, step: 500, help: "Cooldown between backchannel opportunities." },
   { key: "max_backchannels_per_call", label: "Maximum backchannels per call", min: 0, max: 20, step: 1, help: "Hard per-call cap." },
   { key: "latency_filler_delay_ms", label: "Latency filler delay (ms)", min: 500, max: 5000, step: 100, help: "Quiet time after the caller stops speaking before a filler plays. Replies that start sooner never get one." },
-  { key: "latency_filler_hmm_ms", label: "Ladder \"hmm\" cue at (ms)", min: 2000, max: 8000, step: 100, help: "Time after the caller stops before the voiced \"Hmm…\" cue may play, when the reply still has not started." },
+  { key: "latency_filler_hmm_ms", label: "Ladder \"hmm\" cue at (ms)", min: 2000, max: 8000, step: 100, help: "Used when Adaptive thinking cues is off. Time after the caller stops before a voiced cue may play, when the reply still has not started." },
   { key: "latency_filler_spoken_ms", label: "Ladder spoken cue at (ms)", min: 3000, max: 12000, step: 100, help: "Time after the caller stops before the spoken \"एक सेकंड…\" cue may play. Never on critical or sensitive turns." },
 ];
 

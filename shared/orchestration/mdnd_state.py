@@ -90,13 +90,13 @@ def merge_extraction(slots, result, audit, node):
                 slots[legacy] = detail
             if value == "other" and result.get("handoff_type") == "not_handed_over":
                 slots[legacy] = "not handed over"
-            elif value == "other" and result.get("drop_location"):
+            elif value == "other" and (result.get("drop_location") or result.get("handoff_type") == "place"):
                 slots[legacy] = "place (kept at a spot)"
             elif value == "other" and detail == "not handed over":
                 slots[legacy] = detail
         if name == "delivery_handoff":
             place = result.get("drop_location")
-            if value in ("doorstep", "other") and place:
+            if slots.get(legacy) in ("left at door", "place (kept at a spot)") and place:
                 slots["m_drop_location"] = place
             elif value != "doorstep" or before.get(legacy) != slots.get(legacy):
                 slots.pop("m_drop_location", None)
@@ -141,6 +141,8 @@ def summary_fallback(slots, language):
                    "other": "you handed the order to another person"}[target]
         if place and target in ("doorstep", "other"):
             handoff = f"you left the order at the place you described: {place}"
+        elif slots.get("m_handover_recipient") == "place (kept at a spot)":
+            handoff = "you left the order at the place you described"
         if slots.get("m_handover_recipient") == "not handed over":
             handoff = "you did not hand over or leave the order"
         return ("Let me quickly confirm the details you shared. "
@@ -159,6 +161,8 @@ def summary_fallback(slots, language):
                "other": "order किसी और को सौंपा था"}[target]
     if place and target in ("doorstep", "other"):
         handoff = f"order {place} रखा था"
+    elif slots.get("m_handover_recipient") == "place (kept at a spot)":
+        handoff = "order आपके बताए स्थान पर रखा था"
     if slots.get("m_handover_recipient") == "not handed over":
         handoff = "order किसी को सौंपा या कहीं छोड़ा नहीं था"
     return ("आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। "

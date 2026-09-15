@@ -1,7 +1,8 @@
 """Apply the MDND four-slot collection fix without reconfiguring the bot.
 
 Default is a read-only diff; pass --apply to update the current MDND workflow
-and publish the targeted system-prompt changes. Preserves greeting, intents,
+and publish the targeted system-prompt changes. Enables the opening intent's
+contextual retry without changing its matching or route. Preserves greeting,
 context, voice/goal settings, API connections, other bots and unrelated nodes.
 
 Run: env/bin/python zepto/setup/10_mdnd_persistent_slots.py [--apply]
@@ -29,7 +30,7 @@ def patch_workflow(current: dict) -> dict:
     wanted = {node["id"]: node for node in authored}
     nodes = {node["id"]: node for node in result["nodes"]}
     required = {"n_start", "n_msg_empathy", "n_ask_handover", "n_ask_cx",
-                "n_hub_verify", "n_ask_correction"}
+                "n_hub_verify", "n_ask_correction", "n_ask_amount", "n_ask_order", "n_ask_date"}
     required.update(node["id"] for node in authored
                     if "unmatchedReplyByLanguage" in node.get("config", {}))
     if missing := required - nodes.keys():
@@ -39,7 +40,7 @@ def patch_workflow(current: dict) -> dict:
         wanted["n_msg_empathy"]["config"]["text"])
     for node_id in required:
         config = wanted[node_id].get("config", {})
-        for key in ("unmatchedReply", "unmatchedReplyByLanguage"):
+        for key in ("unmatchedReply", "unmatchedReplyByLanguage", "prefillOnly"):
             if key in config:
                 nodes[node_id].setdefault("config", {})[key] = deepcopy(config[key])
     handover_edges = [edge for edge in result["edges"] if edge["from"] == "n_ask_handover"]
@@ -87,7 +88,8 @@ def main() -> None:
     args = parser.parse_args()
     state = stage06.load_state()
     bot_id = state["BOT_MDND"]
-    with stage06.client() as client:
+    client = stage06.client()
+    try:
         workflow = stage06.check(client.get(f"/bots/{bot_id}/workflow"), "read MDND workflow")
         current = {key: workflow[key] for key in ("name", "nodes", "edges", "status")}
         updated = patch_workflow(current)
@@ -97,14 +99,21 @@ def main() -> None:
         version = next(item for item in system["versions"] if item["version"] == version_no)
         system_before = version.get("fullPrompt") or ""
         system_after = patch_system(system_before)
+        intents = stage06.check(client.get(f"/bots/{bot_id}/intents"), "read MDND intents")
+        opening = next(item for item in intents if item["name"] == "start_enquiries")
         _diff(json.dumps(current, ensure_ascii=False, indent=2) + "\n",
               json.dumps(updated, ensure_ascii=False, indent=2) + "\n", "workflow.json")
         _diff(system_before, system_after, "system_prompt.md")
+        if opening.get("fallbackBehavior") != "clarify":
+            print("Opening intent: fallbackBehavior -> clarify (matching and route preserved)")
         if not args.apply:
             print("Read-only preview complete; use --apply to apply these MDND-only changes.")
             return
         if updated != current:
             stage06.check(client.put(f"/bots/{bot_id}/workflow", json=updated), "update MDND collection")
+        if opening.get("fallbackBehavior") != "clarify":
+            stage06.check(client.patch(f"/intents/{opening['id']}", json={"fallbackBehavior": "clarify"}),
+                          "enable MDND contextual opening retry")
         if system_after != system_before:
             stage06.check(client.post(f"/prompts/{system['id']}/versions", json={
                 "promptMode": "full", "fullPrompt": system_after,
@@ -115,6 +124,8 @@ def main() -> None:
             stage06.check(client.patch(f"/prompts/{system['id']}", json={"state": "published"}),
                           "publish MDND system")
         print(f"MDND-only collection fix applied to {bot_id}.")
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":

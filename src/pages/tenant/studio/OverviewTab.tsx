@@ -268,20 +268,22 @@ function EditLanguagesModal({ bot, onClose, onSaved }: { bot: VoiceBot; onClose:
         </>
       }
     >
-      <Field label="Languages" required plain error={err}>
-        <MultiSelect
-          options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
-            value: l.code,
-            label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
-            sub: l.code,
-          }))}
-          selected={langs}
-          onChange={(next) => { setLangs(next); setErr(""); }}
-          placeholder="Select supported languages"
-          searchPlaceholder="Search languages…"
-          invalid={!!err}
-        />
-      </Field>
+      <div className="edit-languages-selector">
+        <Field label="Languages" required plain error={err}>
+          <MultiSelect
+            options={(langsQ.data ?? []).filter((l) => l.enabled).map((l) => ({
+              value: l.code,
+              label: l.nativeName && l.nativeName !== l.name ? `${l.name} · ${l.nativeName}` : l.name,
+              sub: l.code,
+            }))}
+            selected={langs}
+            onChange={(next) => { setLangs(next); setErr(""); }}
+            placeholder="Select supported languages"
+            searchPlaceholder="Search languages…"
+            invalid={!!err}
+          />
+        </Field>
+      </div>
     </Modal>
   );
 }

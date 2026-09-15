@@ -2694,6 +2694,11 @@ class WorkflowEngine:
                 pending_question=_node_text(pending, "question", "prompt", "text", fallback_label=False),
                 pending_variable=str(_node_config(pending).get("variable") or ""),
                 history=history,
+                pending_fields=tuple(key for key, legacy in mdnd_state.FIELDS.items()
+                                     if key != "delivery_handoff" and legacy in [
+                                         _node_config(pending).get("variable"),
+                                         *(_node_config(pending).get("jointYesNo") or []),
+                                     ]),
             )
             invocation["mdnd_extraction"] = asdict(extraction)
         if context_values is not None:
@@ -2737,7 +2742,7 @@ class WorkflowEngine:
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
             "extractionUsage": ({key: invocation["mdnd_extraction"].get(key, 0)
-                                 for key in ("input_tokens", "output_tokens")}
+                                 for key in ("input_tokens", "output_tokens", "requests")}
                                 if invocation.get("mdnd_extraction") is not None else None),
             "handoffQueue": state.get("handoff_queue"),
             # Off-script: the turn was NOT consumed — the workflow stays at

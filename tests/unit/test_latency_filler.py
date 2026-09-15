@@ -294,11 +294,12 @@ class _AcknowledgementCueStub(_CueStub):
 
 
 def make_filler(*, delay_ms=60, library=None, rate=RATE, recorder=None, lead_chunks=2,
-                cue_library=None, hmm_after_ms=None, spoken_after_ms=None):
+                cue_library=None, hmm_after_ms=None, spoken_after_ms=None, voiced_cue_gap_ms=0):
     filler = LatencyFillerProcessor(
         delay_ms=delay_ms, library=library or _ShortLibrary(), sample_rate=rate,
         recorder=recorder or _RecorderStub(), chunk_ms=20, lead_chunks=lead_chunks,
         cue_library=cue_library, hmm_after_ms=hmm_after_ms, spoken_after_ms=spoken_after_ms,
+        voiced_cue_gap_ms=voiced_cue_gap_ms,
     )
     filler.pushed = []
 

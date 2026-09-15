@@ -88,7 +88,7 @@ class TimedOutput(Output):
         return result
 
 
-async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500):
+async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500, adaptive=False, cue_library=None):
     threshold = threshold_ms / 1000
     slow = threshold + 0.2
     scenarios = [
@@ -105,12 +105,13 @@ async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500):
     naturalness = SpeechNaturalnessPlanner({
         "enabled": True, "acknowledgements": acknowledgements,
         "acknowledgement_probability": 1.0, "backchannels": False,
-        "latency_filler_delay_ms": threshold_ms, "latency_filler_ladder": False,
+        "latency_filler_delay_ms": threshold_ms, "latency_filler_ladder": adaptive,
+        "adaptive_latency_cues": adaptive, "latency_cue_probability": 1.0,
         "sentence_breaths": False,
     }, rng=random.Random(7))
     filler = build_latency_filler(
         naturalness, sample_rate=16000, recorder=recorder,
-        library=FillerClipLibrary(None), cue_library=_AcknowledgementCueStub(),
+        library=FillerClipLibrary(None), cue_library=cue_library or _AcknowledgementCueStub(),
     )
     config = ResolvedBotConfig(
         tenant_id="audit", bot_id="audit", bot_name="Audit", version="v1",
@@ -149,7 +150,10 @@ async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500):
                 state["release_at"] = stopped + audio_at
             await worker.queue_frame(transcript(f"मुझे अपनी बात बतानी है और जानकारी चाहिए {chr(65 + index)}"))
             await worker.queue_frame(UserStoppedSpeakingFrame())
-            await asyncio.sleep((audio_at or llm_delay + tts_delay) + 0.7)
+            await asyncio.sleep(max(
+                (audio_at or llm_delay + tts_delay) + 0.7,
+                threshold + 1.2 if adaptive else 0,
+            ))
 
             def relative(at):
                 return round((at - stopped) * 1000, 3) if at is not None else None
