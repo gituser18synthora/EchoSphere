@@ -24,6 +24,8 @@ def router(*, fallback="clarify", extra_intents=()):
 @pytest.mark.parametrize("message", [
     "कंज्यूम कर रहे हैं ना।",  # First unclear STT in cv_1090953f3652.
     "अपने बैठने की जगह नहीं है। मैम के केबिन में।",  # Its next turn.
+    "पास्ट में बोल रहा हूँ बोलो।",  # Opening STT in cv_4e3f6e0147d6.
+    "टिकट क्यों देर कर रहे हो?",  # Its reply to the unwanted ticket filler.
     "hmm",
     "hello",
     "",
