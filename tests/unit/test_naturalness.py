@@ -7,6 +7,7 @@ import random
 import pytest
 
 from shared.orchestration.naturalness import (
+    EARLY_ACK_CONTEXTS,
     ladder_cue,
     ladder_cue_options,
     ladder_cue_text,
@@ -36,6 +37,28 @@ def planner(overrides=None, seed=7):
 
 
 class TestConfigResolution:
+    @pytest.mark.parametrize("gain", [0, -6, -6.5, -24.0])
+    def test_breath_gain_accepts_finite_attenuation(self, gain):
+        assert validate_human_speech({"breath_gain_db": gain}) == []
+        assert planner({"breath_gain_db": gain}).breath_gain_db == gain
+
+    @pytest.mark.parametrize("gain", [True, "-6", None, float("nan"), float("inf"), -float("inf")])
+    def test_invalid_breath_gain_keeps_inherited_level_and_source(self, gain):
+        assert validate_human_speech({"breath_gain_db": gain})
+        effective, sources = resolve_human_speech_with_sources(
+            {"breath_gain_db": -3.5}, {"breath_gain_db": gain},
+        )
+        assert effective["breath_gain_db"] == -3.5
+        assert sources["breath_gain_db"] == "tenant"
+
+    @pytest.mark.parametrize(("gain", "expected"), [(-25, -24.0), (1, 0.0)])
+    def test_breath_gain_rejects_out_of_range_writes_and_clamps_legacy_values(self, gain, expected):
+        assert validate_human_speech({"breath_gain_db": gain})
+        effective, sources = resolve_human_speech_with_sources(None, {"breath_gain_db": gain})
+        assert effective["breath_gain_db"] == expected
+        assert sources["breath_gain_db"] == "bot"
+        assert planner().breath_gain_db == 0.0
+
     def test_defaults_apply_without_layers(self):
         assert resolve_human_speech() == HUMAN_SPEECH_DEFAULTS
 
@@ -507,7 +530,10 @@ class TestLatencyFillerConfig:
         assert planner({"enabled": False}).latency_fillers_enabled is False
         assert planner({"latency_filler_delay_ms": 2200}).latency_filler_delay_ms == 2200
         assert planner().latency_filler_ladder_enabled is True
-        assert planner({"latency_fillers": False}).latency_filler_ladder_enabled is False
+        # The voiced ladder is a FILLER WORD: it never depends on the breath.
+        assert planner({"latency_fillers": False}).latency_filler_ladder_enabled is True
+        assert planner({"breathing": False}).latency_filler_ladder_enabled is True
+        assert planner({"filler_words": False}).latency_filler_ladder_enabled is False
         assert planner({"latency_filler_ladder": False}).latency_filler_ladder_enabled is False
         assert planner({"latency_filler_hmm_ms": 4000}).latency_filler_hmm_ms == 4000
         assert planner({"latency_filler_spoken_ms": 6000}).latency_filler_spoken_ms == 6000
@@ -814,7 +840,11 @@ class TestLatencyCuePlanning:
     def test_previous_cue_never_leads_again(self):
         p = self.planner()
         plan = p.plan_latency_cue(language="hi-IN", context="information", last_cue="achha")
-        assert plan.cue_ids[0] == "theek_hai" and plan.cue_ids[-1] == "achha"
+        # information ranks information / polite / thinking — never the
+        # confirm role ("ठीक है…" would sound like acceptance of a statement
+        # the bot has not acted on yet).
+        assert plan.cue_ids[0] == "ji" and plan.cue_ids[-1] == "achha"
+        assert "theek_hai" not in plan.cue_ids
         # With a single allowed cue it stays (a word is still better than nothing).
         q = self.planner(latency_filler_cue_selection={"hi": {"primary": "hoon", "alternates": []}})
         assert q.plan_latency_cue(language="hi-IN", context="thinking", last_cue="hoon").cue_ids == ["hoon"]
@@ -846,3 +876,151 @@ class TestLatencyCuePlanning:
         assert validate_human_speech({"latency_cue_probability": 1.5}) == [
             "'latency_cue_probability' must be between 0 and 1",
         ]
+
+
+# ── breathing vs filler words: two independent families ─────────────────
+
+
+class TestBreathingAndFillerWordsIndependence:
+    """`breathing` (nonverbal) and `filler_words` (spoken) each have their
+    own master switch; neither implies the other, and the gap-cover
+    processor exists while any member of either family is on."""
+
+    def test_defaults_and_validation(self):
+        assert HUMAN_SPEECH_DEFAULTS["breathing"] is True
+        assert HUMAN_SPEECH_DEFAULTS["filler_words"] is True
+        assert validate_human_speech({"breathing": False, "filler_words": True}) == []
+        assert validate_human_speech({"breathing": "off"}) == ["'breathing' must be a boolean"]
+        assert validate_human_speech({"filler_words": 0}) == ["'filler_words' must be a boolean"]
+        effective, sources = resolve_human_speech_with_sources(
+            {"breathing": False}, {"filler_words": False},
+        )
+        assert effective["breathing"] is False and sources["breathing"] == "tenant"
+        assert effective["filler_words"] is False and sources["filler_words"] == "bot"
+
+    @pytest.mark.parametrize("breathing,words", [
+        (True, True), (True, False), (False, True), (False, False),
+    ])
+    def test_every_combination_resolves_each_family_on_its_own(self, breathing, words):
+        p = planner({"breathing": breathing, "filler_words": words})
+        assert p.breathing_enabled is breathing
+        assert p.latency_fillers_enabled is breathing
+        assert p.sentence_breaths_enabled is breathing
+        assert p.filler_words_enabled is words
+        assert p.acknowledgements_enabled is words
+        assert p.latency_filler_ladder_enabled is words
+        assert p.latency_cover_enabled is (breathing or words)
+        # Member switches stay independent of the OTHER family's master.
+        assert planner({"breathing": breathing, "latency_filler_ladder": False}).latency_fillers_enabled is breathing
+        assert planner({"filler_words": words, "latency_fillers": False}).acknowledgements_enabled is words
+
+    def test_master_layer_switch_still_turns_both_families_off(self):
+        p = planner({"enabled": False})
+        assert not p.breathing_enabled and not p.filler_words_enabled
+        assert not p.latency_cover_enabled
+
+    def test_member_switches_alone_can_turn_the_processor_off(self):
+        assert planner({"latency_fillers": False, "acknowledgements": False,
+                        "latency_filler_ladder": False}).latency_cover_enabled is False
+        assert planner({"latency_fillers": False}).latency_cover_enabled is True   # words remain
+        assert planner({"acknowledgements": False, "latency_filler_ladder": False}).latency_cover_enabled is True  # breath remains
+        assert planner({"adaptive_latency_cues": True}).adaptive_latency_cues_enabled is True
+        assert planner({"adaptive_latency_cues": True, "filler_words": False}).adaptive_latency_cues_enabled is False
+
+    def test_words_off_silences_every_spoken_filler_but_not_the_breath(self):
+        p = planner({"filler_words": False, "acknowledgement_probability": 1.0,
+                     "latency_cue_probability": 1.0, "tool_ack_probability": 1.0,
+                     "sentence_breath_probability": 1.0})
+        assert p.plan_early_ack(language="hi-IN", identity=MALE, context="answer", turn_index=1) == ""
+        assert p.last_early_ack_reason == "disabled"
+        assert p.plan_latency_cue(language="hi-IN", context="information", turn_index=2).reason == "disabled"
+        turn = p.plan_turn(language="hi-IN", identity=MALE, route_kind="tool", turn_index=2)
+        assert not turn.has_preface and turn.telemetry["suppression_reason"] == "filler_words_disabled"
+        critical = p.plan_turn(language="hi-IN", identity=MALE, route_kind="tool", turn_index=2,
+                               critical=True, critical_reason="tool_result", allow_safe_tool_preface=True)
+        assert not critical.has_preface
+        # Breathing is untouched.
+        assert p.latency_fillers_enabled and p.sentence_breaths_enabled
+        long = "Aapke account mein pichle mahine ki kist abhi tak update nahi hui hai isliye"
+        assert p.plan_segment(long, base_pause_ms=150, language="hi-IN").breath_before is True
+
+    def test_breathing_off_silences_every_breath_but_not_the_words(self):
+        p = planner({"breathing": False, "acknowledgement_probability": 1.0,
+                     "latency_cue_probability": 1.0, "sentence_breath_probability": 1.0})
+        long = "Aapke account mein pichle mahine ki kist abhi tak update nahi hui hai isliye"
+        assert p.plan_segment(long, base_pause_ms=150, language="hi-IN").breath_before is False
+        assert not p.latency_fillers_enabled
+        # Words are untouched.
+        assert p.plan_early_ack(language="hi-IN", identity=MALE, context="answer", turn_index=1)
+        assert p.plan_latency_cue(language="hi-IN", context="information", turn_index=3).verbal is True
+        assert p.latency_filler_ladder_enabled and p.acknowledgements_enabled
+
+
+class TestEarlyAckContexts:
+    """Acknowledgements follow what the caller did: an answer may be noted
+    ("ठीक है…"), an explanation or a problem is only listened to."""
+
+    @staticmethod
+    def tokens(context, seeds=60, **overrides):
+        out = set()
+        for seed in range(seeds):
+            p = planner({"acknowledgement_probability": 1.0, **overrides}, seed=seed)
+            token = p.plan_early_ack(language="hi-IN", identity=MALE, context=context, turn_index=3)
+            if token:
+                out.add(normalize_spoken_variant(token))
+        return out
+
+    def test_information_and_concern_never_sound_like_acceptance(self):
+        information = self.tokens("information")
+        concern = self.tokens("concern")
+        answer = self.tokens("answer")
+        theek = normalize_spoken_variant("ठीक है…")
+        assert information == {normalize_spoken_variant(e) for e in _POOLS["hi"]["ack_information"]}
+        assert concern == {normalize_spoken_variant(e) for e in _POOLS["hi"]["ack_neutral"]}
+        assert theek not in information and theek not in concern
+        assert not any("ठीक" in t or "अच्छा" in t for t in concern)
+        assert theek in answer                       # an answer may be noted
+        assert "information" in EARLY_ACK_CONTEXTS and "concern" in EARLY_ACK_CONTEXTS
+        en = self.tokens("information")
+        assert en  # hi pool exercised above; English has its own pool:
+        p = planner({"acknowledgement_probability": 1.0}, seed=3)
+        token = p.plan_early_ack(language="en-IN", identity=NEUTRAL, context="information", turn_index=3)
+        assert normalize_spoken_variant(token) in {
+            normalize_spoken_variant(e) for e in _POOLS["en"]["ack_information"]
+        }
+
+    def test_concern_keeps_full_odds_while_serious_halves_them(self):
+        def rate(**kwargs):
+            hits = 0
+            for seed in range(300):
+                p = planner({"acknowledgement_probability": 0.5}, seed=seed)
+                hits += bool(p.plan_early_ack(language="hi-IN", identity=MALE, turn_index=5, **kwargs))
+            return hits / 300
+        assert 0.4 <= rate(context="concern") <= 0.6
+        assert 0.15 <= rate(context="concern", serious=True) <= 0.35
+
+    def test_a_word_heard_on_one_turn_never_leads_the_next(self):
+        p = planner({"acknowledgement_probability": 1.0, "latency_cue_probability": 1.0}, seed=1)
+        # Turn 3: the processor reports the acknowledgement "जी…" was heard.
+        p.note_early_ack_played(3, "जी…")
+        plan = p.plan_latency_cue(language="hi-IN", context="polite", turn_index=4)
+        assert plan.cue_ids[0] != "ji" and plan.cue_ids[-1] == "ji" and plan.verbal
+        # When "जी…" is the ONLY fitting cue, the next turn stays a breath.
+        only_ji = planner({"latency_cue_probability": 1.0,
+                           "latency_filler_cue_selection": {"hi": {"primary": "ji", "alternates": []}}})
+        only_ji.note_early_ack_played(3, "जी…")
+        plan = only_ji.plan_latency_cue(language="hi-IN", context="polite", turn_index=4)
+        assert plan.verbal is False and plan.reason == "recently_spoken"
+        # Two turns later the word is allowed again.
+        assert only_ji.plan_latency_cue(language="hi-IN", context="polite", turn_index=5).verbal is True
+        # And a voiced cue that was heard keeps the next acknowledgement away
+        # from the same word.
+        q = planner({"acknowledgement_probability": 1.0}, seed=2)
+        q.note_latency_cue_played("hmm", turn_index=4, language="hi-IN")
+        for _ in range(20):
+            q._last_early_ack_turn = None
+            token = q.plan_early_ack(language="hi-IN", identity=MALE, context="question", turn_index=5)
+            assert normalize_spoken_variant(token) != normalize_spoken_variant("Hmm…"), token
+        assert q._oh_used is False
+        q.note_latency_cue_played("oh", turn_index=6, language="hi-IN")
+        assert q._oh_used is True

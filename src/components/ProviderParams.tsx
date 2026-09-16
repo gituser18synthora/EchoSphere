@@ -9,11 +9,23 @@
 import { useEffect, useState } from "react";
 import type { ParamSpec, ProviderSettingValue, ProviderSettings } from "@/types/domain";
 import { Field, Toggle } from "@/components/ui";
+import { PLATFORM_OWNED_STT_KEYS } from "@/components/SttAutoDetectControl";
+
+/* Keys the platform's language policy owns (auto_detect_language) are
+   tri-state on disk: never pre-filled from the schema default — an unset
+   value must keep following the derived multilingual default — and never
+   rendered by the generic fields (a dedicated control does). Matched by key
+   as well as by `widget` so catalogs seeded before the widget flag existed
+   behave the same. */
+function platformOwned(key: string, spec: ParamSpec): boolean {
+  return PLATFORM_OWNED_STT_KEYS.has(key) || spec.widget === "auto_detect_language";
+}
 
 export function schemaDefaults(schema: Record<string, ParamSpec> | undefined): ProviderSettings {
   const out: ProviderSettings = {};
   for (const [key, spec] of Object.entries(schema ?? {})) {
     if (spec.fixed) continue;
+    if (platformOwned(key, spec)) continue;
     if (spec.default !== undefined) out[key] = spec.default;
   }
   return out;
@@ -50,6 +62,11 @@ export function reconcileSettings(schema: Record<string, ParamSpec> | undefined,
   for (const [key, value] of Object.entries(prev)) {
     const spec = schema[key];
     if (!spec || spec.fixed) continue;
+    if (platformOwned(key, spec)) {
+      // An explicit user choice survives a model switch untouched.
+      if (typeof value === "boolean") out[key] = value;
+      continue;
+    }
     const coerced = coerceToSpec(spec, value);
     if (coerced !== undefined) out[key] = coerced;
   }
@@ -77,7 +94,7 @@ export function ParamFields({ schema, values, onChange, showReset = false }: {
   /* Entries with a `widget` are rendered by specialized components (e.g. the
      pronunciation dictionary selector) — never as raw text inputs here. Their
      values still live in the same settings object and schema validation. */
-  const entries = Object.entries(schema ?? {}).filter(([, s]) => !s.widget);
+  const entries = Object.entries(schema ?? {}).filter(([k, s]) => !s.widget && !platformOwned(k, s));
   if (entries.length === 0) return null;
   const basic = entries.filter(([, s]) => !s.advanced);
   const advanced = entries.filter(([, s]) => s.advanced);

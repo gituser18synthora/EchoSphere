@@ -510,13 +510,16 @@ class TestWorkflowRollbackOnLateMerge:
 
         stub = _RollbackStub(wf_result("What happened?", done=False, node_prompt="What happened?"))
         brain = make_brain(stub, _LLMStub())          # active workflow "modes_flow"
+        brain._pending_workflow_question = "May we continue?"
         await brain._handle_turn("okay")
+        assert brain._pending_workflow_question == "What happened?"
         assert brain._open_turn_workflow == ("modes_flow", "modes_flow", "okay")
         brain._open_turn_text = "okay"
         await brain._rollback_open_turn()
         assert stub.rollbacks == [{"session_id": "s-test", "workflow_name": "modes_flow",
                                    "user_text": "okay"}]
         assert brain._active_workflow == "modes_flow"               # restored to the pre-turn value
+        assert brain._orchestration_state()["pending_question"] == "May we continue?"
         assert "workflow_turn_rolled_back" in brain._recorder.event_kinds()
         assert brain._pending_segments == ["okay"]
 

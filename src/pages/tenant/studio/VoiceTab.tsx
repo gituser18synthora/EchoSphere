@@ -23,6 +23,7 @@ import {
 } from "@/components/ui";
 import { Icon } from "@/components/Icon";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
+import { SttAutoDetectControl } from "@/components/SttAutoDetectControl";
 import { DictionaryField } from "@/components/PronunciationDictionaries";
 import { useApp } from "@/state/AppContext";
 
@@ -656,7 +657,10 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
   /* ---- STT language options ---- */
   const sttLangOptions: SearchableSelectOption[] = [];
   if (sttLangQ.data?.supportsAutoDetect) {
-    sttLangOptions.push({ value: "", label: "Auto-detect", sub: "the model detects the spoken language" });
+    sttLangOptions.push({
+      value: "", label: "Auto-detect",
+      sub: "follows the Auto-detect language setting below (else the bot's default language)",
+    });
   }
   for (const l of sttLangQ.data?.languages ?? []) {
     sttLangOptions.push({ value: l.code, label: l.nativeName ? `${l.name} · ${l.nativeName}` : l.name, sub: l.code });
@@ -720,6 +724,18 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                   ariaLabel="STT language"
                 />
               </Field>
+            )}
+            {stt.provider && stt.model && (
+              /* Prominent, not buried under "Advanced": this is the switch that
+                 lets a multilingual bot follow the caller's language. */
+              <SttAutoDetectControl
+                settings={stt.settings}
+                languages={bot.languages}
+                serverDerivedDefault={settingsQ.data?.sttAutoDetectLanguage?.derivedDefault}
+                sttLanguage={stt.language}
+                disabled={!canManage}
+                onChange={(next) => setStt((s) => ({ ...s, settings: next }))}
+              />
             )}
             <ParamFields
               key={`stt:${stt.provider}:${stt.model}`}

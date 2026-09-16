@@ -27,6 +27,12 @@ Design constraints, in priority order:
   disarmed by every cancellation path (barge-in, late merge, hang-up,
   teardown) and by the first reply audio. Nothing is spoken, so history,
   turn records and the client transcript never see it.
+* **Two independent families on one schedule.** The BREATH (``breath_enabled``,
+  config ``breathing``/``latency_fillers``) and the WORDS — the dispatch-time
+  acknowledgement and the voiced/spoken ladder cues (config ``filler_words``)
+  — share the deadline machinery but never imply each other: with the breath
+  off the acknowledgement and the cues still play at their own times; with the
+  words off only the breath plays. Neither family delays reply audio.
 * **Gender-matched.** Clips come from the operator asset directory
   (``Settings.filler_audio_dir``: WAV files whose name carries a ``male`` /
   ``female`` / ``neutral`` token) or are synthesized here per gender.
@@ -257,16 +263,16 @@ def _pretty_label(stem: str) -> str:
 class _FileClip:
     source = "recording"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, clip_id: str | None = None) -> None:
         self.path = path
         self.gender = gender_from_filename(path) or "neutral"
         self.kind = kind_from_filename(path)
         # Stable id the configuration stores (``filler_audio_selection``).
-        self.clip_id = f"file:{path.name}"
+        self.clip_id = clip_id or f"file:{path.name}"
         self.label = _pretty_label(path.stem)
 
     def describe(self) -> str:
-        return f"file:{self.path.name}"
+        return self.clip_id
 
     def render(self, sample_rate: int) -> bytes:
         try:
@@ -310,6 +316,8 @@ class FillerClipLibrary:
 
     A gender with operator files in ``directory`` uses them (all of them, in
     rotation); a gender without files gets the synthesized breath variants.
+    Recordings in ``directory/optional`` appear in the catalog and play only
+    when explicitly selected by a bot; installing one cannot change defaults.
     Neutral voices never borrow gendered recordings. The directory is scanned
     lazily on first use, so a missing or unreadable directory costs nothing
     and simply means "synthesized".
@@ -321,6 +329,7 @@ class FillerClipLibrary:
         self._directory = Path(directory) if directory else None
         self._synthesize = synthesize
         self._sources: dict[tuple[str, str], list] | None = None
+        self._optional_sources: dict[tuple[str, str], list] | None = None
         # Rendered PCM per (clip id, sample rate): a clip renders once however
         # many selections include it.
         self._rendered: dict[tuple[str, int], bytes] = {}
@@ -363,14 +372,15 @@ class FillerClipLibrary:
             and time.monotonic() - self.last_played_at < within_s
         )
 
-    def _scan(self) -> dict[tuple[str, str], list]:
+    def _scan(self, *, optional: bool = False) -> dict[tuple[str, str], list]:
         sources: dict[tuple[str, str], list] = {
             (kind, gender): [] for kind in KINDS for gender in GENDERS
         }
         if self._directory is not None:
+            directory = self._directory / "optional" if optional else self._directory
             try:
                 files = sorted(
-                    path for path in self._directory.iterdir()
+                    path for path in directory.iterdir()
                     if path.is_file() and path.suffix.lower() == ".wav"
                 )
             except OSError:
@@ -383,8 +393,9 @@ class FillerClipLibrary:
                         path.name,
                     )
                     continue
-                sources[(kind_from_filename(path), gender)].append(_FileClip(path))
-        if self._synthesize:
+                clip_id = f"file:optional:{path.name}" if optional else f"file:{path.name}"
+                sources[(kind_from_filename(path), gender)].append(_FileClip(path, clip_id=clip_id))
+        if self._synthesize and not optional:
             for key in sources:
                 if not sources[key]:
                     kind, gender = key
@@ -402,6 +413,16 @@ class FillerClipLibrary:
         kind = kind if kind in KINDS else "breath"
         return self._sources[(kind, normalize_gender(gender))]
 
+    def _available_sources_for(self, gender: str, kind: str) -> list:
+        """Default rotation plus recordings that require an explicit selection."""
+        if self._cache is not None:
+            return self._cache._available_sources_for(gender, kind)
+        kind = kind if kind in KINDS else "breath"
+        gender = normalize_gender(gender)
+        if self._optional_sources is None:
+            self._optional_sources = self._scan(optional=True)
+        return self.sources_for(gender, kind) + self._optional_sources[(kind, gender)]
+
     def describe(self, kind: str = "breath") -> dict[str, list[str]]:
         return {
             gender: [s.describe() for s in self.sources_for(gender, kind)]
@@ -412,7 +433,7 @@ class FillerClipLibrary:
         """The clip source with this id (any kind/gender), or None."""
         for kind in KINDS:
             for gender in GENDERS:
-                for source in self.sources_for(gender, kind):
+                for source in self._available_sources_for(gender, kind):
                     if getattr(source, "clip_id", None) == clip_id:
                         return source
         return None
@@ -420,10 +441,10 @@ class FillerClipLibrary:
     def catalog(self, kind: str, gender: str, sample_rate: int = 16000) -> list[dict]:
         """Every clip the runtime could play for ``kind``/``gender`` — id,
         label, source (recording | synthesized) and duration — in the order
-        they rotate when nothing is selected. Clips that fail to render are
-        left out (the runtime skips them too)."""
+        of the default rotation followed by opt-in recordings. Clips that
+        fail to render are left out (the runtime skips them too)."""
         out: list[dict] = []
-        for source in self.sources_for(gender, kind):
+        for source in self._available_sources_for(gender, kind):
             pcm = self._render_source(source, int(sample_rate))
             if not pcm:
                 continue
@@ -434,6 +455,7 @@ class FillerClipLibrary:
                 "kind": kind,
                 "gender": normalize_gender(gender),
                 "durationMs": round(len(pcm) / (int(sample_rate) * 2) * 1000.0),
+                **({"requiresSelection": True} if source.clip_id.startswith("file:optional:") else {}),
             })
         return out
 
@@ -447,8 +469,8 @@ class FillerClipLibrary:
 
     def selected_sources(self, kind: str, gender: str, selection: dict | None) -> list:
         """The sources a bot's ``selection`` ({primary, alternates}) resolves
-        to for ``kind``/``gender``, primary first; every source of that
-        gender when nothing is selected or nothing selected resolves (an id
+        to for ``kind``/``gender``, primary first; the gender's default
+        rotation when nothing is selected or nothing selected resolves (an id
         of another gender or kind is never honoured — a male voice cannot be
         handed a female breath by configuration)."""
         kind = kind if kind in KINDS else "breath"
@@ -457,7 +479,10 @@ class FillerClipLibrary:
         ids = selection_ids(selection)
         if not ids:
             return sources
-        by_id = {getattr(source, "clip_id", None): source for source in sources}
+        by_id = {
+            getattr(source, "clip_id", None): source
+            for source in self._available_sources_for(gender, kind)
+        }
         chosen = [by_id[i] for i in ids if i in by_id]
         if chosen:
             return chosen
@@ -466,7 +491,7 @@ class FillerClipLibrary:
             self._selection_warned.add(marker)
             logger.warning(
                 "latency-filler: none of the selected %s %s clips %s exist; "
-                "rotating all available clips", kind, gender, ids,
+                "using default rotation", kind, gender, ids,
             )
         return sources
 
@@ -479,8 +504,8 @@ class FillerClipLibrary:
         renders.
 
         With a ``selection`` ({primary, alternates}) only those clips rotate,
-        the primary first in a call; without one every clip of the gender
-        rotates. Operator files that fail to render (not a PCM WAV,
+        the primary first in a call; without one the gender's default clips
+        rotate. Operator files that fail to render (not a PCM WAV,
         unreadable) are skipped; when none of a gender's files renders, the
         synthesized variants take over so a bad upload degrades to the
         default, never to dead air where a breath was configured. ``max_ms``
@@ -664,9 +689,15 @@ class LatencyFillerProcessor(FrameProcessor):
         spoken_after_ms: int | None = None,
         emit_flush_marker: bool = False,
         voiced_cue_gap_ms: int = 0,
+        breath_gain_db: float = 0.0,
+        breath_enabled: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        # The nonverbal breath rung (config ``breathing`` × ``latency_fillers``).
+        # False → the first deadline may only play a planned acknowledgement;
+        # the voiced ladder keeps its own schedule.
+        self._breath_enabled = bool(breath_enabled)
         # Retain completion markers for telephony, now tagged so they cannot
         # flush a speech packet after owned filler has been cleared.
         self._emit_flush_marker = bool(emit_flush_marker)
@@ -683,6 +714,7 @@ class LatencyFillerProcessor(FrameProcessor):
             else library
         )
         self._sample_rate = int(sample_rate)
+        self._breath_gain_db = float(breath_gain_db)
         self._recorder = recorder
         self._chunk_ms = max(10, int(chunk_ms))
         self._lead_chunks = max(0, int(lead_chunks))
@@ -706,6 +738,10 @@ class LatencyFillerProcessor(FrameProcessor):
         # for backchannels (the breath is too quiet to matter).
         self.cue_window_hook = None
         self.acknowledgement_hook = None
+        # Optional ``callable(turn_id: int, cue_id: str | None)`` told when a
+        # voiced "hmm" cue starts, so the planner never repeats that word on
+        # the next turn (as an acknowledgement or as a cue).
+        self.cue_played_hook = None
         self._armed: _ArmedTurn | None = None
         self._task: asyncio.Task | None = None
         self._bot_speaking = False
@@ -728,6 +764,10 @@ class LatencyFillerProcessor(FrameProcessor):
     @property
     def ladder_enabled(self) -> bool:
         return len(self._rung_delays_s) > 1
+
+    @property
+    def breath_enabled(self) -> bool:
+        return self._breath_enabled
 
     @property
     def armed(self) -> bool:
@@ -892,11 +932,17 @@ class LatencyFillerProcessor(FrameProcessor):
             if ack:
                 armed.playing_acknowledgement = True
                 return ack
+            if not self._breath_enabled:
+                # Breathing is off for this bot: the first deadline had only
+                # the acknowledgement to offer, and it is not ready.
+                return b""
+            gain = {"gain_db": self._breath_gain_db} if self._breath_gain_db else {}
             if armed.filler_kind == "breath" and armed.filler_selection is None:
-                return self._library.clip(armed.gender, self._sample_rate)
+                return self._library.clip(armed.gender, self._sample_rate, **gain)
             return self._library.clip(
                 armed.gender, self._sample_rate,
                 kind=armed.filler_kind, selection=armed.filler_selection,
+                **gain,
             )
         if self._cue_library is None:
             return b""
@@ -967,6 +1013,15 @@ class LatencyFillerProcessor(FrameProcessor):
                         reason="after_early_ack",
                     )
                     continue
+                if kind == "breath" and not self._breath_enabled and not armed.acknowledgement:
+                    # Breathing off and no word planned for the first
+                    # deadline: nothing to wait for here; the voiced ladder
+                    # (if any) keeps its own schedule.
+                    self._event(
+                        "latency_filler_skipped", turn=armed.turn_id, rung=kind,
+                        reason="breathing_off",
+                    )
+                    continue
                 if index > 0:
                     armed.fire_at = max(
                         armed.origin + self._rung_delays_s[kind],
@@ -1012,7 +1067,13 @@ class LatencyFillerProcessor(FrameProcessor):
                 if not clip:
                     self._event(
                         "latency_filler_skipped", turn=armed.turn_id, rung=kind,
-                        reason="no_clip", gender=armed.gender,
+                        reason=(
+                            "breathing_off"
+                            if kind == "breath" and not self._breath_enabled
+                            and not armed.playing_acknowledgement
+                            else "no_clip"
+                        ),
+                        gender=armed.gender,
                     )
                     continue
                 armed.clip_ms = len(clip) / (self._sample_rate * 2) * 1000.0
@@ -1030,13 +1091,22 @@ class LatencyFillerProcessor(FrameProcessor):
                 armed.playing_since = time.monotonic()
                 if armed.owner not in self._output_owners:
                     self._output_owners.append(armed.owner)
-                note_played = getattr(self._library, "note_played", None)
-                if note_played is not None:
-                    note_played(armed.playing_since)
+                if kind == "breath" and not armed.playing_acknowledgement:
+                    # Only an actual breath sound counts for the TTS router's
+                    # "no in-reply inhale right after a breath" rule; a word
+                    # is not a breath.
+                    note_played = getattr(self._library, "note_played", None)
+                    if note_played is not None:
+                        note_played(armed.playing_since)
                 self.fillers_played += 1
                 self.rungs_played[kind] = self.rungs_played.get(kind, 0) + 1
                 if kind == "hmm":
                     self.last_cue_played = getattr(self._cue_library, "last_cue_id", None)
+                    if self.cue_played_hook is not None:
+                        try:
+                            self.cue_played_hook(armed.turn_id, self.last_cue_played)
+                        except Exception:  # noqa: BLE001 — decoration never breaks a turn
+                            logger.debug("latency-filler: cue hook failed", exc_info=True)
                 waited_ms = (armed.playing_since - armed.origin) * 1000.0
                 self._event(
                     "latency_filler_played",
@@ -1266,13 +1336,19 @@ class LatencyFillerProcessor(FrameProcessor):
                 # after a short gap (see _wait_for_rung).
                 armed.resume.set()
         elif isinstance(frame, (EndFrame, CancelFrame)):
+            # The call is over: nothing more may play, and this call's
+            # rotation/recency history is released with it.
             await self._cut("pipeline_end")
+            self._release_call_history()
         await self.push_frame(frame, direction)
 
-    async def cleanup(self):
-        await self._cut("cleanup")
+    def _release_call_history(self) -> None:
         for library in (self._library, self._cue_library):
             if getattr(library, "_session_local", False):
                 library.clear_history()
         self.last_cue_played = None
+
+    async def cleanup(self):
+        await self._cut("cleanup")
+        self._release_call_history()
         await super().cleanup()

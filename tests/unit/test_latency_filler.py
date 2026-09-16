@@ -31,7 +31,7 @@ from pipecat.processors.frame_processor import FrameDirection
 
 from shared.audio.pcm import pcm_to_wav_bytes
 from shared.bot_config import ResolvedBotConfig
-from shared.orchestration.naturalness import HUMAN_SPEECH_DEFAULTS, SpeechNaturalnessPlanner
+from shared.orchestration.naturalness import HUMAN_SPEECH_DEFAULTS, SpeechNaturalnessPlanner, validate_human_speech
 from voice_runtime.brain import ConversationBrain
 import voice_runtime.latency_filler as latency_filler_module
 from voice_runtime.latency_filler import (
@@ -294,12 +294,14 @@ class _AcknowledgementCueStub(_CueStub):
 
 
 def make_filler(*, delay_ms=60, library=None, rate=RATE, recorder=None, lead_chunks=2,
-                cue_library=None, hmm_after_ms=None, spoken_after_ms=None, voiced_cue_gap_ms=0):
+                cue_library=None, hmm_after_ms=None, spoken_after_ms=None, voiced_cue_gap_ms=0,
+                breath_gain_db=0.0):
     filler = LatencyFillerProcessor(
         delay_ms=delay_ms, library=library or _ShortLibrary(), sample_rate=rate,
         recorder=recorder or _RecorderStub(), chunk_ms=20, lead_chunks=lead_chunks,
         cue_library=cue_library, hmm_after_ms=hmm_after_ms, spoken_after_ms=spoken_after_ms,
         voiced_cue_gap_ms=voiced_cue_gap_ms,
+        breath_gain_db=breath_gain_db,
     )
     filler.pushed = []
 
@@ -340,6 +342,33 @@ def tts_audio():
 
 
 class TestLatencyFillerProcessor:
+    @pytest.mark.parametrize("kind", ["breath", "inhale", "exhale", "inhale_exhale"])
+    async def test_bot_gain_quiets_only_breaths_without_changing_the_shared_library(self, kind):
+        library = FillerClipLibrary(None)
+        base = library.render_clip(f"synth:{kind}:male:1", RATE)
+        filler = make_filler(library=library, delay_ms=5000, breath_gain_db=-6.0,
+                             cue_library=_AcknowledgementCueStub())
+        try:
+            await filler.arm(turn_id=1, gender="male", filler_kind=kind)
+            quiet = filler._rung_clip(filler._armed, "breath")
+            reduction = 20 * math.log10(np.linalg.norm(samples(quiet)) / np.linalg.norm(samples(base)))
+            assert reduction == pytest.approx(-6.0, abs=0.02)
+            assert library.render_clip(f"synth:{kind}:male:1", RATE) == base
+            for rung, level in [("hmm", 4000), ("wait", 5000)]:
+                assert np.all(samples(filler._rung_clip(filler._armed, rung)) == level)
+            filler._armed.acknowledgement = {"text": "जी…"}
+            assert np.all(samples(filler._rung_clip(filler._armed, "breath")) == 7000)
+        finally:
+            await filler.cancel("test_complete")
+
+    def test_pipeline_applies_the_bot_gain(self):
+        filler = build_latency_filler(
+            SpeechNaturalnessPlanner({"breath_gain_db": -6.5, "latency_filler_ladder": False,
+                                      "acknowledgements": False}),
+            sample_rate=RATE, library=FillerClipLibrary(None),
+        )
+        assert filler._breath_gain_db == -6.5
+
     async def test_fires_after_the_delay_as_plain_output_audio(self):
         filler = make_filler(delay_ms=60)
         await filler.arm(turn_id=1, gender="male")
@@ -1189,10 +1218,47 @@ class TestPipelineBuilder:
 
     def test_disabled_config_builds_no_processor(self):
         library = FillerClipLibrary(None)
-        off = SpeechNaturalnessPlanner({"latency_fillers": False})
-        assert build_latency_filler(off, sample_rate=8000, library=library) is None
+        # The breath alone off keeps the processor for the WORDS (independent
+        # families); it is gone only when nothing of either family remains.
+        breath_off = build_latency_filler(
+            SpeechNaturalnessPlanner({"latency_fillers": False}), sample_rate=8000,
+            library=library, cue_library=_CueStub(),
+        )
+        assert breath_off is not None and breath_off.breath_enabled is False
+        assert breath_off.ladder_enabled and breath_off._cue_library is not None
+        both_off = SpeechNaturalnessPlanner({"breathing": False, "filler_words": False})
+        assert build_latency_filler(both_off, sample_rate=8000, library=library) is None
+        members_off = SpeechNaturalnessPlanner({
+            "latency_fillers": False, "acknowledgements": False, "latency_filler_ladder": False,
+        })
+        assert build_latency_filler(members_off, sample_rate=8000, library=library) is None
         master_off = SpeechNaturalnessPlanner({"enabled": False})
         assert build_latency_filler(master_off, sample_rate=8000, library=library) is None
+
+    def test_each_family_wires_only_its_own_parts(self):
+        library, cues = FillerClipLibrary(None), _CueStub()
+        words_only = build_latency_filler(
+            SpeechNaturalnessPlanner({"breathing": False}), sample_rate=8000,
+            library=library, cue_library=cues,
+        )
+        assert words_only.breath_enabled is False and words_only.ladder_enabled
+        assert words_only._rung_delays_s == {"breath": 1.5, "hmm": 3.5, "wait": 5.0}
+        breath_only = build_latency_filler(
+            SpeechNaturalnessPlanner({"filler_words": False}), sample_rate=8000,
+            library=library, cue_library=cues,
+        )
+        assert breath_only.breath_enabled is True and not breath_only.ladder_enabled
+        assert breath_only._cue_library is None and breath_only._rung_delays_s == {"breath": 1.5}
+        adaptive_words_off = build_latency_filler(
+            SpeechNaturalnessPlanner({"adaptive_latency_cues": True, "filler_words": False}),
+            sample_rate=8000, library=library, cue_library=cues,
+        )
+        assert adaptive_words_off._voiced_cue_gap_ms == 0
+        adaptive_breath_off = build_latency_filler(
+            SpeechNaturalnessPlanner({"adaptive_latency_cues": True, "breathing": False}),
+            sample_rate=8000, library=library, cue_library=cues,
+        )
+        assert adaptive_breath_off._voiced_cue_gap_ms == 300 and not adaptive_breath_off.breath_enabled
 
     def test_ladder_defaults_and_wiring(self):
         assert HUMAN_SPEECH_DEFAULTS["latency_filler_ladder"] is True
@@ -1407,6 +1473,45 @@ class TestFillerSoundKinds:
         library.clip("male", RATE, selection={"primary": "file:breath_male_bad.wav"})
         assert library.last_clip_id == "file:breath_male_good.wav"    # every male clip that renders
 
+    def test_optional_recording_is_previewable_but_only_plays_when_selected(self, tmp_path):
+        optional = tmp_path / "optional"
+        optional.mkdir()
+        (optional / "breath_male_soft.wav").write_bytes(_tone_wav(RATE, 300, 700))
+        library = FillerClipLibrary(tmp_path)
+        clip_id = "file:optional:breath_male_soft.wav"
+        assert validate_human_speech({
+            "filler_audio_selection": {"breath": {"male": {"primary": clip_id, "alternates": []}}},
+        }) == []
+        catalog = library.catalog("breath", "male", RATE)
+        assert catalog[-1]["id"] == clip_id
+        assert catalog[-1]["requiresSelection"] is True
+        expected = library.render_clip(clip_id, RATE)
+        assert expected
+        # Installing an optional asset must not change any unconfigured bot.
+        for _ in range(4):
+            library.clip("male", RATE)
+            assert library.last_clip_id.startswith("synth:breath:male:")
+        session = library.new_session()
+        assert session.clip("male", RATE, selection={"primary": clip_id}) == expected
+        assert session.last_clip_id == clip_id
+        for kind, gender in (("inhale", "male"), ("breath", "female"), ("breath", "neutral")):
+            session.clip(gender, RATE, kind=kind, selection={"primary": clip_id})
+            assert session.last_clip_id.startswith(f"synth:{kind}:{gender}:")
+
+    def test_bad_optional_recording_falls_back_and_duplicate_basename_keeps_distinct_pcm(self, tmp_path):
+        optional = tmp_path / "optional"
+        optional.mkdir()
+        name = "breath_male_soft.wav"
+        (tmp_path / name).write_bytes(_tone_wav(RATE, 200, 700))
+        (optional / name).write_bytes(_tone_wav(RATE, 300, 900))
+        (optional / "breath_male_bad.wav").write_bytes(b"invalid wav")
+        library = FillerClipLibrary(tmp_path)
+        default = library.render_clip(f"file:{name}", RATE)
+        recorded = library.render_clip(f"file:optional:{name}", RATE)
+        assert default and recorded and default != recorded
+        assert library.clip("male", RATE, selection={"primary": "file:optional:breath_male_bad.wav"}) == default
+        assert library.last_clip_id == f"file:{name}"
+
 
 class _KwLibrary(_ShortLibrary):
     """Records the keyword arguments the processor passes."""
@@ -1570,3 +1675,95 @@ class TestVoicedCueSelection:
         pcm = await lib.render_now(engine, "hi-IN", "hmm", "hoon", 24000)
         assert pcm and calls.count("हूँ…") == 1
         assert await lib.render_now(engine, "hi-IN", "hmm", "nope", 24000) == b""
+
+
+# ── breathing and filler words on one schedule, independently ─────────────
+
+
+class TestBreathAndWordsIndependence:
+    """The processor plays two families — the breath and the words — off one
+    deadline schedule without either implying the other."""
+
+    def make(self, monkeypatch, **kwargs):
+        monkeypatch.setattr(latency_filler_module, "_MIN_RUNG_GAP_S", 0.01)
+        monkeypatch.setattr(latency_filler_module, "_AFTER_ACK_GAP_S", 0.01)
+        return make_filler(**kwargs)
+
+    async def test_breath_off_still_plays_the_acknowledgement_and_the_cues(self, monkeypatch):
+        library, cues = _ShortLibrary(), _AcknowledgementCueStub(clip_ms=40)
+        filler = self.make(monkeypatch, delay_ms=30, library=library, cue_library=cues,
+                           hmm_after_ms=90, spoken_after_ms=150)
+        filler._breath_enabled = False
+        played = []
+        filler.acknowledgement_hook = played.append
+        await filler.arm(turn_id=1, gender="male", language="hi-IN", acknowledgement={"text": "जी…"})
+        await wait(0.12)
+        assert played == [1]
+        assert library.requests == []                       # no breath clip was ever asked for
+        rung = filler._recorder.data("latency_filler_played")
+        assert [r["rung"] for r in rung] == ["breath"] and rung[0]["sound"] == "acknowledgement"
+        await filler.cancel("done")
+        # Second turn: no acknowledgement planned → the breath rung is
+        # skipped without waiting and the ladder keeps its own schedule.
+        filler._recorder.events.clear()
+        await filler.arm(turn_id=2, gender="male", language="hi-IN")
+        await wait(0.3)
+        assert filler._recorder.data("latency_filler_skipped")[0] == {
+            "turn": 2, "rung": "breath", "reason": "breathing_off",
+        }
+        assert [r["rung"] for r in filler._recorder.data("latency_filler_played")] == ["hmm", "wait"]
+        assert library.requests == []
+        assert filler.rungs_played == {"breath": 1, "hmm": 1, "wait": 1}
+
+    async def test_breath_off_and_cold_acknowledgement_plays_nothing_at_the_first_deadline(self, monkeypatch):
+        library = _ShortLibrary()
+        filler = self.make(monkeypatch, delay_ms=20, library=library,
+                           cue_library=_AcknowledgementCueStub(ready=False), hmm_after_ms=80)
+        filler._breath_enabled = False
+        await filler.arm(turn_id=1, gender="female", language="hi-IN", acknowledgement={"text": "जी…"})
+        await wait(0.2)
+        skipped = filler._recorder.data("latency_filler_skipped")
+        assert skipped and skipped[0]["rung"] == "breath" and skipped[0]["reason"] == "breathing_off"
+        assert library.requests == []
+        assert [r["rung"] for r in filler._recorder.data("latency_filler_played")] == ["hmm"]
+
+    async def test_words_off_plays_only_the_breath(self, monkeypatch):
+        library = _ShortLibrary()
+        filler = self.make(monkeypatch, delay_ms=30, library=library)   # no cue library, no ladder
+        await filler.arm(turn_id=1, gender="male", language="hi-IN")
+        await wait(0.25)
+        assert [r["rung"] for r in filler._recorder.data("latency_filler_played")] == ["breath"]
+        assert library.requests == [("male", RATE)]
+        assert filler.rungs_played == {"breath": 1, "hmm": 0, "wait": 0}
+        assert not filler.armed
+
+    async def test_only_a_real_breath_updates_the_recent_breath_clock(self, monkeypatch):
+        library = FillerClipLibrary(None)
+        filler = self.make(monkeypatch, delay_ms=20, cue_library=_AcknowledgementCueStub(clip_ms=40),
+                           hmm_after_ms=80)
+        filler._library = library
+        await filler.arm(turn_id=1, gender="male", language="hi-IN", acknowledgement={"text": "जी…"})
+        await wait(0.1)
+        assert filler.rungs_played["breath"] == 1                # the acknowledgement played…
+        assert not library.recently_played(10.0)                 # …but a word is not a breath
+        filler._breath_enabled = False
+        await filler.arm(turn_id=2, gender="male", language="hi-IN")
+        await wait(0.2)
+        assert filler.rungs_played["hmm"] == 1
+        assert not library.recently_played(10.0)                 # a voiced cue is not a breath either
+        filler._breath_enabled = True
+        await filler.arm(turn_id=3, gender="male", language="hi-IN")
+        await wait(0.06)
+        assert library.recently_played(10.0)
+        await filler.cancel("done")
+
+    async def test_voiced_cue_reports_to_the_planner_hook(self, monkeypatch):
+        cues = _SelectingCueStub()
+        filler = self.make(monkeypatch, delay_ms=10, cue_library=cues, hmm_after_ms=40)
+        filler._breath_enabled = False
+        heard = []
+        filler.cue_played_hook = lambda turn, cue: heard.append((turn, cue))
+        await filler.arm(turn_id=7, gender="male", language="hi-IN",
+                         cue_selection={"primary": "achha", "alternates": ["hmm"]})
+        await wait(0.15)
+        assert heard == [(7, "achha")]

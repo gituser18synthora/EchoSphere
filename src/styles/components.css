@@ -1174,6 +1174,23 @@
 .param-reset:hover { text-decoration: underline; }
 :root[data-theme="dark"] .param-reset { color: var(--brand-300); }
 
+/* Inline "Use automatic" link next to the STT auto-detect source line — same
+   look as .param-reset but flows with the text (that class is absolutely
+   positioned for the per-parameter reset affordance and would float the
+   button to the page corner, under the sticky top bar). */
+.stt-auto-detect-reset {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--brand-600);
+  line-height: 1.4;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.stt-auto-detect-reset:hover { text-decoration: underline; }
+:root[data-theme="dark"] .stt-auto-detect-reset { color: var(--brand-300); }
+
 /* Voice-settings block inside the preview modal — visually separated from the
    engine selection above it so draft tuning reads as its own section. */
 .preview-settings {

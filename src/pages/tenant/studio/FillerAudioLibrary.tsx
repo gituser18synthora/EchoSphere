@@ -179,6 +179,14 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
   const cueSelection: CueSelection = override.latency_filler_cue_selection ?? inherited.latency_filler_cue_selection ?? {};
   const cueOverridden = Object.prototype.hasOwnProperty.call(override, "latency_filler_cue_selection");
   const adaptiveCues = override.adaptive_latency_cues ?? inherited.adaptive_latency_cues ?? false;
+  /* Which family each part of the library belongs to. The two are
+     independent: the breath sounds follow Breathing, the voiced cues follow
+     Filler words, and neither switch affects the other. */
+  const flag = (key: "enabled" | "breathing" | "latency_fillers" | "filler_words" | "latency_filler_ladder") =>
+    (override[key] ?? inherited[key] ?? true) as boolean;
+  const layerOn = flag("enabled");
+  const breathingOn = layerOn && flag("breathing") && flag("latency_fillers");
+  const cuesOn = layerOn && flag("filler_words") && flag("latency_filler_ladder");
 
   const setKind = (next: FillerSoundKind) => onChange({ ...override, latency_filler_kind: next });
   const inheritKind = () => {
@@ -246,6 +254,7 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
         </Button>
         <span className="t-strong" style={{ minWidth: 140 }}>{clip.label}</span>
         <span className="t-micro">{clip.source === "recording" ? "Recording" : "Synthesized"} · {formatDuration(clip.durationMs)}</span>
+        {clip.requiresSelection && <span className="t-micro">Plays only when selected</span>}
         <label className="row gap-6 t-micro" style={{ marginLeft: "auto" }}>
           <input type="radio" name={`primary-${clip.kind}-${clip.gender}`} checked={isPrimary} disabled={disabled}
             aria-label={`Primary: ${label}`}
@@ -270,7 +279,10 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
 
   const rotationSummary = (clips: FillerAudioClip[], choice: AudioChoice | null) => {
     const ids = choiceIds(choice).filter((id) => clips.some((c) => c.id === id));
-    if (!ids.length) return `No selection — all ${clips.length} clip${clips.length === 1 ? "" : "s"} rotate.`;
+    if (!ids.length) {
+      const defaults = clips.filter((clip) => !clip.requiresSelection);
+      return `No selection — ${defaults.length === clips.length ? "all" : "the default"} ${defaults.length} clip${defaults.length === 1 ? "" : "s"} rotate.`;
+    }
     const names = ids.map((id) => clips.find((c) => c.id === id)?.label ?? id);
     return ids.length === 1 ? `Always plays: ${names[0]}.` : `Rotation: ${names.join(" → ")} (primary first, never the same twice in a row).`;
   };
@@ -322,13 +334,21 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
 
       <div className="col gap-8" data-testid="latency-filler-kind">
         <div className="row-between gap-8">
-          <span className="t-strong">Sound before the reply</span>
+          <span className="t-strong">Sound before the reply <span className="t-micro">· part of Breathing</span></span>
           {kindOverridden && <Button size="sm" variant="ghost" disabled={disabled} onClick={inheritKind}>Inherit</Button>}
         </div>
         <p className="t-micro" style={{ margin: 0 }}>
           Plays once the reply has not started speaking after the configured delay, and stops the instant the reply begins.
           The inhale is also used before long sentences inside a reply.
         </p>
+        {!breathingOn && (
+          <div data-testid="breathing-off-note">
+            <Callout tone="info">
+              Breathing before the reply is off for this bot, so none of these sounds play. Filler words are not affected.
+              Turn on Breathing and “Breath before the reply” above to use them.
+            </Callout>
+          </div>
+        )}
         <div className="row gap-12" style={{ flexWrap: "wrap" }}>
           {catalog.kinds.map((option) => (
             <label key={option.id} className="row gap-6">
@@ -361,7 +381,7 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
                   {!isEmptyChoice(choice) && (
                     <Button size="sm" variant="ghost" disabled={disabled}
                       onClick={() => updateSelection(withClipChoice(selection, option.id, gender, null))}>
-                      Use all clips
+                      Use default rotation
                     </Button>
                   )}
                 </div>
@@ -383,13 +403,21 @@ export default function FillerAudioLibrary({ botId, override, inherited, disable
 
       <div className="col gap-8" data-testid="voiced-cues">
         <div className="row-between gap-8">
-          <span className="t-strong">Voiced cues on long waits</span>
+          <span className="t-strong">Voiced cues on long waits <span className="t-micro">· part of Filler words</span></span>
           {cueOverridden && <Button size="sm" variant="ghost" disabled={disabled} onClick={inheritCues}>Inherit</Button>}
         </div>
+        {!cuesOn && (
+          <div data-testid="filler-words-off-note">
+            <Callout tone="info">
+              Thinking cues are off for this bot (Filler words or “Thinking cues on long waits”), so no voiced cue plays on a
+              long wait. Breathing is not affected.
+            </Callout>
+          </div>
+        )}
         <p className="t-micro" style={{ margin: 0 }}>
           {adaptiveCues
-            ? "If the reply is still pending, one contextual cue or breath may play 1.5–2.5 seconds after the caller stops. A started voiced cue finishes with a 300 ms gap before the answer; breaths stop when the answer is ready. Caller interruptions always stop playback. A spoken wait cue may follow on a longer wait. "
-            : "When the reply still has not started after the breath, a short cue in the bot’s own voice may follow, then a spoken wait cue. "}
+            ? "If the reply is still pending, one contextual cue may play 1.5–2.5 seconds after the caller stops (a breath instead, when Breathing is on and no cue fits). A started voiced cue finishes with a 300 ms gap before the answer; breaths stop when the answer is ready. Caller interruptions always stop playback. A spoken wait cue may follow on a longer wait. "
+            : "When the reply still has not started, a short cue in the bot’s own voice may follow (after the breath, when Breathing is on), then a spoken wait cue. "}
           Tick the cues this bot is allowed to use; the runtime decides per turn whether a word is needed at all and which allowed cue fits
           what the caller just said (thinking, information given, confirmation, agreement, courtesy, concern). Never a fixed sequence, never the
           same cue twice in a row. The neutral default is used when nothing more specific fits. Previews are rendered once with the bot&apos;s voice

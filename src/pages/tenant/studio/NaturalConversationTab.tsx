@@ -159,7 +159,7 @@ export default function NaturalConversationTab({ bot, onDirtyChange, onSavingCha
       <div className="row-between gap-12" style={{ flexWrap: "wrap" }}>
         <div>
           <h2 className="t-section" style={{ margin: 0 }}>Natural Conversation</h2>
-          <p className="t-sub mt-4">Control fillers, acknowledgements, backchannels and natural pauses for this bot.</p>
+          <p className="t-sub mt-4">Breathing and filler words are two independent families with their own switches; backchannels and delivery pacing sit alongside them.</p>
           <p className="t-micro">Speaking speed and the base sentence pause are in Voice settings. Some effects depend on the selected voice provider.</p>
         </div>
         <div className="row gap-8">

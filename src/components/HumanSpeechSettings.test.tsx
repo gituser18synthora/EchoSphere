@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -20,8 +20,11 @@ const inherited: HumanSpeechEffectiveSettings = {
   gender_agreement: true,
   micro_pauses: true,
   self_correction: false,
+  breathing: true,
+  filler_words: true,
   latency_fillers: true,
   sentence_breaths: true,
+  breath_gain_db: 0,
   thinking_filler_probability: 0.25,
   acknowledgement_probability: 0.4,
   tool_ack_probability: 0.9,
@@ -35,6 +38,7 @@ const inherited: HumanSpeechEffectiveSettings = {
   latency_filler_delay_ms: 1500,
   latency_filler_ladder: true,
   adaptive_latency_cues: false,
+  latency_cue_probability: 0.7,
   latency_filler_hmm_ms: 3500,
   latency_filler_spoken_ms: 5000,
 };
@@ -70,7 +74,7 @@ describe("HumanSpeechSettingsEditor", () => {
 
     expect(details).toHaveAttribute("open");
     expect(probability).toBeVisible();
-    expect(screen.getByLabelText("Latency filler delay (ms)")).toHaveValue(2000);
+    expect(screen.getByLabelText("Delay before the first gap sound (ms)")).toHaveValue(2000);
   });
 
   it("preserves hidden numeric overrides when a common switch changes", async () => {
@@ -166,7 +170,7 @@ describe("HumanSpeechSettingsEditor", () => {
     ]);
   });
 
-  it("exposes the latency filler switch and its delay with backend bounds", async () => {
+  it("exposes the pre-reply breath switch and its delay with backend bounds", async () => {
     const onChange = vi.fn();
     render(
       <HumanSpeechSettingsEditor
@@ -178,19 +182,110 @@ describe("HumanSpeechSettingsEditor", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("switch", { name: "Latency fillers" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Breath before the reply" }));
     expect(onChange).toHaveBeenLastCalledWith({ latency_fillers: false });
-    const delay = screen.getByRole("spinbutton", { name: "Latency filler delay (ms)" });
+    const delay = screen.getByRole("spinbutton", { name: "Delay before the first gap sound (ms)" });
     expect(delay).toHaveValue(1500);
     expect(delay).toHaveAttribute("min", "500");
     expect(delay).toHaveAttribute("max", "5000");
     expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 300 })).toEqual([
-      "Latency filler delay (ms) must be between 500 and 5000.",
+      "Delay before the first gap sound (ms) must be between 500 and 5000.",
     ]);
     expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 1500.5 })).toEqual([
-      "Latency filler delay (ms) must be between 500 and 5000.",
+      "Delay before the first gap sound (ms) must be between 500 and 5000.",
     ]);
     expect(validateHumanSpeechOverrides({ latency_filler_delay_ms: 2000 })).toEqual([]);
+    const cueProbability = screen.getByRole("spinbutton", { name: "Long-wait cue probability" });
+    expect(cueProbability).toHaveValue(0.7);
+    expect(validateHumanSpeechOverrides({ latency_cue_probability: 1.2 })).toEqual([
+      "Long-wait cue probability must be between 0 and 1.",
+    ]);
+  });
+
+  it("separates Breathing and Filler words into independent sections with their own masters", async () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+
+    const breathing = screen.getByTestId("human-speech-group-breathing");
+    const words = screen.getByTestId("human-speech-group-filler-words");
+    expect(within(breathing).getByRole("switch", { name: "Breathing" })).toBeVisible();
+    expect(within(breathing).getByRole("switch", { name: "Breath before the reply" })).toBeVisible();
+    expect(within(breathing).getByRole("switch", { name: "Breath inside long replies" })).toBeVisible();
+    expect(within(breathing).getByRole("spinbutton", { name: "Breathing volume (dB)" })).toBeVisible();
+    expect(within(words).getByRole("switch", { name: "Filler words" })).toBeVisible();
+    expect(within(words).getByRole("switch", { name: "Acknowledgements" })).toBeVisible();
+    expect(within(words).getByRole("switch", { name: "Thinking cues on long waits" })).toBeVisible();
+    expect(within(words).getByRole("spinbutton", { name: "Thinking cue at (ms)" })).toBeVisible();
+    expect(within(words).queryByRole("switch", { name: /Breath/ })).toBeNull();
+    expect(within(breathing).queryByRole("switch", { name: /Acknowledgements|Thinking/ })).toBeNull();
+
+    // Turning one family off writes only its own key.
+    await userEvent.click(within(breathing).getByRole("switch", { name: "Breathing" }));
+    expect(onChange).toHaveBeenLastCalledWith({ breathing: false });
+    await userEvent.click(within(words).getByRole("switch", { name: "Filler words" }));
+    expect(onChange).toHaveBeenLastCalledWith({ filler_words: false });
+  });
+
+  it("marks a family's members inactive while its master is off, without touching the other family", () => {
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ breathing: false }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Breathing" })).toHaveAttribute("aria-checked", "false");
+    // Children keep their own saved value…
+    expect(screen.getByRole("switch", { name: "Breath before the reply" })).toHaveAttribute("aria-checked", "true");
+    // …and say why they are silent right now.
+    expect(screen.getByTestId("human-speech-inactive-latency_fillers")).toHaveTextContent("Inactive while Breathing is off.");
+    expect(screen.getByTestId("human-speech-inactive-sentence_breaths")).toBeInTheDocument();
+    // Filler words are unaffected.
+    expect(screen.queryByTestId("human-speech-inactive-acknowledgements")).toBeNull();
+    expect(screen.queryByTestId("human-speech-inactive-latency_filler_ladder")).toBeNull();
+    expect(screen.queryByTestId("human-speech-inactive-filler_words")).toBeNull();
+    expect(screen.getByRole("switch", { name: "Filler words" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("allows quieter breathing and rejects amplification", () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+
+    const volume = screen.getByRole("spinbutton", { name: "Breathing volume (dB)" });
+    expect(volume).toHaveValue(0);
+    expect(volume).toHaveAttribute("min", "-24");
+    expect(volume).toHaveAttribute("max", "0");
+    expect(volume).toHaveAttribute("step", "0.5");
+
+    fireEvent.change(volume, { target: { value: "-6" } });
+    expect(onChange).toHaveBeenLastCalledWith({ breath_gain_db: -6 });
+    expect(validateHumanSpeechOverrides({ breath_gain_db: -6 })).toEqual([]);
+    expect(validateHumanSpeechOverrides({ breath_gain_db: -6.5 })).toEqual([]);
+    expect(validateHumanSpeechOverrides({ breath_gain_db: 1 })).toEqual([
+      "Breathing volume (dB) must be between -24 and 0.",
+    ]);
+    expect(validateHumanSpeechOverrides({ breath_gain_db: Number.NaN })).toEqual([
+      "Breathing volume (dB) must be between -24 and 0.",
+    ]);
   });
 
   it("preserves fields a future form version may not understand", async () => {

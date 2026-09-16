@@ -69,6 +69,64 @@ _BOOKING_ID_RE = re.compile(
 )
 
 
+# ── foreign-script guard ─────────────────────────────────────────────────────
+# Smaller LLMs generating Indic text occasionally leak tokens from unrelated
+# scripts ("രണ്ട് հազար രൂപ", "XX0923 бойынша", "具体മായ") — observed on a
+# Malayalam collections bot with gpt-5-mini. Such characters are unspeakable
+# for the target voice and can break the provider. Letters from scripts that
+# cannot belong to the reply language are removed before synthesis; Latin
+# (code-switched business terms, names) and Devanagari (Hindi lender/brand
+# names used across the platform) are always kept, as are digits, symbols and
+# punctuation. Unknown target languages keep the text untouched.
+_SCRIPT_BY_BASE_LANGUAGE = {
+    "hi": "DEVANAGARI", "mr": "DEVANAGARI", "ne": "DEVANAGARI",
+    "ml": "MALAYALAM", "ta": "TAMIL", "te": "TELUGU", "kn": "KANNADA",
+    "bn": "BENGALI", "gu": "GUJARATI", "pa": "GURMUKHI", "or": "ORIYA",
+    "en": "LATIN",
+}
+_ALWAYS_ALLOWED_SCRIPTS = frozenset({"LATIN", "DEVANAGARI"})
+
+
+def _letter_script(char: str) -> str | None:
+    import unicodedata
+
+    try:
+        return unicodedata.name(char).split()[0]
+    except ValueError:
+        return None
+
+
+def strip_foreign_scripts(text: str, language: str | None) -> tuple[str, dict[str, int]]:
+    """Remove letters from scripts foreign to ``language``.
+
+    Returns ``(cleaned_text, {script_name: removed_count})``. Nothing is
+    removed for an unknown language, and the original text is returned when
+    stripping would leave nothing speakable.
+    """
+    if not text:
+        return text, {}
+    base = (language or "").split("-")[0].lower()
+    target = _SCRIPT_BY_BASE_LANGUAGE.get(base)
+    if target is None:
+        return text, {}
+    allowed = _ALWAYS_ALLOWED_SCRIPTS | {target}
+    removed: dict[str, int] = {}
+    out: list[str] = []
+    for char in text:
+        if char.isalpha():
+            script = _letter_script(char)
+            if script is not None and script not in allowed and script != "DIGIT":
+                removed[script] = removed.get(script, 0) + 1
+                continue
+        out.append(char)
+    if not removed:
+        return text, {}
+    cleaned = re.sub(r" {2,}", " ", "".join(out)).strip()
+    if not has_speakable_text(cleaned):
+        return text, {}
+    return cleaned, removed
+
+
 def has_speakable_text(text: str) -> bool:
     """True when the text contains at least one letter or digit (any script)."""
     return bool(_SPEAKABLE_RE.search(text or ""))

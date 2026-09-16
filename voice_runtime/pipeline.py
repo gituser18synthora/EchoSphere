@@ -65,6 +65,10 @@ from shared.turn_detection import (
 from shared.orchestration.naturalness import SpeechNaturalnessPlanner
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
+from shared.providers.stt_language_policy import (
+    resolve_auto_detect_language,
+    stt_language_mode,
+)
 from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.barge_in import WordConfirmedBargeInStrategy
 from voice_runtime.silence_policy import SilencePolicy
@@ -265,10 +269,16 @@ def build_stt_service(
     use_provider_vad: bool | None = None,
     latency=None,
     barge_in_min_words: int = 2,
-    prefer_primary_language: bool = False,
+    prefer_primary_language: bool | None = None,
 ):
     """STT service from bot config: Deepgram Flux or Sarvam realtime WS,
-    segmented fallback otherwise."""
+    segmented fallback otherwise.
+
+    ``prefer_primary_language`` is accepted for backward compatibility and
+    ignored: whether the recognizer is pinned to the bot's language is now
+    decided by ``auto_detect_language`` (explicit or derived from the bot's
+    languages) on every transport.
+    """
     stt_conf = config.stt or {}
     provider = stt_conf.get("provider") or "sarvam"
 
@@ -337,17 +347,26 @@ def build_stt_service(
             )
         settings_kwargs = stt_conf.get("settings") or {}
         model = stt_conf.get("model") or "saaras:v3"
-        # Auto-detection is unreliable on the sub-three-second, narrowband
-        # snippets common on phone calls.  Telephony therefore supplies the
-        # bot's primary language when STT language is blank, with an explicit
-        # opt-out for genuinely multilingual bots.
-        language_code = stt_conf.get("language") or None
-        if (
-            language_code is None
-            and prefer_primary_language
-            and settings_kwargs.get("auto_detect_language") is not True
-        ):
-            language_code = config.language or None
+        # Language policy (shared.providers.stt_language_policy): an explicit
+        # STT language always pins the recognizer; otherwise the bot's
+        # auto_detect_language decides — explicit true/false when the user set
+        # it, else derived from the bot's languages (more than one → detect,
+        # a single language → pin to it, the reliable choice for the short
+        # narrowband snippets of phone calls). The SAME rule applies to the
+        # browser test transport so Testing and real calls behave alike, and
+        # a pinned label can never trigger a language switch in the brain.
+        auto_detect = resolve_auto_detect_language(
+            settings_kwargs, config.languages or [config.language],
+        )
+        # The resolver stamps the EFFECTIVE boolean into the settings (so the
+        # value above is always right) and keeps the provenance beside it —
+        # report "derived" vs "explicit" from that record when present.
+        resolved_policy = stt_conf.get("auto_detect_language")
+        if isinstance(resolved_policy, dict) and resolved_policy.get("source") in ("explicit", "derived"):
+            auto_detect = replace(auto_detect, source=resolved_policy["source"])
+        mode, language_code = stt_language_mode(
+            stt_conf.get("language"), auto_detect, config.language,
+        )
         language = None
         if language_code:
             try:
@@ -357,6 +376,17 @@ def build_stt_service(
                     "sarvam-stt: unsupported configured language %r; using auto-detect",
                     language_code,
                 )
+                mode, language_code = "auto", None
+        if recorder is not None:
+            recorder.add_event(
+                "stt_language_mode",
+                mode=mode,
+                language=language_code,
+                auto_detect_language=auto_detect.enabled,
+                source=auto_detect.source,
+                configured_languages=list(auto_detect.languages),
+                default_language=config.language,
+            )
         mode = settings_kwargs.get("mode")
         provider_vad = settings_kwargs.get("vad_signals", False)
         if use_provider_vad is not None:
@@ -606,29 +636,39 @@ def build_latency_filler(
     transport_kind: str = "browser",
 ) -> LatencyFillerProcessor | None:
     """The gap-cover processor for one call, or None when the resolved
-    human-speech config turns latency fillers off (no processor, no cost).
+    human-speech config needs none (no processor, no cost).
 
     Sits between the TTS service and the output transport; the brain arms it
     per dispatched turn with the active voice's gender. Config already comes
     merged platform -> tenant -> bot and bounds-clamped from the planner.
-    With ``latency_filler_ladder`` on, the breath is followed on a long wait
-    by voiced cues rendered once per voice (voice_runtime.voiced_cues).
+
+    Two independent families ride it: the BREATH (``breathing`` ×
+    ``latency_fillers`` → ``breath_enabled``) and the WORDS (``filler_words``
+    × ``acknowledgements`` → the dispatch-time acknowledgement;
+    ``filler_words`` × ``latency_filler_ladder`` → voiced cues rendered once
+    per voice, voice_runtime.voiced_cues). Turning either family off leaves
+    the other exactly as configured; the processor exists while any of them
+    is on.
     """
-    if not naturalness.latency_fillers_enabled:
+    if not naturalness.latency_cover_enabled:
         return None
+    breath = naturalness.latency_fillers_enabled
+    acknowledgements = naturalness.acknowledgements_enabled
     ladder = naturalness.latency_filler_ladder_enabled
     return LatencyFillerProcessor(
         delay_ms=naturalness.latency_filler_delay_ms,
+        breath_enabled=breath,
+        breath_gain_db=naturalness.breath_gain_db,
         library=library if library is not None else get_filler_library(),
         sample_rate=sample_rate,
         recorder=recorder,
         cue_library=(
             (cue_library if cue_library is not None else get_voiced_cue_library())
-            if ladder or naturalness.config["acknowledgements"] else None
+            if ladder or acknowledgements else None
         ),
         hmm_after_ms=naturalness.latency_filler_hmm_ms if ladder else None,
         spoken_after_ms=naturalness.latency_filler_spoken_ms if ladder else None,
-        voiced_cue_gap_ms=300 if ladder and naturalness.config.get("adaptive_latency_cues") else 0,
+        voiced_cue_gap_ms=300 if naturalness.adaptive_latency_cues_enabled else 0,
         # Telephony serializers packetize outbound PCM; a completed clip's
         # tail must be flushed explicitly or it plays ahead of the next reply.
         emit_flush_marker=transport_kind == "telephony",
@@ -706,7 +746,6 @@ def build_voice_pipeline(
         use_provider_vad=not use_vad,
         latency=tracker,
         barge_in_min_words=barge_in_min_words,
-        prefer_primary_language=transport_kind == "telephony",
     )
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,

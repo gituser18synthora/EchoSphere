@@ -35,6 +35,11 @@ from shared.models import (
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.orchestration.voice_identity import VoiceIdentity
 from shared.providers.tts.delivery import clamp_level, clamp_speed
+from shared.providers.stt_language_policy import (
+    AUTO_DETECT_KEY,
+    effective_languages,
+    resolve_auto_detect_language,
+)
 from shared.turn_detection import resolve_tenant_turn_detection
 
 logger = logging.getLogger(__name__)
@@ -807,11 +812,30 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 TenantSetting.human_speech,
                 TenantSetting.timezone,
                 TenantSetting.turn_detection,
+                TenantSetting.default_languages,
             ).where(
                 TenantSetting.tenant_id == bot.tenant_id
             )
         ).first()
         tenant_human_speech = tenant_settings_row[0] if tenant_settings_row else None
+        tenant_default_languages = (
+            tenant_settings_row[3] if tenant_settings_row else None
+        ) or []
+        # A bot with no languages of its own inherits the tenant's defaults —
+        # the same list drives the default call language, the set the brain
+        # may switch to, and the STT auto-detect default below.
+        effective_langs = effective_languages(bot_languages, tenant_default_languages)
+        # STT language detection policy (shared.providers.stt_language_policy):
+        # explicit stt_settings.auto_detect_language wins, otherwise a bot
+        # with more than one effective language auto-detects and a
+        # single-language bot pins the recognizer to its default language.
+        # The effective value is stamped into the resolved settings so the
+        # runtime, the cache and the test tools all see one answer.
+        auto_detect = resolve_auto_detect_language(
+            vbs.stt_settings if vbs else None, bot_languages, tenant_default_languages,
+        )
+        stt_settings_effective = dict((vbs.stt_settings if vbs else None) or {})
+        stt_settings_effective[AUTO_DETECT_KEY] = auto_detect.enabled
         tenant_timezone = (
             tenant_settings_row[1] if tenant_settings_row else None
         ) or "UTC"
@@ -829,7 +853,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         # audio at all. Bot languages are DB-validated platform locale codes.
         default_language = ((vbs.language_voice_map or {}).get("default") if vbs else None)
         if not default_language:
-            default_language = bot_languages[0] if bot_languages else "en"
+            default_language = effective_langs[0] if effective_langs else "en"
 
         return ResolvedBotConfig(
             tenant_id=bot.tenant_id,
@@ -848,7 +872,8 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "provider": stt_provider,
                 "model": stt_model,
                 "language": (vbs.stt_language if vbs else None) or "",
-                "settings": (vbs.stt_settings if vbs else None) or {},
+                "settings": stt_settings_effective,
+                "auto_detect_language": auto_detect.as_dict(),
                 "api_key_reference": _secret_ref_for(session, "stt", stt_provider),
             },
             tts=tts_engine,
@@ -873,7 +898,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             max_call_duration=settings.max_call_duration,
             timezone=tenant_timezone,
             audio_settings=audio_settings,
-            languages=bot_languages,
+            languages=effective_langs,
             language_warnings=language_warnings,
         )
     finally:

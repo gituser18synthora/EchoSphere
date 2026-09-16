@@ -26,6 +26,7 @@ Configuration resolves platform defaults -> tenant override -> bot override
 
 from __future__ import annotations
 
+import math
 import random
 import re
 import time
@@ -61,14 +62,34 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "gender_agreement": True,
     "micro_pauses": True,
     "self_correction": False,
+    # Two INDEPENDENT families of gap cover, each with its own master switch
+    # (voice_runtime.latency_filler plays both through one processor, but
+    # neither switch ever implies the other):
+    #
+    # ``breathing`` — nonverbal breath sounds: the pre-reply breath
+    # (``latency_fillers``) and the rare in-reply sentence breath
+    # (``sentence_breaths``), plus their sound kind, clips and volume.
+    # ``filler_words`` — short spoken words that cover the wait for a reply:
+    # the dispatch-time acknowledgement (``acknowledgements``), the voiced
+    # thinking cue and spoken wait cue on long waits
+    # (``latency_filler_ladder`` / ``adaptive_latency_cues``), the question
+    # beat (``thinking_fillers``) and tool-lookup prefaces.
+    "breathing": True,
+    "filler_words": True,
     # Latency fillers: a short, voice-gender-matched breath played from
     # pre-rendered audio when the reply has not started speaking
     # ``latency_filler_delay_ms`` after the caller stopped talking, cut the
     # instant real reply audio arrives (voice_runtime.latency_filler).
+    # Under ``breathing``; a planned acknowledgement (``filler_words``) uses
+    # the same deadline and replaces the breath when it is ready.
     "latency_fillers": True,
     # Sentence breaths: in pause mode, a rare soft breath before a long or
     # verification sentence INSIDE a reply — never after every sentence.
+    # Under ``breathing``.
     "sentence_breaths": True,
+    # Attenuation for nonverbal breath clips, both before and inside replies.
+    # Spoken acknowledgements and voiced cues retain the bot's speech level.
+    "breath_gain_db": 0.0,
     # Tunables (probabilities are per-opportunity, 0..1)
     "thinking_filler_probability": 0.25,
     # Acknowledgement ("जी…", "ठीक है…", "Hmm…") eligible at the latency
@@ -86,12 +107,13 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     "min_gap_between_backchannels_ms": 8000,
     "max_backchannels_per_call": 4,
     "latency_filler_delay_ms": 1500,
-    # Escalation ladder for LONG waits: when the breath has played and the
-    # reply still has not started, a short voiced cue in the bot's own voice
-    # ("Hmm…") follows at ``latency_filler_hmm_ms`` after the caller stopped,
-    # and a spoken "एक सेकंड…" at ``latency_filler_spoken_ms``. Cues are
-    # rendered once per voice and cached (voice_runtime.voiced_cues); the
-    # spoken rung is withheld on critical/serious turns.
+    # Escalation ladder for LONG waits: when the reply still has not started,
+    # a short voiced cue in the bot's own voice ("Hmm…") follows at
+    # ``latency_filler_hmm_ms`` after the caller stopped, and a spoken
+    # "एक सेकंड…" at ``latency_filler_spoken_ms``. Cues are rendered once per
+    # voice and cached (voice_runtime.voiced_cues); the spoken rung is
+    # withheld on critical/serious turns. Under ``filler_words`` — it does
+    # NOT need the breath: with breathing off the cues play on their own.
     "latency_filler_ladder": True,
     # Opt-in per bot: choose one initial sound at a contextual 1.5–2.5 s
     # deadline instead of requiring breath -> quiet gap -> voiced cue.
@@ -122,6 +144,7 @@ HUMAN_SPEECH_DEFAULTS: dict = {
 _BOOL_KEYS = (
     "enabled", "thinking_fillers", "acknowledgements", "backchannels",
     "prosody_variation", "gender_agreement", "micro_pauses", "self_correction",
+    "breathing", "filler_words",
     "latency_fillers", "sentence_breaths", "latency_filler_ladder", "adaptive_latency_cues",
 )
 _PROBABILITY_KEYS = (
@@ -141,12 +164,23 @@ _INT_KEYS = {
     "latency_filler_hmm_ms": (2000, 8000),
     "latency_filler_spoken_ms": (3000, 12000),
 }
+_FLOAT_KEYS = {"breath_gain_db": (-24.0, 0.0)}
 _CHOICE_KEYS = {"latency_filler_kind": FILLER_SOUND_KINDS}
 # Nested selection maps: {name: … {name: {"primary", "alternates"}}} with the
 # given number of string-key levels above the choice.
 _SELECTION_KEYS = {"filler_audio_selection": 2, "latency_filler_cue_selection": 1}
 _SELECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.:,()\-]{0,120}$")
 _MAX_ALTERNATES = 8
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _normalize_choice(value: object) -> dict | None:
@@ -265,6 +299,11 @@ def validate_human_speech(value: object) -> list[str]:
                 problems.append(f"'{key}' must be an integer")
             elif not low <= item <= high:
                 problems.append(f"'{key}' must be between {low} and {high}")
+        elif key in _FLOAT_KEYS:
+            low, high = _FLOAT_KEYS[key]
+            if (isinstance(item, bool) or not isinstance(item, (int, float))
+                    or not low <= item <= high):
+                problems.append(f"'{key}' must be a finite number between {low} and {high}")
         elif key in _CHOICE_KEYS:
             if not isinstance(item, str) or item not in _CHOICE_KEYS[key]:
                 problems.append(
@@ -318,6 +357,11 @@ def resolve_human_speech(*layers: dict | None) -> dict:
                     merged[key] = min(high, max(low, int(value)))
                 except (TypeError, ValueError):
                     pass
+            elif key in _FLOAT_KEYS:
+                low, high = _FLOAT_KEYS[key]
+                number = _finite_number(value)
+                if number is not None:
+                    merged[key] = min(high, max(low, number))
             elif key in _CHOICE_KEYS:
                 if isinstance(value, str) and value in _CHOICE_KEYS[key]:
                     merged[key] = value
@@ -361,6 +405,10 @@ def resolve_human_speech_with_sources(
                         key in _INT_KEYS
                         and not isinstance(value, bool)
                         and isinstance(value, int)
+                    )
+                    or (
+                        key in _FLOAT_KEYS
+                        and _finite_number(value) is not None
                     )
                     or (
                         key in _CHOICE_KEYS
@@ -498,6 +546,9 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         "ack_question": ("Hmm…", "जी…", "अच्छा…"),
         "ack_lookup": ("एक सेकंड…", "जी, एक सेकंड…", "Hmm… देख रहा हूँ…",
                        "एक सेकंड, देख रहा हूँ…"),
+        # A free statement the bot has not acted on yet: "I'm listening",
+        # never "ठीक है" (acceptance) — see EARLY_ACK_CONTEXTS.
+        "ack_information": ("जी…", "अच्छा…", "Hmm…"),
         "ack_neutral": ("जी…", "Hmm…"),
         "checking": (
             "Ek minute, main check karta hoon...",
@@ -526,6 +577,7 @@ _POOLS: dict[str, dict[str, tuple[str, ...]]] = {
         "ack_answer": ("Okay…", "Right…", "Got it…", "Alright…"),
         "ack_question": ("Hmm…", "Right…", "Let me see…"),
         "ack_lookup": ("One second…", "Let me check…", "Hmm… one moment…"),
+        "ack_information": ("I see…", "Right…", "Mm-hmm…"),
         "ack_neutral": ("Okay…", "Hmm…"),
         "checking": (
             "One moment, let me check...",
@@ -621,14 +673,26 @@ _WORD_RE = re.compile(r"\S+")
 
 # Dispatch-time acknowledgement contexts → pools. Languages without the
 # dedicated ``ack_*`` pools reuse their existing short pools.
-EARLY_ACK_CONTEXTS = ("answer", "question", "lookup", "neutral")
+#   answer       the caller answered the bot's question (inside a workflow,
+#                an agreement, a short reply): "जी…", "ठीक है…", "अच्छा…"
+#   question     a question: a beat of thought, never "ठीक है"
+#   lookup       a knowledge question a retrieval will answer
+#   information  a free statement or explanation the bot has NOT yet
+#                accepted or acted on: listening tokens only ("जी…", "अच्छा…",
+#                "Hmm…") — never "ठीक है", which would sound like acceptance
+#   concern      the caller reported a problem (not yet a serious platform
+#                signal): neutral listening tokens, nothing bright or surprised
+#   neutral      a serious caller state or dictated critical content
+EARLY_ACK_CONTEXTS = ("answer", "question", "lookup", "information", "concern", "neutral")
 _EARLY_ACK_POOLS = {
     "answer": "ack_answer", "question": "ack_question",
-    "lookup": "ack_lookup", "neutral": "ack_neutral",
+    "lookup": "ack_lookup", "information": "ack_information",
+    "concern": "ack_neutral", "neutral": "ack_neutral",
 }
 _EARLY_ACK_FALLBACK = {
     "ack_answer": "acknowledgement", "ack_question": "thinking",
-    "ack_lookup": "thinking", "ack_neutral": "backchannel",
+    "ack_lookup": "thinking", "ack_information": "backchannel",
+    "ack_neutral": "backchannel",
 }
 # A preface that OPENS with an acknowledgement word would stack onto a
 # dispatch-time "जी…" ("जी… … Achha, ek minute…"). Token followed by
@@ -745,7 +809,9 @@ LATENCY_CUE_CONTEXTS = (
 _CUE_CONTEXT_ROLES: dict[str, tuple[str, ...]] = {
     "lookup": ("thinking", "polite"),
     "thinking": ("thinking", "polite"),
-    "information": ("information", "confirm", "polite", "thinking"),
+    # A statement the bot has not acted on yet gets "I've taken that in",
+    # never the confirm role ("ठीक है…" would sound like acceptance).
+    "information": ("information", "polite", "thinking"),
     "confirm": ("confirm", "information", "polite", "thinking"),
     "affirm": ("positive_ack", "polite", "confirm", "thinking"),
     "polite": ("polite", "positive_ack", "thinking"),
@@ -878,6 +944,16 @@ class SpeechNaturalnessPlanner:
         self._last_preface_turn: int | None = None
         self._last_early_ack_turn: int | None = None
         self._last_early_ack_reason = ""
+        # A speculative acknowledgement (plan_early_ack(commit=False)) that
+        # has been chosen but not heard yet: (turn, language, pool key,
+        # normalized entry, normalized spoken form). History is committed
+        # only by note_early_ack_played for that very turn; a newer plan,
+        # a cancellation or call teardown discards it.
+        self._pending_early_ack: tuple[int, str, str, str, str] | None = None
+        # Normalized spoken text -> turn index it was last HEARD as an
+        # acknowledgement or voiced cue (runtime hooks). A filler word never
+        # leads two consecutive turns, whichever family spoke it first.
+        self._spoken_turns: dict[str, int] = {}
         # "ओह…" is a one-per-call reaction (plan_latency_cue).
         self._oh_used = False
         self._last_backchannel_monotonic: float | None = None
@@ -912,19 +988,68 @@ class SpeechNaturalnessPlanner:
     def min_gap_between_backchannels_ms(self) -> int:
         return int(self._config["min_gap_between_backchannels_ms"])
 
+    # -- breathing (nonverbal) ------------------------------------------
+
+    @property
+    def breathing_enabled(self) -> bool:
+        """Master switch of the BREATH family (pre-reply breath, in-reply
+        sentence breath). Independent of ``filler_words_enabled``."""
+        return self.enabled and bool(self._config["breathing"])
+
     @property
     def latency_fillers_enabled(self) -> bool:
-        """Pre-rendered gap fillers ride the master switch like every other
-        naturalness dimension."""
-        return self.enabled and bool(self._config["latency_fillers"])
+        """The pre-reply breath sound (the gap-cover processor's first rung)
+        — a breath only, never the words: those follow ``filler_words``."""
+        return self.breathing_enabled and bool(self._config["latency_fillers"])
+
+    @property
+    def sentence_breaths_enabled(self) -> bool:
+        """The rare in-reply inhale before a long or critical sentence."""
+        return self.breathing_enabled and bool(self._config["sentence_breaths"])
 
     @property
     def latency_filler_delay_ms(self) -> int:
+        """Quiet after the caller stops before the FIRST gap sound may play —
+        the breath, or the acknowledgement that replaces it when ready."""
         return int(self._config["latency_filler_delay_ms"])
 
     @property
+    def breath_gain_db(self) -> float:
+        """Additional gain for nonverbal breathing only (zero or negative dB)."""
+        return float(self._config["breath_gain_db"])
+
+    # -- filler words (spoken) ------------------------------------------
+
+    @property
+    def filler_words_enabled(self) -> bool:
+        """Master switch of the WORD family (acknowledgement, voiced thinking
+        cue, spoken wait cue, question beat, tool prefaces). Independent of
+        ``breathing_enabled``."""
+        return self.enabled and bool(self._config["filler_words"])
+
+    @property
+    def acknowledgements_enabled(self) -> bool:
+        """The dispatch-time acknowledgement ("जी…", "अच्छा…", "Hmm…")."""
+        return self.filler_words_enabled and bool(self._config["acknowledgements"])
+
+    @property
     def latency_filler_ladder_enabled(self) -> bool:
-        return self.latency_fillers_enabled and bool(self._config["latency_filler_ladder"])
+        """Voiced cue + spoken wait cue on long waits. Needs no breath."""
+        return self.filler_words_enabled and bool(self._config["latency_filler_ladder"])
+
+    @property
+    def adaptive_latency_cues_enabled(self) -> bool:
+        return self.latency_filler_ladder_enabled and bool(self._config["adaptive_latency_cues"])
+
+    @property
+    def latency_cover_enabled(self) -> bool:
+        """Whether the call needs the gap-cover processor at all: any of the
+        pre-reply breath, the acknowledgement or the voiced ladder."""
+        return (
+            self.latency_fillers_enabled
+            or self.acknowledgements_enabled
+            or self.latency_filler_ladder_enabled
+        )
 
     @property
     def latency_filler_hmm_ms(self) -> int:
@@ -995,6 +1120,13 @@ class SpeechNaturalnessPlanner:
         if last_cue == "oh":
             self._oh_used = True
         plan = LatencyCuePlan(verbal=False, context=context)
+        # Words heard on the PREVIOUS turn (as an acknowledgement or a cue)
+        # may not lead this one; words merely spoken recently are demoted.
+        previous_turn_words = {
+            text for text, turn in self._spoken_turns.items()
+            if turn_index and turn == turn_index - 1
+        }
+        recent_words = set(self._recent_spoken) | previous_turn_words
         adaptive = bool(self._config.get("adaptive_latency_cues"))
         if adaptive:
             # Lookup/question turns benefit from an earlier listening cue;
@@ -1028,16 +1160,30 @@ class SpeechNaturalnessPlanner:
                 if self._oh_used or self._rng.random() >= _CONCERN_CUE_PROBABILITY:
                     continue
             ranked.extend(cue for cue in allowed if roles.get(cue) == role and cue not in ranked)
-        if last_cue in ranked and len(ranked) > 1:
-            ranked.remove(last_cue)
-            ranked.append(last_cue)
+        def _text(cue: str) -> str:
+            return normalize_spoken_variant(ladder_cue_text(language, "hmm", cue))
+
+        stale = [
+            cue for cue in ranked
+            if cue == last_cue or _text(cue) in recent_words
+        ]
+        if stale and len(stale) < len(ranked):
+            # Keep the role order among fresh cues; the previously voiced or
+            # recently spoken ones go to the back (never first while an
+            # alternative exists).
+            ranked = [cue for cue in ranked if cue not in stale] + stale
         plan.cue_ids = ranked
         plan.role = roles.get(ranked[0], "") if ranked else ""
         if not ranked:
             plan.reason = "no_fitting_cue"
             return plan
-        if not self.latency_fillers_enabled or not self._config.get("latency_filler_ladder", True):
+        if not self.latency_filler_ladder_enabled:
             plan.reason = "disabled"
+            return plan
+        if stale and len(stale) == len(ranked) and _text(ranked[0]) in previous_turn_words:
+            # Every fitting cue was heard on the previous turn: the wait
+            # stays a breath rather than repeating the same word.
+            plan.reason = "recently_spoken"
             return plan
         if early_ack_spoken:
             plan.reason = "ack_already_spoken"
@@ -1059,10 +1205,28 @@ class SpeechNaturalnessPlanner:
         plan.verbal = True
         return plan
 
-    def note_latency_cue_played(self, cue_id: str | None) -> None:
-        """Telemetry from the processor: which voiced cue a wait got."""
+    def note_latency_cue_played(self, cue_id: str | None, *,
+                                turn_index: int | None = None,
+                                language: str | None = None) -> None:
+        """The processor started voicing ``cue_id`` for ``turn_index``.
+
+        Remembers the word so neither the next acknowledgement nor the next
+        cue repeats it, and marks the one-per-call "ओह…" as used.
+        """
         if cue_id == "oh":
             self._oh_used = True
+        text = ladder_cue_text(language, "hmm", cue_id) if language and cue_id else ""
+        if text:
+            self._note_spoken(text, turn_index)
+
+    def _note_spoken(self, text: str, turn_index: int | None) -> None:
+        normalized = normalize_spoken_variant(text)
+        if not normalized:
+            return
+        if not self._recent_spoken or self._recent_spoken[-1] != normalized:
+            self._recent_spoken.append(normalized)
+        if turn_index is not None:
+            self._spoken_turns[normalized] = int(turn_index)
 
     @property
     def configuration_level(self) -> str:
@@ -1095,16 +1259,49 @@ class SpeechNaturalnessPlanner:
 
     def _pick(self, language: str, pool_key: str,
               identity: VoiceIdentity | None, *,
-              exclude_leading_ack: bool = False) -> str:
+              exclude_leading_ack: bool = False,
+              exclude_spoken: set[str] | frozenset[str] = frozenset()) -> str:
+        """Choose AND record a variant (prefaces, backchannels, committed acks)."""
+        entry, spoken = self._select(
+            language, pool_key, identity,
+            exclude_leading_ack=exclude_leading_ack, exclude_spoken=exclude_spoken,
+        )
+        if spoken:
+            self._record(language, pool_key, entry, normalize_spoken_variant(spoken))
+        return spoken
+
+    def _record(self, language: str, pool_key: str, entry: str, spoken: str,
+                turn_index: int | None = None) -> None:
+        """Remember a heard variant: ``entry`` and ``spoken`` are NORMALIZED forms."""
+        recent = self._recent.setdefault(f"{language}:{pool_key}", deque(maxlen=3))
+        recent.append(entry)
+        self._recent_spoken.append(spoken)
+        if turn_index is not None:
+            self._spoken_turns[spoken] = int(turn_index)
+
+    def _select(self, language: str, pool_key: str,
+                identity: VoiceIdentity | None, *,
+                exclude_leading_ack: bool = False,
+                exclude_spoken: set[str] | frozenset[str] = frozenset()) -> tuple[str, str]:
+        """Choose a variant without touching history: (normalized entry,
+        spoken text) — ("", "") when the pool has nothing usable."""
         pools = _POOLS.get(language, {})
         pool = pools.get(pool_key) or pools.get(_EARLY_ACK_FALLBACK.get(pool_key, "")) or ()
         if not pool:
-            return ""
+            return "", ""
         gender = identity.gender if identity else "neutral"
         candidates = [
             entry for entry in pool
             if gender in ("male", "female") or not self._is_gendered(entry)
         ]
+        if exclude_spoken:
+            # Hard rule: a word heard on the previous turn (as an
+            # acknowledgement or a voiced cue) never opens this one.
+            candidates = [
+                entry for entry in candidates
+                if normalize_spoken_variant(entry) not in exclude_spoken
+                and normalize_spoken_variant(self._adapted(entry, identity)) not in exclude_spoken
+            ]
         if exclude_leading_ack:
             # Never stack: a dispatch-time "जी…" already opened the turn.
             # A pool made only of ack-led variants keeps them rather than
@@ -1112,8 +1309,8 @@ class SpeechNaturalnessPlanner:
             unstacked = [e for e in candidates if not _LEADING_ACK_RE.match(e)]
             candidates = unstacked or candidates
         if not candidates:
-            return ""
-        recent = self._recent.setdefault(f"{language}:{pool_key}", deque(maxlen=3))
+            return "", ""
+        recent = self._recent.get(f"{language}:{pool_key}", ())
         adapted = [(entry, self._adapted(entry, identity)) for entry in candidates]
         # Prefer avoiding both pool-local and global recent spoken variants.
         fresh = [
@@ -1121,14 +1318,20 @@ class SpeechNaturalnessPlanner:
             if normalize_spoken_variant(pair[0]) not in recent
             and normalize_spoken_variant(pair[1]) not in self._recent_spoken
         ]
+        if not fresh:
+            # The recent window covers the whole small pool: at least never
+            # repeat the variant heard most recently (a pool of one may).
+            last_spoken = self._recent_spoken[-1] if self._recent_spoken else None
+            last_entry = recent[-1] if recent else None
+            fresh = [
+                pair for pair in adapted
+                if normalize_spoken_variant(pair[0]) != last_entry
+                and normalize_spoken_variant(pair[1]) != last_spoken
+            ]
         # A language with one safe variant must continue to work: if no fresh
         # option exists, choose from the valid pool instead of failing.
         entry, spoken = self._rng.choice(fresh or adapted)
-        normalized_entry = normalize_spoken_variant(entry)
-        normalized_spoken = normalize_spoken_variant(spoken)
-        recent.append(normalized_entry)
-        self._recent_spoken.append(normalized_spoken)
-        return spoken
+        return normalize_spoken_variant(entry), spoken
 
     # -- turn-level planning ----------------------------------------------
 
@@ -1182,12 +1385,14 @@ class SpeechNaturalnessPlanner:
             plan.telemetry["suppression_reason"] = "greeting_turn"
             return plan  # never decorate the greeting
 
+        words = self.filler_words_enabled
         if critical:
             # A generic tool lookup may use one unambiguous checking phrase;
             # high-risk routes (payment reference, identity, compliance,
             # commitment and deterministic finance) suppress even that.
             if (
-                route_kind == "tool"
+                words
+                and route_kind == "tool"
                 and allow_safe_tool_preface
                 and self._rng.random() < cfg["tool_ack_probability"]
             ):
@@ -1218,6 +1423,9 @@ class SpeechNaturalnessPlanner:
             # (plan_early_ack); the latency processor decides whether it is
             # needed. Nothing is glued to the front of the reply.
             suppression = "dispatch_ack_path"
+        elif not words:
+            # A "let me check" preface is a spoken filler word too.
+            suppression = "filler_words_disabled"
         elif self._rng.random() < cfg["tool_ack_probability"]:
             # A lookup is about to run: a spoken "let me check" both sounds
             # human and masks tool latency. Serious contexts get the calmer
@@ -1270,6 +1478,10 @@ class SpeechNaturalnessPlanner:
           "ठीक है" (which would sound like an answer)
         * ``lookup``   — a knowledge question a retrieval will answer:
           "एक सेकंड…", "देख रहा हूँ…"
+        * ``information`` — a free statement or explanation the bot has not
+          accepted or acted on yet: "जी…", "अच्छा…", "Hmm…" — never "ठीक है"
+        * ``concern``  — the caller reported a problem ("नहीं मिला", "कट
+          गया", "problem"): neutral listening tokens only, nothing bright
         * ``neutral``  — anything sensitive: a serious caller state
           (complaint, refusal, hardship…) or dictated amounts/identifiers.
           Only listening tokens ("जी…", "Hmm…") at half probability;
@@ -1290,7 +1502,7 @@ class SpeechNaturalnessPlanner:
             self._last_early_ack_reason = reason
             return ""
 
-        if not (self.enabled and cfg["acknowledgements"]):
+        if not self.acknowledgements_enabled:
             return _withhold("disabled")
         lang = base_language(language)
         if lang not in _POOLS:
@@ -1314,16 +1526,65 @@ class SpeechNaturalnessPlanner:
             probability = min(1.0, probability * _FIRST_REPLY_PREFACE_BOOST)
         if self._rng.random() >= probability:
             return _withhold("roll")
-        token = self._pick(lang, _EARLY_ACK_POOLS[context], identity)
+        heard_last_turn = frozenset(
+            text for text, turn in self._spoken_turns.items() if turn == turn_index - 1
+        )
+        pool_key = _EARLY_ACK_POOLS[context]
+        entry, token = self._select(lang, pool_key, identity, exclude_spoken=heard_last_turn)
         if not token:
-            return _withhold("no_pool_variant")
+            return _withhold("recently_spoken" if heard_last_turn else "no_pool_variant")
+        spoken = normalize_spoken_variant(token)
         if commit:
-            self.note_early_ack_played(turn_index)
+            self._pending_early_ack = None
+            self._record(lang, pool_key, entry, spoken, turn_index)
+            self._last_early_ack_turn = turn_index
+        else:
+            # Speculative: history moves only when the runtime reports the
+            # word was heard (note_early_ack_played for this turn).
+            self._pending_early_ack = (turn_index, lang, pool_key, entry, spoken)
         self._last_early_ack_reason = ""
         return token
 
-    def note_early_ack_played(self, turn_index: int) -> None:
-        self._last_early_ack_turn = turn_index
+    def note_early_ack_played(self, turn_index: int, text: str | None = None) -> bool:
+        """The acknowledgement planned for ``turn_index`` was actually heard.
+
+        Commits the pending speculative pick for that turn (pool rotation,
+        the cross-pool recent window, the per-word turn memory and the
+        no-consecutive-turns guard) and returns True. Returns False when
+        nothing pending belongs to that turn — a repeated callback, an
+        obsolete turn already replanned, a discarded (cancelled) pick or a
+        finished call — unless the caller states the ``text`` it heard, which
+        is then recorded on its own.
+        """
+        pending = self._pending_early_ack
+        if pending is not None and pending[0] == turn_index:
+            _turn, lang, pool_key, entry, spoken = pending
+            self._pending_early_ack = None
+            self._record(lang, pool_key, entry, spoken, turn_index)
+            self._last_early_ack_turn = turn_index
+            return True
+        if text:
+            self._last_early_ack_turn = turn_index
+            self._note_spoken(text, turn_index)
+            return True
+        return False
+
+    def discard_early_ack(self) -> None:
+        """Drop a speculative acknowledgement that will never be heard
+        (cancelled turn, barge-in, teardown): it leaves no history."""
+        self._pending_early_ack = None
+
+    def clear_call_history(self) -> None:
+        """Forget everything this call heard (teardown). A planner is per
+        call, so a new session never starts with completed-call history."""
+        self._recent.clear()
+        self._recent_spoken.clear()
+        self._spoken_turns.clear()
+        self._pending_early_ack = None
+        self._last_early_ack_turn = None
+        self._last_early_ack_reason = ""
+        self._last_preface_turn = None
+        self._oh_used = False
 
     @property
     def last_early_ack_reason(self) -> str:
@@ -1397,7 +1658,7 @@ class SpeechNaturalnessPlanner:
                 delivery.pause_after_ms = min(700, max(80, base_pause_ms + jitter))
 
         if (
-            cfg["sentence_breaths"]
+            self.sentence_breaths_enabled
             and base_pause_ms > 0
             and not first_in_turn
             and breaths_so_far < 1

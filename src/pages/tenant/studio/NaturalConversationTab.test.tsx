@@ -39,7 +39,9 @@ const BOT = { id: "bot_1", status: "published" } as VoiceBot;
 const inherited: HumanSpeechEffectiveSettings = {
   enabled: true, thinking_fillers: true, acknowledgements: true, backchannels: true,
   prosody_variation: true, gender_agreement: true, micro_pauses: true, self_correction: false,
+  breathing: true, filler_words: true,
   latency_fillers: true, sentence_breaths: true, latency_filler_ladder: true, adaptive_latency_cues: false,
+  breath_gain_db: 0, latency_cue_probability: 0.7,
   thinking_filler_probability: 0.25, acknowledgement_probability: 0.4,
   tool_ack_probability: 0.9, backchannel_probability: 0.35, micro_pause_probability: 0.45,
   self_correction_probability: 0.01, sentence_breath_probability: 0.2,
@@ -223,6 +225,34 @@ describe("NaturalConversationTab", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("testing");
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     expect(onNavigate).toHaveBeenLastCalledWith("voice");
+  });
+
+  it("saves Breathing and Filler words as independent sparse overrides", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByRole("switch", { name: "Thinking fillers" });
+    await user.click(screen.getByRole("switch", { name: "Breathing" }));
+    // Turning breathing off leaves every filler-word switch as it was.
+    expect(screen.getByRole("switch", { name: "Filler words" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "Acknowledgements" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("human-speech-inactive-latency_fillers")).toBeInTheDocument();
+    expect(screen.queryByTestId("human-speech-inactive-acknowledgements")).toBeNull();
+    expect(await screen.findByTestId("breathing-off-note")).toBeInTheDocument();
+    expect(screen.queryByTestId("filler-words-off-note")).toBeNull();
+    await user.click(saveButton());
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledWith(BOT.id, {
+      humanSpeech: { thinking_fillers: false, breathing: false },
+    }));
+    // The persisted value is what the editor shows after the save round-trip.
+    expect(screen.getByRole("switch", { name: "Breathing" })).toHaveAttribute("aria-checked", "false");
+    expect(saveButton()).toBeDisabled();
+    await user.click(screen.getByRole("switch", { name: "Filler words" }));
+    expect(screen.getByRole("switch", { name: "Breathing" })).toHaveAttribute("aria-checked", "false");
+    expect(await screen.findByTestId("filler-words-off-note")).toBeInTheDocument();
+    await user.click(saveButton());
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenLastCalledWith(BOT.id, {
+      humanSpeech: { thinking_fillers: false, breathing: false, filler_words: false },
+    }));
   });
 
   it("validates advanced numeric overrides before saving", async () => {

@@ -2618,6 +2618,7 @@ class WorkflowEngine:
         heard_nodes: list[str] | None = None,
         llm=None,
         history: list[dict] | None = None,
+        pause_for_context: bool = False,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -2669,6 +2670,25 @@ class WorkflowEngine:
             )
         except Exception:  # noqa: BLE001 — rollback is best-effort bookkeeping
             self._pre_turn.pop(thread["configurable"]["thread_id"], None)
+        if pause_for_context and previous.get("awaiting") and not reset_state:
+            # A standalone question about this call must not fill a free-text
+            # slot, match a yes/no edge, burn retries or execute an action.
+            # Read the pending step without invoking or updating its graph.
+            pending = next((n for n in (definition or {}).get("nodes") or []
+                            if n.get("id") == previous["awaiting"]), {})
+            return {
+                "reply": "", "done": False,
+                "status": previous.get("status", "collecting"),
+                "source": source, "workflowId": (definition or {}).get("id"),
+                "trace": [previous["awaiting"]],
+                "slots": dict(previous.get("slots") or {}),
+                "handoffQueue": None, "offScript": True,
+                "contextResponse": False, "contextQuestion": True,
+                "nodePrompt": previous.get("awaiting_prompt"),
+                "awaitingIdentifier": previous.get("awaiting_identifier"),
+                "awaitingKind": pending.get("kind"), "signal": signal,
+                "spokenNodes": [],
+            }
         invocation = {
             "tenant_id": tenant_id,
             "bot_id": bot_id,

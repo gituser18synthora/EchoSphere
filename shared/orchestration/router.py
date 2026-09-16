@@ -57,6 +57,47 @@ class RouteDecision:
 # NOTE: Python's \b misfires after Devanagari matra-final words — Devanagari
 # alternates stay outside \b groups (same convention as detect_hangup above).
 
+# ── Malayalam / Tamil deterministic vocabulary ───────────────────────────────
+# The regex signals below are language-agnostic by construction: each list
+# carries the Hindi/Hinglish/English surface forms. Malayalam and Tamil callers
+# reached the LLM for a bare "yes"/"no" because no ml/ta forms existed. These
+# groups add the everyday forms (native script + common romanizations that
+# collide with no Hindi/English word); the patterns splice them in. Malayalam
+# and Tamil vowel signs are combining marks, so word ends are enforced with a
+# not-another-letter lookahead instead of ``\b`` (same rule as Devanagari).
+_ML_TA_LETTER = "ഀ-ൿ஀-௿"
+_ML_TA_AFFIRM_TOKENS = (
+    # Includes the colloquial phone-call yes-sounds ("ഹാ", "ആ", "ആഹ്", "ഉം",
+    # "ആങ്", Tamil "ஆங்") — every use site anchors them at the start of the
+    # utterance and requires the token to END (no following letter), so a
+    # bare "ആ" never fires inside a longer word.
+    r"|അതെ|അതേ|ശരി|ഉവ്വ്|ഉവ്വ|ഓക്കേ|ഓകെ|ഹാ|ആഹ്|ആങ്|ഉം|ഊം|ആ"
+    r"|ஆமாம்|ஆமா|ஆம்|சரி|ஓகே|ஆகட்டும்|ஆங்"
+    r"|athe|athey|seri|aamaam|aamam|aama"
+)
+_ML_TA_NO_TOKENS = (
+    r"ഇല്ല|ഇല്ലാ|അല്ല|വേണ്ട|പറ്റില്ല|കഴിയില്ല|இல்லை|இல்ல|வேண்டாம்|முடியாது|முடியல"
+    r"|illai|illa|alla|venda|vendam|mudiyathu|mudiyadhu|pattilla"
+)
+_ML_TA_REFUSAL = (
+    r"|^\W*(?:" + _ML_TA_NO_TOKENS + r")(?:\W+(?:" + _ML_TA_NO_TOKENS + r"))*"
+    r"(?:\W+(?:please|pls|thanks|thank you|നന്ദി|நன்றி))?\W*$"
+)
+_ML_TA_HARDSHIP = (
+    r"|(?:പണം|പണവും|കാശ്|കാശും)\s*(?:ഇപ്പോൾ\s*)?(?:ഇല്ല|ഇല്ലാ)|പണമില്ല|കാശില്ല"
+    r"|(?:അടയ്ക്കാൻ|അടക്കാൻ|തരാൻ|കൊടുക്കാൻ)\s*(?:ഇപ്പോൾ\s*)?(?:പറ്റില്ല|കഴിയില്ല|സാധിക്കില്ല)"
+    r"|(?:பணம்|பணமும்|காசு|காசும்)\s*(?:இப்போ(?:து)?\s*)?(?:இல்லை|இல்ல)|பணமில்லை|காசில்லை"
+    r"|(?:கட்ட|தர|செலுத்த)\s*(?:இப்போ(?:து)?\s*)?(?:முடியாது|முடியல|முடியவில்லை)"
+    r"|ആശുപത്രി|மருத்துவமனை"
+)
+_ML_TA_PAYMENT_INTENT = (
+    r"|അടയ്ക്കാം|അടക്കാം|അടയ്ക്കും|അടച്ചോളാം|അടയ്ക്കാൻ\s*(?:തയ്യാറാണ്|റെഡിയാണ്)"
+    r"|പേയ്?‌?മെന്റ്\s*(?:ചെയ്യാം|ചെയ്യും)|യുപിഐ|യു\s*പി\s*ഐ|ഗൂഗിൾ\s*പേ|ഫോൺ\s*പേ"
+    r"|கட்டுகிறேன்|கட்டுறேன்|கட்றேன்|கட்டிடுறேன்|கட்டுவேன்|கட்டிடலாம்|கட்டலாம்"
+    r"|செலுத்துகிறேன்|செலுத்துவேன்|பேமெண்ட்\s*(?:பண்ணுறேன்|பண்றேன்|பண்ணுவேன்|செய்கிறேன்|செய்வேன்)"
+    r"|யூபிஐ|யு\s*பி\s*ஐ|கூகுள்\s*பே|போன்\s*பே"
+)
+
 _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     # The caller says the bot is not listening / keeps repeating itself.
     ("complaint", re.compile(
@@ -92,7 +133,16 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("wrong_person", re.compile(
         r"galat number|wrong number|main (?:woh|wo|vo) nahi|koi aur"
         r"|mera loan nahi|loan (?:liya hi nahi|nahi liya)|is naam"
-        r"|गलत नंबर|मैं (?:वो|वह) नहीं|कोई और|मेरा लोन नहीं|इस नाम",
+        r"|गलत नंबर|मैं (?:वो|वह) नहीं|कोई और|मेरा लोन नहीं|इस नाम"
+        # Malayalam / Tamil: wrong number, "he/she is not here", and a
+        # relation answering for the customer ("അമ്മയാണ്" = "it's his
+        # mother", "மனைவி பேசுறேன்") — these must never read as the
+        # customer confirming identity.
+        r"|തെറ്റായ നമ്പർ|റോങ് നമ്പർ|(?:അയാൾ|അവൻ|അവൾ|അവർ|അദ്ദേഹം|പുള്ളി)\s*(?:ഇല്ല|ഇവിടെ ഇല്ല)"
+        r"|(?<![ഀ-ൿ])(?:അമ്മ|അച്ഛൻ|അച്ഛ|ഭാര്യ|ഭർത്താവ്|മകൻ|മകൾ|സഹോദരൻ|സഹോദരി|ചേട്ടൻ|ചേച്ചി"
+        r"|അനിയൻ|അനിയത്തി|അമ്മായി|അമ്മാവൻ|മുത്തശ്ശി|മുത്തശ്ശൻ|ബന്ധു)(?:യാണ്|ആണ്|യ|യുടെ)?(?![ഀ-ൿ])"
+        r"|தவறான எண்|ராங் நம்பர்|(?:அவர்|அவன்|அவள்)\s*இல்லை"
+        r"|(?<![஀-௿])(?:அம்மா|அப்பா|மனைவி|கணவர்|மகன்|மகள்|அண்ணன்|தம்பி|அக்கா|தங்கை|உறவினர்)(?![஀-௿])",
         re.I,
     )),
     # Wants a human.
@@ -119,7 +169,8 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"|बीमार|बिमार|अस्पताल|इलाज|मेडिकल"
         r"|(?:naukri|job|नौकरी)\s*(?:nahi|nahin|chali gayi|chhut|khatam|नहीं|चली गई|छूट)"
         r"|(?:salary|सैलरी|pagar|पगार|tankhwah|तनख्वाह)\s*(?:nahi|nahin|नहीं|नही)"
-        r"|berozgar|बेरोज़गार|बेरोजगार|majboori|majburi|मजबूरी|मज़बूरी",
+        r"|berozgar|बेरोज़गार|बेरोजगार|majboori|majburi|मजबूरी|मज़बूरी"
+        + _ML_TA_HARDSHIP,
         re.I,
     )),
     # "Wait a moment / stay on the line" — a HOLD, not a callback. Checked
@@ -194,7 +245,8 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)"
         r"(?:\W+(?:nahi|nahin|no|nope|नहीं|नही|ji|जी))*"
         r"(?:\W+(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
-        r"shukriya|धन्यवाद|शुक्रिया))?\W*$",
+        r"shukriya|धन्यवाद|शुक्रिया))?\W*$"
+        + _ML_TA_REFUSAL,
         re.I,
     )),
     # Positive commitment to pay (verbs, not the bare noun "payment").
@@ -205,7 +257,8 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"|karunga|karungi|करूंगा|करूंगी"
         r"|\b(?:upi|bhim|paytm|g ?pay|google pay|phone ?pe|debit|card|atm)\b"
         r"|यूपीआई|भीम|पेटीएम|फोन ?पे|गूगल ?पे|डेबिट|कार्ड|एटीएम"
-        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार",
+        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार"
+        + _ML_TA_PAYMENT_INTENT,
         re.I,
     )),
     # A bare confirmation ("haan", "theek hai") — meaningful only in context.
@@ -215,9 +268,9 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"^\W*(?:(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
         r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
         r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
-        r"ओके(?: जी)?|अच्छा)\W*){1,4}"
+        r"ओके(?: जी)?|अच्छा" + _ML_TA_AFFIRM_TOKENS + r")\W*){1,4}"
         r"(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
-        r"shukriya|धन्यवाद|शुक्रिया)?\W*$",
+        r"shukriya|धन्यवाद|शुक्रिया|നന്ദി|நன்றி)?\W*$",
         re.I,
     )),
 ]
@@ -247,17 +300,20 @@ def classify_user_signal(text: str) -> str | None:
 _LEADING_AFFIRM = re.compile(
     r"^\W*(?:haan|han|haanji|hanji|ji|yes|yeah|yep|ok|okay|theek|thik|bilkul|"
     r"zaroor|jarur|sure|correct|right|"
-    r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा)"
+    r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा"
+    + _ML_TA_AFFIRM_TOKENS + r")"
     # Not `\b`: Devanagari vowel signs/candrabindu are combining marks, which
     # `\w` excludes, so a word boundary never forms after "हाँ". Require the
-    # token to END here instead (space, punctuation or end of text).
-    r"(?![\wऀ-ॿ])",
+    # token to END here instead (space, punctuation or end of text). Same for
+    # Malayalam/Tamil vowel signs.
+    r"(?![\wऀ-ॿ" + _ML_TA_LETTER + r"])",
     re.I,
 )
 _AFFIRM_CONTRADICTION = re.compile(
     r"\b(?:no|nope|not|nahi|nahin|nai|mat|never|don't|dont|can't|cannot|"
     r"wrong|galat|bye|goodbye|alvida|rakhta|rakhti|rakho|baad mein|later)\b"
-    r"|(?<![\wऀ-ॿ])(?:नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में)",
+    r"|(?<![\wऀ-ॿ])(?:नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में)"
+    r"|(?<![\w" + _ML_TA_LETTER + r"])(?:ഇല്ല|അല്ല|വേണ്ട|இல்லை|இல்ல|வேண்டாம்)",
     re.I,
 )
 _LEADING_AFFIRM_MAX_TOKENS = 10
@@ -598,6 +654,7 @@ class TurnRouter:
             or not allow_affirm_entry
             or self._affirm_entry is None
             or decision.kind not in (RouteKind.CHAT, RouteKind.CLARIFY)
+            or decision.signal not in (None, "clarify")
         ):
             return decision
         entry_name, _ = self._affirm_entry

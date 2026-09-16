@@ -8,6 +8,7 @@ probability, audio duration) is used wherever the configured STT exposes it;
 absent metadata the gate falls back to script analysis and fails open."""
 
 import asyncio
+import pytest
 import math
 import os
 import types
@@ -795,3 +796,75 @@ class TestRecordingAnnouncement:
             "ek minute ruko", True)
         assert speech_word_count("This call is now being recorded.") == 0
         assert speech_word_count("Call is now being recorded. haan bol raha hoon") == 4
+
+
+# ── bot-configured languages widen the gate (bot_80487d7ce2e9, 2026-09-15) ───
+# Sarvam transcribed Malayalam perfectly and labelled it ml-IN; the gate still
+# rejected every turn as unsupported_script because the allow-list was the
+# platform default (hi+en) and never consulted the bot's own languages.
+
+MALAYALAM = "അതെ, ഞാൻ ഗൗരവ് പാണ്ഡ്യ ആണ്, പറയൂ."
+TAMIL = "ஆமாம், நான் கௌரவ் பாண்டே தான். சொல்லுங்கள்."
+TELUGU = "అవును, నేను గౌరవ్ పాండేని."
+
+
+class TestBotLanguagesWidenTheGate:
+    def test_bot_languages_add_their_base_codes(self):
+        assert resolve_allowed_languages(None, ["en-IN", "hi-IN", "ml-IN", "ta-IN"]) == frozenset(
+            {"en", "hi", "ml", "ta"}
+        )
+        assert resolve_allowed_languages({}, ("mr-IN",)) == frozenset({"en", "hi", "mr"})
+        assert resolve_allowed_languages(None, None) == ALLOWED_STT_LANGUAGES
+        assert resolve_allowed_languages(None, []) == ALLOWED_STT_LANGUAGES
+        assert resolve_allowed_languages(None, ["", None, "xx-YY"]) == frozenset({"en", "hi", "xx"})
+
+    def test_override_and_bot_languages_combine(self):
+        assert resolve_allowed_languages({"allowed_languages": ["hi"]}, ["ta-IN"]) == frozenset({"hi", "ta"})
+
+    @pytest.mark.parametrize("text,label", [(MALAYALAM, "ml-IN"), (TAMIL, "ta-IN")])
+    def test_configured_script_passes_the_gate(self, text, label):
+        allowed = resolve_allowed_languages(None, ["en-IN", "hi-IN", "ml-IN", "ta-IN"])
+        verdict = assess_transcript(text, q(language=label, language_probability=0.95), allowed)
+        assert verdict.accepted, verdict
+
+    @pytest.mark.parametrize("text,label", [(MALAYALAM, "ml-IN"), (TAMIL, "ta-IN"), (TELUGU, "te-IN")])
+    def test_unconfigured_script_is_still_rejected(self, text, label):
+        # The STT provider supports all of these; the bot is configured for none.
+        verdict = assess_transcript(text, q(language=label, language_probability=0.95), ALLOWED_STT_LANGUAGES)
+        assert not verdict.accepted and verdict.reason == "unsupported_script"
+
+    def test_provider_supported_language_outside_the_bot_config_is_rejected(self):
+        allowed = resolve_allowed_languages(None, ["en-IN", "hi-IN", "ml-IN"])
+        assert "ta" not in allowed
+        verdict = assess_transcript(TAMIL, q(language="ta-IN", language_probability=0.95), allowed)
+        assert not verdict.accepted and verdict.reason == "unsupported_script"
+
+    def test_hindi_and_english_unchanged(self):
+        allowed = resolve_allowed_languages(None, ["en-IN", "hi-IN", "ml-IN", "ta-IN"])
+        assert assess_transcript("हाँ बोलो, मैं गौरव बोल रहा हूँ", q(language="hi-IN"), allowed).accepted
+        assert assess_transcript("Yes I can pay next week by UPI", q(language="en-IN"), allowed).accepted
+        assert assess_transcript("payment nahi kar sakta", q(language="hi-IN"), allowed).accepted
+
+
+class TestBrainAcceptsConfiguredLanguages:
+    async def test_malayalam_and_tamil_become_turns_when_configured(self):
+        brain = make_brain(language="ml-IN", languages=("en-IN", "hi-IN", "ml-IN", "ta-IN"))
+        assert brain._allowed_stt_languages == frozenset({"en", "hi", "ml", "ta"})
+        handled = stub_turn_handler(brain)
+        await brain.process_frame(transcript(MALAYALAM, language="ml-IN"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await brain.process_frame(transcript(TAMIL, language="ta-IN"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == [MALAYALAM, TAMIL]
+        assert brain._recorder.events_of("stt_segment_rejected") == []
+        assert brain._recorder.events_of("language_unsupported") == []
+        assert not [n for n in brain._notified if n.get("name") == "language_unsupported"]
+
+    async def test_unconfigured_language_is_still_rejected_and_noticed(self):
+        brain = make_brain(language="ml-IN", languages=("en-IN", "hi-IN", "ml-IN"))
+        handled = stub_turn_handler(brain)
+        await brain.process_frame(transcript(TAMIL, language="ta-IN"), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert handled == []
+        rejected = brain._recorder.events_of("stt_segment_rejected")
+        assert rejected and rejected[0]["reason"] == "unsupported_script"

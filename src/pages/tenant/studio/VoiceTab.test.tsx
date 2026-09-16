@@ -10,7 +10,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import VoiceTab from "@/pages/tenant/studio/VoiceTab";
-import type { VoiceBot } from "@/types/domain";
+import type { VoiceBot, VoiceCapability } from "@/types/domain";
 import * as api from "@/services/api";
 
 vi.mock("@/services/api", () => ({
@@ -641,5 +641,80 @@ describe("VoiceTab — Natural Conversation cross-link", () => {
     render(<VoiceTab bot={BOT} />);
     await screen.findByText("Hindi");
     expect(screen.queryByRole("button", { name: "Open Natural Conversation" })).not.toBeInTheDocument();
+  });
+});
+
+/* Auto-detect language inside the STT card: prominent (not under Advanced),
+   reflects the persisted tri-state, and the save payload carries exactly what
+   the user chose — nothing when left automatic. */
+describe("VoiceTab — STT auto-detect language", () => {
+  const STT_SETTINGS = {
+    ...SETTINGS,
+    sttProvider: "sarvam", sttModel: "saaras:v3", sttLanguage: "",
+    sttSettings: { mode: "transcribe" },
+    sttAutoDetectLanguage: { value: null, effective: true, source: "derived", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+  };
+  const SAARAS_SCHEMA = {
+    mode: { type: "enum", values: ["transcribe", "translate"], default: "transcribe", label: "Mode" },
+    // Legacy catalog row: still carries `default: false` and no widget flag.
+    auto_detect_language: { type: "boolean", default: false, label: "Auto-detect language", advanced: true },
+  };
+
+  function installSttMocks(settings: Record<string, unknown>) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [{ code: "sarvam", name: "Sarvam AI", capability: "stt", description: "", requiresApiKey: true, hasCredentials: true }],
+      llm: [], tts: [],
+    } as never);
+    const tts = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      cap === "stt" && provider === "sarvam"
+        ? Promise.resolve([{ code: "saaras:v3", displayName: "Saaras v3", isDefault: true, capability: "stt", streaming: true, paramsSchema: SAARAS_SCHEMA }])
+        : tts(cap, provider)) as never);
+  }
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("shows the derived multilingual default ON, outside Advanced, and saves no key when untouched", async () => {
+    installSttMocks(STT_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await screen.findByRole("switch", { name: "Auto-detect language" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("stt-auto-detect-source")).toHaveTextContent("Automatic default: on (2 languages configured)");
+    // The generic Advanced group no longer lists it.
+    expect(screen.queryByText(/^Advanced \(/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe" });
+  });
+
+  it("turning it off persists an explicit false; a stored explicit value is shown as set manually", async () => {
+    installSttMocks(STT_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    await userEvent.click(await screen.findByRole("switch", { name: "Auto-detect language" }));
+    expect(screen.getByTestId("stt-auto-detect-source")).toHaveTextContent("Set manually to off.");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe", auto_detect_language: false });
+  });
+
+  it("reloads a persisted explicit OFF as OFF and lets the user return to automatic", async () => {
+    installSttMocks({
+      ...STT_SETTINGS,
+      sttSettings: { mode: "transcribe", auto_detect_language: false },
+      sttAutoDetectLanguage: { value: false, effective: false, source: "explicit", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+    });
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await screen.findByRole("switch", { name: "Auto-detect language" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(screen.getByRole("button", { name: /Use automatic/ }));
+    expect(screen.getByRole("switch", { name: "Auto-detect language" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttSettings).toEqual({ mode: "transcribe" });
   });
 });
