@@ -39,6 +39,41 @@ would need unsafe look-ahead or risk replaying text already sent to TTS. Rare
 self-correction remains available only for an explicitly enabled, non-critical
 direct/full-text response.
 
+## Breathing and filler words are independent
+
+Two families cover the gap before a reply, and each has its own master switch
+under the layer master `enabled`:
+
+| Family | Master key | Members | Tunables |
+|---|---|---|---|
+| **Breathing** (nonverbal) | `breathing` | `latency_fillers` (pre-reply breath), `sentence_breaths` (in-reply inhale) | `latency_filler_delay_ms`, `latency_filler_kind`, `filler_audio_selection`, `breath_gain_db`, `sentence_breath_probability` |
+| **Filler words** (spoken) | `filler_words` | `acknowledgements` (dispatch-time "जी…"), `latency_filler_ladder` (voiced "Hmm…" + spoken "एक सेकंड…"), `adaptive_latency_cues`, `thinking_fillers` (question beat), tool-lookup prefaces | `acknowledgement_probability`, `latency_cue_probability`, `latency_filler_hmm_ms`, `latency_filler_spoken_ms`, `latency_filler_cue_selection`, `thinking_filler_probability`, `tool_ack_probability` |
+
+Both families play through the same `LatencyFillerProcessor`
+(`voice_runtime/latency_filler.py`), but neither switch implies the other:
+
+- `breathing` off (or `latency_fillers` off) → `breath_enabled=False` on the
+  processor. The first deadline may still play a ready acknowledgement; the
+  voiced cues keep their own schedule (`latency_filler_skipped` reason
+  `breathing_off` marks the rung that would have breathed).
+- `filler_words` off → no acknowledgement is planned (`plan_early_ack` reason
+  `disabled`), no cue library and no ladder rungs are wired, tool prefaces
+  are suppressed (`filler_words_disabled`). The breath plays exactly as
+  configured.
+- The processor exists while any of the three — pre-reply breath,
+  acknowledgement, ladder — is on (`SpeechNaturalnessPlanner.latency_cover_enabled`);
+  with both families off there is no processor at all.
+- `latency_filler_delay_ms` is the deadline of the FIRST gap sound, whichever
+  family provides it (the acknowledgement replaces the breath when ready).
+- Only an actual breath sound updates the clip library's `note_played`
+  clock, so a spoken cue never suppresses the in-reply sentence inhale.
+
+Planner properties: `breathing_enabled`, `latency_fillers_enabled` (breath
+only), `sentence_breaths_enabled`, `filler_words_enabled`,
+`acknowledgements_enabled`, `latency_filler_ladder_enabled`,
+`adaptive_latency_cues_enabled`, `latency_cover_enabled`. Backchannels
+(`backchannels`) and the delivery switches are separate and unaffected.
+
 ## Latency acknowledgements
 
 The main response starts processing at turn dispatch. A short acknowledgement
@@ -56,10 +91,25 @@ their words with no model call:
 
 | Caller just… | Context | Tokens (hi) |
 |---|---|---|
-| gave an answer or a statement | `answer` | "जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…" |
+| answered the bot's question (inside a workflow, an agreement, a reply of ≤ 4 words) | `answer` | "जी…", "ठीक है…", "अच्छा…", "अच्छा, ठीक है…" |
 | asked a question | `question` | "Hmm…", "जी…", "अच्छा…" — never "ठीक है", which would sound like an answer |
 | asked something the knowledge base answers | `lookup` | "एक सेकंड…", "देख रहा/रही हूँ…" |
+| explained or stated something the bot has not acted on yet | `information` | "जी…", "अच्छा…", "Hmm…" — never "ठीक है", which would sound like acceptance |
+| reported a problem ("नहीं मिला", "कट गया", "galat", "problem", a complaint/hardship/wrong-person signal) | `concern` | "जी…", "Hmm…" only — nothing bright, agreeing or surprised |
 | is in a serious state (complaint, refusal, hardship, wrong person, agent request) or dictated amounts/identifiers | `neutral` | "जी…", "Hmm…" only, at half probability — "ठीक है" after a refusal reads as acceptance |
+
+No filler word leads two consecutive turns: the processor reports every
+acknowledgement and voiced cue it actually played (`note_early_ack_played`,
+`note_latency_cue_played`), and the planner demotes those words for the next
+turn's acknowledgement and cue ranking (`plan_latency_cue` reason
+`recently_spoken` when every fitting cue was heard on the previous turn;
+`plan_early_ack` reason `recently_spoken` when the pool has nothing else).
+History follows what was HEARD, not what was planned: a speculative pick
+(`plan_early_ack(commit=False)`) sits in `_pending_early_ack` until the
+processor confirms it for that turn; a newer plan, a cancellation
+(`discard_early_ack`) or teardown (`clear_call_history`) drops it, so a fast
+reply or a barge-in never "uses up" a word or the no-consecutive-turns
+allowance.
 
 Control: `acknowledgements` on/off; `acknowledgement_probability` (default 0.5,
 ×1.5 on the first reply after the greeting, the slowest turn of a call); a
@@ -126,10 +176,18 @@ last word and the first byte of reply audio: turn detection, the decision
 layer, the LLM and the TTS provider add up to 1.5–4 s on telephony, and the
 first reply of a call is the slowest (cold decision/LLM/knowledge paths). A
 human agent is never that silent. `latency_fillers` (on by default, under the
-master switch) plays a short breath from pre-rendered audio when a dispatched
+`breathing` family master and the layer master) plays a short breath from pre-rendered audio when a dispatched
 reply has not started speaking `latency_filler_delay_ms` (default 1500,
 500–5000) after the caller stopped speaking, measured from the physical end of
 speech the latency probe recorded (dispatch time when unknown).
+
+`breath_gain_db` adjusts only nonverbal breathing clips, including sentence
+breaths. It accepts -24 to 0 dB and defaults to 0 (original clip level).
+For example, a bot override of -6 dB halves the waveform amplitude while
+preserving speech, acknowledgements and voiced thinking cues. Studio exposes
+this as **Breathing volume (dB)** under **Advanced tuning**; clip previews
+use the bot's saved setting. This changes loudness, not the clip's voice or
+tone: synthesized breaths remain gender-matched rather than voice-specific.
 
 Rules, in priority order (`voice_runtime/latency_filler.py`):
 
@@ -170,15 +228,17 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   these APIs cannot selectively revoke one owner's remote audio and could
   remove valid speech. Packets already accepted by the socket, remote jitter
   buffers and device playback therefore remain an unavoidable boundary.
-- **Escalation ladder on long waits** (`latency_filler_ladder`, on by default;
-  `voice_runtime/voiced_cues.py`). When the breath has played and the reply is
+- **Escalation ladder on long waits** (`latency_filler_ladder`, on by default,
+  under the `filler_words` family master — it needs no breath;
+  `voice_runtime/voiced_cues.py`). When the reply is
   still not speaking, a short "Hmm…" in the bot's OWN voice follows at
   `latency_filler_hmm_ms` (default 3500, 2000–8000) and a spoken "एक सेकंड…"
   at `latency_filler_spoken_ms` (default 5000, 3000–12000), both measured
   from the caller's end of speech with at least 1 s of quiet between rungs.
   `TTSStartedFrame` does not suppress a rung while playable audio is still
   pending. The TTS router withholds the in-reply sentence inhale for 6 s after
-  any latency rung started (`sentence_breath_suppressed`, `recent_latency_filler`).
+  a pre-reply BREATH started (`sentence_breath_suppressed`, `recent_latency_filler`);
+  a spoken acknowledgement or cue does not count as a breath.
   Cue texts are fixed per language (`ladder_cue`), gender-neutral, rendered
   ONCE per (provider, model, voice, language) through the provider's REST
   `synthesize`, trimmed of lead/tail silence, faded, normalized under the reply's level (≈−25 dBFS RMS, peaks ≤ −10 dBFS) and
@@ -205,6 +265,12 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   voices, front-loaded so a reply landing 200–300 ms in still cuts an audible
   breath); `python scripts/export_filler_audio.py` writes those as WAVs for
   audition. A file that fails to decode falls back to the synthesized breath.
+  Recordings in `filler_audio_dir/optional/` appear in the catalog with
+  `requiresSelection: true` and IDs such as
+  `file:optional:breath_male_soft_recorded.wav`. They play only when a bot
+  selects them, so adding a recording there leaves all default rotations
+  unchanged. See `storage/filler_audio/README.md` for source and processing
+  details of the bundled soft recorded breath.
 - **Choosing the sounds (Natural Conversation tab).** The library holds four
   sound kinds — `breath` (soft, trailing off), `inhale` (short, rising; also
   the in-reply sentence breath), `exhale` (quick onset, long soft tail) and
@@ -216,7 +282,8 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   `filler_audio_selection` — `{kind: {gender: {primary, alternates}}}` —
   narrows a kind/gender to chosen clips: the primary plays first in a call and
   the alternates rotate with it, never the same clip twice in a row while
-  more than one is selected; empty means every clip of the gender rotates.
+  more than one is selected; empty means the gender's default clips rotate
+  (excluding recordings marked as requiring selection).
   Runtime eligibility always follows the active voice's catalog gender: a
   selection naming another gender's or kind's clips is ignored (the voice's
   own clips rotate) and logged once. `latency_filler_cue_selection` —
@@ -253,7 +320,9 @@ Rules, in priority order (`voice_runtime/latency_filler.py`):
   workflow's question → `confirm`; an agreement → `affirm`; a stated fact or
   commitment → `information`; courtesy words → `polite`; a longer statement →
   `information`; else `neutral`. Roles a context does not list are never
-  voiced there (no "ठीक है…" after a question, no "ओह…" after a plain
+  voiced there (no "ठीक है…" after a question or after a free statement the
+  bot has not accepted — `information` ranks information / polite / thinking
+  only — and no "ओह…" after a plain
   statement); in a serious caller state only thinking / polite / concern
   survive, so nothing sounds like agreement with a complaint; "ओह…" is a
   reaction, not a filler — at most once per call and on a minority of
@@ -272,6 +341,8 @@ Telemetry on the conversation event stream, every event carrying `rung`
 `caller_speech` | `interruption` | `bot_speaking` | `early_ack` | brain
 cancellation reason, `played_ms`), `latency_filler_completed`,
 `latency_filler_deferred` (`bot_speaking`) and `latency_filler_skipped`
-(`no_clip` | `spoken_withheld` | `voiced_withheld` | `after_early_ack`). The per-turn `naturalness_trace` log carries
-`latency_filler_enabled` and `latency_fillers_played` (all rungs); the
-processor's `rungs_played` counts per kind.
+(`no_clip` | `spoken_withheld` | `voiced_withheld` | `after_early_ack` |
+`breathing_off`). The per-turn `naturalness_trace` log carries
+`latency_filler_enabled`, `breathing_enabled`, `filler_words_enabled` and
+`latency_fillers_played` (all rungs); the processor's `rungs_played` counts
+per kind.

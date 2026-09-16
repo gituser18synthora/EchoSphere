@@ -37,7 +37,7 @@ _spec = importlib.util.spec_from_file_location("vaani_dialer_sim", _SIM_PATH)
 sim = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sim)
 
-QUIET_GAP = 0.7          # bot counted as done speaking after this much silence
+QUIET_GAP = float(os.environ.get("PROBE_QUIET_GAP", "0.7"))  # bot counted as done speaking after this much silence (env override for long replies)
 REPLY_TIMEOUT = 20.0     # give up waiting for a reply after this long
 BYTES_PER_SECOND = 16000  # 8 kHz PCM16 mono
 

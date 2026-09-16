@@ -118,6 +118,7 @@ class ConversationDecision(BaseModel):
     # executor — this field never executes anything by itself.
     tool_request: str | None = None
     needs_clarification: bool = False
+    context_question: bool = False
     # Optional co-generated reply. Spoken ONLY when the runtime's direct-speech
     # gate allows it (validated decision, no tool/knowledge/workflow involved).
     response_text: str = ""
@@ -140,6 +141,11 @@ class ConversationDecision(BaseModel):
             return None
         text = str(v).strip()
         return text[:80] or None
+
+    @field_validator("context_question", mode="before")
+    @classmethod
+    def _strict_context_question(cls, v):
+        return v is True
 
     @field_validator("decision", mode="before")
     @classmethod
@@ -204,6 +210,18 @@ class ConversationDecision(BaseModel):
     @model_validator(mode="after")
     def _enforce_scope_rules(self):
         """Deterministic guardrails no model output can bypass."""
+        self.context_question = bool(
+            self.context_question and self.scope == SCOPE_IN
+            and self.signal == "question" and self.confidence >= 0.6
+            and not self.slots and not self.tool_request
+            and self.decision not in ("confirmed", "denied")
+            and self.next_action in ("answer", "continue_workflow", "clarify", "ask_identity_confirmation")
+        )
+        if self.context_question:
+            # A question about the call is not an answer to its pending gate.
+            self.decision = "unrelated" if self.decision is not None else None
+            self.next_action = "answer"
+            self.needs_clarification = False
         if self.scope != SCOPE_IN:
             # Off-goal turns never call tools, never fill slots, never
             # confirm a pending gate and never advance a workflow — they
@@ -246,6 +264,7 @@ class ConversationDecision(BaseModel):
             "next_action": self.next_action,
             "tool_request": self.tool_request,
             "needs_clarification": self.needs_clarification,
+            "context_question": self.context_question,
             "has_response_text": bool(self.response_text),
             "user_language": self.user_language or None,
             "response_language": self.response_language or None,

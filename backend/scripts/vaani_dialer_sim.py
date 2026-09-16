@@ -85,7 +85,7 @@ def sign(body: bytes, *, ts: int | None = None, key: str | None = None) -> dict:
 
 def call_body(args, **extra) -> bytes:
     payload = {
-        "To": args.to, "From": "+919812345678",
+        "To": args.to, "From": os.environ.get("VAANI_SIM_FROM", "+919812345678"),
         "callId": f"SIM-{os.urandom(6).hex()}",
         "variables": {"customer_name": "Rohan Sharma", "outstanding_amount": "4500",
                       "overdue_days": "3", "dpd_bucket": "0-7"},
@@ -163,13 +163,19 @@ async def caller_audio(args, text: str) -> tuple[bytes, str]:
     if getattr(args, "raw", None):
         return load_raw_8k(args.raw), f"raw-pcm16le-8k:{args.raw}"
     api_key = os.environ.get("SARVAM_API_KEY", "")
+    # Caller language for the synthesized turn: a "ml-IN::text" prefix on the
+    # turn wins, else VAANI_SIM_TTS_LANG, else Hindi — so a multilingual bot
+    # can be driven with Malayalam/Tamil/English caller turns over telephony.
+    tts_lang = os.environ.get("VAANI_SIM_TTS_LANG", "hi-IN")
+    if "::" in text and len(text.split("::", 1)[0]) <= 6:
+        tts_lang, text = text.split("::", 1)
     if api_key:
         try:
             async with httpx.AsyncClient(timeout=30) as cx:
                 r = await cx.post(
                     "https://api.sarvam.ai/text-to-speech",
                     headers={"api-subscription-key": api_key},
-                    json={"text": text, "target_language_code": "hi-IN",
+                    json={"text": text, "target_language_code": tts_lang,
                           "speaker": "anand", "model": "bulbul:v3",
                           "speech_sample_rate": 8000})
                 r.raise_for_status()

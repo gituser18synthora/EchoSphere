@@ -440,19 +440,32 @@ def meaningful_short_reply(text: str) -> bool:
     )
 
 
-def resolve_allowed_languages(stt_settings: dict | None) -> frozenset[str]:
-    """Allowed STT languages for one bot: platform default, per-bot override.
+def resolve_allowed_languages(
+    stt_settings: dict | None, bot_languages: list[str] | tuple[str, ...] | None = None,
+) -> frozenset[str]:
+    """Allowed STT languages for one bot.
 
-    ``stt_settings.allowed_languages`` (list of locale or base codes) narrows
-    or widens the platform set; junk entries are ignored so a typo can never
-    disable the gate or reject every caller.
+    The platform default (or the per-bot ``stt_settings.allowed_languages``
+    override — a list of locale or base codes; junk entries are ignored so a
+    typo can never disable the gate or reject every caller) PLUS the base
+    codes of the languages configured for the bot. A bot that speaks ml-IN or
+    ta-IN must also be allowed to HEAR them: before this, a Malayalam caller's
+    perfectly transcribed turns were rejected as ``unsupported_script`` and
+    the call died on the silence ladder (bot_80487d7ce2e9, 2026-09-15).
+    Languages the STT provider merely supports are still rejected unless the
+    bot is configured for them.
     """
+    allowed = ALLOWED_STT_LANGUAGES
     raw = (stt_settings or {}).get("allowed_languages")
     if isinstance(raw, (list, tuple, set)):
         cleaned = {code for code in (base_language(item) for item in raw) if code}
         if cleaned:
-            return frozenset(cleaned)
-    return ALLOWED_STT_LANGUAGES
+            allowed = frozenset(cleaned)
+    configured = {
+        code for code in (base_language(item) for item in (bot_languages or ()))
+        if code
+    } if isinstance(bot_languages, (list, tuple, set, frozenset)) else set()
+    return allowed | frozenset(configured)
 
 
 def assess_transcript(

@@ -64,6 +64,10 @@ import logging
 import re
 import time
 from dataclasses import replace
+
+from shared.orchestration.context_questions import (
+    CONTEXT_QUESTION_RESPONSE, CONTEXT_QUESTION_TURN,
+)
 from datetime import datetime, timezone
 
 from pipecat.frames.frames import (
@@ -123,6 +127,7 @@ from shared.orchestration.naturalness import (
     is_serious_caller_state,
 )
 from shared.orchestration.router import (
+    leading_affirmation,
     RouteDecision,
     RouteKind,
     TurnRouter,
@@ -352,6 +357,11 @@ _QUESTION_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A caller utterance this short (words) that is neither a question nor a
+# problem report is an answer to what the bot just asked ("हाँ", "ठीक है",
+# "मेरा नाम राहुल है"): the acknowledgement may note it ("ठीक है…"). Longer
+# free statements are only listened to ("जी…", "अच्छा…", "Hmm…").
+_SHORT_ANSWER_WORDS = 4
 # One physical speech start may surface as BOTH an InterruptionFrame and a
 # UserStartedSpeakingFrame moments apart; inside this window (with no stop in
 # between) the second frame is bookkeeping-deduplicated.
@@ -367,6 +377,13 @@ _IDENTIFIER_RECOVERY_TIMEOUT = 6.0
 _LANGUAGE_RESCUE_RETENTION_SECONDS = 12.0
 _LANGUAGE_RESCUE_TIMEOUT = 4.0
 _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS = 0.3
+# Longest segment (meaningful words) the short-segment re-transcription may
+# re-read in the caller's ESTABLISHED language when the auto-detector labelled
+# it as another configured Indic language. Sarvam's mislabels are short
+# ("ஆமாம், நான் கௌரவ் தான்" came back as four Devanagari tokens); a genuine
+# mid-call switch to another Indic language is longer. English is never
+# re-read, so ml/ta ↔ en switching is unaffected at any length.
+_SHORT_MISLABEL_MAX_WORDS = 4
 # A provider re-emitting the SAME still-open audio segment cumulatively does
 # so within moments of the original final; past this, a prefix-extending
 # final is new speech (e.g. a caller repeating digits) and must append.
@@ -539,6 +556,18 @@ class ConversationBrain(FrameProcessor):
             self._policy = CollectionCallPolicy(
                 context=snapshot, language=config.language
             )
+            preferred = (getattr(snapshot, "preferred_language", None) or "").strip()
+            if preferred and preferred != config.language:
+                # The customer record's stored preference is a FACT for the
+                # LLM, not the spoken language: the brain owns the call
+                # language (bot default → per-turn following), and the
+                # policy's canned phrases follow it. Recorded so a call that
+                # "should have been in Hindi" can be explained.
+                recorder.add_event(
+                    "context_preferred_language_noted",
+                    preferred=preferred,
+                    spoken=config.language,
+                )
             if customer_context is not None:
                 recorder.customer_context_id = customer_context.context_id
             # The context row is fresher than any dialer-supplied variable:
@@ -731,6 +760,8 @@ class ConversationBrain(FrameProcessor):
         # confirmation intent's workflow) is permitted only before that: a
         # "theek hai" after the flow closed must never restart it.
         self._workflow_ever_routed = False
+        self._pending_workflow_question = ""
+        self._open_turn_pending_question = ""
         self._last_bot_reply: str = ""
         self._conversation_language: str = config.language
         # Language continuity: the previous call's dominant customer language
@@ -759,11 +790,18 @@ class ConversationBrain(FrameProcessor):
         self._language_candidate: str | None = None
         self._language_candidate_count = 0
         self._notified_unsupported_languages: set[str] = set()
+        # True once the CALLER (not the greeting default) has established the
+        # conversation language: a confirmed switch, or a multi-word turn in
+        # the current language. Gates the short-segment re-transcription.
+        self._caller_language_confirmed = False
         # Transcript gate: STT languages this bot accepts (platform default
-        # hi+en; stt_settings.allowed_languages overrides) and the streak of
-        # consecutive foreign-language rejections per detected language.
+        # hi+en or the stt_settings.allowed_languages override, PLUS every
+        # language configured for the bot — a bot that answers in Malayalam
+        # or Tamil must hear them too) and the streak of consecutive
+        # foreign-language rejections per detected language.
         self._allowed_stt_languages = resolve_allowed_languages(
-            (config.stt or {}).get("settings")
+            (config.stt or {}).get("settings"),
+            config.languages or [config.language],
         )
         self._unsupported_streak: dict[str, int] = {}
         llm_settings = (config.llm or {}).get("settings") or {}
@@ -972,6 +1010,9 @@ class ConversationBrain(FrameProcessor):
         self._early_ack_spoken_turn: int | None = None
         if latency_filler is not None:
             latency_filler.acknowledgement_hook = self._on_latency_ack_played
+            # A voiced ladder cue was heard: neither the next acknowledgement
+            # nor the next cue repeats that word.
+            latency_filler.cue_played_hook = self._on_latency_cue_played
         # Most recent trusted caller-state signal. Accepted STT finals may set
         # a deterministic serious signal while the caller still owns the
         # floor; the orchestrator's validated signal replaces it at turn end.
@@ -1550,6 +1591,16 @@ class ConversationBrain(FrameProcessor):
                 await self._reject_segment(text, quality, verdict)
                 return
             text, quality, verdict = rescued
+        else:
+            # Accepted, but a SHORT segment the auto-detector labelled as a
+            # different configured language than the one this caller has
+            # already established (Sarvam wrote a Tamil "ஆமாம், நான் ..." as
+            # Devanagari "आमाम नान ..."): re-transcribe it in the established
+            # language. Long utterances are untouched, so a genuine switch
+            # still follows the caller.
+            biased = await self._retranscribe_short_mislabel(text, quality)
+            if biased is not None:
+                text, quality, verdict = biased
         if verdict.reason == "digit_payload" and verdict.normalized_text:
             # A high-quality digit word the auto-detector labelled as an
             # unsupported language/script (Gujarati "સાત" while an order id
@@ -1806,6 +1857,129 @@ class ConversationBrain(FrameProcessor):
             language=language,
             original=text[:120],
             recovered=recovered[:200],
+        )
+        return recovered, rescued_quality, rescued_verdict
+
+    @staticmethod
+    def _unrecognized_latin_fragment(text: str) -> bool:
+        """A short all-Latin segment that reads as no reply we know: not a
+        signal (yes/no/hardship/…), not a leading affirmation, not a short
+        complete reply, and carrying no digits."""
+        stripped = (text or "").strip()
+        if not stripped or any(ch.isdigit() for ch in stripped):
+            return False
+        if not script_supports_language(stripped, "en-IN"):
+            return False
+        if classify_user_signal(stripped) is not None:
+            return False
+        if leading_affirmation(stripped) or is_short_complete_reply(stripped):
+            return False
+        return True
+
+    async def _retranscribe_short_mislabel(self, text: str, quality):
+        """Re-read a short, cross-labelled segment in the caller's language.
+
+        Runs only when ALL of these hold: the caller has already established
+        the conversation language (``_caller_language_confirmed``); the STT
+        label is a DIFFERENT non-English language the bot is configured for
+        (an unsupported label is the gate's business; short English replies
+        stay as heard); the segment is short (≤ ``_SHORT_MISLABEL_MAX_WORDS``
+        meaningful words — longer turns are left to the language follower, so
+        a genuine switch still happens); its script agrees with the label (a real
+        transliteration, not a borrowed word); and bounded post-gate audio
+        was retained for exactly this utterance. One batch transcription
+        pinned to the conversation language, gated like any segment and
+        required to read as that language; otherwise the original stands.
+        Returns ``(text, quality, verdict)`` or None.
+        """
+        raw = quality.language
+        if not raw:
+            return None
+        detected = to_platform_language(self._config.stt.get("provider", ""), raw)
+        current = self._conversation_language
+        detected_base = (detected or "").split("-")[0].lower()
+        if not detected_base or detected_base == current.split("-")[0].lower():
+            return None
+        if current.split("-")[0].lower() == "en":
+            return None
+        meaningful = meaningful_language_words(text)
+        if detected_base == "en":
+            # An English-labelled Latin fragment ("In law" for ഇല്ല): only when
+            # it is short and reads as NO known reply, and the call's language
+            # is one the caller established or the bot's own default that
+            # nothing has contradicted yet. Real short English replies ("yes
+            # speaking", "no", "next week by UPI") stay as heard.
+            if len(meaningful) > _MIN_SWITCH_WORDS:
+                return None
+            if not (self._caller_language_confirmed
+                    or current == (self._config.language or current)):
+                return None
+            if not self._unrecognized_latin_fragment(text):
+                return None
+        else:
+            if not self._caller_language_confirmed:
+                return None
+            if self._match_supported(detected) is None:
+                return None
+            if len(meaningful) > _SHORT_MISLABEL_MAX_WORDS:
+                return None
+            if not script_supports_language(" ".join(meaningful) or text, detected):
+                return None
+        if (
+            self._batch_transcriber is None
+            or self._identifier_capture is not None
+            or self._pending_segments
+        ):
+            return None
+        gate = self._audio_gate
+        take = getattr(gate, "take_retained_audio", None) if gate else None
+        retained = take() if take is not None else None
+        if not retained:
+            return None
+        audio, rate = retained
+        seconds = len(audio) / (rate * 2) if rate else 0.0
+        if seconds < _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS:
+            return None
+        self._recorder.add_event(
+            "short_segment_retranscribe_attempted",
+            detected=detected, language=current,
+            audio_seconds=round(seconds, 2), text=text[:80],
+        )
+        try:
+            recovered = await asyncio.wait_for(
+                self._batch_transcriber(audio, rate, current),
+                timeout=_LANGUAGE_RESCUE_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001 — the original segment stands
+            logger.warning(
+                "turn[%s] short-segment re-transcription failed",
+                self._recorder.session_id, exc_info=True,
+            )
+            self._recorder.add_event(
+                "short_segment_retranscribe_failed", reason="provider_error"
+            )
+            return None
+        recovered = (recovered or "").strip()
+        if not recovered:
+            self._recorder.add_event(
+                "short_segment_retranscribe_failed", reason="empty"
+            )
+            return None
+        rescued_quality = replace(quality, language=current, language_probability=None)
+        rescued_verdict = assess_transcript(
+            recovered, rescued_quality, self._allowed_stt_languages,
+            numeric_context=self._identifier_capture is not None,
+        )
+        if not rescued_verdict.accepted or not script_supports_language(recovered, current):
+            self._recorder.add_event(
+                "short_segment_retranscribe_failed",
+                reason=f"gate:{rescued_verdict.reason}" if not rescued_verdict.accepted else "script",
+            )
+            return None
+        self._recorder.add_event(
+            "short_segment_retranscribed",
+            detected=detected, language=current,
+            original=text[:120], recovered=recovered[:200],
         )
         return recovered, rescued_quality, rescued_verdict
 
@@ -2107,6 +2281,7 @@ class ConversationBrain(FrameProcessor):
                 rolled = False
             if rolled:
                 self._active_workflow = previous_active
+                self._pending_workflow_question = self._open_turn_pending_question
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
@@ -2333,10 +2508,19 @@ class ConversationBrain(FrameProcessor):
             detected_base = detected.split("-")[0].lower()
             current_base = self._conversation_language.split("-")[0].lower()
             if detected_base != current_base:
+                # Name the actual reason: a one-word answer ("yes", "haan",
+                # "അതെ") is simply too short to vote; only when digit words /
+                # business terms were stripped is it a numeric or technical
+                # payload.
+                total_tokens = len(text.split())
                 self._recorder.add_event(
                     "language_switch_blocked",
                     detected=detected,
-                    reason="numeric_or_technical_payload",
+                    reason=(
+                        "numeric_or_technical_payload"
+                        if total_tokens > len(meaningful) else "too_few_words"
+                    ),
+                    words=len(meaningful),
                     current=self._conversation_language,
                 )
             self._reset_language_candidate()
@@ -2380,8 +2564,32 @@ class ConversationBrain(FrameProcessor):
             self._reset_language_candidate()
             return
 
+        if (
+            detected_base == "en"
+            and self._conversation_language.split("-")[0].lower() != "en"
+            and len(meaningful) <= _MIN_SWITCH_WORDS
+            and self._unrecognized_latin_fragment(text)
+        ):
+            # Sarvam writes a short Malayalam/Tamil answer as an English
+            # look-alike now and then ("ഇല്ല" → "In law", "യുപിഐ വഴി" →
+            # "UPA Mulam"). Two Latin tokens that read as no known reply
+            # never flip an Indic call to English; a real English switch is
+            # either longer or a recognizable reply ("yes speaking").
+            self._recorder.add_event(
+                "language_switch_blocked",
+                detected=detected,
+                reason="short_unrecognized_english",
+                current=self._conversation_language,
+            )
+            self._reset_language_candidate()
+            return
+
         target = self._match_supported(detected)
         if target == self._conversation_language:
+            if len(meaningful) > _MIN_SWITCH_WORDS:
+                # A multi-word turn in the current language: the CALLER has
+                # now established it (the greeting default was only a guess).
+                self._caller_language_confirmed = True
             self._reset_language_candidate()
             return
 
@@ -2421,6 +2629,7 @@ class ConversationBrain(FrameProcessor):
             previous=self._conversation_language,
         )
         self._conversation_language = target
+        self._caller_language_confirmed = True
         self._voice_context = voice_context_values(
             active_voice_identity(self._config.tts, target)
         )
@@ -3146,6 +3355,11 @@ class ConversationBrain(FrameProcessor):
         }
 
     async def _cancel_latency_filler(self, reason: str) -> None:
+        # Whatever acknowledgement was planned for the cancelled turn will
+        # never be heard: it must leave no trace in the planner's history.
+        discard = getattr(self._naturalness, "discard_early_ack", None)
+        if callable(discard):
+            discard()
         filler = self._latency_filler
         if filler is None:
             return
@@ -3157,27 +3371,61 @@ class ConversationBrain(FrameProcessor):
     # ── latency acknowledgement (human speech naturalness) ───────────────
 
     def _on_latency_ack_played(self, turn_id: int) -> None:
+        """The processor started the acknowledgement planned for ``turn_id``.
+
+        The planner commits that turn's speculative pick into its history
+        and confirms; a stale callback (the pick was discarded by a
+        cancellation or replaced by a newer plan) is ignored so the word is
+        never counted as heard.
+        """
+        note = getattr(self._naturalness, "note_early_ack_played", None)
+        confirmed = note(turn_id) if callable(note) else True
+        if confirmed is False:
+            return
         self._early_ack_spoken_turn = turn_id
-        self._naturalness.note_early_ack_played(turn_id)
+
+    def _on_latency_cue_played(self, turn_id: int, cue_id: str | None) -> None:
+        note = getattr(self._naturalness, "note_latency_cue_played", None)
+        if not callable(note):
+            return
+        try:
+            note(cue_id, turn_index=turn_id, language=self._conversation_language)
+        except TypeError:
+            note(cue_id)
 
     def _early_ack_context(self, text: str, decision: RouteDecision) -> str:
         """What the caller just did, from their words alone (no model call).
 
         A knowledge question gets a lookup beat ("एक सेकंड…"), any other
-        question a beat of thought ("Hmm…"), a statement or answer a plain
-        acknowledgement ("जी…", "ठीक है…"). A serious caller state or
-        dictated amounts/identifiers degrade to neutral listening tokens
-        inside the planner (see plan_early_ack).
+        question a beat of thought ("Hmm…"). Trouble in the words (a
+        complaint/hardship/wrong-person signal or "नहीं मिला", "कट गया",
+        "problem", "galat"…) gets ``concern``: neutral listening tokens,
+        nothing bright or surprised after a problem report. An answer to the
+        bot's own question — inside a workflow, an agreement, or a short
+        reply — is ``answer`` and may be noted with "ठीक है…"; a longer free
+        statement or explanation the bot has not acted on yet is
+        ``information`` and only gets listening tokens ("जी…", "अच्छा…",
+        "Hmm…"). A serious caller state or dictated amounts/identifiers
+        degrade to neutral tokens inside the planner (see plan_early_ack).
         """
         if decision.kind == RouteKind.KNOWLEDGE:
             return "lookup"
+        signal = classify_user_signal(text) or ""
         if (
-            _QUESTION_MARK_RE.search(text)
+            signal == "question"
+            or _QUESTION_MARK_RE.search(text)
             or _QUESTION_WORD_RE.search(text)
-            or classify_user_signal(text) == "question"
         ):
             return "question"
-        return "answer"
+        if signal in ("complaint", "hardship", "wrong_person") or _CONCERN_RE.search(text):
+            return "concern"
+        if (
+            self._active_workflow is not None
+            or signal == "affirm"
+            or len(text.split()) <= _SHORT_ANSWER_WORDS
+        ):
+            return "answer"
+        return "information"
 
     def _plan_early_ack(self, text: str) -> dict | None:
         """Plan an optional cached acknowledgement for the latency deadline.
@@ -3192,7 +3440,21 @@ class ConversationBrain(FrameProcessor):
         queues TTS: the filler may play it only after the configured delay
         while reply audio is still unavailable.
         """
+        discard = getattr(self._naturalness, "discard_early_ack", None)
+        if callable(discard):
+            # A new plan (or a withheld one) invalidates any older speculative
+            # pick: a late playback report for it must not enter history.
+            discard()
         if self._closing or self._bot_speaking or not self._naturalness.enabled:
+            return
+        if getattr(self._naturalness, "acknowledgements_enabled", True) is False:
+            # Filler words (or acknowledgements) are off for this bot: no
+            # routing work for a word that can never play. The planner still
+            # records the reason for the per-turn trace.
+            self._naturalness.plan_early_ack(
+                language=self._conversation_language, turn_index=self._turn_counter + 1,
+                commit=False,
+            )
             return
         prefetch = self._decision_prefetch
         if (
@@ -3263,6 +3525,10 @@ class ConversationBrain(FrameProcessor):
         if prefetch is not None:
             prefetch[1].cancel()
         await self._cancel_generation("cleanup")
+        release = getattr(self._naturalness, "clear_call_history", None)
+        if callable(release):
+            # The call is over: its heard-word history dies with it.
+            release()
         if self._policy is not None:
             # Final disposition + call-state write-back payload for the
             # recorder (persisted in finalize, after the pipeline is torn
@@ -3591,10 +3857,6 @@ class ConversationBrain(FrameProcessor):
                 # slow provider turns into a doubled worst case.
                 classification = await self._classify_turn(text)
                 decision = self._apply_classification(decision, classification)
-        decision = self._router.apply_entry_fallback(
-            decision, active_workflow=self._active_workflow,
-            allow_affirm_entry=not self._workflow_ever_routed,
-        )
         if orchestrated is not None:
             # The validated decision is the single source of meaning for the
             # turn — the regex bank must not resurrect a signal the decision
@@ -3607,6 +3869,24 @@ class ConversationBrain(FrameProcessor):
                 or decision.signal
                 or classify_user_signal(text)
             )
+        # Opening fallback must see the semantic understanding, even when
+        # classification found no configured business intent to upgrade.
+        decision = replace(decision, signal=signal)
+        decision = self._router.apply_entry_fallback(
+            decision, active_workflow=self._active_workflow,
+            allow_affirm_entry=not self._workflow_ever_routed,
+        )
+        if (
+            decision.kind == RouteKind.CHAT and signal == "affirm"
+            and (orchestrated is None or (
+                orchestrated.scope == SCOPE_IN and not orchestrated.slots
+                and not orchestrated.tool_request
+            ))
+            and self._pending_opening_question()
+        ):
+            # Acknowledgement that did not route into the configured workflow
+            # must not let free chat invent its first business question.
+            decision = replace(decision, reason="entry_resume")
         if (
             self._active_workflow is not None
             and self._runtime_context is not None
@@ -3888,6 +4168,11 @@ class ConversationBrain(FrameProcessor):
                 await self._say(entry_question_retry(
                     self._config.greeting, self._conversation_language,
                 ))
+            elif decision.reason == "entry_resume":
+                question = self._pending_opening_question()
+                if self._conversation_language != self._config.language:
+                    question = await self._adapt_scripted_ask(question) or question
+                await self._say(question)
             elif decision.kind == RouteKind.CLARIFY and self._policy is not None:
                 # In a policy-managed call even a bare "जी" / "hmm" is context:
                 # a canned clarification here is what produced the "didn't
@@ -4034,6 +4319,8 @@ class ConversationBrain(FrameProcessor):
                 "backchannel_used": self._naturalness.backchannels_played > 0,
                 "backchannel_count": self._naturalness.backchannels_played,
                 "latency_filler_enabled": self._latency_filler is not None,
+                "breathing_enabled": bool(getattr(self._naturalness, "breathing_enabled", False)),
+                "filler_words_enabled": bool(getattr(self._naturalness, "filler_words_enabled", False)),
                 "latency_fillers_played": (
                     getattr(self._latency_filler, "fillers_played", 0)
                     if self._latency_filler is not None else 0
@@ -4190,6 +4477,10 @@ class ConversationBrain(FrameProcessor):
                 language=self._conversation_language,
                 last_bot_question=self._last_bot_reply[-240:],
             ))
+        if self._active_workflow and self._pending_workflow_question:
+            state["pending_question"] = self._pending_workflow_question
+        elif policy is None and (question := self._pending_opening_question()):
+            state["pending_question"] = question
         return state
 
     _DIRECT_SPEAK_PLAN_ACTIONS = frozenset({
@@ -4205,6 +4496,13 @@ class ConversationBrain(FrameProcessor):
         "ask_identity_confirmation", "request_slot_value", "clarify",
         "redirect_to_goal", "answer", "continue_workflow",
     })
+
+    def _conversation_uses_other_indic_script(self) -> bool:
+        """Whether the conversation language is written in a script other than
+        Devanagari or Latin (ml, ta, te, kn, bn, gu, pa, or, as, ur). Hindi/
+        Marathi/English conversations keep their existing adaptation rule."""
+        base = (self._conversation_language or "").split("-")[0].lower()
+        return base not in ("", "hi", "mr", "ne", "en")
 
     def _decision_text_matches_language(self, text: str) -> bool:
         """Whether a co-generated reply is actually in the response language.
@@ -4238,6 +4536,14 @@ class ConversationBrain(FrameProcessor):
         decision — the text can only phrase it, never change it.
         """
         if orchestrated is None or not orchestrated.response_text or tool_instruction:
+            return ""
+        if getattr(orchestrated, "context_question", False) or (
+            orchestrated.signal == "question" and not self._workflow_ever_routed
+            and self._router.affirm_entry is not None
+        ):
+            # Stage A has only a short prompt excerpt. Identity/purpose and
+            # contextual facts must be answered under the complete bot prompt
+            # and the current session's disclosure restrictions.
             return ""
         if orchestrated.next_action not in self._DIRECT_SPEAK_DECISION_ACTIONS:
             return ""
@@ -4342,6 +4648,23 @@ class ConversationBrain(FrameProcessor):
         deterministic routes never reach here. Below the intent's threshold
         nothing is routed — an uncertain guess must not start a workflow.
         """
+        if classification.context_question and decision.reason == "intent_knowledge":
+            # An explicit tenant route wins over a conflicting semantic hint.
+            return decision
+        if classification.context_question and decision.kind in (
+            RouteKind.CHAT, RouteKind.CLARIFY, RouteKind.KNOWLEDGE,
+            RouteKind.INTENT, RouteKind.WORKFLOW,
+        ):
+            if self._active_workflow is not None:
+                return RouteDecision(
+                    kind=RouteKind.WORKFLOW, action=self._active_workflow,
+                    confidence=classification.confidence,
+                    reason="context_question_in_workflow", signal="question",
+                )
+            return RouteDecision(
+                kind=RouteKind.CHAT, confidence=classification.confidence,
+                reason="context_question", signal="question",
+            )
         if decision.kind not in (
             RouteKind.CHAT, RouteKind.CLARIFY, RouteKind.KNOWLEDGE,
             RouteKind.INTENT, RouteKind.TOOL,
@@ -4698,6 +5021,7 @@ class ConversationBrain(FrameProcessor):
                 if verified_slots:
                     initial_slots = verified_slots
         self._open_turn_workflow = (workflow_name, self._active_workflow, text)
+        self._open_turn_pending_question = self._pending_workflow_question
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -4715,6 +5039,8 @@ class ConversationBrain(FrameProcessor):
             heard_nodes=list(self._heard_nodes),
             llm=self._llm,
             history=self._history,
+            **({"pause_for_context": True} if classification is not None
+               and classification.context_question else {}),
         )
         extraction_usage = result.get("extractionUsage")
         if extraction_usage:
@@ -4742,6 +5068,9 @@ class ConversationBrain(FrameProcessor):
                 self._runtime_context.prompt_section()
             )
         self._active_workflow = None if result["done"] else workflow_name
+        self._pending_workflow_question = (
+            str(result.get("nodePrompt") or "") if not result["done"] else ""
+        )
         self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)
         turn_signal = result.get("signal") or (
@@ -4765,9 +5094,11 @@ class ConversationBrain(FrameProcessor):
             )
             if self._policy is not None:
                 extra += self._policy.turn_instruction()
-            if self._knowledge is not None and self._config.kb_ids and (
-                kb_intent or turn_signal == "question"
-            ):
+            if (self._knowledge is not None and self._config.kb_ids and (
+                kb_intent or (turn_signal == "question" and not (
+                    classification is not None and classification.context_question
+                ))
+            )):
                 # An informational question while the flow waits (cv_56df956b0430:
                 # "what is the onboarding fee?" at the amount ask was answered
                 # by the persona alone — and refused as out of scope). The
@@ -4786,7 +5117,11 @@ class ConversationBrain(FrameProcessor):
                     "workflow_kb_question", workflow=workflow_name,
                     consumed=False, intent=decision.intent,
                 )
-            await self._generate_reply(text, decision, started, extra_system=extra)
+            await self._generate_reply(
+                text, decision, started, extra_system=extra,
+                question_response=turn_signal == "question" and decision.kind != RouteKind.KNOWLEDGE,
+                pending_question=str(result.get("nodePrompt") or ""),
+            )
             return
         reply = result["reply"]
         if result.get("knowledgeCovered") and kb_intent:
@@ -4829,7 +5164,15 @@ class ConversationBrain(FrameProcessor):
         needs_language_adaptation = bool(
             reply
             and not exact_delivery
-            and self._conversation_language != self._config.language
+            and (
+                self._conversation_language != self._config.language
+                # A bot whose DEFAULT language is written in a non-Devanagari,
+                # non-Latin script (Malayalam, Tamil, …) usually carries
+                # workflow text authored in Hindi/English: the caller must not
+                # hear a Hindi node question on a Malayalam call just because
+                # the conversation never left the default language.
+                or self._conversation_uses_other_indic_script()
+            )
             and not self._decision_text_matches_language(reply)
         )
         # The engine reports nodePrompt whenever the flow paused on a node
@@ -5354,7 +5697,8 @@ class ConversationBrain(FrameProcessor):
         prompt = (result.get("nodePrompt") or "").strip()
         step = f' The flow is currently waiting on this step: "{prompt}".' if prompt else ""
         facts = collected_facts_block(result.get("slots") or {})
-        if result.get("awaitingKind") == "intent" and prompt:
+        if (result.get("awaitingKind") == "intent" and prompt
+                and not result.get("contextQuestion")):
             # An "anything else?" hub: after answering the caller's question
             # the bot must not recite the hub's question verbatim every time
             # (cv_2c60d51f61fb: the same closing line after four answers).
@@ -5392,15 +5736,46 @@ class ConversationBrain(FrameProcessor):
         """Instruction for an authored workflow context-response node."""
         return CONTEXT_RESPONSE_INSTRUCTION
 
+    def _pending_opening_question(self) -> str:
+        if (self._workflow_ever_routed or self._active_workflow is not None
+                or self._router.affirm_entry is None):
+            return ""
+        from shared.orchestration.phrases import entry_question
+
+        return entry_question(resolve_placeholders(
+            self._config.greeting, self._placeholder_values(),
+        ))
+
     async def _generate_reply(
         self, text: str, decision: RouteDecision, started: float,
         extra_system: str = "", fallback_text: str = "",
+        *, question_response: bool = False,
+        pending_question: str = "",
     ) -> None:
         # Generic bots carry their guarded goal state (identity gating,
         # missing slots, scope) into every generation — the response stage
         # follows the validated decision state, it never redefines it.
         if self._goal_session is not None:
             extra_system = self._goal_session.turn_instruction() + extra_system
+        opening_pending = (
+            not self._workflow_ever_routed and self._active_workflow is None
+            and self._router.affirm_entry is not None and self._config.greeting
+        )
+        if opening_pending:
+            extra_system += (
+                "\n\n# Pending opening step\nThe workflow has not started. "
+                "The question in this bot's opening utterance is still pending: "
+                + json.dumps(resolve_placeholders(
+                    self._config.greeting, self._placeholder_values(),
+                ), ensure_ascii=False)
+                + ". After answering a related question, return only to that "
+                "pending question if appropriate. Any follow-up question must "
+                "have the SAME meaning as that pending question; never replace "
+                "it with a generic 'how can I help?' or a new topic. "
+                "Do not request later workflow "
+                "details or assume identity/permission has been confirmed. "
+                "Do not repeat the full greeting or an apology for unclear speech."
+            )
         # The immutable per-call prompt was assembled once at call start; only
         # the (cached) reply-language suffix varies between turns. The
         # language instruction comes LAST deliberately: a bot whose persona
@@ -5411,10 +5786,33 @@ class ConversationBrain(FrameProcessor):
             self._static_system
             + self._verified_runtime_context_block
             + extra_system
+            + CONTEXT_QUESTION_RESPONSE
             + self._time_context_instruction()
             + f"\n\n# Voice response length\nKeep the spoken reply concise: usually one or two short sentences and never more than {self._llm_max_characters} characters. Preserve required confirmations, workflow instructions, and tool results; omit nonessential detail."
             + self._language_instruction()
         )
+        # Carry the live turn's meaning into speech generation, not just a
+        # general rule buried among the tenant's script examples. An opening
+        # question also needs this grounding when the classifier omitted the
+        # context hint. Explicit KB/tool/control routes keep their own behavior.
+        turn_instruction = ""
+        if question_response or decision.reason in ("context_question", "context_question_in_workflow") or (
+            opening_pending and decision.kind == RouteKind.CHAT
+            and decision.signal == "question"
+        ):
+            pending_question = pending_question or self._pending_opening_question()
+            turn_instruction = (
+                CONTEXT_QUESTION_TURN
+                + "\nAuthoritative pending question (reference text): "
+                + json.dumps(pending_question or None, ensure_ascii=False)
+                + "\nLast bot utterance (history, not permission to change steps): "
+                + json.dumps(self._last_bot_reply or None, ensure_ascii=False)
+            )
+            system += "\n\n# Current question — response task\n" + turn_instruction
+            self._recorder.add_event(
+                "context_question_reply", opening_pending=bool(opening_pending),
+                workflow_paused=bool(self._active_workflow),
+            )
         kb_sources: list[dict] = []
         retrieval_ms = 0.0
 
@@ -5532,7 +5930,9 @@ class ConversationBrain(FrameProcessor):
             await self.push_frame(TextFrame(preface + " "))
             await self.push_frame(TTSFlushHintFrame())
         try:
-            first_token_ms = await self._stream_llm_tokens(reply_parts, system, started)
+            first_token_ms = await self._stream_llm_tokens(
+                reply_parts, system, started, turn_instruction=turn_instruction,
+            )
             self._latency.mark_llm_completed()
         except _GuardrailBlockedReply as blocked:
             guardrail_block = blocked
@@ -5626,6 +6026,21 @@ class ConversationBrain(FrameProcessor):
             # actually starts playing (see _report_latency).
             self._pending_latency_record = record
 
+        if (reply and turn_instruction and pending_question
+                and not any(mark in reply for mark in ("?", "？", "؟"))
+                and not self._closing):
+            # A factual answer alone must not strand a waiting workflow.
+            # Speak its authored question if generation omitted it; no graph
+            # invocation, slot capture or step advancement occurs here.
+            question = pending_question
+            if (self._conversation_language != self._config.language
+                    or self._conversation_uses_other_indic_script()):
+                question = await self._adapt_scripted_ask(question) or question
+            self._recorder.add_event(
+                "pending_question_resumed", source="workflow" if self._active_workflow else "opening",
+            )
+            await self._say(question)
+
     def _record_llm_usage(self, reply: str) -> None:
         """Fold one LLM generation into the call's usage counters.
 
@@ -5651,7 +6066,7 @@ class ConversationBrain(FrameProcessor):
             usage["llm_output_tokens"] += len(reply) // 4
             usage["llm_usage_estimated"] = 1
 
-    def _generation_messages(self) -> list[dict]:
+    def _generation_messages(self, turn_instruction: str = "") -> list[dict]:
         """The message list one generation runs on.
 
         While the caller speaks a language OTHER than the bot's authored
@@ -5660,21 +6075,32 @@ class ConversationBrain(FrameProcessor):
         overrode the system-level language section often enough that English
         callers got Hindi replies — the inline note is the reliable lever, and
         it never enters stored history (this list is built per request).
+        A context-question response likewise carries its one-turn task here,
+        so script examples and earlier mistaken refusals do not define the
+        current answer. The note contains no caller-supplied instructions.
         """
-        if self._conversation_language == self._config.language:
-            return self._history
         label = language_label(self._conversation_language)
-        if not label or not self._history or self._history[-1]["role"] != "user":
+        notes = [turn_instruction] if turn_instruction else []
+        if label and self._conversation_language != self._config.language:
+            notes.append(f"The caller is speaking {label}; your entire reply must be in {label}.")
+        if not notes or not self._history or self._history[-1]["role"] != "user":
             return self._history
         messages = [dict(m) for m in self._history]
         messages[-1]["content"] += (
-            f"\n\n[Platform note — not the caller's words: the caller is "
-            f"speaking {label}; your entire reply must be in {label}.]"
+            "\n\n[Platform note — not the caller's words: " + " ".join(notes) + "]"
         )
+        if turn_instruction:
+            messages[-1]["content"] += (
+                "\n\nResponse task: answer the actual question, then return "
+                "to the supplied pending question once. For a repeat request, "
+                "just restate that question clearly. Keep it brief; do not "
+                "advance to another step.\nSpoken reply:"
+            )
         return messages
 
     async def _stream_llm_tokens(
-        self, reply_parts: list[str], system: str, started: float
+        self, reply_parts: list[str], system: str, started: float,
+        *, turn_instruction: str = "",
     ) -> float | None:
         """Stream LLM tokens downstream with pause-flush hints and retry.
 
@@ -5761,7 +6187,7 @@ class ConversationBrain(FrameProcessor):
                 self._latency.mark_llm_request()
                 request_at = time.monotonic()
                 stream = self._llm.stream(
-                    self._generation_messages(),
+                    self._generation_messages(turn_instruction),
                     system=system,
                     temperature=self._llm_temperature,
                     max_tokens=self._llm_max_tokens,

@@ -235,6 +235,72 @@ _COLLECTIONS_FALLBACKS: dict[str, dict[str, str]] = {
 }
 
 
+# Malayalam / Tamil renderings, merged at import (resolve_phrase stays a plain
+# locale lookup). Placeholders {amount}/{days}/{name}/{reference} kept verbatim.
+_COLLECTIONS_FALLBACKS_ML_TA: dict[str, dict[str, str]] = {
+    "collections_open_amount_days": {
+        "ml": ("നിങ്ങളുടെ അക്കൗണ്ടിൽ {amount} പേയ്‌മെന്റ് {days} ദിവസമായി കുടിശ്ശികയാണ്. "
+               "ആ പേയ്‌മെന്റിനെക്കുറിച്ചാണ് ഞാൻ വിളിക്കുന്നത് — ഇന്ന് പേയ്‌മെന്റ് ചെയ്യാൻ കഴിയുമോ?"),
+        "ta": ("உங்கள் கணக்கில் {amount} பேமெண்ட் {days} நாட்களாக நிலுவையில் உள்ளது. "
+               "அந்தப் பேமெண்ட் குறித்துதான் அழைக்கிறேன் — இன்று பேமெண்ட் செய்ய முடியுமா?"),
+    },
+    "collections_open_amount": {
+        "ml": ("നിങ്ങളുടെ അക്കൗണ്ടിൽ {amount} പേയ്‌മെന്റ് കുടിശ്ശികയാണ്. "
+               "ആ പേയ്‌മെന്റിനെക്കുറിച്ചാണ് ഞാൻ വിളിക്കുന്നത് — ഇന്ന് പേയ്‌മെന്റ് ചെയ്യാൻ കഴിയുമോ?"),
+        "ta": ("உங்கள் கணக்கில் {amount} பேமெண்ட் நிலுவையில் உள்ளது. "
+               "அந்தப் பேமெண்ட் குறித்துதான் அழைக்கிறேன் — இன்று பேமெண்ட் செய்ய முடியுமா?"),
+    },
+    "collections_identity_reask": {
+        "ml": "ക്ഷമിക്കണം — ഞാൻ {name} നോടാണോ സംസാരിക്കുന്നത്?",
+        "ta": "மன்னிக்கவும் — நான் {name} உடன் பேசுகிறேனா?",
+    },
+    "collections_identity_unverified_close": {
+        "ml": ("ക്ഷമിക്കണം, ശരിയായ ആളോടാണ് സംസാരിക്കുന്നതെന്ന് ഉറപ്പാക്കാൻ കഴിഞ്ഞില്ല, അതിനാൽ "
+               "ഈ കോളിന്റെ വിവരങ്ങൾ പങ്കുവയ്ക്കാൻ കഴിയില്ല. ഞങ്ങൾ പിന്നീട് വീണ്ടും ബന്ധപ്പെടാം. നന്ദി."),
+        "ta": ("மன்னிக்கவும், சரியான நபரிடம் பேசுகிறேனா என்பதை உறுதிப்படுத்த முடியவில்லை, எனவே "
+               "இந்த அழைப்பின் விவரங்களைப் பகிர முடியாது. நாங்கள் பிறகு மீண்டும் தொடர்பு கொள்கிறோம். நன்றி."),
+    },
+    "collections_ask_reference": {
+        "ml": "നന്ദി. പേയ്‌മെന്റ് സ്ഥിരീകരിക്കാൻ, ദയവായി ട്രാൻസാക്ഷൻ അല്ലെങ്കിൽ UTR നമ്പർ പറയൂ.",
+        "ta": "நன்றி. பேமெண்டை உறுதிப்படுத்த, தயவுசெய்து டிரான்சாக்ஷன் அல்லது UTR எண்ணைச் சொல்லுங்கள்.",
+    },
+    "collections_ask_reference_retry": {
+        "ml": "ക്ഷമിക്കണം, നമ്പർ മനസ്സിലായില്ല. ദയവായി ട്രാൻസാക്ഷൻ നമ്പർ പതുക്കെ, ഓരോ അക്കമായി പറയൂ.",
+        "ta": "மன்னிக்கவும், எண் புரியவில்லை. தயவுசெய்து டிரான்சாக்ஷன் எண்ணை மெதுவாக, ஒவ்வொரு இலக்கமாகச் சொல்லுங்கள்.",
+    },
+    "collections_payment_verified": {
+        "ml": "നിങ്ങളുടെ പേയ്‌മെന്റ് ലഭിച്ചു, വിജയകരമായി സ്ഥിരീകരിച്ചു. ഓർമ്മപ്പെടുത്തൽ കോളിന് ക്ഷമിക്കണം, നന്ദി!",
+        "ta": "உங்கள் பேமெண்ட் பெறப்பட்டு வெற்றிகரமாக உறுதிப்படுத்தப்பட்டது. நினைவூட்டல் அழைப்பிற்கு மன்னிக்கவும், நன்றி!",
+    },
+    "collections_payment_processing": {
+        "ml": ("ട്രാൻസാക്ഷൻ നമ്പർ {reference} ഞാൻ കുറിച്ചെടുത്തു. നിങ്ങളുടെ പേയ്‌മെന്റ് ഞങ്ങളുടെ "
+               "രേഖകളിൽ കാണുന്നുണ്ട്, പക്ഷേ ഇപ്പോഴും പ്രോസസ്സിംഗിലാണ് — പൂർത്തിയാകുമ്പോൾ അക്കൗണ്ടിൽ പ്രതിഫലിക്കും. നന്ദി!"),
+        "ta": ("டிரான்சாக்ஷன் எண் {reference} குறித்துக்கொண்டேன். உங்கள் பேமெண்ட் எங்கள் பதிவுகளில் "
+               "தெரிகிறது, ஆனால் இன்னும் செயலாக்கத்தில் உள்ளது — முடிந்ததும் உங்கள் கணக்கில் தெரியும். நன்றி!"),
+    },
+    "collections_payment_not_found": {
+        "ml": ("ട്രാൻസാക്ഷൻ നമ്പർ {reference} ഉപയോഗിച്ച് ഇപ്പോൾ പേയ്‌മെന്റ് സ്ഥിരീകരിക്കാൻ കഴിഞ്ഞില്ല. "
+               "നമ്പർ ഞാൻ രേഖപ്പെടുത്തി — ഞങ്ങളുടെ ടീം വീണ്ടും പരിശോധിച്ച് നിങ്ങളെ ബന്ധപ്പെടും. നന്ദി."),
+        "ta": ("டிரான்சாக்ஷன் எண் {reference} மூலம் இப்போது பேமெண்டை உறுதிப்படுத்த முடியவில்லை. "
+               "எண்ணைப் பதிவு செய்துவிட்டேன் — எங்கள் குழு மீண்டும் சரிபார்த்து உங்களைத் தொடர்பு கொள்ளும். நன்றி."),
+    },
+    "collections_verification_unavailable": {
+        "ml": ("ട്രാൻസാക്ഷൻ നമ്പർ {reference} ഞാൻ കുറിച്ചെടുത്തു. സ്ഥിരീകരണം ഇപ്പോഴും ബാക്കിയാണ് — "
+               "ഞങ്ങളുടെ ടീം രേഖകളുമായി ഒത്തുനോക്കി ഉറപ്പാക്കും. നന്ദി."),
+        "ta": ("டிரான்சாக்ஷன் எண் {reference} குறித்துக்கொண்டேன். உறுதிப்படுத்தல் இன்னும் நிலுவையில் உள்ளது — "
+               "எங்கள் குழு பதிவுகளுடன் சரிபார்த்து உறுதிப்படுத்தும். நன்றி."),
+    },
+    "collections_reference_unavailable_close": {
+        "ml": ("കുഴപ്പമില്ല. നിങ്ങൾ പേയ്‌മെന്റ് ചെയ്തതായി ഞാൻ രേഖപ്പെടുത്തി — ഞങ്ങളുടെ ടീം രേഖകളിൽ നിന്ന് "
+               "അത് പരിശോധിക്കും, ആവശ്യമെങ്കിൽ ബന്ധപ്പെടും. നന്ദി."),
+        "ta": ("பரவாயில்லை. நீங்கள் பேமெண்ட் செய்ததாகப் பதிவு செய்துவிட்டேன் — எங்கள் குழு பதிவுகளிலிருந்து "
+               "சரிபார்த்து, தேவைப்பட்டால் தொடர்பு கொள்ளும். நன்றி."),
+    },
+}
+for _key, _extra in _COLLECTIONS_FALLBACKS_ML_TA.items():
+    _COLLECTIONS_FALLBACKS.setdefault(_key, {}).update(_extra)
+
+
 def canned(key: str, locale: str | None = None) -> str:
     """Collections fallback phrase in the caller's language (domain-owned)."""
     return resolve_phrase(_COLLECTIONS_FALLBACKS, key, locale)
@@ -318,7 +384,22 @@ _IDENTITY_QUESTION = re.compile(
     r"(?:baat|बात)[^।?!]{0,50}(?:ho rah|kar rah|हो रह|कर रह)"
     r"|am i speaking|speaking (?:with|to)|is (?:this|that)\s+\S+"
     r"|account holder|अकाउंट होल्डर"
-    r"|(?:aap|आप)[^।?!]{0,20}(?:hi|ही)\s*(?:bol|बोल)",
+    r"|(?:aap|आप)[^।?!]{0,20}(?:hi|ही)\s*(?:bol|बोल)"
+    # Malayalam / Tamil greeting forms ("ഞാൻ X ജിയോടാണോ സംസാരിക്കുന്നത്?",
+    # "X തന്നെയാണോ?", "நான் X உடன் பேசுகிறேனா?", "X தானா பேசுவது?"). Without
+    # these the policy never armed awaiting_identity on a Malayalam greeting,
+    # so no identity/refusal/hardship fast path ever fired for such callers.
+    r"|(?:ഓടാണോ|യോടാണോ|ജിയോടാണോ|ആണോ)\s*സംസാരിക്കുന്നത്|സംസാരിക്കുന്നത്[^?]{0,30}ആണോ"
+    r"|തന്നെയാണോ|ആണോ\s*(?:ഞാൻ\s*)?സംസാരിക്കുന്ന"
+    # LLM-authored re-asks (seen on a memory-continued call where the greeting
+    # carried no identity question): "are you Gaurav Pandey?", "നിങ്ങൾ ഗൗരവ്
+    # ആണോ എന്ന്…", "…എന്നുള്ളത് ശരിയാണോ", "ദയവായി സ്ഥിരീകരിക്കുക — നിങ്ങൾ …",
+    # "நீங்கள் … தானா". Without these the gate never arms and the caller's
+    # yes is judged as a general turn instead of an identity answer.
+    r"|\bare you\s+(?!able|sure|there|okay|ok|still|ready|calling)[A-Za-z]"
+    r"|നിങ്ങൾ[^?]{0,40}(?:ആണോ|യാണോ|തന്നെയാണോ)|ആണോ\s*എന്ന്|എന്നുള്ളത്\s*ശരിയാ|സ്ഥിരീകരിക്ക[^?]{0,40}(?:ആണ്|ആണോ)"
+    r"|நீங்கள்[^?]{0,40}(?:தானா|ஆ\?)"
+    r"|உடன்\s*(?:தான்\s*)?பேசு|பேசுகிறேனா|பேசுறேனா|பேசுவது[^?]{0,30}(?:உடனா|தானா)|தானா\s*(?:பேசு|\?)",
     re.I,
 )
 # How-much question about the account (total/overdue/minimum/penalty) —
@@ -394,8 +475,24 @@ _IDENTITY_AFFIRM_CLEAR = re.compile(
     # Python's \b misfires around Devanagari, so the Devanagari alternates
     # end on an explicit not-another-Devanagari-letter lookahead instead.
     r"^\W*(?:haan(?:\s*ji)?|han(?:\s*ji)?|hanji|ji(?:\s*haan|\s*han)?|yes|yeah"
-    r"|correct|sahi|bilkul|barabar|barobar)\b"
+    r"|correct|sahi|bilkul|barabar|barobar|athe|athey|seri|aamaam|aamam|aama)\b"
     r"|^\W*(?:हाँ|हां|जी(?:\s*(?:हाँ|हां))?|सही|बिल्कुल|बराबर)(?![ऀ-ॿ])"
+    # Malayalam / Tamil: leading yes, or first-person "it's me" ("ഞാൻ തന്നെ",
+    # "ഞാൻ ... ആണ്", "நான் தான்"). Vowel signs are combining marks → explicit
+    # not-another-letter lookahead, as for Devanagari.
+    # Colloquial Malayalam yes-sounds ("ഹാ", "ആ", "ആഹ്", "ഉം", "ആങ്") and Tamil
+    # "ஆங்" are how a phone call is actually answered (cv_eb5cdace6a98: "ഹാ
+    # പറഞ്ഞോളൂ ഗോരവമാണ്" = "yes, go ahead, it's Gaurav" was left unclear).
+    r"|^\W*(?:അതെ|അതേ|ശരി|ഉവ്വ്|ഉവ്വ|ഓക്കേ|ഓകെ|ഹാ|ആ|ആഹ്|ഉം|ഊം|ആങ്"
+    r"|ஆமாம்|ஆமா|ஆம்|சரி|ஓகே|ஆங்)(?![ഀ-ൿ஀-௿])"
+    r"|^\W*ഞാൻ\s*(?:തന്നെ|ആണ്)|^\W*நான்\s*தான்"
+    # "<Name> ആണ്" / "<Name>മാണ്" ("it is Gaurav") — the Malayalam form of
+    # "this is Gaurav": a first word that is a name/noun carrying the copula
+    # ആണ്. Question words (എന്താണ്, ആരാണ്, എവിടെയാണ് …) are caught by the
+    # ambiguity check first; relation nouns (അമ്മയാണ് …) by the wrong-person
+    # signal — both run BEFORE this rule in classify_identity_answer.
+    r"|^\W*[ഀ-ൿ]+(?:മാണ്|യാണ്|ആണ്)(?![ഀ-ൿ])"
+    r"|^\W*[ഀ-ൿ]+\s+ആണ്(?![ഀ-ൿ])"
     # First-person speaking: "मैं (ही) बोल रहा हूँ", "main bol raha hoon".
     r"|^\W*(?:main|mai)\b\s*(?:hi\s+)?(?:bol|hoon|hu\b|speaking)"
     r"|^\W*मैं\s*(?:ही\s*)?(?:बोल|हूँ|हूं)"
@@ -406,7 +503,8 @@ _IDENTITY_AFFIRM_CLEAR = re.compile(
 )
 # Anything carrying a negation can never confirm ("जी नहीं", "no, not me").
 _IDENTITY_NEGATION = re.compile(
-    r"\b(?:nahi|nahin|no|not|nope)\b|नहीं|नही|गलत|\bgalat\b", re.I
+    r"\b(?:nahi|nahin|no|not|nope)\b|नहीं|नही|गलत|\bgalat\b"
+    r"|(?<![ഀ-ൿ஀-௿])(?:അല്ല|ഇല്ല|തെറ്റ്|இல்லை|இல்ல|தப்பு)|\b(?:alla|illa|illai)\b", re.I
 )
 # Explicit ambiguity/confusion markers: a reply built around these is a
 # mis-heard or partial utterance, not an answer ("I mean ...", "मतलब?",
@@ -414,7 +512,12 @@ _IDENTITY_NEGATION = re.compile(
 _IDENTITY_AMBIGUOUS = re.compile(
     r"\bi mean\b|\bmatlab\b|मतलब|\bhello+\b|\bhaanlo\b|हेलो|हैलो"
     r"|\bkaun\b|कौन|\bkya\b\W*$|^\W*क्या\W*$"
-    r"|^\W*(?:boliye|bolo|bataiye)\W*$|^\W*(?:बोलिए|बोलो|बताइए)\W*$",
+    r"|^\W*(?:boliye|bolo|bataiye)\W*$|^\W*(?:बोलिए|बोलो|बताइए)\W*$"
+    r"|ആരാണ്|ആരാ|ഹലോ|யார்|ஹலோ|^\W*(?:പറയൂ|പറഞ്ഞോളൂ|சொல்லுங்கள்|சொல்லுங்க)\W*$"
+    # Question words: "എന്താണ്?" ("what is it?"), "എന്ത്", "എവിടെയാണ്",
+    # "என்ன", "எது" — a question back is never a confirmation.
+    r"|(?<![ഀ-ൿ])(?:എന്ത്|എന്താ|എന്താണ്|എന്തിനാ|എവിടെ|എപ്പോ|എങ്ങനെ)"
+    r"|(?<![஀-௿])(?:என்ன|எது|எங்கே|எப்போ|எப்படி)",
     re.I,
 )
 
@@ -580,7 +683,15 @@ class TurnPlan:
 @dataclass
 class CollectionCallPolicy:
     context: CustomerContextSnapshot | None = None
-    language: str = "hi-IN"
+    # The language the policy's canned phrases and spoken numbers use. The
+    # brain (and the simulate endpoint) pass the CALL's conversation language
+    # explicitly and keep it in sync on every switch — that explicit value
+    # always wins. Only when no language is given does the customer record's
+    # stored preference fill it in (legacy standalone use), then "hi-IN".
+    # cv_eb5cdace6a98 / cv_78c1236a5cdf: a Malayalam call (bot default ml-IN)
+    # re-asked identity in HINDI because the stored preference silently
+    # overrode the language the brain had chosen and was greeting in.
+    language: str | None = None
     # Whether a backend payment-status tool is configured for this bot. It
     # flips the prompt from "you cannot check anything on this call" to
     # "state only what the tool verified".
@@ -688,8 +799,12 @@ class CollectionCallPolicy:
             self.complaint_raised = bool(self.context.complaint_pending)
             self.payment_claimed = self.context.payment_status == "completed"
             self.recording_notice_given = not self.context.recording_notice_required
-            if self.context.preferred_language:
-                self.language = self.context.preferred_language
+        if not self.language:
+            preferred = (
+                (self.context.preferred_language or "").strip()
+                if self.context is not None else ""
+            )
+            self.language = preferred or "hi-IN"
         if not self.verified:
             self.phase = IDENTITY_VERIFICATION
 
@@ -1164,7 +1279,10 @@ class CollectionCallPolicy:
     _CLEAR_COMMITMENT = re.compile(
         r"karunga|karungi|करूंगा|करूंगी"
         r"|(?:kar|कर|de|दे|bhar|भर)\s*(?:dunga|dungi|deta|deti|दूंगा|दूंगी|देता|देती)"
-        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार",
+        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार"
+        # Malayalam / Tamil commitment verbs ("I will pay") — same role.
+        r"|അടയ്ക്കാം|അടക്കാം|അടയ്ക്കും|അടച്ചോളാം|கட்டுகிறேன்|கட்டுறேன்|கட்றேன்"
+        r"|கட்டிடுறேன்|கட்டுவேன்|செலுத்துகிறேன்|செலுத்துவேன்",
         re.I,
     )
     _INTERROGATIVE = re.compile(

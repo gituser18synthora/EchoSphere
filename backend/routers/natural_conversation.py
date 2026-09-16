@@ -32,12 +32,13 @@ from shared.orchestration.naturalness import (
     FILLER_SOUND_KINDS,
     FILLER_SOUND_LABELS,
     LADDER_CUE_KINDS,
+    SpeechNaturalnessPlanner,
     base_language,
     default_cue_selection,
     ladder_cue_options,
 )
 from shared.orchestration.voice_identity import active_voice_identity, resolve_tts_engine
-from voice_runtime.latency_filler import get_filler_library
+from voice_runtime.latency_filler import get_filler_library, scale_pcm
 from voice_runtime.voiced_cues import get_voiced_cue_library
 
 router = APIRouter(tags=["Natural Conversation"])
@@ -91,7 +92,8 @@ def natural_conversation_audio(
     ``voices`` — the voice (name, catalog gender, engine) the runtime uses per
     bot language, i.e. which gender's clips are eligible at runtime;
     ``clips`` — every pre-rendered sound per kind and gender (recordings from
-    the asset directory first, synthesized fallbacks otherwise), each with a
+    the asset directory first, synthesized fallbacks otherwise, plus opt-in
+    recordings marked ``requiresSelection``), each with a
     stable id the selection stores; ``cues`` — the voiced ladder cue options
     per language with whether each is already rendered for the bot's voice.
     """
@@ -151,6 +153,7 @@ def natural_conversation_audio(
         "clips": clips,
         "cues": cues,
         "effective": {
+            "breathGainDb": SpeechNaturalnessPlanner(human_speech).breath_gain_db,
             "latencyFillerKind": human_speech.get("latency_filler_kind", "breath"),
             "fillerAudioSelection": human_speech.get("filler_audio_selection") or {},
             "latencyFillerCueSelection": human_speech.get("latency_filler_cue_selection") or {},
@@ -166,14 +169,16 @@ def natural_conversation_clip(
     db: Session = Depends(get_db),
 ):
     """The exact audio the runtime plays for one clip id, as a 16-bit PCM WAV."""
-    _bot_checked(db, bot_id, user)
+    bot = _bot_checked(db, bot_id, user)
     pcm = get_filler_library().render_clip(id, PREVIEW_SAMPLE_RATE)
     if not pcm:
         raise NotFoundError("Filler audio clip")
+    config = _load_config_sync(bot.id, False)
+    pcm = scale_pcm(pcm, SpeechNaturalnessPlanner(config.human_speech).breath_gain_db)
     return Response(
         content=pcm_to_wav_bytes(pcm, sample_rate=PREVIEW_SAMPLE_RATE),
         media_type="audio/wav",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers={"Cache-Control": "private, no-cache"},
     )
 
 

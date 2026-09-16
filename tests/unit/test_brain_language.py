@@ -311,3 +311,39 @@ class TestShortAnswersInsideAWorkflow:
         brain = make_brain()
         await brain._maybe_switch_language("Yes please", "en-IN")
         assert brain._conversation_language == "en-IN"
+
+
+class TestSwitchGuardReasons:
+    async def test_one_word_answer_is_too_few_words_not_numeric(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("yes", "en-IN")
+        assert brain._conversation_language == "hi-IN"
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "too_few_words"
+        assert blocked[-1]["words"] == 1
+
+    async def test_digit_words_are_still_a_numeric_payload(self):
+        brain = make_brain(language="hi-IN")
+        await brain._maybe_switch_language("nine nine zero", "en-IN")
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "numeric_or_technical_payload"
+
+    async def test_short_malayalam_answer_on_a_hindi_call_does_not_switch(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "ml-IN"])
+        await brain._maybe_switch_language("അതെ", "ml-IN")
+        assert brain._conversation_language == "hi-IN"
+        blocked = [d for k, d in brain._recorder.events if k == "language_switch_blocked"]
+        assert blocked and blocked[-1]["reason"] == "too_few_words"
+
+    async def test_full_malayalam_sentence_switches_when_malayalam_is_configured(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "ml-IN"])
+        await brain._maybe_switch_language("ഞാൻ അടുത്ത ആഴ്ച പണം അടയ്ക്കാം", "ml-IN")
+        assert brain._conversation_language == "ml-IN"
+
+    async def test_full_malayalam_sentence_is_unsupported_when_not_configured(self):
+        brain = make_brain(language="hi-IN", languages=["hi-IN", "en-IN"])
+        await brain._maybe_switch_language("ഞാൻ അടുത്ത ആഴ്ച പണം അടയ്ക്കാം", "ml-IN")
+        assert brain._conversation_language == "hi-IN"
+        kinds = [k for k, _ in brain._recorder.events]
+        assert "language_detected" not in kinds
+        assert "language_candidate" in kinds or "language_unsupported" in kinds

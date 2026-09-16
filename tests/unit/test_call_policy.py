@@ -422,3 +422,40 @@ class TestScriptedOpening:
         policy = make_policy(recording_notice_required=False)
         plan = policy.plan_turn("कौन बोल रहा है?", "question")
         assert plan.scripted_reply == ""
+
+
+class TestPolicyLanguageOwnership:
+    """The call language passed by the brain/simulate wins over the customer
+    record's stored preference; the preference only fills an unspecified
+    language (cv_eb5cdace6a98: a Malayalam call re-asked identity in Hindi
+    because the stored hi-IN preference silently replaced ml-IN)."""
+
+    def test_explicit_call_language_wins_over_stored_preference(self):
+        policy = CollectionCallPolicy(
+            context=snapshot(preferred_language="hi-IN"), language="ml-IN",
+        )
+        assert policy.language == "ml-IN"
+        policy.observe_bot("ഞാൻ Ramesh Kumar ജിയോടാണോ സംസാരിക്കുന്നത്?")
+        assert policy.awaiting_identity
+        policy.observe_user("പറഞ്ഞോളൂ", None)  # bare "go ahead" → unclear → re-ask
+        plan = policy.plan_turn("പറഞ്ഞോളൂ", None)
+        assert plan.action == "ask_identity_confirmation"
+        # The re-ask is spoken in the CALL language, never the stored preference.
+        assert "ക്ഷമിക്കണം" in plan.scripted_reply and "Ramesh Kumar" in plan.scripted_reply
+        assert "माफ़" not in plan.scripted_reply
+
+    def test_colloquial_malayalam_yes_confirms_identity(self):
+        policy = CollectionCallPolicy(
+            context=snapshot(preferred_language="hi-IN"), language="ml-IN",
+        )
+        policy.observe_bot("ഞാൻ Ramesh Kumar ജിയോടാണോ സംസാരിക്കുന്നത്?")
+        policy.observe_user("ഹാ പറഞ്ഞോളൂ ഗോരവമാണ്", None)
+        assert policy.verified and not policy.awaiting_identity
+
+    def test_stored_preference_fills_an_unspecified_language(self):
+        policy = CollectionCallPolicy(context=snapshot(preferred_language="en-IN"))
+        assert policy.language == "en-IN"
+
+    def test_no_language_and_no_preference_defaults_to_hindi(self):
+        assert CollectionCallPolicy(context=snapshot(preferred_language=None)).language == "hi-IN"
+        assert CollectionCallPolicy(context=None).language == "hi-IN"

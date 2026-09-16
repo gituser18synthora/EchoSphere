@@ -85,10 +85,16 @@ export interface HumanSpeechSettings {
   gender_agreement?: boolean;
   micro_pauses?: boolean;
   self_correction?: boolean;
-  /** Pre-rendered, voice-gender-matched breath while a reply is still on its way. */
+  /** Master switch of the nonverbal breath family (pre-reply breath, in-reply sentence breath). Independent of filler_words. */
+  breathing?: boolean;
+  /** Master switch of the spoken filler-word family (acknowledgement, voiced/spoken wait cues, question beat, tool prefaces). Independent of breathing. */
+  filler_words?: boolean;
+  /** Pre-rendered, voice-gender-matched breath while a reply is still on its way (under breathing). */
   latency_fillers?: boolean;
-  /** Rare soft breath before a long or verification sentence inside a reply (pause mode). */
+  /** Rare soft breath before a long or verification sentence inside a reply (pause mode, under breathing). */
   sentence_breaths?: boolean;
+  /** Breathing clip volume adjustment in dB; 0 preserves the original level. */
+  breath_gain_db?: number;
   thinking_filler_probability?: number;
   acknowledgement_probability?: number;
   tool_ack_probability?: number;
@@ -101,9 +107,11 @@ export interface HumanSpeechSettings {
   max_backchannels_per_call?: number;
   /** Quiet after the caller stops (ms) before a latency filler may play. */
   latency_filler_delay_ms?: number;
-  /** Long-wait escalation: voiced "hmm" then a spoken "one second" cue in the bot's voice. */
+  /** Long-wait escalation: voiced "hmm" then a spoken "one second" cue in the bot's voice (under filler_words). */
   latency_filler_ladder?: boolean;
   adaptive_latency_cues?: boolean;
+  /** Chance (0..1) that a long wait gets a voiced cue at all; below it the wait stays silent or a breath. */
+  latency_cue_probability?: number;
   /** Time after the caller stops (ms) before the voiced "hmm" cue may play. */
   latency_filler_hmm_ms?: number;
   /** Time after the caller stops (ms) before the spoken "one second" cue may play. */
@@ -136,6 +144,7 @@ export interface FillerAudioClip {
   kind: FillerSoundKind;
   gender: FillerGender;
   durationMs: number;
+  requiresSelection?: boolean;
 }
 export interface FillerCueOption { id: string; text: string; ready: boolean }
 export interface NaturalConversationAudio {
@@ -153,6 +162,14 @@ export type HumanSpeechSettingKey = keyof HumanSpeechSettings;
 export type HumanSpeechSettingSource = "platform" | "tenant" | "bot";
 export type HumanSpeechSources = Record<HumanSpeechSettingKey, HumanSpeechSettingSource>;
 
+export interface SttAutoDetectLanguage {
+  value: boolean | null;
+  effective: boolean;
+  source: "explicit" | "derived";
+  derivedDefault: boolean;
+  languages: string[];
+}
+
 export interface VoiceSettings {
   botId: string;
   voiceId: string | null;
@@ -168,6 +185,10 @@ export interface VoiceSettings {
   /** Platform locale code, or "" for auto-detect. */
   sttLanguage: string | null;
   sttSettings: ProviderSettings;
+  /** Effective STT auto-detect state: the persisted tri-state value, the
+      effective boolean, whether it is explicit or derived, and the derived
+      (multilingual → on) default. Absent in older API responses. */
+  sttAutoDetectLanguage?: SttAutoDetectLanguage;
   ttsProvider: string | null;
   ttsModel: string | null;
   ttsVoice: string | null;

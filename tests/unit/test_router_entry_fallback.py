@@ -100,3 +100,10 @@ def test_ambiguous_entry_configuration_cannot_choose_an_opening_question():
     original = current.decide("कंज्यूम कर रहे हैं ना।")
 
     assert current.apply_entry_fallback(original) is original
+
+
+@pytest.mark.parametrize("signal", ["question", "refusal", "complaint", "wrong_person", "hold", "callback"])
+def test_meaningful_signal_without_a_business_intent_is_not_an_unclear_opening(signal):
+    current = router()
+    original = RouteDecision(kind=RouteKind.CHAT, reason="default_chat", signal=signal)
+    assert current.apply_entry_fallback(original) is original

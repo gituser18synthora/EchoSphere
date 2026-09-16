@@ -21,6 +21,7 @@ from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from shared.providers.tts.delivery import strip_speed_params
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
+from shared.providers.stt_language_policy import resolve_auto_detect_language
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.bot_lifecycle import (
@@ -672,10 +673,20 @@ def _sanitize_language_voice_map(lang_map: dict | None) -> dict | None:
 
 
 def _serialize_voice_settings(
-    s: VoiceBotSetting, tenant_human_speech: dict | None = None
+    s: VoiceBotSetting,
+    tenant_human_speech: dict | None = None,
+    *,
+    bot_languages: list[str] | None = None,
+    tenant_default_languages: list[str] | None = None,
 ) -> dict:
     effective, sources = resolve_human_speech_with_sources(
         tenant_human_speech, s.human_speech
+    )
+    # STT auto-detect is tri-state on disk (absent/true/false); the effective
+    # value and where it came from are reported so the Voice tab can show
+    # "following the multilingual default" vs "set by you" without guessing.
+    auto_detect = resolve_auto_detect_language(
+        s.stt_settings, bot_languages, tenant_default_languages
     )
     inherited, inherited_sources = resolve_human_speech_with_sources(
         tenant_human_speech
@@ -698,6 +709,7 @@ def _serialize_voice_settings(
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
         "sttSettings": public_stt_settings,
+        "sttAutoDetectLanguage": auto_detect.as_dict(),
         "ttsProvider": s.tts_provider,
         "ttsModel": s.tts_model,
         "ttsVoice": s.tts_voice,
@@ -718,6 +730,23 @@ def _serialize_voice_settings(
     }
 
 
+def _bot_language_codes(bot: VoiceBot) -> list[str]:
+    return sorted(row.language_code for row in (bot.languages or []))
+
+
+def _tenant_voice_context(db: Session, bot: VoiceBot) -> tuple[dict | None, list[str]]:
+    """Tenant-level human-speech overrides and default languages (the
+    languages a bot without its own list inherits)."""
+    row = db.execute(
+        select(TenantSetting.human_speech, TenantSetting.default_languages).where(
+            TenantSetting.tenant_id == bot.tenant_id
+        )
+    ).first()
+    if row is None:
+        return None, []
+    return row[0], list(row[1] or [])
+
+
 @router.get("/bots/{bot_id}/voice-settings")
 def get_voice_settings(
     bot_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
@@ -731,12 +760,12 @@ def get_voice_settings(
         )
         db.add(s)
         db.commit()
-    tenant_human_speech = db.scalar(
-        select(TenantSetting.human_speech).where(
-            TenantSetting.tenant_id == bot.tenant_id
-        )
-    )
-    return ok(_serialize_voice_settings(s, tenant_human_speech))
+    tenant_human_speech, tenant_default_languages = _tenant_voice_context(db, bot)
+    return ok(_serialize_voice_settings(
+        s, tenant_human_speech,
+        bot_languages=_bot_language_codes(bot),
+        tenant_default_languages=tenant_default_languages,
+    ))
 
 
 @router.put("/bots/{bot_id}/voice-settings")
@@ -768,12 +797,12 @@ def update_voice_settings(
             id=new_id("vbs"), bot_id=bot.id, tenant_id=bot.tenant_id, created_by=user.id
         )
         db.add(s)
-    tenant_human_speech = db.scalar(
-        select(TenantSetting.human_speech).where(
-            TenantSetting.tenant_id == bot.tenant_id
-        )
-    )
-    before = _serialize_voice_settings(s, tenant_human_speech)
+    tenant_human_speech, tenant_default_languages = _tenant_voice_context(db, bot)
+    serialize_kwargs = {
+        "bot_languages": _bot_language_codes(bot),
+        "tenant_default_languages": tenant_default_languages,
+    }
+    before = _serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs)
     if body.voice_id is not None:
         if body.voice_id:
             profile = db.get(VoiceProfile, body.voice_id)
@@ -857,14 +886,15 @@ def update_voice_settings(
         db, user=user, action="Updated voice settings", entity_type="voice_bot",
         entity_id=bot.id, target_label=bot.name, tenant_id=bot.tenant_id,
         previous_value=before,
-        new_value=_serialize_voice_settings(s, tenant_human_speech), request=request,
+        new_value=_serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs),
+        request=request,
     )
     db.commit()
     from shared.bot_config import invalidate_bot_config_sync
 
     invalidate_bot_config_sync(bot.tenant_id, bot.id)
     return ok(
-        _serialize_voice_settings(s, tenant_human_speech),
+        _serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs),
         meta={"warnings": warnings} if warnings else None,
     )
 

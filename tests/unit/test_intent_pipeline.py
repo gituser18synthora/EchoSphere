@@ -94,7 +94,7 @@ class TestLLMClassification:
         # The classifier saw the tenant intents and the signal vocabulary.
         system = llm.calls[0]["system"]
         assert "already_paid" in system and "book_appointment" in system
-        assert "Hinglish" in system
+        assert "any language or mix languages" in system
         assert "NEVER invent values" in system
 
     async def test_unknown_intent_name_discarded(self):

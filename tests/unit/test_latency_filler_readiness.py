@@ -152,7 +152,12 @@ async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500, adaptiv
             await worker.queue_frame(UserStoppedSpeakingFrame())
             await asyncio.sleep(max(
                 (audio_at or llm_delay + tts_delay) + 0.7,
-                threshold + 1.2 if adaptive else 0,
+                # Adaptive: a started 600 ms cue finishes, then its 300 ms
+                # gap, then the 240 ms reply plays out behind ~0.1 s of output
+                # queue lag (~3.3 s after the caller stopped). The next
+                # scenario must not start while that reply is still being
+                # written, or its "first reply write" is the previous tail.
+                threshold + 1.6 if adaptive else 0,
             ))
 
             def relative(at):

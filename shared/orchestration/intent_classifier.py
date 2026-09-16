@@ -31,6 +31,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from shared.orchestration.context_questions import CONTEXT_QUESTION_CLASSIFICATION
+
 from shared.orchestration.router import (
     classify_user_signal,
     match_tokens,
@@ -95,6 +97,7 @@ class IntentClassification:
     source: str = "none"               # llm | phrase | regex | none
     latency_ms: float = 0.0
     raw: dict | None = None
+    context_question: bool = False
 
     def as_event(self) -> dict:
         return {
@@ -105,6 +108,7 @@ class IntentClassification:
             "interrupts_flow": self.should_interrupt_current_flow,
             "below_threshold": self.below_threshold,
             "source": self.source, "latency_ms": round(self.latency_ms, 1),
+            "context_question": self.context_question,
         }
 
 
@@ -230,12 +234,13 @@ class HybridIntentPipeline:
             return self._system_prompt
         lines = [
             "You classify ONE caller utterance from a phone call. The caller "
-            "may speak Hindi, English, or mixed Hinglish (Latin or Devanagari "
-            "script).",
+            "may speak any language or mix languages and writing systems. "
+            "Interpret their meaning using the recent conversation.",
             "Reply with ONLY a JSON object, no prose, no code fences:",
-            '{"intent": <string|null>, "signal": <string|null>, '
-            '"confidence": <0..1>, "entities": {<key>: <string|null>}, '
-            '"should_interrupt_current_flow": <bool>}',
+            '{"intent":null,"signal":null,"confidence":0.0,"entities":{},'
+            '"should_interrupt_current_flow":false,"context_question":false}',
+            "Replace the example values with your decision; quote all string "
+            "values and always include context_question as a boolean.",
             "",
             "intent: the business intent, ONLY from this configured list "
             "(null if none fits):",
@@ -268,6 +273,7 @@ class HybridIntentPipeline:
             "must change the current script (a claim, dispute, complaint, "
             "refusal or emergency), false for answers that continue it.",
             "confidence: your certainty in the chosen intent/signal.",
+            CONTEXT_QUESTION_CLASSIFICATION,
         ]
         self._system_prompt = "\n".join(lines)
         return self._system_prompt
@@ -357,6 +363,9 @@ class HybridIntentPipeline:
             parsed.get("should_interrupt_current_flow")
         )
         result.raw = parsed
+        result.context_question = self._is_context_question(
+            result, parsed.get("context_question") is True,
+        )
         if result.below_threshold and signal is None:
             # Low-confidence AND no generic signal: keep the regex opinion so
             # a weak LLM answer never loses to silence.
@@ -394,7 +403,21 @@ class HybridIntentPipeline:
             result.requires_tool = False
             result.tool_name = None
         result.latency_ms = decision.latency_ms
+        result.context_question = self._is_context_question(
+            result, in_scope and getattr(decision, "context_question", False),
+        )
         return result
+
+    def _is_context_question(self, result: IntentClassification, requested: bool) -> bool:
+        configured = self._by_name.get(result.intent, {})
+        route = str(configured.get("route") or "")
+        return bool(
+            requested and result.signal == "question"
+            and result.confidence >= self._default_threshold
+            and not result.below_threshold and not result.requires_tool
+            and not any(value is not None for value in result.entities.values())
+            and route not in ("knowledge", "handoff", "hangup")
+        )
 
     def _from_intent(
         self, intent: dict, confidence: float, *, source: str

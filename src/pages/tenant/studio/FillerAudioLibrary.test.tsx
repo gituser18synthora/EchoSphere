@@ -70,6 +70,25 @@ beforeEach(() => {
 });
 
 describe("FillerAudioLibrary", () => {
+  it("excludes opt-in recordings from default rotation and allows selecting them", async () => {
+    const user = userEvent.setup();
+    const catalog = structuredClone(CATALOG);
+    const recorded = {
+      ...catalog.clips.breath.male[0],
+      id: "file:optional:breath_male_soft.wav", label: "Soft recorded breath", requiresSelection: true,
+    };
+    catalog.clips.breath.male.push(recorded);
+    vi.mocked(api.getNaturalConversationAudio).mockResolvedValue(catalog);
+    const onChange = renderLibrary();
+    await screen.findByTestId("filler-audio-library");
+    expect(screen.getByTestId("rotation-breath-male")).toHaveTextContent("No selection — the default 3 clips rotate.");
+    expect(screen.getByText("Plays only when selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Primary: Soft breath · Male · Soft recorded breath" }));
+    expect(onChange).toHaveBeenLastCalledWith({
+      filler_audio_selection: { breath: { male: { primary: recorded.id, alternates: [] } } },
+    });
+  });
+
   it("shows the runtime voice gender by default and lets the operator inspect the other library", async () => {
     const user = userEvent.setup();
     renderLibrary();
@@ -139,7 +158,7 @@ describe("FillerAudioLibrary", () => {
     expect(onChange).toHaveBeenLastCalledWith({
       filler_audio_selection: { exhale: { male: { primary: "synth:exhale:male:2", alternates: ["file:exhale:male:1"] } } },
     });
-    await user.click(within(screen.getByTestId("clips-exhale-male")).getByRole("button", { name: "Use all clips" }));
+    await user.click(within(screen.getByTestId("clips-exhale-male")).getByRole("button", { name: "Use default rotation" }));
     // The bot explicitly overrides to "nothing selected" (not inheritance).
     expect(onChange).toHaveBeenLastCalledWith({ filler_audio_selection: {} });
     await user.click(screen.getByRole("button", { name: "Inherit tenant/platform selection" }));
@@ -178,6 +197,28 @@ describe("FillerAudioLibrary", () => {
     expect(await screen.findByText("boom")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByTestId("filler-audio-library");
+  });
+});
+
+describe("family notes", () => {
+  it("says which family each part belongs to and flags the switched-off one only", async () => {
+    renderLibrary({ breathing: false });
+    await screen.findByTestId("latency-filler-kind");
+    expect(screen.getByTestId("breathing-off-note")).toHaveTextContent("Breathing before the reply is off");
+    expect(screen.getByTestId("breathing-off-note")).toHaveTextContent("Filler words are not affected");
+    expect(screen.queryByTestId("filler-words-off-note")).toBeNull();
+    expect(screen.getByText(/part of Breathing/)).toBeInTheDocument();
+    expect(screen.getByText(/part of Filler words/)).toBeInTheDocument();
+  });
+
+  it("flags switched-off thinking cues without touching the breath library", async () => {
+    renderLibrary({ filler_words: false });
+    await screen.findByTestId("voiced-cues");
+    expect(screen.getByTestId("filler-words-off-note")).toHaveTextContent("Breathing is not affected");
+    expect(screen.queryByTestId("breathing-off-note")).toBeNull();
+    renderLibrary({ latency_filler_ladder: false, latency_fillers: false });
+    await waitFor(() => expect(screen.getAllByTestId("filler-words-off-note")).toHaveLength(2));
+    expect(screen.getAllByTestId("breathing-off-note")).toHaveLength(1);
   });
 });
 

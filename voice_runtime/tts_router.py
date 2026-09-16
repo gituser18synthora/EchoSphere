@@ -44,7 +44,7 @@ from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
 from shared.audio.pcm import resample_pcm, silence_pcm
-from shared.audio.text import has_speakable_text, sanitize_for_tts
+from shared.audio.text import has_speakable_text, sanitize_for_tts, strip_foreign_scripts
 from shared.orchestration.placeholders import sanitize_spoken_text
 from shared.config import get_settings
 from shared.providers.base import ProviderError
@@ -553,6 +553,24 @@ class StreamingTTSRouter(TTSService):
                     "tts_placeholder_stripped", chars=len(text) - len(guarded),
                 )
             text = guarded
+        stripped, foreign = strip_foreign_scripts(text, self._current_language)
+        if foreign:
+            # LLM leakage from unrelated scripts (Cyrillic/Armenian/CJK inside
+            # a Malayalam reply) is unspeakable for the target voice — dropped
+            # from the SPOKEN text only; the transcript keeps the model output.
+            logger.warning(
+                "tts[%s] stripped foreign-script letters before synthesis "
+                "(language=%s, removed=%s)",
+                self._recorder.session_id if self._recorder else "?",
+                self._current_language, foreign,
+            )
+            if self._recorder is not None:
+                self._recorder.add_event(
+                    "tts_foreign_script_stripped",
+                    language=self._current_language,
+                    removed=foreign,
+                )
+            text = stripped
         if not has_speakable_text(text):
             # An orphan punctuation/emoji-only fragment (e.g. a held "." the
             # aggregator released at end of turn). Sarvam rejects these with a
@@ -1018,9 +1036,11 @@ class StreamingTTSRouter(TTSService):
             selection = (
                 select_clips(_SENTENCE_BREATH_KIND, gender) if callable(select_clips) else None
             )
+            breath_gain_db = getattr(self._naturalness, "breath_gain_db", 0.0)
             breath = self._filler_library.clip(
                 gender, self.sample_rate, kind=_SENTENCE_BREATH_KIND,
                 **({"selection": selection} if selection else {}),
+                **({"gain_db": breath_gain_db} if breath_gain_db else {}),
             )
             if breath:
                 pieces += [breath, silence_pcm(self.sample_rate, _SENTENCE_BREATH_BEAT_MS)]

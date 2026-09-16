@@ -94,10 +94,18 @@ _SARVAM_STT_COMMON = {
         "help": "Wire encoding for microphone/telephony audio sent to Sarvam.",
     },
     "auto_detect_language": {
-        "type": "boolean", "default": False,
-        "label": "Auto-detect language", "advanced": True,
-        "help": "Auto-detect every utterance language. Keep off for phone calls "
-                "with short replies; the bot's primary language is more reliable.",
+        # Tri-state on disk (absent / true / false). No schema default on
+        # purpose: the Voice tab renders this with a dedicated control
+        # (widget) and only persists the key when the user sets it, so an
+        # unset value follows the platform rule — more than one bot language
+        # → detect, a single language → pin to the bot's default language
+        # (shared.providers.stt_language_policy).
+        "type": "boolean", "widget": "auto_detect_language",
+        "label": "Auto-detect language",
+        "help": "Let the recognizer detect the spoken language on every utterance "
+                "so the bot can follow the caller between its configured languages. "
+                "When off, recognition is pinned to the bot's default language "
+                "(more reliable for short phone replies).",
     },
     "timeout_seconds": {
         "type": "number", "min": 5, "max": 120, "default": 30, "step": 1,

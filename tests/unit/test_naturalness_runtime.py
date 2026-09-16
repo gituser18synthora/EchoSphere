@@ -13,6 +13,8 @@ import logging
 import random
 from types import SimpleNamespace
 
+import pytest
+
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -34,6 +36,7 @@ from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.frames import TTSFlushHintFrame
 from voice_runtime.tts_router import _Generation, _Sentence
+from voice_runtime.latency_filler import scale_pcm
 from voice_runtime.services import EchoTTSService
 
 from tests.unit.test_tts_router_flush_finals import (
@@ -437,8 +440,9 @@ class _ForcedPlanner(SpeechNaturalnessPlanner):
 class _BreathPlanner(SpeechNaturalnessPlanner):
     """Forces a breath before every sentence but the first (router test)."""
 
-    def __init__(self):
-        super().__init__({"sentence_breath_probability": 1.0}, rng=random.Random(1))
+    def __init__(self, breath_gain_db=0.0):
+        super().__init__({"sentence_breath_probability": 1.0, "breath_gain_db": breath_gain_db},
+                         rng=random.Random(1))
 
     def plan_segment(self, text, *, base_pause_ms, language="", first_in_turn=False,
                      breaths_so_far=0):
@@ -456,7 +460,7 @@ class _ClipLibraryStub:
 
     def clip(self, gender, sample_rate, *, kind="breath", max_ms=None, gain_db=0.0):
         self.requests.append((gender, sample_rate, kind))
-        return self.clip_bytes
+        return scale_pcm(self.clip_bytes, gain_db)
 
 
 class _RouterRecorder:
@@ -505,11 +509,13 @@ async def test_no_in_reply_inhale_right_after_the_pre_reply_latency_breath():
     assert not any(k == "sentence_breath_played" for k, _ in recorder.events)
 
 
-async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence():
-    breath = b"\x05\x00" * 1600                      # 100 ms at 16 kHz
+@pytest.mark.parametrize("gain_db", [0.0, -6.0])
+async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence(gain_db):
+    breath = b"\xe8\x03" * 1600                      # 100 ms at 16 kHz
     library = _ClipLibraryStub(breath)
     recorder = _RouterRecorder()
-    router = make_router(pause_ms=150, naturalness=_BreathPlanner(),
+    breath_planner = _BreathPlanner(breath_gain_db=gain_db)
+    router = make_router(pause_ms=150, naturalness=breath_planner,
                          filler_library=library, recorder=recorder)
     provider = FakeProvider()
     engine = dict(ENGINE, voice_gender="female")
@@ -531,7 +537,7 @@ async def test_pause_mode_inserts_one_soft_breath_before_a_later_sentence():
     # Planned pause, then the breath (gender-matched, trimmed), then a beat.
     frames = audio_frames(router)
     assert frames[-3].audio == b"\x00" * (int(16000 * 150 / 1000) * 2)
-    assert frames[-2].audio == breath
+    assert frames[-2].audio == scale_pcm(breath, gain_db)
     assert len(frames[-1].audio) == int(16000 * 60 / 1000) * 2
     assert library.requests == [("female", 16000, "inhale")]
     assert ("sentence_breath_played", {
