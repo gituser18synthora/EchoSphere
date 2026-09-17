@@ -659,6 +659,18 @@ async def _run_call(
             return hangup_reason
         return default
 
+    def _record_inbound_media_stats() -> None:
+        # Telephony ingress evidence (message size, cadence, stalls) on the
+        # call's own event stream, so a "caller not heard" report can be
+        # attributed to the line/module before the gate and VAD are blamed.
+        stats = getattr(media_serializer, "inbound_media_stats", None)
+        if stats is None:
+            return
+        try:
+            recorder.add_event("telephony_inbound_media", **stats())
+        except Exception:  # noqa: BLE001 — evidence must never fail teardown
+            logger.debug("inbound media stats unavailable", exc_info=True)
+
     runner = PipelineRunner(handle_sigint=False)
     # The session was already claimed in _active_sessions at connection time.
     max_duration_handle = asyncio.get_running_loop().call_later(
@@ -666,8 +678,10 @@ async def _run_call(
     )
     try:
         await runner.run(worker)
+        _record_inbound_media_stats()
         await recorder.finalize(reason=_final_end_reason("completed"))
     except asyncio.CancelledError:
+        _record_inbound_media_stats()
         await recorder.finalize(reason=_final_end_reason("worker_shutdown"))
         raise
     except Exception:  # noqa: BLE001 - one call must not take down the worker

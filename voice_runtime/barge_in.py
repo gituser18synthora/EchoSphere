@@ -72,13 +72,20 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
     """
 
     def __init__(
-        self, *, min_words: int = 2, vad_fallback_secs: float = 1.0, **kwargs
+        self, *, min_words: int = 2, vad_fallback_secs: float = 1.0,
+        on_confirmed=None, **kwargs
     ):
         super().__init__(**kwargs)
         self._min_words = max(1, int(min_words))
         self._vad_fallback_secs = max(0.0, float(vad_fallback_secs))
         self._bot_speaking = False
         self._vad_speech_since: float | None = None
+        # Evidence hook: the gateway log used to be the only place the
+        # confirmation reason existed, so a call's barge-ins could not be
+        # classified from its own event stream (2026-09-17 live audit had to
+        # join journalctl lines to Mongo by wall-clock). The pipeline wires
+        # this to the session recorder.
+        self._on_confirmed = on_confirmed
 
     async def reset(self):
         """Reset on turn start. ``_bot_speaking`` deliberately survives:
@@ -88,8 +95,17 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         await super().reset()
 
     async def _confirm(self, why: str) -> ProcessFrameResult:
+        sustained = (
+            time.monotonic() - self._vad_speech_since
+            if self._vad_speech_since is not None else None
+        )
         self._vad_speech_since = None
         logger.info("barge-in confirmed (%s)", why)
+        if self._on_confirmed is not None:
+            try:
+                self._on_confirmed(why, sustained)
+            except Exception:  # noqa: BLE001 — evidence must never block a turn
+                logger.debug("barge-in confirmation hook failed", exc_info=True)
         await self.trigger_user_turn_started()
         return ProcessFrameResult.STOP
 

@@ -112,14 +112,26 @@ class TestLanguageSwitching:
 
     async def test_unsupported_language_keeps_current_and_notifies(self):
         brain = make_brain(language="hi-IN")
+        spoken = []
+
+        async def _say(text, **kwargs):
+            spoken.append(text)
+
+        brain._say = _say
         await brain._maybe_switch_language("ஒரு கேள்வி உள்ளது", "ta-IN")
         assert brain._notified == []  # do not warn on one noisy detection
+        assert spoken == []
         await brain._maybe_switch_language("தயவுசெய்து எனக்கு உதவுங்கள்", "ta-IN")
         assert brain._conversation_language == "hi-IN"
         assert brain._pushed == []  # no voice switch
         assert any(
             n.get("name") == "language_unsupported" for n in brain._notified
         )
+        # The caller is TOLD, once, which languages the bot speaks — a phone
+        # caller has no UI for the event (live vs_fWRbAKI1UBg7Usl0B-5GS6Pk).
+        assert len(spoken) == 1 and "हिंदी" in spoken[0] and "अंग्रेज़ी" in spoken[0]
+        await brain._maybe_switch_language("மீண்டும் தமிழில்", "ta-IN")
+        assert len(spoken) == 1
 
     async def test_single_word_never_switches(self):
         brain = make_brain(language="hi-IN")

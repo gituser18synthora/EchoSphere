@@ -24,6 +24,21 @@ localization, so transcripts/tests keyed on them keep working.
 """
 
 _PHRASES: dict[str, dict[str, str]] = {
+    # Spoken when the caller has repeatedly been heard in a language the bot
+    # does not support (voice_runtime.brain): a telephony caller has no UI
+    # to show the language_unsupported event on, and silence made them hang
+    # up (live call vs_fWRbAKI1UBg7Usl0B-5GS6Pk, 2026-09-17). {languages}
+    # is filled with the bot's own spoken-language names.
+    "language_unsupported": {
+        "en": (
+            "Sorry, I could not understand that language. "
+            "I can help you in {languages}. Please continue in one of those."
+        ),
+        "hi": (
+            "माफ़ कीजिए, मैं यह भाषा समझ नहीं पाया। "
+            "मैं {languages} में आपकी मदद कर सकता हूँ। कृपया उनमें से किसी एक में बोलिए।"
+        ),
+    },
     "clarify": {
         "en": "Sorry, could you tell me a bit more about what you need?",
         "hi": "माफ़ कीजिए, थोड़ा और बताइए कि आपको क्या चाहिए?",
@@ -248,6 +263,12 @@ def canned(key: str, locale: str | None = None) -> str:
 # resolve_phrase() stays a plain locale lookup — no per-language branches.
 # Placeholders ({count}, {digits}) are kept verbatim for the engine to fill.
 _PHRASES_ML_TA: dict[str, dict[str, str]] = {
+    "language_unsupported": {
+        "ml": ("ക്ഷമിക്കണം, ആ ഭാഷ എനിക്ക് മനസ്സിലായില്ല. "
+               "{languages} ഭാഷകളിൽ എനിക്ക് നിങ്ങളെ സഹായിക്കാൻ കഴിയും. ദയവായി അവയിലൊന്നിൽ തുടരുക."),
+        "ta": ("மன்னிக்கவும், அந்த மொழி எனக்குப் புரியவில்லை. "
+               "{languages} மொழிகளில் நான் உங்களுக்கு உதவ முடியும். தயவுசெய்து அவற்றில் ஒன்றில் தொடரவும்."),
+    },
     "clarify": {
         "ml": "ക്ഷമിക്കണം, നിങ്ങൾക്ക് എന്താണ് വേണ്ടതെന്ന് കുറച്ചുകൂടി വിശദമായി പറയാമോ?",
         "ta": "மன்னிக்கவும், உங்களுக்கு என்ன வேண்டும் என்று இன்னும் கொஞ்சம் விளக்கமாகச் சொல்ல முடியுமா?",

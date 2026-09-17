@@ -204,6 +204,7 @@ from voice_runtime.silence_policy import (
 )
 from voice_runtime.transcript_gate import (
     assess_transcript,
+    base_language,
     resolve_allowed_languages,
     romanized_language_leaning,
     script_supports_language,  # noqa: F401 — re-exported (tests, language following)
@@ -441,6 +442,23 @@ _MIN_SWITCH_WORDS = 2
 # Unsupported languages still require repetition before the client is warned:
 # a single mislabel must not surface a false "caller speaks Tamil" notice.
 _UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
+# The rescue re-transcription (``_retranscribe_unsupported``) turns a short
+# Hindi turn that the auto-detector labelled pa/te/gu/bn back into Hindi. A
+# caller who REALLY speaks Kannada gets the same treatment — pinned Hindi
+# then yields plausible-looking nonsense ("हाँ हाँ।" for ಹೌದು). Misdetections
+# of Hindi hop between labels (pa → gu → bn within one call), a genuine
+# speaker is labelled the same way every time: so after one rescue from a
+# label, a SECOND consecutive confident segment with that same label is
+# treated as the caller's real language — no rescue, the unsupported-language
+# path (and its spoken notice) runs instead (live vs_fWRbAKI1UBg7Usl0B-5GS6Pk).
+_GENUINE_UNSUPPORTED_MIN_PROBABILITY = 0.5
+# Spoken-language names for the unsupported-language notice, by the notice's
+# own language; English names (``language_label``) cover everything else.
+_LANGUAGE_NAMES_HI = {
+    "hi": "हिंदी", "en": "अंग्रेज़ी", "mr": "मराठी", "ta": "तमिल", "ml": "मलयालम",
+    "bn": "बंगाली", "gu": "गुजराती", "te": "तेलुगु", "kn": "कन्नड़", "pa": "पंजाबी",
+    "or": "ओड़िया", "od": "ओड़िया",
+}
 # `language_label` (locale → "Hindi"/"English") is shared with the response
 # mode instructions and imported above; it stays re-exported from this module.
 
@@ -790,6 +808,7 @@ class ConversationBrain(FrameProcessor):
         self._language_candidate: str | None = None
         self._language_candidate_count = 0
         self._notified_unsupported_languages: set[str] = set()
+        self._unsupported_notice_spoken = False
         # True once the CALLER (not the greeting default) has established the
         # conversation language: a confirmed switch, or a multi-word turn in
         # the current language. Gates the short-segment re-transcription.
@@ -1585,11 +1604,13 @@ class ConversationBrain(FrameProcessor):
             # language/script label — see transcript_gate.assess_transcript.
             numeric_context=self._identifier_capture is not None,
         )
+        rescued_from: str | None = None
         if not verdict.accepted:
             rescued = await self._retranscribe_unsupported(text, quality, verdict)
             if rescued is None:
                 await self._reject_segment(text, quality, verdict)
                 return
+            rescued_from = base_language(quality.language)
             text, quality, verdict = rescued
         else:
             # Accepted, but a SHORT segment the auto-detector labelled as a
@@ -1634,7 +1655,16 @@ class ConversationBrain(FrameProcessor):
         self._latency.mark_final()
         self._last_final_at = time.monotonic()
         self._interim_texts.clear()
-        self._unsupported_streak.clear()
+        if rescued_from:
+            # A rescued segment is NOT proof the caller speaks the bot's
+            # language: remember the label so a repeat is treated as genuine
+            # (see _GENUINE_UNSUPPORTED_MIN_PROBABILITY). Any segment heard
+            # in a supported language clears it.
+            self._unsupported_streak = {
+                rescued_from: self._unsupported_streak.get(rescued_from, 0) + 1
+            }
+        else:
+            self._unsupported_streak.clear()
         # Cumulative re-emission: some providers re-deliver an ALREADY
         # DISPATCHED turn's text as the prefix of the next final
         # ("नहीं नहीं करूँगा ना बोल दिया" → "नहीं नहीं करूँगा ना बोल दिया Hello").
@@ -1802,6 +1832,24 @@ class ConversationBrain(FrameProcessor):
             or self._identifier_capture is not None
             or self._pending_segments
         ):
+            return None
+        label = base_language(quality.language) or ""
+        probability = quality.language_probability
+        if (
+            label
+            and self._unsupported_streak.get(label, 0) >= 1
+            and (probability is None or probability >= _GENUINE_UNSUPPORTED_MIN_PROBABILITY)
+        ):
+            # Second consecutive confident segment in the SAME unsupported
+            # language: the caller really speaks it. Rescuing would only
+            # fabricate Hindi; let the rejection path count it and speak the
+            # unsupported-language notice.
+            self._recorder.add_event(
+                "unsupported_language_rescue_skipped",
+                reason="repeated_label", language=label,
+                language_probability=probability,
+                streak=self._unsupported_streak.get(label, 0),
+            )
             return None
         gate = self._audio_gate
         take = getattr(gate, "take_retained_audio", None) if gate else None
@@ -2052,6 +2100,49 @@ class ConversationBrain(FrameProcessor):
             "name": "language_unsupported",
             "language": language,
         })
+        await self._speak_unsupported_language_notice(language)
+
+    def _supported_language_names(self) -> str:
+        """The bot's spoken languages, named in the conversation language."""
+        current = base_language(self._conversation_language) or "en"
+        codes: list[str] = []
+        for locale in (self._config.languages or [self._config.language]):
+            code = base_language(locale)
+            if code and code not in codes:
+                codes.append(code)
+        if current == "hi":
+            names = [_LANGUAGE_NAMES_HI.get(c) or language_label(c) for c in codes]
+            joiner = " या "
+        else:
+            names = [language_label(c) for c in codes]
+            joiner = " or "
+        names = [n for n in names if n]
+        if len(names) <= 1:
+            return names[0] if names else language_label(current)
+        return ", ".join(names[:-1]) + joiner + names[-1]
+
+    async def _speak_unsupported_language_notice(self, language: str) -> None:
+        """Tell the caller, in the bot's language, which languages it speaks.
+
+        The ``language_unsupported`` client event only reaches a browser UI;
+        a phone caller heard nothing at all and hung up after 20 s of
+        silence (live vs_fWRbAKI1UBg7Usl0B-5GS6Pk). Spoken at most once per
+        call, and only once the repeated-label rule has ruled out an STT
+        misdetection of the bot's own language.
+        """
+        if self._closing or self._unsupported_notice_spoken:
+            return
+        self._unsupported_notice_spoken = True
+        names = self._supported_language_names()
+        text = canned("language_unsupported", self._conversation_language).replace(
+            "{languages}", names
+        )
+        self._recorder.add_event(
+            "language_unsupported_notice_spoken",
+            language=language, languages=names,
+            spoken_in=self._conversation_language,
+        )
+        await self._say(text)
 
     # ── turn finalization (debounced) ─────────────────────────────────────
 
@@ -2618,6 +2709,7 @@ class ConversationBrain(FrameProcessor):
                 "name": "language_unsupported",
                 "language": detected,
             })
+            await self._speak_unsupported_language_notice(detected)
             return
 
         # Supported language, confidently detected: switch NOW. The reply to

@@ -30,6 +30,28 @@ _LANG_TO_SARVAM = {
 }
 
 
+def _base_language(language: str) -> str:
+    """Normalize a platform locale or short code to the internal base code.
+
+    Callers hand this provider both spellings — the bot's configured locale
+    ("hi-IN") and the short code ("hi"). Only the short code is a key of
+    :data:`_LANG_TO_SARVAM`; the locale used to miss the table and silently
+    turned every "pinned" batch request (language rescue, identifier
+    recovery) into an auto-detect request, so the retry answered with the
+    very same misdetected language it was meant to correct.
+    """
+    return (language or "").strip().split("-")[0].lower()
+
+
+def sarvam_language_code(language: str | None) -> str:
+    """The wire ``language_code`` for a platform language ("hi-IN"/"hi" →
+    "hi-IN"); blank, "auto" and unmapped languages request auto-detect."""
+    base = _base_language(language or "")
+    if base in ("", "auto", "unknown"):
+        return "unknown"
+    return _LANG_TO_SARVAM.get(base, "unknown")
+
+
 def _sarvam_lang_to_internal(code: str | None, fallback: str) -> str:
     """Map a Sarvam language_code (e.g. "hi-IN") back to an internal short code."""
     if not code:
@@ -74,13 +96,13 @@ class SarvamSTT(STTProvider):
             return STTResult(text="")
         started = time.perf_counter()
         wav = pcm_to_wav_bytes(audio, sample_rate)
-        lang = (language or self._language or "en").lower()
+        lang = _base_language(language or self._language or "en")
         try:
             response = await asyncio.wait_for(
                 self._client.speech_to_text.transcribe(
                     file=("audio.wav", wav, "audio/wav"),
                     model=self._model,
-                    language_code=_LANG_TO_SARVAM.get(lang, "unknown"),
+                    language_code=sarvam_language_code(lang),
                 ),
                 timeout=self._timeout,
             )

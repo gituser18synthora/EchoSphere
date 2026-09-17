@@ -510,6 +510,17 @@ _QUESTION_MARKERS = re.compile(
     r"क्या|क्यों|क्यूँ|क्यूं|कैसे|कब|कितन[ाीे]|कौन|कहाँ|कहां|किस|बताओ|बताइए|समझाओ)(?!\w)",
     re.I,
 )
+
+
+def looks_like_question(text: str) -> bool:
+    """Deterministic question shape: a "?" or an interrogative word in Hindi,
+    Hinglish or English. The workflow engine uses it to double-check an LLM
+    'question' label before that label is allowed to park a caller's literal
+    answer off-script ("मैं टैली यूज़ करता हूँ।" was labelled a question with
+    confidence 0.0 in live calls and re-asked six times)."""
+    return bool(_QUESTION_MARKERS.search(text or ""))
+
+
 # Function words that never identify a knowledge TOPIC.
 _KNOWLEDGE_STOP_TOKENS = frozenset({
     "hai", "hain", "hota", "hoti", "hote", "hoga", "hogi", "the", "and", "for",
