@@ -111,6 +111,19 @@ _WOULD_DEDUCT = (r"(?:katega|katenge|kategi|katne\s*(?:wala|wale|wali)|kat(?:ne)
                  r"deduct\s*(?:hoga|honge|hogi|hone\s*(?:wala|wale)|kiya\s*jayega)|"
                  r"(?:would|will|shall|going\s+to)\s+be\s+(?:deducted|cut|taken)|to\s+be\s+deducted|"
                  r"कटेगा|कटेंगे|कटेगी|कटने\s*(?:वाला|वाले|वाली)|डिडक्ट\s*(?:होगा|होंगे))")
+# A clause that asks whether something CAN be done is a question, not the
+# partner's own case ("kya main ek baar me pay kar sakta hu?").
+_NOT_A_QUESTION = r"(?![^.।?!]*(?:sakt[aei]|सकत[ाेी]|\bcan\b|\bcould\b|\bkya\b|क्या|\bhow\b|\bwhether\b))"
+# "X ke bajaye Y" / "instead of X, Y" (cv_1979484122a8: "do sau ke bajaye mera
+# teen sau rupaye … ka tha") — a contrast between the figure that was EXPECTED
+# (communicated) and the figure that actually applied, with no deduction verb
+# at all. Hindi puts the marker AFTER the expected figure, English BEFORE it.
+_INSTEAD_HI = (r"(?:ke\s+baja[yi]e?|ke\s+bajay|ki\s+jagah|ke\s+jagah|ki\s+jage|ke\s+badle|ke\s+badley|"
+               r"के\s+बजाय|के\s+बजाए|के\s+बजाये|की\s+जगह|के\s+जगह|के\s+बदले)" + _END_W)
+_INSTEAD_EN = r"(?:instead\s+of|rather\s+than|in\s+place\s+of)"
+_RS = r"(?:the\s+)?(?:rs\.?|rupees?|₹)?\s*"
+_FIG = r"[0-9]{2,6}"
+_NO_DIGIT_GAP = r"[^.।!?0-9]{0,30}?"          # same clause, no other figure in between
 _MONTH = (r"(?:अगस्त|जनवरी|फ़रवरी|फरवरी|मार्च|अप्रैल|मई|जून|जुलाई|सितंबर|सितम्बर|अक्टूबर|नवंबर|दिसंबर|"
           r"january|february|march|april|may|june|july|august|september|october|november|december|"
           r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)")
@@ -199,6 +212,9 @@ AMOUNT_INFORMED_PATTERNS = {
         rf"{_NOT_NEGATED}{_TOLD}[\s,—–\-:]+(?:tha[\s,—–\-:]+|था[\s,—–\-:]+|gaya\s+tha[\s,—–\-:]+|गया\s+था[\s,—–\-:]+|me\s+|us\s+|about\s+|hi\s+|ही\s+)?(?:ki\s+|कि\s+|that\s+)?(?:rupees?|rs\.?|₹|रुपये|रुपए)?\s*[0-9]{{2,6}}(?!\s*(?:tarikh|तारीख|date|hafte|week|baar|बार|times|{_MONTH}))",
         r"(?:told|informed|mentioned|said|communicated)\s+(?:me\s+|us\s+)?(?:the\s+|about\s+the\s+|exact\s+)?(?:amount|figure|how\s+much)",
         r"(?:amount|figure)\s+(?:was|were)\s+(?:told|informed|mentioned|communicated|clear|shared|specified)",
+        # "200 ke bajaye 300 …" / "instead of 200 …": the expected figure was known
+        rf"{_NOT_A_QUESTION}{_NOT_WD}{_FIG}(?![0-9]){_RUPEE_TAIL}\s*{_INSTEAD_HI}",
+        rf"{_NOT_A_QUESTION}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}{_FIG}(?![0-9])",
     ],
 }
 _LEAD_YES = r"(?:haan|haa|han|ji|yes|yeah|हाँ|हां|जी)"
@@ -224,9 +240,6 @@ AMOUNT_INFORMED_ENTITY = {
 }
 AMOUNT_INFORMED_LOOKAHEAD = {"dataType": "text", "synonymPatterns": AMOUNT_INFORMED_PATTERNS}
 
-# A clause that asks whether something CAN be done is a question, not the
-# partner's own case ("kya main ek baar me pay kar sakta hu?").
-_NOT_A_QUESTION = r"(?![^.।?!]*(?:sakt[aei]|सकत[ाेी]|\bcan\b|\bcould\b|\bkya\b|क्या|\bhow\b|\bwhether\b))"
 # ── informed_amount / deducted_amount / upfront_amount_paid (numbers) ─────
 # dataType number ⇒ a miss is retried on the spoken-number rewrite of the
 # utterance ("paanch sau rupaye" → "500"), Hindi and English number words.
@@ -238,6 +251,12 @@ _DEDUCTED = (r"(?:hi\s+|ही\s+)?(?:kata|kaata|kate|kaate|kati|katt?a|kat\s*(?
 INFORMED_AMOUNT_LOOKAHEAD = {
     "dataType": "text",
     "regexPatterns": [
+        # Explicit contrast FIRST: "200 ke bajaye 300" / "300 instead of 200" names
+        # the expected figure unambiguously, and must win over the generic
+        # "told <figure>" capture below ("I was told, 300 instead of 200" — the
+        # figure after "told," is the deducted one). Patterns are tried in order.
+        rf"{_NOT_A_QUESTION}{_NOT_WD}({_FIG})(?![0-9]){_RUPEE_TAIL}\s*{_INSTEAD_HI}",
+        rf"{_NOT_A_QUESTION}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}({_FIG})(?![0-9])",
         rf"{_NOT_A_QUESTION}{_AMOUNT_NUM}{_RUPEE_TAIL}\s*(?:hi\s+|ही\s+)?{_WOULD_DEDUCT}",
         rf"{_NOT_A_QUESTION}{_AMOUNT_NUM}{_RUPEE_TAIL}\s*(?:{_TOLD})",
         rf"{_NOT_A_QUESTION}{_NOT_NEGATED}(?:{_TOLD})[\s,—–\-:]+(?:tha[\s,—–\-:]+|था[\s,—–\-:]+|gaya\s+tha[\s,—–\-:]+|गया\s+था[\s,—–\-:]+|me\s+|us\s+|about\s+)?(?:ki\s+|कि\s+|that\s+)?(?:rupees?|rs\.?|₹|रुपये\s+)?{_AMOUNT_NUM}(?!\s*(?:tarikh|तारीख|date|august|अगस्त|september|सितंबर|july|जुलाई|june|जून|hafte|week|baar|बार|times))",
@@ -268,6 +287,13 @@ DEDUCTED_AMOUNT_LOOKAHEAD = {
         rf"{_NOT_A_QUESTION}{_AMOUNT_NUM}{_RUPEE_TAIL}\s*(?:actually\s+|actual\s+mein\s+|असल\s+में\s+|real\s+mein\s+)?{_DEDUCTED}",
         rf"{_NOT_A_QUESTION}(?:actually|actual\s+mein|असल\s+में|par|but|lekin|magar|पर|बट|लेकिन|मगर)[\s,]+(?:mera\s+|मेरा\s+|payout\s+se\s+|पेआउट\s+से\s+)?(?:rupees?|rs\.?|₹|रुपये\s+)?{_AMOUNT_NUM}{_RUPEE_TAIL}\s*(?:hi\s+|ही\s+)?{_DEDUCTED}",
         rf"{_NOT_A_QUESTION}(?:deducted|deduct\s*(?:hua|hue|kiya)|kata|kaata|कटा|काटा)\s+(?:hai\s+|hain\s+|है\s+|हैं\s+|tha\s+|था\s+)?(?:rupees?|rs\.?|₹|रुपये\s+)?{_AMOUNT_NUM}",
+        # contrast without any deduction verb — "200 ke bajaye mera 300 rupaye ka tha",
+        # "instead of 200 they took 300", "300 instead of 200": the OTHER figure is
+        # what actually applied. The extractor reads capturing group 1, so the
+        # expected figure is a non-capturing group (no engine change needed).
+        rf"{_NOT_A_QUESTION}{_NOT_WD}(?:{_FIG})(?![0-9]){_RUPEE_TAIL}\s*{_INSTEAD_HI}{_NO_DIGIT_GAP}{_NOT_WD}({_FIG})(?![0-9])",
+        rf"{_NOT_A_QUESTION}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}(?:{_FIG})(?![0-9]){_RUPEE_TAIL}{_NO_DIGIT_GAP}{_NOT_WD}({_FIG})(?![0-9])",
+        rf"{_NOT_A_QUESTION}{_NOT_WD}({_FIG})(?![0-9]){_RUPEE_TAIL}{_NO_DIGIT_GAP}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}(?:{_FIG})(?![0-9])",
     ],
 }
 DEDUCTED_AMOUNT_ENTITY = {
@@ -326,6 +352,10 @@ AMOUNT_MATCHES_PATTERNS = {
         r"(?:more|less|extra|double|twice|higher|lower)\s+(?:than\s+)?(?:what\s+)?(?:was\s+)?(?:told|informed|said|communicated|mentioned|expected)",
         r"(?:do|दो|two|2|teen|तीन|three|3|kai|कई|multiple|several)\s+(?:baar|बार|times)\s+(?:kat|deduct|कट|काट)",
         rf"(?:{_TOLD})[^.।]{{0,30}}?(?:par|lekin|magar|but|पर|लेकिन|मगर)[^.।]{{0,30}}?[0-9]{{2,6}}",
+        # "200 ke bajaye 300" / "instead of 200, 300" / "300 instead of 200" — two DIFFERENT figures
+        rf"{_NOT_A_QUESTION}{_NOT_WD}({_FIG})(?![0-9]){_RUPEE_TAIL}\s*{_INSTEAD_HI}{_NO_DIGIT_GAP}{_NOT_WD}(?!\1(?![0-9])){_FIG}(?![0-9])",
+        rf"{_NOT_A_QUESTION}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}({_FIG})(?![0-9]){_RUPEE_TAIL}{_NO_DIGIT_GAP}{_NOT_WD}(?!\1(?![0-9])){_FIG}(?![0-9])",
+        rf"{_NOT_A_QUESTION}{_NOT_WD}({_FIG})(?![0-9]){_RUPEE_TAIL}{_NO_DIGIT_GAP}{_INSTEAD_EN}\s+{_RS}{_NOT_WD}(?!\1(?![0-9])){_FIG}(?![0-9])",
     ],
     "yes": [
         # "haan, 500 hi kata" — a leading affirmation plus the figure deducted

@@ -3432,9 +3432,14 @@ class ConversationBrain(FrameProcessor):
             logger.debug("latency filler could not be armed", exc_info=True)
 
     def _latency_cue_engine(self) -> dict:
-        """The engine (provider/model/voice/key reference) the TTS router
-        resolves for the current language — what a voiced cue is rendered
-        with, so it is unmistakably the same voice as the reply."""
+        """The engine (provider/model/voice/key reference + synthesis
+        parameters) the TTS router resolves for the current language — what
+        a voiced cue or acknowledgement is rendered with, so it is
+        unmistakably the same voice as the reply. ``params`` comes from the
+        same resolver the router uses (bot settings for the default engine,
+        the override's own params otherwise, canonical speed/energy on top)."""
+        from shared.providers.tts.delivery import resolve_engine_params
+
         tts = self._config.tts or {}
         engine = resolve_tts_engine(tts, self._conversation_language)
         return {
@@ -3443,6 +3448,11 @@ class ConversationBrain(FrameProcessor):
             "voice": engine.get("voice") or tts.get("voice") or "",
             "api_key_reference": (
                 engine.get("api_key_reference") or tts.get("api_key_reference") or ""
+            ),
+            "params": resolve_engine_params(
+                tts, engine,
+                speed=getattr(self._config, "speed", None),
+                energy=getattr(self._config, "energy", None),
             ),
         }
 

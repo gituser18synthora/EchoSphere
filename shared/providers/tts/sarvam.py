@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 # truth — and ultimately by the Sarvam API itself; an unknown speaker surfaces
 # as a ProviderError("invalid_input"), never as a silent substitution.
 _MODEL_DEFAULT_SPEAKER = {"bulbul:v2": "anushka", "bulbul:v3": "shubh"}
+# Output rates the REST endpoint synthesizes natively (same set as streaming).
+_NATIVE_RATES = {8000, 16000, 22050, 24000}
+# Parameters forwarded from ProviderConfig.extra to the REST request.
+_REST_PARAMS = {"pace", "temperature", "pitch", "loudness", "enable_preprocessing"}
+_V3_ONLY_PARAMS = {"temperature"}
+_V2_ONLY_PARAMS = {"pitch", "loudness"}
 _FALLBACK_DEFAULT_SPEAKER = "shubh"
 
 
@@ -103,9 +109,21 @@ class SarvamTTS(TTSProvider):
         self._voice = config.voice or ""
         self._language = config.language or ""
         self._timeout = config.timeout_seconds
-        # Fixed output rate — synthesize() resamples any other WAV rate to
-        # it; consumers resample when their pipeline differs.
-        self.output_sample_rate = _PCM_RATE
+        # Synthesis parameters (the same names the streaming config uses:
+        # pace, temperature, pitch, loudness, enable_preprocessing) so a
+        # REST render can match a streamed reply's voice. Unknown keys are
+        # ignored; ``output_sample_rate`` selects a native Sarvam rate so
+        # short clips for an 8 kHz telephony leg need no resampling.
+        self._params = {
+            key: value for key, value in dict(config.extra or {}).items()
+            if key in _REST_PARAMS and value is not None
+        }
+        requested = (config.extra or {}).get("output_sample_rate")
+        try:
+            requested = int(requested) if requested else 0
+        except (TypeError, ValueError):
+            requested = 0
+        self.output_sample_rate = requested if requested in _NATIVE_RATES else _PCM_RATE
 
     async def synthesize(
         self, text: str, *, voice: str | None = None, language: str | None = None,
@@ -123,17 +141,26 @@ class SarvamTTS(TTSProvider):
                 "sarvam-tts: no speaker configured; using model default '%s' for %s",
                 speaker, self._model,
             )
+        request = {
+            "text": text,
+            "model": self._model,
+            "target_language_code": language_code,
+            "speaker": speaker,
+            "speech_sample_rate": self.output_sample_rate,
+            "output_audio_codec": "wav",
+        }
+        for key, value in self._params.items():
+            if key in _V3_ONLY_PARAMS and not self._model.startswith("bulbul:v3"):
+                continue
+            if key in _V2_ONLY_PARAMS and self._model.startswith("bulbul:v3"):
+                continue
+            request[key] = value
+        # The canonical Delivery speed is authoritative over a stored pace.
+        pace = speed if speed and speed != 1.0 else request.get("pace", speed or 1.0)
+        request["pace"] = max(0.5, min(2.0, float(pace or 1.0)))
         try:
             response = await asyncio.wait_for(
-                self._client.text_to_speech.convert(
-                    text=text,
-                    model=self._model,
-                    target_language_code=language_code,
-                    speaker=speaker,
-                    pace=max(0.5, min(2.0, speed)),
-                    speech_sample_rate=_PCM_RATE,
-                    output_audio_codec="wav",
-                ),
+                self._client.text_to_speech.convert(**request),
                 timeout=self._timeout,
             )
         except TimeoutError as exc:
@@ -160,8 +187,8 @@ class SarvamTTS(TTSProvider):
                     self.name, "upstream",
                     "Provider returned an audio payload that is not a 16-bit PCM WAV",
                 )
-            if rate and rate != _PCM_RATE:
-                pcm = resample_pcm(pcm, rate, _PCM_RATE)
+            if rate and rate != self.output_sample_rate:
+                pcm = resample_pcm(pcm, rate, self.output_sample_rate)
         else:
             logger.warning(
                 "sarvam-tts: provider returned no audio for speaker '%s' (%s)",
@@ -169,7 +196,7 @@ class SarvamTTS(TTSProvider):
             )
         return TTSResult(
             audio=pcm,
-            sample_rate=_PCM_RATE,
+            sample_rate=self.output_sample_rate,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
 

@@ -230,3 +230,33 @@ def apply_delivery_params(
         if key is not None:
             merged[key] = provider_speed(provider, model, speed)
     return merged
+
+
+def resolve_engine_params(
+    tts: dict[str, Any] | None,
+    engine: dict[str, Any] | None,
+    *,
+    speed: float | None = None,
+    energy: int | None = None,
+) -> dict[str, Any]:
+    """The synthesis parameters a reply is generated with for ``engine``.
+
+    Single source of truth shared by the streaming TTS router and every
+    pre-rendered sound that must match the reply's voice (latency cues,
+    acknowledgements, previews). The bot's saved ``tts.settings`` describe
+    the DEFAULT engine's provider/model and apply only to engines matching
+    that selection; a per-language override or the fallback engine carries
+    its own validated ``params``. Canonical Delivery speed/energy are then
+    overlaid exactly as for the reply (see :func:`apply_delivery_params`).
+    """
+    tts = tts or {}
+    engine = engine or {}
+    provider = str(engine.get("provider") or tts.get("provider") or "sarvam")
+    model = str(engine.get("model") or tts.get("model") or "")
+    inherits_base = (
+        provider == str(tts.get("provider") or "sarvam")
+        and model == str(tts.get("model") or "")
+    )
+    base = dict(tts.get("settings") or {}) if inherits_base else {}
+    params = {**base, **(engine.get("params") or {})}
+    return apply_delivery_params(provider, model, params, speed=speed, energy=energy)

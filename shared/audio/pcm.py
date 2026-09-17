@@ -94,7 +94,18 @@ def silence_pcm(sample_rate: int, duration_ms: int) -> bytes:
 
 
 def resample_pcm(pcm: bytes, from_rate: int, to_rate: int) -> bytes:
-    """Resample 16-bit mono PCM between arbitrary rates (numpy linear interpolation)."""
+    """Resample 16-bit mono PCM between arbitrary rates.
+
+    Polyphase (anti-aliased) resampling when SciPy is available, linear
+    interpolation otherwise. The linear path used to be the only one, and
+    downsampling 16 kHz voiced cues to the 8 kHz telephony leg with it folded
+    everything above 4 kHz back into the band: the cached "wait"/"achha"
+    cues kept 2-3x the high-frequency share of a proper resample and sat
+    only ~15 dB (SNR) from it — audibly thinner than the reply synthesized
+    natively at 8 kHz (2026-09-17 voice-consistency audit).
+
+    The output length is always ``int(n * to_rate / from_rate)`` samples.
+    """
     if from_rate <= 0 or to_rate <= 0:
         raise ValueError("sample rates must be positive")
     if not pcm or from_rate == to_rate:
@@ -106,9 +117,32 @@ def resample_pcm(pcm: bytes, from_rate: int, to_rate: int) -> bytes:
     if n == 0:
         return b""
     out_n = max(1, int(n * to_rate / from_rate))
-    positions = np.arange(out_n, dtype=np.float64) * (from_rate / to_rate)
-    resampled = np.interp(positions, np.arange(n, dtype=np.float64), samples)
+    resampled = _resample_polyphase(samples, from_rate, to_rate)
+    if resampled is None:
+        positions = np.arange(out_n, dtype=np.float64) * (from_rate / to_rate)
+        resampled = np.interp(positions, np.arange(n, dtype=np.float64), samples)
+    if resampled.size > out_n:
+        resampled = resampled[:out_n]
+    elif resampled.size < out_n:
+        resampled = np.concatenate([resampled, np.zeros(out_n - resampled.size)])
     return np.clip(np.rint(resampled), -32768, 32767).astype("<i2").tobytes()
+
+
+def _resample_polyphase(samples: np.ndarray, from_rate: int, to_rate: int):
+    """Anti-aliased rational resampling, or None when SciPy is unavailable."""
+    try:
+        from math import gcd
+
+        from scipy.signal import resample_poly
+    except ImportError:  # pragma: no cover — SciPy is a runtime dependency here
+        return None
+    divisor = gcd(int(from_rate), int(to_rate))
+    up, down = int(to_rate) // divisor, int(from_rate) // divisor
+    if up > 1000 or down > 1000:
+        return None  # absurd ratio: keep the cheap path rather than a huge filter
+    if samples.size < 8:
+        return None
+    return resample_poly(samples, up, down)
 
 
 def _apply_fades(

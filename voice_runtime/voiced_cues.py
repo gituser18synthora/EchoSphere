@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
+import json
 import logging
 import re
 import time
@@ -50,12 +52,53 @@ logger = logging.getLogger(__name__)
 # -18..-20 dBFS RMS.
 CUE_TARGET_RMS_DBFS = {"hmm": -26.0, "wait": -24.0}
 CUE_PEAK_CEILING_DBFS = -10.0
+# Play-time level matching (LatencyFillerProcessor passes the reply's
+# measured level): the rendered baseline may be raised or lowered within
+# this range, peaks stay under the ceiling. Live replies measured -18..-19
+# dBFS on telephony vs the fixed -26 dBFS baseline (2026-09-17 audit).
+MATCH_GAIN_RANGE_DB = (-6.0, 15.0)
+MATCH_PEAK_CEILING_DBFS = -3.0
 # Longest a cue may run; a provider that pads a short text with a long tail
 # is trimmed to this after silence trimming.
 _MAX_CUE_MS = {"hmm": 900, "wait": 1400}
 _TRIM_THRESHOLD_DBFS = -45.0
 _FAILURE_COOLDOWN_S = 300.0
 _RENDER_TIMEOUT_S = 12.0
+# Cues are rendered once at the highest rate both streaming providers
+# synthesize natively and resampled (anti-aliased) to each call's rate. The
+# old 16 kHz renders reached the 8 kHz telephony leg through a linear
+# interpolation that aliased everything above 4 kHz back into the band —
+# the "thinner" cue timbre heard on phone calls (2026-09-17 audit).
+CUE_RENDER_SAMPLE_RATE = 24000
+# Synthesis parameters that make a cue sound like the reply; anything else
+# on the engine dict (buffer sizes, completion events) is transport plumbing
+# and must not fork the cache.
+_VOICE_PARAM_KEYS = (
+    "pace", "speed", "temperature", "pitch", "loudness", "enable_preprocessing",
+    "stability", "similarity_boost", "style", "use_speaker_boost", "dict_id",
+)
+
+
+def _accepts_sample_rate(renderer) -> bool:
+    """Whether ``renderer`` takes a ``sample_rate`` keyword (explicitly or via
+    ``**kwargs``). Unknown signatures are assumed positional-only."""
+    try:
+        parameters = inspect.signature(renderer).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.name == "sample_rate" or p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in parameters
+    )
+
+
+def voice_params(engine: dict | None) -> dict:
+    """The subset of ``engine["params"]`` that shapes the rendered voice."""
+    params = (engine or {}).get("params") or {}
+    return {
+        key: params[key] for key in _VOICE_PARAM_KEYS
+        if params.get(key) is not None
+    }
 
 
 def trim_silence(pcm: bytes, sample_rate: int, *, threshold_dbfs: float = _TRIM_THRESHOLD_DBFS,
@@ -108,9 +151,19 @@ class VoicedCueLibrary:
     ``TTSProvider`` for the engine (see :func:`default_renderer`).
     """
 
+    # Duck-typed capability the filler processor checks before asking for a
+    # level-matched clip (test stubs and older libraries return raw clips).
+    supports_level_matching = True
+
     def __init__(self, cache_dir: str | Path | None = None, *, renderer=None) -> None:
         self._cache_dir = Path(cache_dir) if cache_dir else None
         self._renderer = renderer or default_renderer
+        # (key, rate, target dB bucket) -> level-matched PCM
+        self._matched: dict[tuple[str, int, int], bytes] = {}
+        # Test/legacy renderers take (engine, language, text); the default
+        # one also accepts the render rate. Detected from the signature and
+        # confirmed at the first call (a wrapper may hide its parameters).
+        self._renderer_takes_rate = _accepts_sample_rate(self._renderer)
         # key -> (pcm, native_rate); b"" marks "rendered, nothing usable".
         self._clips: dict[str, tuple[bytes, int]] = {}
         self._resampled: dict[tuple[str, int], bytes] = {}
@@ -139,8 +192,14 @@ class VoicedCueLibrary:
 
     def _key(self, engine: dict | None, language: str, kind: str, text: str | None = None) -> str:
         text = ladder_cue(language, kind) if text is None else text
-        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
-        return f"{self.engine_key(engine, language)}_{kind}_{digest}"
+        # The voice parameters are part of the identity: a bot at speed 1.2
+        # with temperature 0.01 must not play a cue cached for defaults, and
+        # two bots sharing a speaker but not a delivery must not share clips.
+        params = voice_params(engine)
+        material = text if not params else text + "\x1f" + json.dumps(params, sort_keys=True, default=str)
+        digest = hashlib.sha1(material.encode("utf-8")).hexdigest()[:8]
+        suffix = "" if not params else "_p"
+        return f"{self.engine_key(engine, language)}_{kind}_{digest}{suffix}"
 
     @staticmethod
     def cue_choices(language: str, kind: str, selection: dict | None = None) -> list[tuple[str, str]]:
@@ -172,19 +231,46 @@ class VoicedCueLibrary:
 
     def acknowledgement_clip(
         self, engine: dict | None, language: str, text: str, sample_rate: int,
+        target_rms_dbfs: float | None = None,
     ) -> bytes:
         """A planned acknowledgement from the existing background-render cache.
 
         A cache miss starts rendering and returns immediately. This must never
         use the reply's streaming TTS connection or wait for synthesis.
+        ``target_rms_dbfs`` (the reply's level minus a margin) places the
+        clip at the reply's loudness instead of the rendered baseline.
         """
         if not text or sample_rate <= 0:
             return b""
-        return self._cached_clip(engine, language, "ack", text, sample_rate)
+        return self._cached_clip(
+            engine, language, "ack", text, sample_rate, target_rms_dbfs=target_rms_dbfs,
+        )
+
+    def level_matched(self, key: str, pcm: bytes, sample_rate: int, target_rms_dbfs: float) -> bytes:
+        """``pcm`` scaled toward ``target_rms_dbfs`` (bounded gain, capped
+        peaks), cached per 1 dB bucket so a call re-scales nothing per turn."""
+        if not pcm:
+            return pcm
+        bucket = int(round(target_rms_dbfs))
+        cached = self._matched.get((key, sample_rate, bucket))
+        if cached is not None:
+            return cached
+        samples = np.frombuffer(pcm[: len(pcm) - (len(pcm) % 2)], dtype="<i2").astype(np.float32)
+        rms = float(np.sqrt(np.mean(samples**2))) if samples.size else 0.0
+        if rms <= 1.0:
+            return pcm
+        current = 20.0 * np.log10(rms / 32767.0)
+        low, high = MATCH_GAIN_RANGE_DB
+        gain = min(high, max(low, float(bucket) - current))
+        out = normalize_level(
+            pcm, target_rms_dbfs=current + gain, peak_ceiling_dbfs=MATCH_PEAK_CEILING_DBFS,
+        ) or pcm
+        self._matched[(key, sample_rate, bucket)] = out
+        return out
 
     def clip(
         self, engine: dict | None, language: str, kind: str, sample_rate: int,
-        selection: dict | None = None,
+        selection: dict | None = None, target_rms_dbfs: float | None = None,
     ) -> bytes:
         """The best READY cue clip for this turn at ``sample_rate``, or b""
         when none is ready.
@@ -198,7 +284,9 @@ class VoicedCueLibrary:
         if kind not in LADDER_CUE_KINDS or sample_rate <= 0:
             return b""
         for cue_id, text in self.cue_choices(language, kind, selection):
-            pcm = self._cached_clip(engine, language, kind, text, sample_rate)
+            pcm = self._cached_clip(
+                engine, language, kind, text, sample_rate, target_rms_dbfs=target_rms_dbfs,
+            )
             if pcm:
                 self.last_cue_id = cue_id
                 return pcm
@@ -206,6 +294,7 @@ class VoicedCueLibrary:
 
     def _cached_clip(
         self, engine: dict | None, language: str, kind: str, text: str, sample_rate: int,
+        target_rms_dbfs: float | None = None,
     ) -> bytes:
         key = self._key(engine, language, kind, text)
         cached = self._clips.get(key)
@@ -217,13 +306,15 @@ class VoicedCueLibrary:
         pcm, rate = cached
         if not pcm:
             return b""
-        if rate == sample_rate:
-            return pcm
-        out = self._resampled.get((key, sample_rate))
-        if out is None:
-            out = resample_pcm(pcm, rate, sample_rate)
-            self._resampled[(key, sample_rate)] = out
-        return out
+        if rate != sample_rate:
+            out = self._resampled.get((key, sample_rate))
+            if out is None:
+                out = resample_pcm(pcm, rate, sample_rate)
+                self._resampled[(key, sample_rate)] = out
+            pcm = out
+        if target_rms_dbfs is not None:
+            pcm = self.level_matched(key, pcm, sample_rate, target_rms_dbfs)
+        return pcm
 
     def ready(self, engine: dict | None, language: str, kind: str, cue_id: str | None = None) -> bool:
         text = ladder_cue_text(language, kind, cue_id) if cue_id else ladder_cue(language, kind)
@@ -315,9 +406,19 @@ class VoicedCueLibrary:
     ) -> None:
         text = ladder_cue(language, kind) if text is None else text
         try:
-            pcm, rate = await asyncio.wait_for(
-                self._renderer(engine, language, text), timeout=_RENDER_TIMEOUT_S
-            )
+            if self._renderer_takes_rate:
+                try:
+                    render = self._renderer(
+                        engine, language, text, sample_rate=CUE_RENDER_SAMPLE_RATE
+                    )
+                except TypeError:
+                    # The renderer does not take the rate after all (binding
+                    # fails before anything runs): fall back for good.
+                    self._renderer_takes_rate = False
+                    render = self._renderer(engine, language, text)
+            else:
+                render = self._renderer(engine, language, text)
+            pcm, rate = await asyncio.wait_for(render, timeout=_RENDER_TIMEOUT_S)
         except Exception:  # noqa: BLE001 — a cue is decoration; never fatal
             self.render_failures += 1
             self._failed_at[key] = time.monotonic()
@@ -383,7 +484,7 @@ class VoicedCueSession:
 
     def clip(
         self, engine: dict | None, language: str, kind: str, sample_rate: int,
-        selection: dict | None = None,
+        selection: dict | None = None, target_rms_dbfs: float | None = None,
     ) -> bytes:
         if kind not in LADDER_CUE_KINDS or sample_rate <= 0:
             return b""
@@ -397,7 +498,9 @@ class VoicedCueSession:
             pair for pair in choices if pair[0] == previous
         ]
         for cue_id, text in choices:
-            pcm = self._library._cached_clip(engine, language, kind, text, sample_rate)
+            pcm = self._library._cached_clip(
+                engine, language, kind, text, sample_rate, target_rms_dbfs=target_rms_dbfs,
+            )
             if pcm:
                 self.last_cue_id = cue_id
                 self._last_cues[history_key] = cue_id
@@ -405,14 +508,35 @@ class VoicedCueSession:
         return b""
 
 
-async def default_renderer(engine: dict, language: str, text: str) -> tuple[bytes, int]:
-    """Render ``text`` through the engine's REST TTS provider (one call)."""
+async def default_renderer(
+    engine: dict, language: str, text: str, *, sample_rate: int = CUE_RENDER_SAMPLE_RATE,
+) -> tuple[bytes, int]:
+    """Render ``text`` through the engine's REST TTS provider (one call).
+
+    ``engine["params"]`` carries the reply's synthesis parameters (resolved
+    by :func:`shared.providers.tts.delivery.resolve_engine_params`): the
+    same pace/speed, temperature, stability… the streamed reply uses, so the
+    cue is unmistakably the same voice. Without them the REST render fell
+    back to provider defaults (pace 1.0, default temperature) while the
+    reply streamed at the bot's speed with temperature 0.01.
+    """
     from shared.providers.base import ProviderConfig
     from shared.providers.factory import get_tts_provider
+    from shared.providers.tts.delivery import speed_param_name
 
     provider_name = engine.get("provider") or "sarvam"
     if provider_name == "mock":
         return b"", 0  # never bill or fake a cue for the mock provider
+    params = voice_params(engine)
+    speed_key = speed_param_name(provider_name, engine.get("model") or "")
+    speed = params.get(speed_key) if speed_key else None
+    try:
+        speed = float(speed) if speed is not None else 1.0
+    except (TypeError, ValueError):
+        speed = 1.0
+    extra = {key: value for key, value in params.items() if key != speed_key}
+    if sample_rate and sample_rate > 0:
+        extra["output_sample_rate"] = int(sample_rate)
     provider = get_tts_provider(
         ProviderConfig(
             provider=provider_name,
@@ -420,10 +544,11 @@ async def default_renderer(engine: dict, language: str, text: str) -> tuple[byte
             voice=engine.get("voice") or "",
             language=language or "en",
             api_key_reference=engine.get("api_key_reference") or "",
+            extra=extra,
         )
     )
     result = await provider.synthesize(
-        text, voice=engine.get("voice") or None, language=language or None
+        text, voice=engine.get("voice") or None, language=language or None, speed=speed,
     )
     return result.audio, int(result.sample_rate)
 

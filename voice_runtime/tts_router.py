@@ -52,6 +52,7 @@ from shared.providers.tts.delivery import (
     apply_delivery_params,
     delivery_capabilities,
     provider_speed,
+    resolve_engine_params,
 )
 from shared.orchestration.voice_identity import resolve_language_engine
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
@@ -382,17 +383,16 @@ class StreamingTTSRouter(TTSService):
         # selection — an override carries its own validated params. Without
         # this, bulbul:v2 loudness or eleven_flash speed would ride along to an
         # engine that never accepts them.
-        inherits_base = (
-            provider == self._default_engine.get("provider")
-            and model == (self._default_engine.get("model") or "")
-        )
-        base = self._base_params if inherits_base else {}
-        params = {**base, **(engine.get("params") or {})}
         # Canonical Delivery tuning: speed OVERRIDES any legacy pace/speed left
         # in stored settings; Energy fills only fields the operator left unset
-        # and only ones the model documents (shared.providers.tts.delivery).
-        params = apply_delivery_params(
-            provider, model, params,
+        # and only ones the model documents. The resolver is shared with the
+        # pre-rendered cues/acknowledgements so they carry the reply's exact
+        # parameters (shared.providers.tts.delivery.resolve_engine_params).
+        params = resolve_engine_params(
+            {**self._tts_config, "provider": self._default_engine.get("provider"),
+             "model": self._default_engine.get("model") or "",
+             "settings": self._base_params},
+            engine,
             speed=self._speed if speed is None else speed, energy=self._energy,
         )
         supported = _SUPPORTED_RATES.get(provider, {self.sample_rate})

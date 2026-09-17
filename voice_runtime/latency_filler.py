@@ -65,6 +65,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from shared.audio.pcm import apply_fade_in, apply_fade_out, resample_pcm, wav_to_pcm
+from voice_runtime.audio_gate import frame_dbfs
 from shared.orchestration.naturalness import (
     FILLER_SOUND_KINDS,
     FILLER_SOUND_LABELS,
@@ -598,6 +599,14 @@ _RESUME_GAP_S = 0.7
 # acknowledgement ended (live call cv_06b9ead29d43: ack → 0.7 s → breath read
 # as two fillers back to back).
 _AFTER_ACK_GAP_S = 1.2
+# Voiced cues/acknowledgements are pre-rendered at a fixed level (about
+# -26 dBFS RMS). Live replies measured -18..-19 dBFS on telephony and about
+# -26 dBFS in the browser: a fixed level is 6-10 dB too quiet on the phone
+# and about right in the browser. The processor therefore tracks the reply
+# audio it forwards and places each voiced clip just under THAT level.
+_CUE_BELOW_REPLY_DB = 3.0
+_REPLY_LEVEL_EMA = 0.15
+_REPLY_LEVEL_MIN_DBFS = -50.0  # frames below this are silence, not level
 # Minimum quiet between two rungs (the next rung's schedule may be earlier):
 # a breath and a "Hmm…" less than a second apart read as one stuttered noise.
 _MIN_RUNG_GAP_S = 1.0
@@ -714,6 +723,10 @@ class LatencyFillerProcessor(FrameProcessor):
             else library
         )
         self._sample_rate = int(sample_rate)
+        # Running RMS level (dBFS) of the reply audio this processor forwards,
+        # and the last voiced clip's level-matching telemetry.
+        self._reply_level_dbfs: float | None = None
+        self._last_cue_level: dict | None = None
         self._breath_gain_db = float(breath_gain_db)
         self._recorder = recorder
         self._chunk_ms = max(10, int(chunk_ms))
@@ -926,6 +939,40 @@ class LatencyFillerProcessor(FrameProcessor):
             self._session(), armed.rung_kind, played_ms, reason, armed.turn_id,
         )
 
+    # -- reply level matching ------------------------------------------
+
+    def _observe_reply_level(self, audio: bytes) -> None:
+        """Fold one forwarded reply frame into the running reply level."""
+        level = frame_dbfs(audio)
+        if level < _REPLY_LEVEL_MIN_DBFS:
+            return
+        if self._reply_level_dbfs is None:
+            self._reply_level_dbfs = level
+        else:
+            self._reply_level_dbfs += (level - self._reply_level_dbfs) * _REPLY_LEVEL_EMA
+
+    def _cue_level_kwargs(self) -> dict:
+        """``target_rms_dbfs`` for a voiced clip: just under the reply's
+        measured level. Empty before any reply audio was heard, or when the
+        cue library cannot level-match (stubs, older libraries return the
+        rendered clip as is)."""
+        if self._reply_level_dbfs is None:
+            return {}
+        if not getattr(self._cue_library, "supports_level_matching", False):
+            return {}
+        return {"target_rms_dbfs": self._reply_level_dbfs - _CUE_BELOW_REPLY_DB}
+
+    def _note_cue_level(self, pcm: bytes, level_kwargs: dict) -> bytes:
+        self._last_cue_level = None
+        if pcm and level_kwargs:
+            level = frame_dbfs(pcm)
+            self._last_cue_level = {
+                "reply_level_dbfs": round(self._reply_level_dbfs, 1),
+                "cue_level_dbfs": round(level, 1),
+                "cue_target_dbfs": round(level_kwargs["target_rms_dbfs"], 1),
+            }
+        return pcm
+
     def _rung_clip(self, armed: _ArmedTurn, kind: str) -> bytes:
         if kind == "breath":
             ack = self._acknowledgement_clip(armed)
@@ -946,36 +993,46 @@ class LatencyFillerProcessor(FrameProcessor):
             )
         if self._cue_library is None:
             return b""
+        level = self._cue_level_kwargs()
         if kind == "hmm" and armed.cue_selection is not None:
-            return self._cue_library.clip(
+            clip = self._cue_library.clip(
                 armed.engine, armed.language, kind, self._sample_rate,
-                selection=armed.cue_selection,
+                selection=armed.cue_selection, **level,
             )
-        return self._cue_library.clip(armed.engine, armed.language, kind, self._sample_rate)
+        else:
+            clip = self._cue_library.clip(
+                armed.engine, armed.language, kind, self._sample_rate, **level,
+            )
+        return self._note_cue_level(clip, level)
 
     def _acknowledgement_clip(self, armed: _ArmedTurn) -> bytes:
         get_clip = getattr(self._cue_library, "acknowledgement_clip", None)
         if not armed.acknowledgement or get_clip is None:
             return b""
+        level = self._cue_level_kwargs()
         try:
-            return get_clip(
+            clip = get_clip(
                 armed.engine, armed.language, armed.acknowledgement["text"],
-                self._sample_rate,
+                self._sample_rate, **level,
             )
         except Exception:  # Decoration failure must not hold up the reply.
             logger.debug("latency-filler: acknowledgement unavailable", exc_info=True)
             return b""
+        return self._note_cue_level(clip, level)
 
     def _rung_sound(self, armed: _ArmedTurn, kind: str) -> dict:
         """Telemetry: which sound/clip a rung actually played."""
         if kind == "breath":
             if armed.playing_acknowledgement:
-                return {"sound": "acknowledgement"}
+                return {"sound": "acknowledgement", **(self._last_cue_level or {})}
             return {
                 "sound": armed.filler_kind,
                 "clip": getattr(self._library, "last_clip_id", None),
             }
-        return {"sound": kind, "cue": getattr(self._cue_library, "last_cue_id", None)}
+        return {
+            "sound": kind, "cue": getattr(self._cue_library, "last_cue_id", None),
+            **(self._last_cue_level or {}),
+        }
 
     def _begin_cue_window(self, armed: _ArmedTurn) -> None:
         if (armed.rung_kind != "breath" or armed.playing_acknowledgement) and self.cue_window_hook is not None:
@@ -1299,6 +1356,7 @@ class LatencyFillerProcessor(FrameProcessor):
             # the configured filler deadline intact while the provider waits.
             # Finish a started voiced cue or cut a breath before forwarding.
             if frame.num_frames > 0 and direction == FrameDirection.DOWNSTREAM:
+                self._observe_reply_level(frame.audio)
                 self._notice_reply_audio()
                 voiced = self._voiced_handoff
                 if voiced is not None:
