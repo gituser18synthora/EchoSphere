@@ -598,6 +598,12 @@ def _short_question(base: str, lang: str = "") -> str:
 # store it as the answer, a hub must not advance on it, and it is never an
 # entry signal — the node simply waits for the caller to come back.
 _OFF_SCRIPT_SIGNALS = ("complaint", "clarify", "question", "hold")
+# A free-text ask treats an LLM ``question`` label as a real question only
+# when the words have question shape; a narrative this long with no
+# interrogative is the caller's answer (cv_7786bc42deca: "maine product
+# deliver kar diya phir bhi mera MDND mark hua hai" was labelled a question
+# twice and met "didn't understand" twice, while a bare "Haan" was accepted).
+_LITERAL_ANSWER_MIN_WORDS = 3
 # Flow-answer signals that may still advance via literal tokens when no edge
 # declares the signal explicitly (the author spelled the words out instead).
 _LITERAL_FALLBACK_SIGNALS = ("refusal", "callback", "payment_intent", "affirm")
@@ -1638,6 +1644,19 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 variable = str(config.get("variable") or node.get("id"))
                 semantic_ask = semantic_active and variable in mdnd_state.FIELDS.values()
                 guarded = signal in _OFF_SCRIPT_SIGNALS or signal == "agent_request"
+                if (
+                    guarded and signal == "question"
+                    and not looks_like_question(text)
+                    and len(text.split()) >= _LITERAL_ANSWER_MIN_WORDS
+                    and _ask_is_free_text(node, variable)
+                ):
+                    # The label says "question", the words do not: a
+                    # statement at a free-text ask IS the answer. Store the
+                    # narrative instead of parking the flow off-script, where
+                    # the LLM only re-asks the same question (cv_7786bc42deca).
+                    audit.append({"action": "question_label_yielded",
+                                  "node": awaiting, "words": len(text.split())})
+                    guarded = False
                 # Numeric-identifier dictation: digits held from earlier turns
                 # of THIS ask continue the same identifier, so "six zero …
                 # <pause> one zero double one" resolves as one value. The

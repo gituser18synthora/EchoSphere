@@ -269,6 +269,79 @@ class TestMismatch:
         assert payload["deduction_date_or_week"] == "pichle hafte"
 
 
+# ── readback confirmation → outcome, never a second readback ────────────────
+
+FIGURES = ("200", "500", "300", "दो सौ", "पांच सौ", "पाँच सौ", "तीन सौ", "two hundred", "five hundred")
+
+
+async def _to_readback(engine, session, language="hi-IN"):
+    """200 told / 500 deducted / Monday → the exact readback at n_hub_verify."""
+    await _turn(engine, "haan" if language == "hi-IN" else "yes", session, language)
+    await _turn(engine, "haan bataya tha, 200 katega bola tha, lekin 500 kata"
+                if language == "hi-IN" else "Yes, I was told 200 but 500 was deducted",
+                session, language, signal="affirm")
+    r = await _turn(engine, "Monday ko", session, language)
+    assert r["trace"][-1] == "n_hub_verify"
+    assert (r["slots"]["informed_amount"], r["slots"]["deducted_amount"]) == ("200", "500")
+    assert "200" in r["reply"] and "500" in r["reply"]      # the readback itself
+    return r
+
+
+class TestReadbackConfirmation:
+    @pytest.mark.parametrize("confirmation,language", [
+        ("Haan sahi hai", "hi-IN"), ("haan", "hi-IN"), ("haan sahi hai", "hi-IN"),
+        ("ji sahi hai", "hi-IN"), ("ji haan, sab sahi hai", "hi-IN"),
+        ("yes", "en-IN"), ("yes, that's correct", "en-IN"), ("Yes, all correct.", "en-IN"),
+    ])
+    async def test_affirmative_moves_to_outcome_without_reading_figures_again(
+            self, engine, confirmation, language):
+        s = f"rb-confirm-{language}-{abs(hash(confirmation))}"
+        await _to_readback(engine, s, language)
+        r = await _turn(engine, confirmation, s, language, signal="affirm")
+        # forward transition: verify hub → outcome conditions → mismatch outcome → anything-else hub
+        assert r["trace"][:2] == ["n_hub_verify", "n_cond_out_informed_2"]
+        assert "n_msg_mismatch" in r["trace"] and r["trace"][-1] == "n_hub_more"
+        assert r["slots"]["verification_status"] == "amount_mismatch"
+        # nothing collected again, no second readback
+        assert not any(node.startswith("n_ask_") for node in r["trace"])
+        assert r["trace"].count("n_hub_verify") == 1
+        assert "readback" not in r and r.get("awaitingKind") != "verify"
+        # the outcome + next question carry no figures (authored fallback wording)
+        for figure in FIGURES:
+            assert figure not in r["reply"], (figure, r["reply"])
+        assert r["reply"].count("?") == 1                      # exactly one question: anything else?
+
+    async def test_outcome_directive_forbids_repeating_confirmed_values(self):
+        for directive in (M.MISMATCH_DIRECTIVE, M.NOT_COMMUNICATED_DIRECTIVE):
+            assert "JUST confirmed" in directive
+            assert "Do NOT repeat any figure" in directive
+        for text in (M.MISMATCH_TEXT, M.NOT_COMMUNICATED_TEXT, M.CONSISTENT_TEXT,
+                     M.ENGLISH_TEXT["n_msg_mismatch"], M.ENGLISH_TEXT["n_msg_not_communicated"]):
+            assert not any(ch.isdigit() for ch in text)
+
+    @pytest.mark.parametrize("rejection", ["nahi", "nahi galat hai", "sahi nahi hai", "no, that's wrong"])
+    async def test_rejection_goes_to_the_correction_ask(self, engine, rejection):
+        s = f"rb-reject-{abs(hash(rejection))}"
+        await _to_readback(engine, s)
+        r = await _turn(engine, rejection, s, signal="refusal")
+        assert r["trace"][-1] == "n_ask_correction"
+        assert _asked(r, "कौन सी बात सही नहीं है")
+        assert "verification_status" not in r["slots"]
+        assert "n_msg_mismatch" not in r["trace"]
+
+    async def test_inline_correction_at_readback_reverifies_only(self, engine):
+        s = "rb-inline-fix"
+        await _to_readback(engine, s)
+        r = await _turn(engine, "nahi, 500 nahi 600 kata tha", s, signal="refusal")
+        assert r["slots"]["deducted_amount"] == "600"
+        assert "verification_status" not in r["slots"]
+        assert r["trace"][-1] == "n_hub_verify"                 # acknowledged + re-verified
+        assert "600" in r["reply"]
+        r = await _turn(engine, "haan ab sahi hai", s, signal="affirm")
+        assert "n_msg_mismatch" in r["trace"] and r["trace"][-1] == "n_hub_more"
+        assert r["slots"]["verification_status"] == "amount_mismatch"
+
+
 # ── corrections, incomplete answers, additional concern ─────────────────────
 
 class TestCorrections:
