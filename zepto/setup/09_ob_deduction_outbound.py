@@ -601,15 +601,21 @@ CONSISTENT_DIRECTIVE = (
 CONSISTENT_TEXT = ("ठीक है। इस case में ये deduction आपको onboarding के time दी गई "
                    "information के हिसाब से consistent लग रहा है।")
 
+# This step is reached ONLY after the partner confirmed the full readback (which
+# already spoke both figures and their difference). Restating "आपको दो सौ बताया
+# गया था और पांच सौ deduct हुआ" here sounded like the readback starting again
+# (cv_3c3e42bd6519) — the outcome must acknowledge the confirmation and state
+# the result, never re-read the confirmed values.
 MISMATCH_DIRECTIVE = (
-    "The partner reports a DISCREPANCY: the amount actually deducted is not the "
-    "amount communicated at onboarding. In the caller's language, one or two "
-    "short sentences: say you have noted this difference on their ticket — quote "
-    "the informed_amount and the deducted_amount as spoken words ONLY when those "
-    "slots have values (e.g. 'आपको पाँच सौ रुपये बताया गया था और सात सौ रुपये deduct हुआ "
-    "है — ये difference मैंने आपके ticket पर note कर लिया है।' / 'You were told five "
-    "hundred rupees and seven hundred were deducted — I have noted this difference "
-    "on your ticket.'), otherwise say the difference is noted without figures. Do "
+    "The partner has JUST confirmed the complete readback (both amounts and their "
+    "difference were read out and confirmed). Outcome: the amount actually deducted "
+    "differs from the amount communicated at onboarding. In the caller's language, "
+    "one or two short sentences: acknowledge the confirmation and say this difference "
+    "is noted on their ticket (e.g. 'ठीक है — जो amount आपको बताया गया था और जो actually "
+    "deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर note कर ली है।' / "
+    "'Okay — there is a difference between the amount you were told and the amount "
+    "actually deducted; I have noted this on your ticket.'). Do NOT repeat any "
+    "figure, amount, date or week the partner just confirmed — no numbers at all. Do "
     "NOT say the deduction is wrong or right, do NOT promise a refund, reversal, "
     "correction, review or timeline, do NOT explain why it happened — the document "
     "defines no resolution; nothing beyond 'noted in this verification' may be "
@@ -618,13 +624,13 @@ MISMATCH_TEXT = ("ठीक है — जो amount आपको बताय�
                  "difference है; ये बात मैंने आपके ticket पर clearly note कर ली है।")
 
 NOT_COMMUNICATED_DIRECTIVE = (
-    "The partner said the amount to be deducted was NOT communicated to them at "
-    "onboarding. In the caller's language, one or two short sentences: say you "
-    "have noted on the ticket that the deduction amount was not communicated to "
-    "them at onboarding (mention the deducted_amount as spoken words only if that "
-    "slot has a value). Do NOT say or imply the deduction is correct, do NOT "
-    "promise a refund, reversal or timeline, do NOT invent any rule. Do not ask a "
-    "question — the flow continues.")
+    "The partner has JUST confirmed the complete readback. Outcome: the amount to be "
+    "deducted was NOT communicated to them at onboarding. In the caller's language, "
+    "one or two short sentences: say you have noted on the ticket that the deduction "
+    "amount was not communicated to them at onboarding. Do NOT repeat any figure, "
+    "amount, date or week the partner just confirmed. Do NOT say or imply the "
+    "deduction is correct, do NOT promise a refund, reversal or timeline, do NOT "
+    "invent any rule. Do not ask a question — the flow continues.")
 NOT_COMMUNICATED_TEXT = ("ठीक है — मैंने note कर लिया है कि onboarding के time deduct होने "
                          "वाला amount आपको communicate नहीं किया गया था।")
 

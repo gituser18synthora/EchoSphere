@@ -512,13 +512,42 @@ _QUESTION_MARKERS = re.compile(
 )
 
 
+# English auxiliaries open a question only at the start of a clause AND
+# followed by an English subject ("is it refunded?", "do you support Tally?").
+# Elsewhere they are Hinglish words: "is" = यह ("is baar"), "do" = दो ("bata
+# do", "mark do hai" — an STT slip for "ho"), "are" = अरे ("Are maine deliver
+# kar diya", cv_7786bc42deca), "can"/"will" inside a statement.
+_ENGLISH_AUX_WORDS = r"(?:is|are|can|could|do|does|will|would|should)"
+_ENGLISH_SUBJECT_WORDS = (
+    r"(?:you|u|i|we|they|he|she|it|this|that|these|those|there|the|my|your|our|"
+    r"his|her|their|any|anyone|anybody|someone|somebody|me)"
+)
+_QUESTION_MARKERS_ANYWHERE = re.compile(
+    r"\?|(?<!\w)(?:kya|kyu|kyun|kyon|kaise|kab|kitn[aei]|kaun|kahan|kis|what|why|how|when|"
+    r"which|where|explain|tell|batao|bataiye|"
+    r"क्या|क्यों|क्यूँ|क्यूं|कैसे|कब|कितन[ाीे]|कौन|कहाँ|कहां|किस|बताओ|बताइए|समझाओ)(?!\w)",
+    re.I,
+)
+_QUESTION_CLAUSE_START = re.compile(
+    r"^\W*" + _ENGLISH_AUX_WORDS + r"\s+" + _ENGLISH_SUBJECT_WORDS + r"(?!\w)", re.I,
+)
+
+
 def looks_like_question(text: str) -> bool:
     """Deterministic question shape: a "?" or an interrogative word in Hindi,
     Hinglish or English. The workflow engine uses it to double-check an LLM
     'question' label before that label is allowed to park a caller's literal
     answer off-script ("मैं टैली यूज़ करता हूँ।" was labelled a question with
-    confidence 0.0 in live calls and re-asked six times)."""
-    return bool(_QUESTION_MARKERS.search(text or ""))
+    confidence 0.0 in live calls and re-asked six times).
+
+    Wh-words count anywhere; an English auxiliary counts only when it opens a
+    clause and an English subject follows ("do you", "is it"), so Hinglish
+    statements containing "is"/"do"/"are" stay statements.
+    """
+    text = text or ""
+    if _QUESTION_MARKERS_ANYWHERE.search(text):
+        return True
+    return any(_QUESTION_CLAUSE_START.match(clause) for clause in _CLAUSE_SPLIT.split(text))
 
 
 # Function words that never identify a knowledge TOPIC.
