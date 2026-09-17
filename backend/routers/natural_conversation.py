@@ -68,9 +68,13 @@ def _bot_languages(config) -> list[str]:
     return languages or ["hi-IN"]
 
 
-def _engine_for(tts: dict, language: str) -> dict:
-    """Provider/model/voice the router speaks ``language`` with — the engine a
-    voiced cue is rendered in (mirrors ConversationBrain._latency_cue_engine)."""
+def _engine_for(tts: dict, language: str, config=None) -> dict:
+    """Provider/model/voice (+ synthesis params) the router speaks ``language``
+    with — the engine a voiced cue is rendered in (mirrors
+    ConversationBrain._latency_cue_engine, so the preview plays the very clip
+    a call would)."""
+    from shared.providers.tts.delivery import resolve_engine_params
+
     engine = resolve_tts_engine(tts, language)
     return {
         "provider": engine.get("provider") or tts.get("provider") or "sarvam",
@@ -79,6 +83,10 @@ def _engine_for(tts: dict, language: str) -> dict:
         "voice_name": engine.get("voice_name") or tts.get("voice_name") or "",
         "api_key_reference": (
             engine.get("api_key_reference") or tts.get("api_key_reference") or ""
+        ),
+        "params": resolve_engine_params(
+            tts, engine,
+            speed=getattr(config, "speed", None), energy=getattr(config, "energy", None),
         ),
     }
 
@@ -106,7 +114,7 @@ def natural_conversation_audio(
     voices = []
     for language in _bot_languages(config):
         identity = active_voice_identity(tts, language)
-        engine = _engine_for(tts, language)
+        engine = _engine_for(tts, language, config)
         voices.append({
             "language": language,
             "voiceName": identity.name,
@@ -130,7 +138,7 @@ def natural_conversation_audio(
         base = base_language(language)
         if not base or base in cues:
             continue
-        engine = _engine_for(tts, language)
+        engine = _engine_for(tts, language, config)
         entry: dict = {"language": language, "options": {}}
         for kind in LADDER_CUE_KINDS:
             entry["options"][kind] = [
@@ -195,7 +203,7 @@ async def natural_conversation_cue(
     same cached clip the runtime's ladder plays (rendered now if needed)."""
     bot = _bot_checked(db, bot_id, user)
     config = _load_config_sync(bot.id, False)
-    engine = _engine_for(config.tts or {}, language)
+    engine = _engine_for(config.tts or {}, language, config)
     if engine["provider"] == "mock":
         raise ApiError("The mock voice provider does not render cues.", 409)
     pcm = await get_voiced_cue_library().render_now(

@@ -72,11 +72,11 @@ def payloads(monkeypatch):
     return seen
 
 
-async def _turn(engine, text, session, language="hi-IN", entry=False):
+async def _turn(engine, text, session, language="hi-IN", entry=False, signal=None):
     return await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_04250683f1b3", bot_id="bot_ob",
         workflow_name=M.WORKFLOW_NAME, user_text=text, language=language,
-        context_values=CONTEXT,
+        context_values=CONTEXT, signal=signal,
     )
 
 
@@ -590,6 +590,82 @@ class TestSttVariantsFromVoiceRuns:
         assert r["slots"]["amount_matches"] == "no"
         assert not _asked(r, M.Q_AMOUNT_MATCHES)
         assert _asked(r, M.Q_DEDUCTION_WEEK)
+
+    async def test_contrast_without_deduction_verb_is_not_reasked(self, engine):
+        # cv_1979484122a8 (live, Sarvam STT): "200 ke bajaye mera 300 rupaye … ka tha"
+        # names both figures with NO deduction verb — the bot asked Q3 and the
+        # deducted amount again although both were already on the table.
+        s = "cv_1979484122a8"
+        await _turn(engine, "Haan bol raha hoon", s)
+        r = await _turn(engine, "Haan mujhe bataya gaya tha ki anurodhan fee jo hai do sau rupaya "
+                                "katega Aur do sau ke bajaye mera teen sau rupaye onloading fees ka tha", s)
+        assert r["slots"]["deduction_explained"] == "yes"
+        assert r["slots"]["amount_informed"] == "yes"
+        assert (r["slots"]["informed_amount"], r["slots"]["deducted_amount"]) == ("200", "300")
+        assert r["slots"]["amount_matches"] == "no"
+        assert "n_msg_amounts_differ" in r["trace"]            # acknowledged, not re-asked
+        assert not _asked(r, M.Q_AMOUNT_INFORMED) and not _asked(r, M.Q_INFORMED_AMOUNT)
+        assert not _asked(r, M.Q_AMOUNT_MATCHES) and not _asked(r, M.Q_DEDUCTED_AMOUNT)
+        assert _asked(r, M.Q_DEDUCTION_WEEK)
+        r = await _turn(engine, "last Tuesday ko", s)
+        assert r["trace"][-1] == "n_hub_verify"
+        assert "200 रुपये बताए गए थे" in r["reply"] and "300 रुपये deduct हुए" in r["reply"]
+
+    @pytest.mark.parametrize("utterance", [
+        "haan bataya tha. 200 ke bajaye 300 kat gaya",
+        "हाँ बताया था, दो सौ की जगह मेरा तीन सौ कटा।",
+        "haan, 200 ke badle 300 rupaye ka deduction tha",
+    ])
+    async def test_hindi_contrast_variants_fill_both_figures(self, engine, utterance):
+        s = "contrast-" + str(abs(hash(utterance)))
+        await _turn(engine, "haan", s)
+        # the leading "haan" reaches the engine as the classifier's affirm signal
+        r = await _turn(engine, utterance, s, signal="affirm")
+        assert (r["slots"]["informed_amount"], r["slots"]["deducted_amount"],
+                r["slots"]["amount_matches"]) == ("200", "300", "no")
+        assert not _asked(r, M.Q_AMOUNT_MATCHES) and not _asked(r, M.Q_DEDUCTED_AMOUNT)
+        assert _asked(r, M.Q_DEDUCTION_WEEK)
+
+    @pytest.mark.parametrize("utterance", [
+        "Yes, they told me. Instead of 200 they took 300 from my payout.",
+        "yes I was told, but 300 was deducted instead of 200",
+        "Yes. They charged 300 rather than the 200 they had mentioned.",
+        # the figure after "told," is the deducted one — the contrast wins over "told <figure>"
+        "yes I was told, 300 instead of 200",
+    ])
+    async def test_english_contrast_variants_fill_both_figures(self, engine, utterance):
+        s = "contrast-en-" + str(abs(hash(utterance)))
+        await _turn(engine, "yes", s, language="en-IN")
+        r = await _turn(engine, utterance, s, language="en-IN", signal="affirm")
+        assert (r["slots"]["informed_amount"], r["slots"]["deducted_amount"],
+                r["slots"]["amount_matches"]) == ("200", "300", "no")
+        # filled asks are walked (slot_reused) but never spoken
+        for node in ("n_ask_amount_informed", "n_ask_informed_amount",
+                     "n_ask_amount_matches", "n_ask_deducted_amount"):
+            assert M.ENGLISH_TEXT[node] not in r["reply"]
+        assert r["trace"][-1] == "n_ask_deduction_week"
+        assert M.ENGLISH_TEXT["n_msg_amounts_differ"] in r["reply"]
+
+    async def test_told_figure_without_contrast_is_still_the_informed_amount(self, engine):
+        s = "told-plain"
+        await _turn(engine, "yes", s, language="en-IN")
+        r = await _turn(engine, "Yes, I was told 200", s, language="en-IN", signal="affirm")
+        assert r["slots"]["informed_amount"] == "200"
+        assert "deducted_amount" not in r["slots"]
+
+    async def test_contrast_question_about_values_fills_nothing(self, engine):
+        s = "contrast-q"
+        await _turn(engine, "haan", s)
+        r = await _turn(engine, "kya 200 ke bajaye 300 kat sakta hai?", s)
+        for key in ("informed_amount", "deducted_amount", "amount_matches", "amount_informed"):
+            assert key not in r["slots"]
+
+    async def test_contrast_with_a_deduction_verb_still_prefers_the_verb(self, engine):
+        # "500 katega bola tha, 300 ke bajaye 700 kata" — the verb-anchored figure wins
+        s = "contrast-verb"
+        await _turn(engine, "haan", s)
+        r = await _turn(engine, "haan bataya tha, 500 katega bola tha aur 700 kata", s, signal="affirm")
+        assert (r["slots"]["informed_amount"], r["slots"]["deducted_amount"]) == ("500", "700")
 
     async def test_explanation_step_is_flagged_as_the_kb_answer(self, engine):
         s = "kb-covered"
