@@ -33,8 +33,7 @@ from shared.orchestration.response_modes import (
     resolve_response_directive,
     resolve_response_must_include,
 )
-from shared.orchestration.router import classify_user_signal
-
+from shared.orchestration.router import classify_user_signal, looks_like_question
 logger = logging.getLogger(__name__)
 
 
@@ -701,17 +700,26 @@ def _choose_intent_edge_detailed(
         if len(token) > len(best_token):
             best, best_token = edge, token
     if signal and signal not in _LITERAL_FALLBACK_SIGNALS:
-        # The classifier called this a non-flow signal. Only a 'clarify' label
-        # yields to a SPECIFIC literal edge token: "हाँ, नाम पूछा था तो guard
+        # The classifier called this a non-flow signal. Two labels yield to a
+        # SPECIFIC literal edge token: 'clarify' ("हाँ, नाम पूछा था तो guard
         # बोला…" was labelled clarify by the LLM, yet "नाम पूछा" is
-        # unmistakably this hub's yes. Every other label (question, complaint,
-        # hardship, hold…) keeps the turn off-script — "nahi bas, refund kab
-        # tak aayega?" is a question to answer, not the hub's "no" — and
-        # generic yes/no tokens never override a label at all.
+        # unmistakably this hub's yes), and 'question' when the words do NOT
+        # read as a question — the LLM labelled "मैं टैली यूज़ करता हूँ।",
+        # "I use Tally" and a bare "Tally" as questions (confidence 0.0) and
+        # the caller was re-asked which software they use six times in one
+        # call (live vs_o9Th_dw7qZgJjimwMOhdYtdx, 2026-09-16). A real
+        # question that merely names an option ("Tally mein kya hota hai?")
+        # keeps its question shape and stays off-script. Every other label
+        # (complaint, hardship, hold…) keeps the turn off-script — "nahi bas,
+        # refund kab tak aayega?" is a question to answer, not the hub's
+        # "no" — and generic yes/no tokens never override a label at all.
         if (
             best is not None
-            and signal == "clarify"
             and _specific_answer_token(best_token)
+            and (
+                signal == "clarify"
+                or (signal == "question" and not looks_like_question(text))
+            )
         ):
             return best, "token", best_token
         return None, "off_script", ""

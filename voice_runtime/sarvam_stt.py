@@ -351,6 +351,26 @@ class EndpointedSarvamSTTService(SarvamSTTService):
             await client.flush()
         except Exception:  # noqa: BLE001 — reconnect path owns socket recovery
             logger.debug("sarvam-stt: missing-final retry failed", exc_info=True)
+        # Outcome of the retry. Until now a caller turn Sarvam never answered
+        # left no trace at all — the retry warning looked like a recovery
+        # even when it was not (2026-09-17 live audit: 48 retries, unknown
+        # how many recovered). Same wait as the first window; a transcript
+        # arriving meanwhile cancels this task through push_frame().
+        await asyncio.sleep(_MISSING_FINAL_RETRY_S)
+        if (
+            generation != self._utterance_generation
+            or generation == self._transcript_generation
+            or self._stt_stopping
+        ):
+            return
+        logger.warning(
+            "sarvam-stt: no transcript after retried flush; utterance lost"
+        )
+        if self._recorder is not None:
+            self._recorder.add_event(
+                "stt_final_missing", generation=generation,
+                waited_s=round(2 * _MISSING_FINAL_RETRY_S, 2),
+            )
 
     async def _barge_in_flush_loop(self) -> None:
         while True:

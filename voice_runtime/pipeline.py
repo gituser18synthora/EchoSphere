@@ -83,6 +83,10 @@ from voice_runtime.recording import (
     SessionRecorder,
 )
 from voice_runtime.turn_metrics import TurnLatencyTracker, VADLatencyProbe
+from voice_runtime.vad_confidence import (
+    ConfidenceTrackingSileroVADAnalyzer,
+    VADConfidenceProbe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -825,22 +829,23 @@ def build_voice_pipeline(
         # never start a user turn, interrupt the bot, or reach the STT.
         processors.append(audio_gate)
     if use_vad and not provider_owns_turns:
-        processors.append(
-            VADProcessor(
-                vad_analyzer=SileroVADAnalyzer(
-                    params=VADParams(
-                        confidence=turn["confidence"],
-                        start_secs=turn["start_secs"],
-                        stop_secs=turn["stop_secs"],
-                        min_volume=turn["min_volume"],
-                    )
-                )
+        # Confidence-tracking Silero: same model and decision as pipecat's
+        # analyzer, plus a per-window probability history the probe below
+        # summarises into ``vad_segment`` events (voice_runtime.vad_confidence).
+        vad_analyzer = ConfidenceTrackingSileroVADAnalyzer(
+            params=VADParams(
+                confidence=turn["confidence"],
+                start_secs=turn["start_secs"],
+                stop_secs=turn["stop_secs"],
+                min_volume=turn["min_volume"],
             )
         )
+        processors.append(VADProcessor(vad_analyzer=vad_analyzer))
         # Physical speech boundaries are only visible here: the UserTurnProcessor
         # downstream consumes the VAD frames, so the brain cannot time true
         # end-of-speech itself.
         processors.append(VADLatencyProbe(tracker))
+        processors.append(VADConfidenceProbe(vad_analyzer, recorder))
     # STT must receive VADUserStoppedSpeakingFrame directly. Sarvam uses that
     # frame to flush its streaming socket; placing UserTurnProcessor first
     # consumed the control frame and left telephony transcripts waiting for
@@ -865,6 +870,13 @@ def build_voice_pipeline(
                 # could never interrupt (the word gate's arbiter only exists
                 # after a VAD stop + flush).
                 vad_fallback_secs=turn["barge_in_vad_fallback_secs"],
+                # Evidence: which arbiter confirmed each interruption
+                # (transcript words vs sustained VAD vs bot-stopped) lands on
+                # the call's own event stream.
+                on_confirmed=lambda why, sustained: recorder.add_event(
+                    "barge_in_confirmed", reason=why,
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                ),
             )
             if barge_in_min_words > 0
             else VADUserTurnStartStrategy()

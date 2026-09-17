@@ -269,3 +269,129 @@ class TestUnsupportedLanguageRescue:
         assert handled == []
         failed = brain._recorder.events_of("unsupported_language_retranscribe_failed")
         assert failed and failed[0]["reason"] == "provider_error"
+
+
+# ── genuine unsupported language vs a repeated misdetection ─────────────────
+# Live 2026-09-17: a Kannada caller (vs_fWRbAKI1UBg7Usl0B-5GS6Pk) was labelled
+# kn-IN three times in a row; a Hindi caller's misdetections hop between
+# labels (pa → gu → bn in vs__3YgHMb2sJ0-Nc-ukF3ipkq2). Once the rescue has
+# fired for a label, a second confident segment with the SAME label is the
+# caller's real language: no rescue, and the caller is TOLD which languages
+# the bot speaks instead of hearing silence.
+
+KANNADA_YES = "ಹೌದು."
+
+
+def _spoken(brain):
+    spoken = []
+
+    async def _say(text, **kwargs):
+        spoken.append(text)
+        return None
+
+    brain._say = _say
+    return spoken
+
+
+class TestRepeatedUnsupportedLabel:
+    @pytest.mark.asyncio
+    async def test_second_confident_same_label_is_not_rescued_and_notice_is_spoken(self):
+        calls = []
+
+        async def _batch(pcm, rate, language):
+            calls.append(language)
+            return "हाँ हाँ।"
+
+        gate = _GateStub()
+        brain = make_brain(gate=gate, batch_transcriber=_batch)
+        handled = stub_turn_handler(brain)
+        spoken = _spoken(brain)
+
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+        await _frame_in(brain, transcript(KANNADA_YES, language="kn-IN",
+                                          language_code="kn-IN", language_probability=0.69))
+        assert calls == ["hi-IN"] and handled == ["हाँ हाँ।"]
+        assert brain._unsupported_streak == {"kn": 1}
+
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+        await _frame_in(brain, transcript(KANNADA_YES, language="kn-IN",
+                                          language_code="kn-IN", language_probability=0.63))
+        kinds = brain._recorder.event_kinds()
+        assert calls == ["hi-IN"], "no second rescue for the same confident label"
+        assert "unsupported_language_rescue_skipped" in kinds
+        assert "stt_segment_rejected" in kinds
+        assert "language_unsupported" in kinds
+        assert "language_unsupported_notice_spoken" in kinds
+        assert len(spoken) == 1
+        assert "हिंदी या अंग्रेज़ी" in spoken[0]
+        assert "{languages}" not in spoken[0]
+        assert handled == ["हाँ हाँ।"]
+
+        # Spoken once per call, even if the caller keeps going.
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+        await _frame_in(brain, transcript(KANNADA_YES, language="kn-IN",
+                                          language_code="kn-IN", language_probability=0.9))
+        assert len(spoken) == 1
+
+    @pytest.mark.asyncio
+    async def test_alternating_labels_keep_being_rescued(self):
+        calls = []
+
+        async def _batch(pcm, rate, language):
+            calls.append(language)
+            return HINDI_RECOVERED
+
+        gate = _GateStub()
+        brain = make_brain(gate=gate, batch_transcriber=_batch)
+        handled = stub_turn_handler(brain)
+        spoken = _spoken(brain)
+        for label, text in (("gu-IN", GUJARATI_MISLABEL), ("pa-IN", "ਹਾਂਜੀ ਹੋ ਰਹੀ ਹੈ।"),
+                            ("bn-IN", "যাও তাহলে।")):
+            gate.retained = (b"\x00\x01" * 8000, 8000)
+            await _frame_in(brain, transcript(text, language=label, language_code=label,
+                                              language_probability=0.85))
+        assert calls == ["hi-IN"] * 3
+        assert handled == [HINDI_RECOVERED] * 3
+        assert spoken == []
+        assert "language_unsupported" not in brain._recorder.event_kinds()
+
+    @pytest.mark.asyncio
+    async def test_low_probability_repeat_is_still_rescued(self):
+        calls = []
+
+        async def _batch(pcm, rate, language):
+            calls.append(language)
+            return HINDI_RECOVERED
+
+        gate = _GateStub()
+        brain = make_brain(gate=gate, batch_transcriber=_batch)
+        stub_turn_handler(brain)
+        spoken = _spoken(brain)
+        for _ in range(2):
+            gate.retained = (b"\x00\x01" * 8000, 8000)
+            await _frame_in(brain, transcript(GUJARATI_MISLABEL, language="gu-IN",
+                                              language_code="gu-IN", language_probability=0.25))
+        assert calls == ["hi-IN", "hi-IN"]
+        assert spoken == []
+
+    @pytest.mark.asyncio
+    async def test_supported_speech_clears_the_label_memory(self):
+        async def _batch(pcm, rate, language):
+            return HINDI_RECOVERED
+
+        gate = _GateStub()
+        brain = make_brain(gate=gate, batch_transcriber=_batch)
+        stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+        await _frame_in(brain, transcript(KANNADA_YES, language="kn-IN",
+                                          language_code="kn-IN", language_probability=0.7))
+        assert brain._unsupported_streak == {"kn": 1}
+        await _frame_in(brain, transcript("हाँ जी बोल रहा हूँ", language="hi-IN",
+                                          language_code="hi-IN"))
+        assert brain._unsupported_streak == {}
+
+    def test_language_names_follow_the_conversation_language(self):
+        brain = make_brain()
+        assert brain._supported_language_names() == "हिंदी या अंग्रेज़ी"
+        brain._conversation_language = "en-IN"
+        assert brain._supported_language_names() == "Hindi or English"

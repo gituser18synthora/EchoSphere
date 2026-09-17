@@ -47,6 +47,17 @@ _FREESWITCH_MIN_CHUNK_BYTES = 3200
 _FREESWITCH_MAX_CHUNK_BYTES = 32_000
 _FREESWITCH_FRAME_BYTES = 320
 _FREESWITCH_FORK_SAMPLE_RATE = 8000
+# Pre-gate capture length for the fork transport (ECHOSPHERE_FS_AUDIO_DEBUG_DIR).
+_FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT = 120
+
+
+def _debug_capture_seconds() -> int:
+    raw = os.getenv("ECHOSPHERE_FS_AUDIO_DEBUG_SECONDS", "")
+    try:
+        value = int(raw) if raw else _FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT
+    except ValueError:
+        value = _FREESWITCH_FORK_DEBUG_SECONDS_DEFAULT
+    return max(1, min(value, 3600))
 # 100 KB of PCM is ~133.4 KB base64 — anything larger is a protocol violation.
 _VAANI_MAX_B64_CHARS = 140_000
 
@@ -450,6 +461,80 @@ class FreeSwitchAudioForkSerializer(
         self._inbound_interval_peak = 0
         self._last_inbound_log = 0.0
         self._warned_text_input = False
+        # Ingress evidence (2026-09-17 audit): the runtime never measured how
+        # the module actually delivers caller audio — message size, cadence,
+        # stalls — and had no PRE-gate capture on this transport, so a
+        # "caller not heard" report could not be separated into line, gate
+        # and VAD causes. Counters below feed the periodic log line and the
+        # ``telephony_inbound_media`` end-of-call event.
+        self._inbound_messages = 0
+        self._inbound_interval_messages = 0
+        self._inbound_msg_bytes_min = 0
+        self._inbound_msg_bytes_max = 0
+        self._inbound_gap_max_ms = 0.0
+        self._inbound_gaps_over_100ms = 0
+        self._inbound_gaps_over_500ms = 0
+        self._inbound_first_at = 0.0
+        self._debug_file = None
+        self._debug_bytes_remaining = 0
+        debug_dir = os.getenv("ECHOSPHERE_FS_AUDIO_DEBUG_DIR")
+        if debug_dir:
+            directory = Path(debug_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"echosphere-fork-{int(time.time())}-{id(self)}.s16le"
+            seconds = _debug_capture_seconds()
+            self._debug_file = path.open("wb")
+            self._debug_bytes_remaining = _FREESWITCH_FORK_SAMPLE_RATE * 2 * seconds
+            logger.warning(
+                "FreeSWITCH fork PRE-GATE audio capture enabled: %s (%d s, mono 8 kHz s16le)",
+                path, seconds,
+            )
+
+    def inbound_media_stats(self) -> dict:
+        """Ingress counters for the call's event stream (numbers only)."""
+        elapsed = (time.monotonic() - self._inbound_first_at) if self._inbound_first_at else 0.0
+        return {
+            "messages": self._inbound_messages,
+            "total_bytes": self._inbound_bytes,
+            "audio_seconds": round(self._inbound_bytes / (_FREESWITCH_FORK_SAMPLE_RATE * 2), 1),
+            "wall_seconds": round(elapsed, 1),
+            "msg_bytes_min": self._inbound_msg_bytes_min,
+            "msg_bytes_max": self._inbound_msg_bytes_max,
+            "gap_max_ms": round(self._inbound_gap_max_ms, 1),
+            "gaps_over_100ms": self._inbound_gaps_over_100ms,
+            "gaps_over_500ms": self._inbound_gaps_over_500ms,
+        }
+
+    def _observe_inbound_message(self, wire_audio: bytes, now: float) -> None:
+        if self.last_media_at:
+            gap_ms = (now - self.last_media_at) * 1000.0
+            if gap_ms > self._inbound_gap_max_ms:
+                self._inbound_gap_max_ms = gap_ms
+            if gap_ms > 100.0:
+                self._inbound_gaps_over_100ms += 1
+            if gap_ms > 500.0:
+                self._inbound_gaps_over_500ms += 1
+        else:
+            self._inbound_first_at = now
+        self._inbound_messages += 1
+        self._inbound_interval_messages += 1
+        size = len(wire_audio)
+        if not self._inbound_msg_bytes_min or size < self._inbound_msg_bytes_min:
+            self._inbound_msg_bytes_min = size
+        if size > self._inbound_msg_bytes_max:
+            self._inbound_msg_bytes_max = size
+        if self._debug_file is not None and self._debug_bytes_remaining > 0:
+            chunk = wire_audio[: self._debug_bytes_remaining]
+            try:
+                self._debug_file.write(chunk)
+            except OSError:
+                logger.warning("fork audio capture write failed; capture stopped")
+                self._debug_bytes_remaining = 0
+            else:
+                self._debug_bytes_remaining -= len(chunk)
+            if self._debug_bytes_remaining <= 0:
+                self._debug_file.close()
+                self._debug_file = None
 
     async def setup(self, frame: StartFrame):
         pass
@@ -517,13 +602,16 @@ class FreeSwitchAudioForkSerializer(
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, (bytes, bytearray)) and data:
-            self._note_inbound_media()
+            now = time.monotonic()
             wire_audio = bytes(data)
             # L16 samples are two bytes. Ignore an incomplete trailing byte
             # rather than passing malformed PCM into VAD/STT.
             wire_audio = wire_audio[:len(wire_audio) - (len(wire_audio) % 2)]
             if not wire_audio:
+                self._note_inbound_media()
                 return None
+            self._observe_inbound_message(wire_audio, now)
+            self._note_inbound_media()
             samples = np.frombuffer(wire_audio, dtype="<i2")
             peak = (
                 int(np.abs(samples.astype(np.int32)).max())
@@ -541,13 +629,20 @@ class FreeSwitchAudioForkSerializer(
             ):
                 logger.info(
                     "freeswitch fork audio inbound: total_bytes=%d "
-                    "interval_bytes=%d peak=%d (%.3f full-scale)",
+                    "interval_bytes=%d interval_msgs=%d msg_bytes=%d..%d "
+                    "peak=%d (%.3f full-scale) max_gap_ms=%.0f gaps>100ms=%d",
                     self._inbound_bytes,
                     self._inbound_interval_bytes,
+                    self._inbound_interval_messages,
+                    self._inbound_msg_bytes_min,
+                    self._inbound_msg_bytes_max,
                     self._inbound_interval_peak,
                     self._inbound_interval_peak / 32768.0,
+                    self._inbound_gap_max_ms,
+                    self._inbound_gaps_over_100ms,
                 )
                 self._inbound_interval_bytes = 0
+                self._inbound_interval_messages = 0
                 self._inbound_interval_peak = 0
                 self._last_inbound_log = now
             return InputAudioRawFrame(
