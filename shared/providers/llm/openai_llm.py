@@ -52,6 +52,7 @@ def _chat_generation_params(
 
 class OpenAILLM(LLMProvider):
     name = "openai-llm"
+    supports_json_output = True
 
     def __init__(self, config: ProviderConfig) -> None:
         settings = get_settings()
@@ -83,8 +84,11 @@ class OpenAILLM(LLMProvider):
         tools: list[dict] | None = None,
         temperature: float = 0.3,
         max_tokens: int = 512,
+        response_format: dict | None = None,
     ) -> LLMResult:
         kwargs: dict = {}
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         if tools:
             kwargs["tools"] = tools
         kwargs.update(_chat_generation_params(

@@ -581,11 +581,29 @@ def resolve_semantic_slots(ctx: AskContext) -> bool:
     return True
 
 
+def _understood_narrative(node: dict, semantic: dict | None, signal: str | None) -> bool:
+    """Opt-in acceptance of an intelligible incident without inventing facts.
+
+    Extraction can understand a deduction complaint even when none of the
+    four delivery questions has been answered. Keep human-agent requests
+    and failed extraction on their existing paths.
+    """
+    return bool(
+        _node_config(node).get("acceptUnderstoodNarrative") is True
+        and semantic and semantic.get("understood") is True
+        and not semantic.get("failed") and signal != "agent_request"
+        and (bool(semantic.get("patch")) or signal not in {"affirm", "refusal", "clarify"})
+    )
+
+
 def resolve_narrative_guard(ctx: AskContext) -> bool:
     """A garbled first response is not an incident narrative (semantic-slots
     definitions only)."""
     if ctx.handled or not ctx.narrative_ask:
         return False
+    if _understood_narrative(ctx.node, ctx.semantic, ctx.signal):
+        ctx.value = ctx.text.strip() or None
+        return True
     if ctx.semantic_answers or (ctx.semantic or {}).get("understood"):
         return False
     ctx.captured_first = True
