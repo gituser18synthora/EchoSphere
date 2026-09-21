@@ -1432,6 +1432,12 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   /* Automatic greeting updates stop after the user intentionally edits the
      textarea, so changing a language/voice cannot destroy their test text. */
   const sampleTextEditedRef = useRef(false);
+  /* Set once the user picks a provider/model/voice by hand. From then on a
+     language change never rewrites the engine: an explicit selection is the
+     thing being tested, and silently switching the provider out from under
+     it made the modal look broken. State, not a ref — the offered language
+     list depends on it. */
+  const [enginePinned, setEnginePinned] = useState(false);
 
   const automaticSampleText = (provider: string, voiceId: string, language: string) => {
     const voice = findVoice(voicesFor(provider), voiceId);
@@ -1440,6 +1446,36 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
       ? renderGreetingVariables(greeting, withVoiceIdentity(previewVariables, voice))
       : (voice?.sampleText ?? DEFAULT_SAMPLE_TEXT);
   };
+
+  /* Languages the selected preview model can actually speak (platform locale
+     codes, already intersected with the enabled platform languages by the
+     API). Deepgram is the sharp case: its Aura voices speak no Indian
+     language at all, so offering hi-IN under a Deepgram model could only
+     ever produce a provider rejection. */
+  const modelLangQ = useAsync<ModelLanguagesInfo | null>(
+    () => (form.provider && form.model
+      ? getModelLanguages("tts", form.provider, form.model).catch(() => null)
+      : Promise.resolve(null)),
+    [form.provider, form.model],
+  );
+
+  /* A language with a per-language override previews on ITS OWN engine, so it
+     stays offered whatever the currently shown model speaks. Everything else
+     is filtered to the selected model. */
+  const offeredLanguages = useMemo(() => {
+    const info = modelLangQ.data;
+    if (!info || info.languageAgnostic || info.languages.length === 0) return languages;
+    const speakable = new Set(info.languages.map((l) => l.code));
+    return languages.filter(
+      (l) => speakable.has(l)
+        || (!enginePinned && Boolean(ctx?.resolveOverride?.(l))),
+    );
+  }, [modelLangQ.data, languages, ctx, enginePinned]);
+
+  const hiddenLanguages = useMemo(
+    () => languages.filter((l) => !offeredLanguages.includes(l)),
+    [languages, offeredLanguages],
+  );
 
   const draftFor = (provider: string, model: string, params: ProviderSettings | undefined) => {
     const schema = stripDeliverySpeedParams(
@@ -1453,6 +1489,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
     if (!ctx) return;
     const language = ctx.language || languages[0] || "";
     sampleTextEditedRef.current = false;
+    setEnginePinned(false);
     setForm({
       provider: ctx.provider,
       model: ctx.model,
@@ -1507,6 +1544,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
      parameters are entirely different — so the draft resets to the new
      default model's defaults. */
   const changeProvider = async (provider: string) => {
+    setEnginePinned(true);
     setForm((f) => ({ ...f, provider, model: "", voice: "" }));
     setDraft({});
     setOverrideLocale(null);
@@ -1523,6 +1561,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
      range) and drops the rest — v2's pitch/loudness disappear on v3, and v3's
      temperature appears with its default. */
   const changeModel = (model: string) => {
+    setEnginePinned(true);
     const schema = stripDeliverySpeedParams(
       modelsFor(form.provider).find((m) => m.code === model)?.paramsSchema,
     );
@@ -1547,7 +1586,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         : automaticSampleText(f.provider, f.voice, locale),
     }));
     setApplied(false);
-    if (!ctx) return;
+    if (!ctx || enginePinned) return;
     const fallback = ctx.defaultEngine
       ?? { provider: ctx.provider, model: ctx.model, voice: ctx.voice, params: ctx.params };
     const override = ctx.resolveOverride?.(locale) ?? null;
@@ -1775,16 +1814,22 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
           </Field>
           <Field
             label="Language" plain
-            hint={overrideLocale ? undefined : "A language with a per-language override previews that engine, like a real call."}
+            hint={
+              hiddenLanguages.length > 0
+                ? `${selectedModel?.displayName ?? form.model} does not speak ${hiddenLanguages.join(", ")} — map those languages to another engine below.`
+                : overrideLocale
+                  ? undefined
+                  : "A language with a per-language override previews that engine, like a real call."
+            }
           >
             <select
               className="select" value={form.language} aria-label="Preview language"
               onChange={(e) => void changeLanguage(e.target.value)}
             >
-              {form.language && !languages.includes(form.language) && (
+              {form.language && !offeredLanguages.includes(form.language) && (
                 <option value={form.language}>{form.language}</option>
               )}
-              {languages.map((l) => <option key={l} value={l}>{l}</option>)}
+              {offeredLanguages.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </Field>
         </div>

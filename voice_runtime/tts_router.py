@@ -55,6 +55,7 @@ from shared.providers.tts.delivery import (
     resolve_engine_params,
 )
 from shared.orchestration.voice_identity import resolve_language_engine
+from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import (
@@ -77,12 +78,16 @@ logger = logging.getLogger(__name__)
 _STREAMING_PROVIDERS: dict[str, type[StreamingTTSProvider]] = {
     "sarvam": SarvamWebSocketTTSProvider,
     "elevenlabs": ElevenLabsWebSocketTTSProvider,
+    "deepgram": DeepgramWebSocketTTSProvider,
 }
 
 # Sample rates each provider can emit natively; anything else is resampled.
 _SUPPORTED_RATES = {
     "sarvam": {8000, 16000, 22050, 24000},
     "elevenlabs": {8000, 16000, 22050, 24000},
+    # Deepgram /v1/speak linear16 rates — the telephony 8 kHz and browser
+    # 24 kHz legs are both native, so neither resamples.
+    "deepgram": {8000, 16000, 24000, 32000, 48000},
 }
 
 # Healthy warm TTFB is 35-700ms; a dialer gives up on prolonged dead air

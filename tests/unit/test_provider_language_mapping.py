@@ -29,6 +29,7 @@ from shared.providers.languages import (
     elevenlabs_language_code,
     elevenlabs_models_speaking,
     elevenlabs_supports_language,
+    elevenlabs_unsupported_language_message,
     sarvam_stt_language_code,
 )
 from shared.providers.tts.elevenlabs import ElevenLabsTTS
@@ -87,6 +88,22 @@ class TestModelCapability:
     def test_alternatives_are_named_for_the_error_message(self):
         assert elevenlabs_models_speaking("ml-IN") == ["eleven_v3"]
         assert "eleven_flash_v2_5" in elevenlabs_models_speaking("hi-IN")
+
+    def test_guidance_does_not_send_the_operator_into_a_dead_end(self):
+        # eleven_v3 speaks Malayalam but has no realtime streaming, so a
+        # per-language override to it is rejected by voice-settings
+        # validation. The message must say where it CAN be selected rather
+        # than just naming the model.
+        message = elevenlabs_unsupported_language_message(
+            "eleven_flash_v2_5", "ml-IN"
+        )
+        assert "eleven_v3" in message
+        assert "DEFAULT TTS model" in message
+        assert "no realtime streaming" in message
+
+    def test_guidance_names_a_streaming_model_when_one_exists(self):
+        message = elevenlabs_unsupported_language_message("eleven_v3", "hi-IN")
+        assert "Use eleven_flash_v2_5 or eleven_turbo_v2_5" in message
 
     def test_short_form_and_casing(self):
         assert elevenlabs_language_code("eleven_flash_v2_5", "hi") == "hi"
@@ -173,6 +190,7 @@ class TestElevenLabsRestPayload:
         assert captured == []
         assert excinfo.value.category == "invalid_input"
         assert "eleven_v3" in str(excinfo.value)
+        assert "DEFAULT TTS model" in str(excinfo.value)
 
     async def test_eleven_v3_accepts_malayalam(self):
         adapter, captured = _rest_adapter("eleven_v3")

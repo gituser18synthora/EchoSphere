@@ -243,6 +243,10 @@ PROVIDERS = [
     ("tts", "openai", "OpenAI TTS", True, "OpenAI text-to-speech voices.", "inactive"),
     ("tts", "elevenlabs", "ElevenLabs", True, "High-fidelity neural voices.", "active"),
     ("tts", "sarvam", "Sarvam AI", True, "Indic-language TTS (bulbul).", "active"),
+    ("tts", "deepgram", "Deepgram", True,
+     "Low-latency Aura / Aura-2 voices (English, Spanish, German, Dutch, "
+     "French, Italian, Japanese \u2014 no Indian language).",
+     "active"),
     ("tts", "azure", "Azure Speech", True, "Microsoft Azure neural voices.", "inactive"),
     ("tts", "google", "Google Cloud TTS", True, "Google Cloud neural voices.", "inactive"),
     ("tts", "mock", "Mock TTS (dev)", False, "Deterministic development TTS — no external calls.", "active"),
@@ -276,8 +280,14 @@ _MAJOR_INDIC = {"stt": ["sarvam", "google", "azure", "openai"], "tts": ["sarvam"
                 "llm": ["openai", "anthropic", "google"]}
 _MINOR_INDIC = {"stt": [], "tts": [], "llm": ["openai", "anthropic", "google"]}
 _GLOBAL = {"stt": ["openai", "deepgram", "assemblyai", "azure", "google"],
-           "tts": ["openai", "elevenlabs", "azure", "google"],
+           "tts": ["openai", "elevenlabs", "deepgram", "azure", "google"],
            "llm": ["openai", "anthropic", "google"]}
+# English (India) is the one Indic-catalog locale a Deepgram voice can speak
+# (its English voices, American/British/Australian accents \u2014 there is no
+# Indian-English Aura voice). The other _MAJOR_INDIC languages must NOT list
+# deepgram: Aura has no Hindi, Tamil, Telugu, Malayalam, Marathi, Gujarati,
+# Punjabi or Urdu voice, and the India endpoint does not add any.
+_ENGLISH_INDIA = {**_MAJOR_INDIC, "tts": [*_MAJOR_INDIC["tts"], "deepgram"]}
 
 LANGUAGES = [
     ("en-US", "English (US)", "English", "en", "Latin", "ltr", _GLOBAL),
@@ -289,7 +299,7 @@ LANGUAGES = [
     ("vi-VN", "Vietnamese", "Tiếng Việt", "vi", "Latin", "ltr",
      {"stt": ["openai", "google"], "tts": ["google"], "llm": ["openai", "anthropic", "google"]}),
     # ── India ────────────────────────────────────────────────────────────
-    ("en-IN", "English (India)", "English", "en", "Latin", "ltr", _MAJOR_INDIC),
+    ("en-IN", "English (India)", "English", "en", "Latin", "ltr", _ENGLISH_INDIA),
     ("hi-IN", "Hindi", "हिन्दी", "hi", "Devanagari", "ltr", _MAJOR_INDIC),
     ("bn-IN", "Bengali", "বাংলা", "bn", "Bengali", "ltr", _MAJOR_INDIC),
     ("mr-IN", "Marathi", "मराठी", "mr", "Devanagari", "ltr", _MAJOR_INDIC),
@@ -444,6 +454,8 @@ CURRENCIES = [
 #   per minute of audio: whisper-1 and gpt-4o-transcribe $0.006,
 #   gpt-transcribe $0.0045, gpt-4o-mini-transcribe $0.003. TTS is per
 #   character: tts-1 $15/1M, tts-1-hd $30/1M.
+# - Deepgram TTS (deepgram.com/pricing, verified 2026-09-21): Aura-2
+#   $0.030 per 1k characters, Aura-1 $0.0150 per 1k characters.
 # - Deepgram (deepgram.com/pricing): Flux conversational STT pay-as-you-go
 #   flux-general-multi $0.0078/min, flux-general-en $0.0065/min (verified
 #   2026-08); nova-3 streaming pay-as-you-go
@@ -505,6 +517,8 @@ PROVIDER_PRICING = [
     # ── TTS ──────────────────────────────────────────────────────────────
     ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "3", "INR"),
     ("sarvam", "tts", "bulbul:v2", "characters", "per_1k_characters", "1.5", "INR"),
+    ("deepgram", "tts", "aura-2", "characters", "per_1k_characters", "0.030", "USD"),
+    ("deepgram", "tts", "aura", "characters", "per_1k_characters", "0.0150", "USD"),
     ("elevenlabs", "tts", "eleven_flash_v2_5", "characters", "per_1k_characters", "0.05", "USD"),
     ("elevenlabs", "tts", "eleven_v3", "characters", "per_1k_characters", "0.10", "USD"),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "characters", "per_1k_characters", "0.05", "USD"),

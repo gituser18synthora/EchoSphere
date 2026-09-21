@@ -27,9 +27,19 @@ def _script_directory():
     return ScriptDirectory.from_config(cfg)
 
 
-def test_new_migration_is_the_single_head_on_top_of_the_elevenlabs_revision():
+def test_new_migration_is_on_the_single_head_path_over_the_elevenlabs_revision():
+    """Chaining, not head identity.
+
+    What must hold is that the tree stays linear (one head) and that this
+    revision sits on the path above the ElevenLabs one. Asserting it IS the
+    head would fail the moment any later migration is added on top, which is
+    normal and not a regression — as happened with the Deepgram TTS catalog
+    revision.
+    """
     sd = _script_directory()
-    assert sd.get_heads() == ["a1b2c3d4e5f6"]
+    assert len(sd.get_heads()) == 1, f"branched migration tree: {sd.get_heads()}"
+    head = sd.get_heads()[0]
+    assert "a1b2c3d4e5f6" in [r.revision for r in sd.iterate_revisions(head, "base")]
     assert sd.get_revision("a1b2c3d4e5f6").down_revision == "b5d7f9a1c3e5"
     # Both environments reach the head linearly: dev (at b5d7…) in one step,
     # live (at f3a5…) via the ElevenLabs revision first.

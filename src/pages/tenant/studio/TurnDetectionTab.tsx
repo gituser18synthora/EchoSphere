@@ -4,6 +4,7 @@ import { Button, Callout, CardSkeleton, ConfirmModal, ErrorState, Modal, Toggle 
 import { Icon } from "@/components/Icon";
 import { useAsync } from "@/hooks/useAsync";
 import { getTurnDetectionSettings, saveTurnDetectionSettings } from "@/services/api";
+import { copyToClipboard, readFromClipboard } from "@/services/clipboard";
 import { useApp } from "@/state/AppContext";
 import {
   buildTurnDetectionExport,
@@ -191,6 +192,7 @@ export default function TurnDetectionTab() {
   /** Copy/Import: JSON shown when the clipboard is unavailable, and the
       paste → validate → preview → apply state of the import modal. */
   const [exportFallback, setExportFallback] = useState<string | null>(null);
+  const [exportBlockedReason, setExportBlockedReason] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importView, setImportView] = useState<"paste" | "preview">("paste");
   const [importText, setImportText] = useState("");
@@ -335,15 +337,24 @@ export default function TurnDetectionTab() {
   /** Portable export of what is currently on screen — mode plus sparse
       overrides only, never tenant, bot or database identifiers. */
   const copyConfiguration = async () => {
-    const text = buildTurnDetectionExport(config, draft.mode, compactOverrides(draft.overrides));
+    let text: string;
     try {
-      await navigator.clipboard.writeText(text);
+      text = buildTurnDetectionExport(config, draft.mode, compactOverrides(draft.overrides));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not build the configuration", "error");
+      return;
+    }
+    const written = await copyToClipboard(text);
+    if (written.ok) {
       toast(dirty
         ? "Configuration copied — includes your unsaved changes"
         : "Turn detection configuration copied to clipboard");
-    } catch {
-      setExportFallback(text);
+      return;
     }
+    // A refused clipboard is never silent: the JSON is shown for manual copy,
+    // together with the reason the browser gave.
+    setExportBlockedReason(written.reason ?? null);
+    setExportFallback(text);
   };
 
   const openImport = () => {
@@ -366,10 +377,8 @@ export default function TurnDetectionTab() {
   /** One-click path for the common case: read the clipboard, fill the text
       area and validate immediately — a valid copy lands straight on preview. */
   const pasteFromClipboard = async () => {
-    let text = "";
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
+    const text = await readFromClipboard();
+    if (text === null) {
       toast("Clipboard access was blocked — paste into the text area instead", "error");
       return;
     }
@@ -759,10 +768,15 @@ export default function TurnDetectionTab() {
       {/* ── Copy fallback: shown only when the clipboard is unavailable ── */}
       <Modal
         open={exportFallback !== null}
-        onClose={() => setExportFallback(null)}
+        onClose={() => { setExportFallback(null); setExportBlockedReason(null); }}
         title="Copy Configuration"
-        sub="Clipboard access was blocked by the browser — copy the JSON below manually."
-        footer={<Button variant="ghost" onClick={() => setExportFallback(null)}>Close</Button>}
+        sub={"Clipboard access was blocked by the browser — copy the JSON below manually."
+          + (exportBlockedReason ? ` (${exportBlockedReason})` : "")}
+        footer={(
+          <Button variant="ghost" onClick={() => { setExportFallback(null); setExportBlockedReason(null); }}>
+            Close
+          </Button>
+        )}
       >
         <textarea
           className="textarea"

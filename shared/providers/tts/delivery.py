@@ -34,6 +34,8 @@ LEGACY_SPEED_PARAMS = ("pace", "speed")
 _SARVAM_PACE_RANGE = {"bulbul:v2": (0.3, 3.0)}
 _SARVAM_PACE_DEFAULT_RANGE = (0.5, 2.0)  # bulbul:v3 and newer
 _ELEVEN_SPEED_RANGE = (0.7, 1.2)
+# Deepgram /v1/speak ``speed`` query parameter (docs, verified 2026-09-21).
+_DEEPGRAM_SPEED_RANGE = (0.7, 1.5)
 # ElevenLabs models whose voice_settings reject ``speed`` (Eleven v3 alpha).
 _ELEVEN_NO_SPEED_MODELS = {"eleven_v3"}
 # Sarvam models that accept the v2-only pitch/loudness controls.
@@ -95,6 +97,16 @@ def delivery_capabilities(
             emotional_style=True,
             phrase_boundaries=True,
         )
+    if provider == "deepgram":
+        # Aura exposes exactly one native delivery control: the ``speed``
+        # query parameter. REST sends it per request; the realtime socket
+        # carries it in the connection URL, so it cannot change between the
+        # sentences of one reply without reconnecting.
+        return DeliveryCapabilities(
+            speaking_rate=True,
+            per_segment_rate=not streaming,
+            phrase_boundaries=True,
+        )
     if provider == "sarvam":
         v2 = model in _SARVAM_PITCH_LOUDNESS_MODELS
         return DeliveryCapabilities(
@@ -135,6 +147,8 @@ def speed_range(provider: str, model: str = "") -> tuple[float, float] | None:
         return _SARVAM_PACE_RANGE.get(model, _SARVAM_PACE_DEFAULT_RANGE)
     if provider == "elevenlabs":
         return _ELEVEN_SPEED_RANGE
+    if provider == "deepgram":
+        return _DEEPGRAM_SPEED_RANGE
     return None
 
 
@@ -162,6 +176,8 @@ def speed_param_name(provider: str, model: str = "") -> str | None:
         return "pace"
     if provider == "elevenlabs":
         return None if model in _ELEVEN_NO_SPEED_MODELS else "speed"
+    if provider == "deepgram":
+        return "speed"
     return None
 
 
@@ -172,6 +188,8 @@ def provider_speed(provider: str, model: str, speed: float) -> float:
         low, high = _SARVAM_PACE_RANGE.get(model, _SARVAM_PACE_DEFAULT_RANGE)
     elif provider == "elevenlabs":
         low, high = _ELEVEN_SPEED_RANGE
+    elif provider == "deepgram":
+        low, high = _DEEPGRAM_SPEED_RANGE
     else:
         return speed
     return min(high, max(low, speed))

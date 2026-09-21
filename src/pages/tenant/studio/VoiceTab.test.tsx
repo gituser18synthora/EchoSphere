@@ -527,6 +527,124 @@ describe("VoiceTab — Delivery tuning", () => {
       speed: 1, pauseMs: 350, energy: 50,
     });
   });
+
+  it("preview offers only the languages the selected model can speak", async () => {
+    const user = userEvent.setup();
+    // The real case: the bot also speaks Malayalam, which the selected model
+    // cannot. Previewing it only ever produced a provider rejection.
+    const MULTILINGUAL = {
+      id: "bot_1", languages: ["en-IN", "hi-IN", "ml-IN"],
+    } as unknown as VoiceBot;
+    vi.mocked(api.getModelLanguages).mockImplementation(((capability: string) =>
+      Promise.resolve(
+        capability === "tts"
+          ? { languages: [
+                { code: "en-IN", name: "English (India)", nativeName: null },
+                { code: "hi-IN", name: "Hindi", nativeName: null },
+              ],
+              supportsAutoDetect: false, languageAgnostic: false }
+          : { languages: [], supportsAutoDetect: true, languageAgnostic: true },
+      )) as never);
+    render(<VoiceTab bot={MULTILINGUAL} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = within(dialog).getByLabelText("Preview language") as HTMLSelectElement;
+
+    await waitFor(() => {
+      const offered = Array.from(select.options).map((o) => o.value);
+      expect(offered).toEqual(expect.arrayContaining(["en-IN", "hi-IN"]));
+      expect(offered).not.toContain("ml-IN");
+    });
+    // The operator is told why a bot language is missing rather than guessing.
+    expect(within(dialog).getByTestId("unsupported-languages-hint")).toHaveTextContent("ml-IN");
+  });
+
+  it("a language change never swaps out a provider the user chose by hand", async () => {
+    const user = userEvent.setup();
+    // hi-IN maps to Sarvam. Picking ElevenLabs by hand and then switching to
+    // hi-IN used to flip the provider back to Sarvam mid-preview.
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const providerSelect = within(dialog).getByLabelText("Preview provider") as HTMLSelectElement;
+
+    await user.selectOptions(providerSelect, "elevenlabs");
+    await waitFor(() => expect(providerSelect.value).toBe("elevenlabs"));
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Preview language") as HTMLSelectElement, "hi-IN",
+    );
+
+    // The deliberate selection survives, and the override is reported not applied.
+    await waitFor(() =>
+      expect(within(dialog).getByTestId("pinned-engine-hint")).toHaveTextContent("sarvam/bulbul:v3"));
+    expect(providerSelect.value).toBe("elevenlabs");
+  });
+
+  it("still mirrors the live-call engine when the user has not touched the engine", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+      languageVoiceMap: {
+        default: "en-IN",
+        "hi-IN": { provider: "sarvam", model: "bulbul:v3", voice: "vp-anushka" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const providerSelect = within(dialog).getByLabelText("Preview provider") as HTMLSelectElement;
+    await waitFor(() => expect(providerSelect.value).toBe("elevenlabs"));
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Preview language") as HTMLSelectElement, "hi-IN",
+    );
+    // Untouched engine: the preview follows the override, like a real call.
+    await waitFor(() => expect(providerSelect.value).toBe("sarvam"));
+  });
+
+  it("keeps a language the model cannot speak when it has a per-language override", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getModelLanguages).mockImplementation(((capability: string) =>
+      Promise.resolve(
+        capability === "tts"
+          ? { languages: [{ code: "hi-IN", name: "Hindi", nativeName: null }],
+              supportsAutoDetect: false, languageAgnostic: false }
+          : { languages: [], supportsAutoDetect: true, languageAgnostic: true },
+      )) as never);
+    // en-IN maps to its own engine, so the preview resolves THAT engine and
+    // the language must stay selectable.
+    vi.mocked(api.getVoiceSettings).mockResolvedValue({
+      ...SETTINGS,
+      languageVoiceMap: {
+        default: "hi-IN",
+        "en-IN": { provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "vp-rachel" },
+      },
+    } as never);
+    render(<VoiceTab bot={BOT} />);
+    await screen.findByText("Hindi");
+
+    await user.click(screen.getByRole("button", { name: "Preview voice" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = within(dialog).getByLabelText("Preview language") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(select.options).map((o) => o.value)).toContain("en-IN");
+    });
+  });
 });
 
 describe("VoiceTab — LLM output length", () => {

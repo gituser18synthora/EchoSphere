@@ -5,6 +5,9 @@ locale codes (``hi-IN``, ``en-US``). Providers differ:
 
 - Sarvam uses locale codes but spells Odia ``od-IN`` (platform: ``or-IN``).
 - ElevenLabs uses bare ISO 639-1 codes (``hi``, ``en``).
+- Deepgram TTS has no language parameter at all: the language is part of
+  the voice model id (``aura-2-thalia-en``), so a locale only selects
+  which voices exist — nothing locale-shaped is ever sent to Deepgram.
 
 ``provider_models.languages`` stores each model's languages in the provider's
 native form. The helpers here translate between the two shapes so language IDs
@@ -236,3 +239,191 @@ def sarvam_stt_language_code(language: str | None) -> str:
     if locale not in SARVAM_STT_SUPPORTED_LOCALES:
         return "unknown"
     return to_provider_language("sarvam", locale) or "unknown"
+
+
+def _elevenlabs_unsupported_message(
+    model: str | None, platform_code: str | None
+) -> str:
+    """Why this ElevenLabs model cannot speak the language, and what instead.
+
+    Wording is the one the preview API has always returned; it lives here so
+    the provider-neutral dispatcher below can reach it without the callers
+    re-deriving it from :func:`elevenlabs_models_speaking`.
+    """
+    alternatives = [
+        m for m in elevenlabs_models_speaking(platform_code) if m != model
+    ]
+    hint = (
+        f" Choose {' or '.join(alternatives)} for this language."
+        if alternatives else
+        " No configured ElevenLabs model speaks it."
+    )
+    return (
+        f"ElevenLabs model '{model}' does not support language "
+        f"'{platform_code}'.{hint}"
+    )
+
+
+# ── Deepgram TTS (Aura / Aura-2) ─────────────────────────────────────────────
+# Verified 2026-09-21 against developers.deepgram.com/docs/tts-models.
+#
+# Deepgram TTS has NO ``language`` request parameter: the language is baked
+# into the voice model id, whose suffix is the language tag
+# (``aura-2-thalia-en`` → ``en``, ``aura-2-estrella-es`` → ``es``). The
+# platform locale is therefore never sent to Deepgram in any form — it only
+# decides which voices are selectable. Mapping a locale here means "which
+# Deepgram language tag do our voices for this locale carry", not "what do we
+# put in a language field".
+#
+# Deepgram's published TTS language list is short and closed:
+#
+#   Aura-2 : en, es, de, nl, fr, it, ja
+#   Aura   : en only
+#
+# NO Indian language is on it — not Hindi, Tamil, Telugu, Malayalam, Marathi,
+# Gujarati, Punjabi or Urdu — and the India regional endpoint
+# (api.in.deepgram.com) does not change that: it is a data-residency host
+# running the same models, so it must never be read as Indic support. A
+# locale absent from the table below is genuinely unsupported, and the
+# adapters refuse it rather than sending a guess. Deepgram would otherwise
+# read Devanagari with an English voice and return confident gibberish — it
+# has no language field to reject, so the refusal has to happen on our side.
+#
+# ``en-IN`` IS mapped, because Deepgram genuinely speaks English — but only
+# with American, British, Australian, Irish and Filipino accents. There is no
+# Indian-English voice; a bot that needs one belongs on another provider.
+_DEEPGRAM_TTS_LOCALE_TAGS: dict[str, str] = {
+    # English — accent is American/British/Australian, never Indian.
+    "en-IN": "en", "en-US": "en", "en-GB": "en", "en-AU": "en", "en-IE": "en",
+    "en-PH": "en",
+    "es-US": "es", "es-MX": "es", "es-ES": "es", "es-419": "es",
+    "de-DE": "de",
+    "nl-NL": "nl", "nl-BE": "nl",
+    "fr-FR": "fr", "fr-CA": "fr",
+    "it-IT": "it",
+    "ja-JP": "ja",
+}
+
+#: Language tags each catalogued Deepgram TTS model (Aura generation) speaks.
+#: The platform's model codes are the Aura *families*; an individual voice
+#: (``aura-2-thalia-en``) is the wire ``model`` query parameter.
+_DEEPGRAM_TTS_MODEL_TAGS: dict[str, frozenset[str]] = {
+    "aura-2": frozenset({"en", "es", "de", "nl", "fr", "it", "ja"}),
+    "aura": frozenset({"en"}),
+}
+
+#: Deepgram TTS models available on the realtime ``/v1/speak`` WebSocket.
+#: Both Aura generations stream; the set exists so the router and the preview
+#: can ask the same question they ask of every other provider.
+DEEPGRAM_STREAMING_MODELS = frozenset(_DEEPGRAM_TTS_MODEL_TAGS)
+
+
+def deepgram_tts_language_tag(platform_code: str | None) -> str | None:
+    """Deepgram language tag for a platform locale, or None if it has none.
+
+    None means no Deepgram voice exists for that language at all — the caller
+    must refuse, never fall back to an English voice speaking foreign text.
+    """
+    return _DEEPGRAM_TTS_LOCALE_TAGS.get(_canonical_locale(platform_code))
+
+
+def deepgram_voice_language_tag(voice_model: str | None) -> str | None:
+    """Language tag carried by a Deepgram voice id (``aura-2-thalia-en`` →
+    ``en``). None when the id does not look like an Aura voice."""
+    parts = (voice_model or "").strip().lower().split("-")
+    if len(parts) < 3 or parts[0] != "aura":
+        return None
+    return parts[-1] or None
+
+
+def deepgram_voice_model_family(voice_model: str | None) -> str | None:
+    """Aura family a voice id belongs to (``aura-2-thalia-en`` → ``aura-2``,
+    ``aura-asteria-en`` → ``aura``).
+
+    Used to check that the selected catalog model and the selected voice are
+    the same generation before either reaches the wire.
+    """
+    parts = (voice_model or "").strip().lower().split("-")
+    if len(parts) < 3 or parts[0] != "aura":
+        return None
+    return "aura-2" if parts[1] == "2" else "aura"
+
+
+def deepgram_supports_language(
+    model: str | None, platform_code: str | None
+) -> bool | None:
+    """Can this Deepgram TTS model speak this language?
+
+    Unlike the ElevenLabs equivalent this is authoritative for every locale,
+    because Deepgram's TTS language list is closed and published: a locale
+    with no entry in the tag table has no Deepgram voice, full stop. ``None``
+    is returned only for an unknown model code, where this module holds no
+    capability data and callers must not read the answer as a rejection.
+    """
+    speaks = _DEEPGRAM_TTS_MODEL_TAGS.get((model or "").strip())
+    if speaks is None:
+        return None
+    tag = deepgram_tts_language_tag(platform_code)
+    return tag is not None and tag in speaks
+
+
+def deepgram_models_speaking(platform_code: str | None) -> list[str]:
+    """Catalogued Deepgram TTS models that can speak this language."""
+    tag = deepgram_tts_language_tag(platform_code)
+    if tag is None:
+        return []
+    return [m for m, tags in _DEEPGRAM_TTS_MODEL_TAGS.items() if tag in tags]
+
+
+def deepgram_unsupported_language_message(
+    model: str | None, platform_code: str | None
+) -> str:
+    """Why this Deepgram model cannot speak the language, and what to do."""
+    alternatives = [m for m in deepgram_models_speaking(platform_code) if m != model]
+    base = f"Deepgram model '{model}' does not support language '{platform_code}'."
+    if alternatives:
+        return f"{base} Use {' or '.join(alternatives)} for this language."
+    return (
+        f"{base} Deepgram text-to-speech speaks only English, Spanish, German, "
+        "Dutch, French, Italian and Japanese — it has no voice for this "
+        "language, and the India endpoint (api.in.deepgram.com) is a "
+        "data-residency host, not extra language support. Map this language "
+        "to another provider in the per-language voice settings."
+    )
+
+
+# ── provider-neutral TTS capability dispatch ─────────────────────────────────
+# Callers that validate an arbitrary engine (the preview API, the adapters'
+# shared guards) ask these two instead of branching per provider, so adding a
+# provider means adding a table above — not another ``if provider == …``
+# somewhere else in the codebase.
+
+_TTS_LANGUAGE_SUPPORT: dict[str, tuple] = {
+    "elevenlabs": (elevenlabs_supports_language, _elevenlabs_unsupported_message),
+    "deepgram": (deepgram_supports_language, deepgram_unsupported_language_message),
+}
+
+
+def tts_supports_language(
+    provider: str | None, model: str | None, platform_code: str | None
+) -> bool | None:
+    """Can this provider/model speak this language?
+
+    ``None`` means "not modelled here" — the caller must NOT read that as a
+    rejection; the DB catalog (``provider_models.languages``) remains the
+    general gate. Providers with no entry (Sarvam, mock) always answer None.
+    """
+    entry = _TTS_LANGUAGE_SUPPORT.get((provider or "").strip().lower())
+    if entry is None:
+        return None
+    return entry[0](model, platform_code)
+
+
+def tts_unsupported_language_message(
+    provider: str | None, model: str | None, platform_code: str | None
+) -> str:
+    """Operator-facing reason a provider/model cannot speak a language."""
+    entry = _TTS_LANGUAGE_SUPPORT.get((provider or "").strip().lower())
+    if entry is None:
+        return f"{provider}/{model} does not support language '{platform_code}'."
+    return entry[1](model, platform_code)

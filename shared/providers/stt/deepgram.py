@@ -4,6 +4,12 @@ Migrated from the legacy voice engines deepgram_adapter.py. The legacy adapter
 called a non-existent SDK path (``client.listen.v1.media.transcribe_file``);
 this port talks to Deepgram's documented REST API with httpx directly, so no
 deepgram SDK is required.
+
+Vendor-level configuration — the API key reference, the regional host and the
+auth header shape — comes from :mod:`shared.providers.deepgram_common`, which
+the Deepgram TTS adapters share. Only the /v1/listen wire protocol lives here;
+the realtime Flux path is a separate implementation
+(``voice_runtime/deepgram_stt.py``) and neither knows about the other.
 """
 
 import time
@@ -12,9 +18,14 @@ import httpx
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, STTProvider, STTResult
+from shared.providers.deepgram_common import (
+    auth_headers,
+    resolve_api_key,
+    rest_base_url,
+)
 from shared.audio.pcm import pcm_to_wav_bytes
 
-_LISTEN_URL = "https://api.deepgram.com/v1/listen"
+_LISTEN_PATH = "/v1/listen"
 
 
 class DeepgramSTT(STTProvider):
@@ -22,14 +33,17 @@ class DeepgramSTT(STTProvider):
 
     def __init__(self, config: ProviderConfig) -> None:
         settings = get_settings()
-        key = settings.resolve_secret(
-            config.api_key_reference or settings.stt_api_key_reference
+        key = resolve_api_key(
+            config.api_key_reference, settings.stt_api_key_reference
         )
         if not key:
             raise ProviderError(self.name, "auth", "Missing API key reference")
+        # Data residency: the platform default (DEEPGRAM_REGION) unless this
+        # engine pins its own region. Same key and same API on every host.
+        self._base_url = rest_base_url((config.extra or {}).get("region"))
         self._client = httpx.AsyncClient(
             timeout=config.timeout_seconds,
-            headers={"Authorization": f"Token {key}"},
+            headers=auth_headers(key),
         )
         self._model = config.model or "nova-2"
         self._language = config.language or None
@@ -48,7 +62,7 @@ class DeepgramSTT(STTProvider):
             params["language"] = lang
         try:
             response = await self._client.post(
-                _LISTEN_URL,
+                f"{self._base_url}{_LISTEN_PATH}",
                 params=params,
                 content=wav,
                 headers={"Content-Type": "audio/wav"},
@@ -78,6 +92,13 @@ class DeepgramSTT(STTProvider):
 
 
 def _raise_for_status(provider: str, response: httpx.Response) -> None:
+    """Deliberately NOT the shared deepgram_common helper.
+
+    That one categorizes 400/404/422 as ``invalid_input``, which is what the
+    TTS adapters need so a bad model/encoding never triggers engine fallback.
+    This endpoint has always reported them as ``upstream``, and changing that
+    here would be an unrelated STT behaviour change.
+    """
     if response.status_code < 400:
         return
     detail = response.text[:200]

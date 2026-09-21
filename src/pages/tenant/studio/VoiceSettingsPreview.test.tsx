@@ -785,3 +785,171 @@ describe("Voice preview — pronunciation dictionary", () => {
     expect(paramInput(dialog, "Min buffer size")).toHaveValue(30);
   });
 });
+
+/* Deepgram TTS in the preview modal.
+
+   Deepgram is the provider that makes the filtering rules matter: its Aura
+   voices speak no Indian language at all, so a bot whose languages are
+   English (India) + Hindi can preview only one of them on Deepgram. The
+   catalog is the source of truth for that — the UI never hardcodes it. */
+describe("Voice preview — Deepgram", () => {
+  const DEEPGRAM_MODELS = [
+    {
+      code: "aura-2", displayName: "Aura-2 (streaming)", isDefault: true,
+      capability: "tts", streaming: true, speedRange: [0.7, 1.5] as [number, number],
+      description: "Deepgram Aura-2 low-latency neural voices.",
+      paramsSchema: {
+        speed: { type: "number", min: 0.7, max: 1.5, step: 0.05, default: 1, label: "Speed" },
+        region: {
+          type: "enum", values: ["default", "global", "in", "eu", "au"],
+          default: "default", label: "Region",
+        },
+      },
+    },
+    {
+      code: "aura", displayName: "Aura v1 (English, legacy)", isDefault: false,
+      capability: "tts", streaming: true, speedRange: [0.7, 1.5] as [number, number],
+      paramsSchema: {
+        speed: { type: "number", min: 0.7, max: 1.5, step: 0.05, default: 1, label: "Speed" },
+      },
+    },
+  ];
+
+  const dgVoice = (id: string, name: string, modelCodes: string[]) => ({
+    ...voice(id, name, modelCodes, "deepgram"),
+    providerVoiceId: id.replace("vp-dg-", "aura-2-") + "-en",
+  });
+
+  function installDeepgramMocks() {
+    installMocks();
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [], llm: [],
+      tts: [
+        { code: "sarvam", name: "Sarvam AI", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+        { code: "elevenlabs", name: "ElevenLabs", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+        { code: "deepgram", name: "Deepgram", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+    } as never);
+    vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
+      Promise.resolve(provider === "sarvam" ? SARVAM_MODELS
+        : provider === "elevenlabs" ? ELEVEN_MODELS
+          : provider === "deepgram" ? DEEPGRAM_MODELS : [])) as never);
+    vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
+      Promise.resolve(provider === "sarvam"
+        ? [voice("vp-shubh", "Shubh", ["bulbul:v3", "bulbul:v2"])]
+        : provider === "elevenlabs"
+          ? [voice("vp-rachel", "Rachel", ["eleven_flash_v2_5", "eleven_v3"], "elevenlabs")]
+          : provider === "deepgram"
+            ? [dgVoice("vp-dg-thalia", "Thalia", ["aura-2"]),
+               dgVoice("vp-dg-zeus", "Zeus", ["aura-2"])]
+            : [])) as never);
+    /* The catalog answers what each model speaks. Deepgram's Aura models
+       reach exactly one of this bot's languages. */
+    vi.mocked(api.getModelLanguages).mockImplementation((
+      (_cap: string, provider: string) => Promise.resolve(
+        provider === "deepgram"
+          ? {
+            languages: [{ code: "en-IN", name: "English (India)", nativeName: "English" }],
+            supportsAutoDetect: false, languageAgnostic: false,
+          }
+          : { languages: [], supportsAutoDetect: true, languageAgnostic: true },
+      )) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    window.HTMLMediaElement.prototype.pause = vi.fn();
+    installDeepgramMocks();
+  });
+
+  async function selectDeepgram(user: ReturnType<typeof userEvent.setup>) {
+    const dialog = await openPreview(user);
+    await user.selectOptions(within(dialog).getByLabelText("Preview provider"), ["deepgram"]);
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText("Preview model")).toHaveValue("aura-2"));
+    return dialog;
+  }
+
+  it("selecting Deepgram shows only Deepgram models and voices", async () => {
+    const user = userEvent.setup();
+    const dialog = await selectDeepgram(user);
+
+    const models = within(within(dialog).getByLabelText("Preview model"))
+      .getAllByRole("option").map((o) => o.textContent);
+    expect(models).toEqual(
+      expect.arrayContaining(["Aura-2 (streaming)", "Aura v1 (English, legacy)"]));
+    expect(models.join(" ")).not.toMatch(/Bulbul|Eleven/);
+
+    await user.click(within(dialog).getByLabelText("Preview voice"));
+    const voiceNames = within(dialog).getAllByRole("option").map((o) => o.textContent);
+    expect(voiceNames.join(" ")).toContain("Thalia");
+    expect(voiceNames.join(" ")).toContain("Zeus");
+    expect(voiceNames.join(" ")).not.toMatch(/Shubh|Rachel/);
+  });
+
+  it("languages are filtered to what the selected Deepgram model speaks", async () => {
+    const user = userEvent.setup();
+    const dialog = await selectDeepgram(user);
+
+    const languageSelect = within(dialog).getByLabelText("Preview language");
+    await waitFor(() => {
+      const offered = within(languageSelect).getAllByRole("option").map((o) => o.textContent);
+      expect(offered).toEqual(["en-IN"]);
+    });
+    // The omission is explained rather than silent — Deepgram has no Hindi
+    // voice, so the operator is told to map Hindi to another engine.
+    expect(within(dialog).getByText(/does not speak hi-IN/)).toBeInTheDocument();
+  });
+
+  it("choosing a language does not switch the provider away from Deepgram", async () => {
+    const user = userEvent.setup();
+    const dialog = await selectDeepgram(user);
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText("Preview language")).toHaveValue("en-IN"));
+
+    await user.selectOptions(within(dialog).getByLabelText("Preview language"), ["en-IN"]);
+
+    expect(within(dialog).getByLabelText("Preview provider")).toHaveValue("deepgram");
+    expect(within(dialog).getByLabelText("Preview model")).toHaveValue("aura-2");
+  });
+
+  it("previews with the Deepgram engine and its own parameters", async () => {
+    const user = userEvent.setup();
+    const dialog = await selectDeepgram(user);
+    await user.click(within(dialog).getByLabelText("Preview voice"));
+    await user.click(await within(dialog).findByRole("option", { name: /Thalia/ }));
+
+    await user.click(within(dialog).getByRole("button", { name: /Generate/i }));
+    await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalled());
+    const body = vi.mocked(api.generateTtsPreview).mock.calls.at(-1)![0];
+    expect(body.provider).toBe("deepgram");
+    expect(body.model).toBe("aura-2");
+    expect(body.voice).toBe("vp-dg-thalia");
+    expect(body.language).toBe("en-IN");
+    // Sarvam/ElevenLabs parameters must never ride along to Deepgram.
+    expect(Object.keys(body.params ?? {})).not.toContain("pace");
+    expect(Object.keys(body.params ?? {})).not.toContain("stability");
+  });
+
+  it("surfaces the server's validation error for an invalid combination", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.generateTtsPreview).mockRejectedValue(
+      new Error("Deepgram model 'aura-2' does not support language 'hi-IN'."));
+    const dialog = await selectDeepgram(user);
+    await user.click(within(dialog).getByLabelText("Preview voice"));
+    await user.click(await within(dialog).findByRole("option", { name: /Thalia/ }));
+
+    await user.click(within(dialog).getByRole("button", { name: /Generate/i }));
+    expect(await within(dialog).findByText(/does not support language 'hi-IN'/))
+      .toBeInTheDocument();
+  });
+
+  it("the speaking-speed control uses Deepgram's documented range", async () => {
+    const user = userEvent.setup();
+    const dialog = await selectDeepgram(user);
+    const slider = await within(dialog).findByRole("slider", { name: "Speaking speed" });
+    expect(slider).toHaveAttribute("min", "0.7");
+    expect(slider).toHaveAttribute("max", "1.5");
+  });
+});
