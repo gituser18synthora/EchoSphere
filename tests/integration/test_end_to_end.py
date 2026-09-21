@@ -19,6 +19,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from shared.knowledge.ingestion.pipeline import IngestionPipeline
 from backend.main import app
+from shared.config import get_settings
 from shared.orchestration.workflow_engine import WorkflowEngine
 from shared.providers.base import ProviderConfig
 from shared.providers.factory import get_llm_provider, get_tts_provider
@@ -92,6 +93,10 @@ async def test_full_flow(client, store, mock_embedder, knowledge_service, pg_cle
     assert session_response.status_code == 201
     session_payload = session_response.json()["data"]
     assert session_payload["wsPath"].startswith("/ws/voice/")
+    # wsBase is always present; empty means the browser derives the URL
+    # (wss:// on its own origin over HTTPS, host:workerPort over plain HTTP).
+    assert session_payload["wsBase"] == ""
+    assert session_payload["workerPort"] == get_settings().voice_worker_port
 
     # 12-25. Mocked voice call through the real Pipecat pipeline.
     config = make_config(kb_ids=[kb_id], tenant_id="tn-001", bot_id="bot-101")

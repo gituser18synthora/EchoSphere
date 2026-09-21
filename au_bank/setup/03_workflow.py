@@ -211,7 +211,7 @@ NODES = layout([
     }),
     otp_ask("n_ask_otp", "Login OTP", "auth_otp",
             ("Thank you. An OTP has been sent to your registered mobile "
-             "number. Please enter or speak the six digit code."),
+             "number. Please share the six digit code."),
             ("धन्यवाद। आपके registered mobile number पर एक OTP भेजा गया है। "
              "कृपया छह अंकों का OTP बताइए।")),
     N("n_msg_verified", "message", "Identity verified", {
@@ -243,8 +243,8 @@ NODES = layout([
                    "eighty rupees. Would you also like to hear your recent "
                    "transactions?"),
         **hi(f"आपके Savings Account, जो {CARD_END} पर समाप्त होता है, में "
-             "available balance पैंतालीस हज़ार दो सौ अस्सी रुपये है। क्या आप "
-             "अपने recent transactions भी सुनना चाहेंगे?"),
+             "available balance पैंतालीस हज़ार दो सौ अस्सी रुपये है। क्या मैं "
+             "आपको recent transactions भी बता दूँ?"),
     }),
     N("n_msg_txns", "message", "Recent transactions (demo)", {
         "text": ("Your recent transactions are: two thousand five hundred "
@@ -261,7 +261,7 @@ NODES = layout([
     N("n_hub_ministmt", "intent", "Mini statement via SMS?", {
         "prompt": ("Your last five transactions are available. Would you like "
                    "them sent to your registered mobile number via SMS?"),
-        **hi("आपके last five transactions available हैं। क्या आप चाहेंगे कि मैं "
+        **hi("आपके last five transactions available हैं। क्या मैं "
              "उन्हें SMS के द्वारा आपके registered mobile number पर भेज दूँ?"),
     }),
     N("n_msg_ministmt_sent", "message", "Mini statement sent (simulated)", {
@@ -276,13 +276,13 @@ NODES = layout([
                    "Would you like me to proceed and block the card?"),
         **hi("यह सुनकर मुझे खेद है। किसी भी unauthorized use को रोकने के लिए, मैं "
              f"आपका {CARD_END} पर समाप्त होने वाला debit card तुरंत block कर "
-             "सकती हूँ। क्या मैं आगे बढ़कर card block कर दूँ?"),
+             "सकती हूँ। क्या मैं आपका debit card block कर दूँ?"),
     }),
     N("n_hub_replace", "intent", "Blocked — replacement card?", {
         "prompt": ("Your debit card has been successfully blocked. Would you "
                    "like to request a replacement card?"),
-        **hi("आपका debit card सफलतापूर्वक block कर दिया गया है। क्या आप "
-             "replacement card के लिए request करना चाहेंगे?"),
+        **hi("आपका debit card सफलतापूर्वक block कर दिया गया है। क्या मैं "
+             "आपके लिए replacement card की request दर्ज कर दूँ?"),
     }),
     N("n_hub_replace_direct", "intent", "Replacement card (direct request)?", {
         "prompt": ("I can register a replacement request for your debit card "
@@ -303,7 +303,7 @@ NODES = layout([
         "text": ("Alright, I have not blocked your card. If you notice any "
                  "suspicious activity, please contact us immediately."),
         **hi("ठीक है, मैंने आपका card block नहीं किया है। अगर आपको कोई suspicious "
-             "activity दिखे, तो कृपया हमें तुरंत संपर्क करें।"),
+             "activity दिखे, तो कृपया हमसे तुरंत संपर्क करें।"),
     }),
     N("n_msg_noted", "message", "Acknowledge a no", {
         "text": "Alright, no problem.",
@@ -313,7 +313,7 @@ NODES = layout([
     # PIN reset (fresh OTP; the existing PIN is never requested)
     otp_ask("n_ask_pin_otp", "PIN reset — OTP", "otp_pinreset",
             ("Certainly. For security purposes, I have sent an OTP to your "
-             "registered mobile number. Please enter or speak the six digit "
+             "registered mobile number. Please share the six digit "
              "code."),
             ("जी ज़रूर। सुरक्षा के लिए, मैंने आपके registered mobile number पर एक "
              "OTP भेजा है। कृपया छह अंकों का OTP बताइए।")),
@@ -350,7 +350,7 @@ NODES = layout([
                  "twenty-four hours. If it is not, please contact us again and "
                  "we will raise a service request."),
         **hi("ठीक है। यह amount चौबीस घंटों के भीतर अपने आप reverse हो जाना चाहिए। "
-             "अगर ऐसा न हो, तो कृपया हमें दोबारा संपर्क करें, हम service request "
+             "अगर ऐसा न हो, तो कृपया हमसे दोबारा संपर्क करें, हम service request "
              "raise कर देंगे।"),
     }),
 
@@ -358,13 +358,13 @@ NODES = layout([
     N("n_hub_stmt", "intent", "Statement — last 30 days?", {
         "prompt": ("Certainly. Would you like the account statement for the "
                    "last thirty days?"),
-        **hi("जी ज़रूर। क्या आप पिछले तीस दिनों का account statement चाहेंगे?"),
+        **hi("जी ज़रूर। क्या आपको पिछले तीस दिनों का account statement चाहिए?"),
     }),
     N("n_msg_stmt_done", "message", "Statement processed (simulated)", {
         "text": ("Your account statement request has been processed and will "
                  "be sent to your registered email address shortly."),
-        **hi("आपकी account statement request process कर दी गई है और यह शीघ्र ही "
-             "आपके registered email address पर भेज दी जाएगी।"),
+        **hi("आपकी account statement request process कर दी गई है। आपका statement "
+             "जल्द ही आपके registered email address पर भेज दिया जाएगा।"),
     }),
     N("n_msg_stmt_declined", "message", "Statement declined", {
         "text": "Alright, I have not processed a statement request.",
@@ -374,7 +374,7 @@ NODES = layout([
     # profile / email update (fresh OTP)
     otp_ask("n_ask_profile_otp", "Profile update — OTP", "otp_profile",
             ("I can assist you with that. For security purposes, I have sent "
-             "an OTP to your registered mobile number. Please enter or speak "
+             "an OTP to your registered mobile number. Please share "
              "the six digit code."),
             ("मैं इसमें आपकी मदद कर सकती हूँ। सुरक्षा के लिए, मैंने आपके "
              "registered mobile number पर एक OTP भेजा है। कृपया छह अंकों का "
@@ -390,7 +390,7 @@ NODES = layout([
         "text": ("I'm sorry, I could not verify the OTP, so this request has "
                  "not been processed. You can try again later."),
         **hi("माफ़ कीजिए, मैं OTP verify नहीं कर पाई, इसलिए यह request process "
-             "नहीं हुई है। आप बाद में दोबारा try कर सकते हैं।"),
+             "नहीं हुई है। कृपया बाद में दोबारा कोशिश कीजिए।"),
     }),
 
     # ── wrap-up ───────────────────────────────────────────────────────────

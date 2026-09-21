@@ -35,7 +35,12 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.protocol import State
 
 from shared.providers.base import ProviderError
-from shared.providers.languages import to_provider_language
+from shared.providers.languages import (
+    ELEVENLABS_LANGUAGE_ENFORCING_MODELS,
+    elevenlabs_language_code,
+    elevenlabs_models_speaking,
+    elevenlabs_supports_language,
+)
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
     TTSStreamEvent,
@@ -55,8 +60,10 @@ _MAX_CONNECT_ATTEMPTS = 2
 _CONNECT_TIMEOUT_S = 3.0
 _CLOSE_HANDSHAKE_TIMEOUT = 2.0
 
-# Models that accept the language_code enforcement query parameter.
-_LANGUAGE_ENFORCING_MODELS = {"eleven_flash_v2_5", "eleven_turbo_v2_5"}
+# Which models accept the language_code enforcement query parameter, and
+# which languages each one speaks, both live in shared.providers.languages —
+# the one place that knows ElevenLabs' wire spelling (bare ISO 639-1).
+_LANGUAGE_ENFORCING_MODELS = ELEVENLABS_LANGUAGE_ENFORCING_MODELS
 
 # Models the ElevenLabs realtime WebSocket does not accept (official docs:
 # "That endpoint does not support the eleven_v3 model"). Configurations with
@@ -68,6 +75,28 @@ _WS_UNSUPPORTED_MODELS = {"eleven_v3"}
 _VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style",
                        "use_speaker_boost", "speed")
 
+
+def _unsupported_language_error(provider: str, model: str, language: str) -> ProviderError:
+    """Refusal for a model that provably cannot speak the language.
+
+    Omitting ``language_code`` is NOT a workaround: the model still cannot
+    produce that language, and ElevenLabs either rejects the request outright
+    (HTTP 400 / a 1008 ``unsupported_language`` frame) or returns unusable
+    audio. The operator has to pick a model that speaks it, or map the
+    language to a different engine in the bot's per-language voice map.
+    """
+    alternatives = [m for m in elevenlabs_models_speaking(language) if m != model]
+    hint = (
+        f" Use {' or '.join(alternatives)} for this language, or map it to "
+        "another engine in the bot's per-language voice settings."
+        if alternatives else
+        " No configured ElevenLabs model speaks it — map this language to "
+        "another provider in the bot's per-language voice settings."
+    )
+    return ProviderError(
+        provider, "invalid_input",
+        f"ElevenLabs model '{model}' does not support language '{language}'.{hint}",
+    )
 
 def _output_format(codec: str, sample_rate: int) -> str:
     if codec in ("mulaw", "ulaw"):
@@ -86,6 +115,11 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._receive_task: asyncio.Task | None = None
         self._keepalive_task: asyncio.Task | None = None
         self._initialized_contexts: set[str] = set()
+        # Bytes delivered per live generation. ElevenLabs reports some
+        # account-level failures (e.g. an unpaid invoice) by simply closing
+        # the generation with no audio instead of an error frame, so a final
+        # carrying zero bytes has to be treated as a failure, not a success.
+        self._generation_bytes: dict[str, int] = {}
         self._send_lock = asyncio.Lock()
         # Serializes concurrent connect() calls (a background warm-up racing
         # the next dispatch) so only one socket is opened.
@@ -96,6 +130,11 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         if self._closed:
             raise RuntimeError("provider is closed")
         model = self._settings.model or ""
+        language = self._settings.language or ""
+        if language and elevenlabs_supports_language(model, language) is False:
+            error = _unsupported_language_error(self.name, model, language)
+            await self._emit_error(error.category, str(error))
+            raise error
         if model in _WS_UNSUPPORTED_MODELS:
             message = (
                 f"ElevenLabs model '{model}' is not supported on the realtime "
@@ -187,6 +226,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
 
     async def cancel(self, generation_id: str) -> None:
         self._end_generation(generation_id)
+        self._generation_bytes.pop(generation_id, None)
         if generation_id in self._initialized_contexts:
             self._initialized_contexts.discard(generation_id)
             if self._ws is not None and self._ws.state is State.OPEN:
@@ -199,6 +239,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._closed = True
         self._live_generations.clear()
         self._initialized_contexts.clear()
+        self._generation_bytes.clear()
         ws = self._ws
         if ws is not None and ws.state is State.OPEN:
             # Two-step close: ask the server to close, then wait briefly so we
@@ -229,9 +270,9 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         if params.get("sync_alignment"):
             url += "&sync_alignment=true"
         if s.language and model in _LANGUAGE_ENFORCING_MODELS:
-            iso = to_provider_language("elevenlabs", s.language)
+            iso = elevenlabs_language_code(model, s.language)
             if iso:
-                url += f"&language_code={iso.split('-')[0]}"
+                url += f"&language_code={iso}"
         return url
 
     def _context_init(self, context_id: str) -> dict:
@@ -302,8 +343,23 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
 
         if is_final:
             if self.generation_alive(context):
+                delivered = self._generation_bytes.pop(context, 0)
                 self._end_generation(context)
                 self._initialized_contexts.discard(context)
+                if not delivered:
+                    # No audio at all: the server ended the generation without
+                    # telling us why. The REST endpoint does report the reason
+                    # (auth/payment/quota), so say that rather than emitting a
+                    # "successful" final that renders as silence.
+                    await self._emit_error(
+                        "upstream",
+                        "ElevenLabs ended the generation without returning any "
+                        "audio. The REST text-to-speech endpoint reports the "
+                        "underlying reason (account, quota or voice/model "
+                        "configuration).",
+                        generation_id=context,
+                    )
+                    return
                 await self._emit(TTSStreamEvent(kind="final", generation_id=context))
             return
 
@@ -318,6 +374,9 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
                 logger.warning("elevenlabs: discarding invalid base64 audio chunk")
                 return
             if audio:
+                self._generation_bytes[context] = (
+                    self._generation_bytes.get(context, 0) + len(audio)
+                )
                 await self._emit(TTSStreamEvent(
                     kind="audio", generation_id=context, audio=audio,
                 ))
@@ -348,6 +407,7 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
         self._receive_task = None
         self._keepalive_task = None
         self._initialized_contexts.clear()
+        self._generation_bytes.clear()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:
