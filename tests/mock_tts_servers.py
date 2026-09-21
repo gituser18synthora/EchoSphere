@@ -1,4 +1,4 @@
-"""Scriptable mock WebSocket servers speaking the Sarvam and ElevenLabs TTS protocols.
+"""Scriptable mock WebSocket servers speaking the Sarvam, ElevenLabs and Deepgram TTS protocols.
 
 Used by provider/router tests. Each server binds 127.0.0.1:0 and records every
 message it receives for assertions. `behavior` selects failure injection:
@@ -16,6 +16,13 @@ message it receives for assertions. `behavior` selects failure injection:
   late_after_close  (ElevenLabs) keep emitting audio for a context after the
                     client sent close_context — clients must reject it
   snake_case        (ElevenLabs) reply with snake_case keys (is_final, ...)
+  late_after_clear  (Deepgram) keep emitting audio after the client sent
+                    Clear — clients must reject it (the protocol puts no id
+                    on audio frames, so only local state can catch it)
+  warning           (Deepgram) emit a Warning frame before the audio; it is
+                    advisory and must not fail the generation
+  bad_config        (Deepgram) reject the WS handshake with HTTP 400, the
+                    way a bad model/encoding/sample_rate is reported
 """
 
 from __future__ import annotations
@@ -46,9 +53,12 @@ class _BaseMockServer:
         self.port: int | None = None
 
     auth_header = "api-subscription-key"
+    # Prefix the header VALUE carries before the key (Deepgram: "Token ").
+    auth_prefix = ""
 
     def _process_request(self, connection, request):
-        if self.behavior == "auth_fail" or request.headers.get(self.auth_header) != self.api_key:
+        expected = f"{self.auth_prefix}{self.api_key}"
+        if self.behavior == "auth_fail" or request.headers.get(self.auth_header) != expected:
             return connection.respond(http.HTTPStatus.UNAUTHORIZED, "unauthorized")
         if self.behavior == "rate_limit":
             return connection.respond(http.HTTPStatus.TOO_MANY_REQUESTS, "rate limited")
@@ -249,4 +259,112 @@ class MockElevenLabsServer(_BaseMockServer):
                     pending_flush.add(context_id)
                     await self._emit_audio_burst(websocket, context_id)
         except Exception:  # noqa: BLE001
+            pass
+
+
+class MockDeepgramTTSServer(_BaseMockServer):
+    """Speaks the Deepgram /v1/speak text-to-speech WebSocket protocol.
+
+    Unlike the other two, audio comes back as BINARY frames with no
+    generation id of any kind: the socket is one ordered pipeline and a
+    ``Flushed`` answers each ``Flush`` in order.
+
+    ``chunk_delay`` spaces every chunk out (not just the first), which is how
+    a test can show that audio is delivered as it arrives rather than after
+    the whole response.
+    """
+
+    auth_header = "authorization"
+    auth_prefix = "Token "
+
+    def __init__(self, *, chunk_delay: float = 0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.chunk_delay = chunk_delay
+        self.queries: list[dict] = []
+        self.paths: list[str] = []
+        self.clears = 0
+        self.closes = 0
+        self._sequence = 0
+
+    def _process_request(self, connection, request):
+        if self.behavior == "bad_config":
+            return connection.respond(http.HTTPStatus.BAD_REQUEST, "invalid model")
+        return super()._process_request(connection, request)
+
+    def texts(self) -> list[str]:
+        return [m["text"] for m in self.received if m.get("type") == "Speak"]
+
+    async def _emit_audio_burst(self, websocket):
+        if self.behavior == "invalid_json":
+            await websocket.send("not json {{{")
+        if self.behavior == "warning":
+            await websocket.send(json.dumps({
+                "type": "Warning", "description": "input was truncated",
+                "code": "TEXT_TOO_LONG",
+            }))
+        if self.behavior == "error_message":
+            await websocket.send(json.dumps({
+                "type": "Error", "description": "synthesis backend unavailable",
+                "code": 503,
+            }))
+            return
+        if self.behavior == "silent":
+            # Flushed with no audio at all — an account/voice failure that
+            # would otherwise render as silence on the call.
+            self._sequence += 1
+            await websocket.send(json.dumps({
+                "type": "Flushed", "sequence_id": self._sequence,
+            }))
+            return
+        for index in range(self.chunks):
+            if index == 0 and self.first_chunk_delay:
+                await asyncio.sleep(self.first_chunk_delay)
+            elif index and self.chunk_delay:
+                await asyncio.sleep(self.chunk_delay)
+            await websocket.send(PCM_CHUNK)
+        self._sequence += 1
+        await websocket.send(json.dumps({
+            "type": "Flushed", "sequence_id": self._sequence,
+        }))
+
+    async def _handler(self, websocket):
+        self.connections += 1
+        self.paths.append(websocket.request.path)
+        raw_query = urlparse(websocket.request.path).query
+        query = {k: v[0] for k, v in parse_qs(raw_query).items()}
+        query["_raw"] = raw_query
+        self.queries.append(query)
+        await websocket.send(json.dumps({
+            "type": "Metadata", "request_id": "req-mock",
+            "model_name": query.get("model", ""),
+        }))
+        try:
+            async for raw in websocket:
+                self.raw_frames.append(raw if isinstance(raw, str) else "<binary>")
+                try:
+                    message = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                self.received.append(message)
+                kind = message.get("type")
+                if kind == "Speak" and self.behavior == "drop_conn":
+                    await websocket.close(code=1011, reason="server going away")
+                    return
+                elif kind == "Flush":
+                    await self._emit_audio_burst(websocket)
+                elif kind == "Clear":
+                    self.clears += 1
+                    self._sequence += 1
+                    await websocket.send(json.dumps({
+                        "type": "Cleared", "sequence_id": self._sequence,
+                    }))
+                    if self.behavior == "late_after_clear":
+                        # Audio for a cleared generation — must be dropped.
+                        for _ in range(self.chunks):
+                            await websocket.send(PCM_CHUNK)
+                elif kind == "Close":
+                    self.closes += 1
+                    await websocket.close()
+                    return
+        except Exception:  # noqa: BLE001 — mock server should never propagate
             pass

@@ -22,6 +22,7 @@ _REGISTRY: dict[tuple[str, str], str] = {
     ("tts", "azure"): "shared.providers.tts.azure_tts:AzureTTS",
     ("tts", "google"): "shared.providers.tts.google_tts:GoogleTTS",
     ("tts", "sarvam"): "shared.providers.tts.sarvam:SarvamTTS",
+    ("tts", "deepgram"): "shared.providers.tts.deepgram:DeepgramTTS",
     ("tts", "mock"): "shared.providers.tts.mock:MockTTS",
     ("llm", "openai"): "shared.providers.llm.openai_llm:OpenAILLM",
     ("llm", "anthropic"): "shared.providers.llm.anthropic_llm:AnthropicLLM",

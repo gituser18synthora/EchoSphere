@@ -38,8 +38,8 @@ from shared.providers.base import ProviderError
 from shared.providers.languages import (
     ELEVENLABS_LANGUAGE_ENFORCING_MODELS,
     elevenlabs_language_code,
-    elevenlabs_models_speaking,
     elevenlabs_supports_language,
+    elevenlabs_unsupported_language_message,
 )
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
@@ -80,23 +80,14 @@ def _unsupported_language_error(provider: str, model: str, language: str) -> Pro
     """Refusal for a model that provably cannot speak the language.
 
     Omitting ``language_code`` is NOT a workaround: the model still cannot
-    produce that language, and ElevenLabs either rejects the request outright
-    (HTTP 400 / a 1008 ``unsupported_language`` frame) or returns unusable
-    audio. The operator has to pick a model that speaks it, or map the
-    language to a different engine in the bot's per-language voice map.
+    produce that language. The guidance comes from shared.providers.languages
+    so every call site names the same, actually-selectable alternative.
     """
-    alternatives = [m for m in elevenlabs_models_speaking(language) if m != model]
-    hint = (
-        f" Use {' or '.join(alternatives)} for this language, or map it to "
-        "another engine in the bot's per-language voice settings."
-        if alternatives else
-        " No configured ElevenLabs model speaks it — map this language to "
-        "another provider in the bot's per-language voice settings."
-    )
     return ProviderError(
         provider, "invalid_input",
-        f"ElevenLabs model '{model}' does not support language '{language}'.{hint}",
+        elevenlabs_unsupported_language_message(model, language),
     )
+
 
 def _output_format(codec: str, sample_rate: int) -> str:
     if codec in ("mulaw", "ulaw"):

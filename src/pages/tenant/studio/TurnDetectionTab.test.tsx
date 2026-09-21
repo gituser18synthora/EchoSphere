@@ -218,6 +218,27 @@ describe("TurnDetectionTab", () => {
     });
   });
 
+  it("a clipboard the browser refuses opens the manual-copy modal with the reason", async () => {
+    // Async API denied and no legacy copy available: the click must still end
+    // in visible feedback rather than doing nothing at all.
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("Write permission denied.")) },
+    });
+    try {
+      render(<TurnDetectionTab />);
+      await screen.findByText("Speech Detection");
+      fireEvent.click(screen.getByRole("button", { name: "Copy Configuration" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "Copy Configuration" });
+      expect(within(dialog).getByText(/Write permission denied\./)).toBeInTheDocument();
+      const shown = within(dialog).getByLabelText("Exported configuration JSON") as HTMLTextAreaElement;
+      expect(JSON.parse(shown.value).kind).toBe("echosphere.turn-detection");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    }
+  });
+
   it("import rejects invalid JSON, stays on the paste step and offers no Apply", async () => {
     const user = userEvent.setup();
     render(<TurnDetectionTab />);

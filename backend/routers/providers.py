@@ -34,8 +34,8 @@ from backend.core.deps import (
     require_tenant_member,
 )
 from shared.providers.languages import (
-    elevenlabs_models_speaking,
-    elevenlabs_supports_language,
+    tts_supports_language,
+    tts_unsupported_language_message,
 )
 from backend.core.provider_catalog import (
     CAPABILITIES,
@@ -63,6 +63,7 @@ from shared.db.mysql import get_db
 from shared.errors import ApiError, NotFoundError
 from shared.models import User, VoiceBot, VoiceProfile
 from shared.providers.base import ProviderError
+from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import TTSStreamSettings
@@ -74,6 +75,30 @@ logger = logging.getLogger("api.providers")
 _TEST_TIMEOUT_S = 8.0
 _PREVIEW_TIMEOUT_S = 15.0
 _PREVIEW_MAX_CHARS = 500
+
+# Providers whose realtime WebSocket the preview can drive. A provider
+# absent here can still be previewed over REST if its model row is
+# non-streaming; otherwise the preview reports it as unsupported.
+_STREAMING_PREVIEW_CLIENTS = {
+    "sarvam": SarvamWebSocketTTSProvider,
+    "elevenlabs": ElevenLabsWebSocketTTSProvider,
+    "deepgram": DeepgramWebSocketTTSProvider,
+}
+
+# Providers with a REST adapter the preview can use for a NON-streaming model
+# row (ElevenLabs v3 today). The class is imported lazily in the branch so a
+# streaming preview never pulls an adapter it will not call.
+_REST_PREVIEW_PROVIDERS = frozenset({"elevenlabs", "deepgram"})
+
+
+def _rest_preview_client(provider: str):
+    if provider == "deepgram":
+        from shared.providers.tts.deepgram import DeepgramTTS
+
+        return DeepgramTTS
+    from shared.providers.tts.elevenlabs import ElevenLabsTTS
+
+    return ElevenLabsTTS
 
 
 def _provider_secret(provider_row) -> str:
@@ -320,13 +345,17 @@ async def _run_provider_test(db: Session, body: ProviderTestRequest) -> dict:
                 if body.voice and not response.json().get("voices"):
                     return {"ok": False, "error": "voice_unavailable",
                             "message": "The selected voice is not available on this account."}
-        elif body.provider == "deepgram" and body.capability == "stt":
-            # Cheapest authenticated call: token introspection. A live Flux
-            # WS handshake would bill audio minutes for a connectivity check.
+        elif body.provider == "deepgram":
+            # Cheapest authenticated call: token introspection, for STT and
+            # TTS alike. A live Flux or /v1/speak handshake would bill audio
+            # minutes / characters for a connectivity check. Probes the same
+            # regional host the adapters use, so a misconfigured
+            # DEEPGRAM_REGION shows up here rather than on a live call.
+            from shared.providers.deepgram_common import auth_headers, rest_base_url
+
             async with httpx.AsyncClient(timeout=_TEST_TIMEOUT_S) as client:
                 response = await client.get(
-                    "https://api.deepgram.com/v1/auth/token",
-                    headers={"Authorization": f"Token {key}"},
+                    f"{rest_base_url()}/v1/auth/token", headers=auth_headers(key),
                 )
                 if response.status_code in (401, 403):
                     return {"ok": False, "error": "auth",
@@ -583,21 +612,13 @@ async def tts_preview(
     # speak the requested language is a configuration error the operator can
     # fix, not a provider outage. Only the platform's own languages are
     # modelled, so an unmodelled combination (None) is never rejected here.
-    if body.provider == "elevenlabs" and body.language:
-        if elevenlabs_supports_language(body.model, body.language) is False:
-            alternatives = [
-                m for m in elevenlabs_models_speaking(body.language)
-                if m != body.model
-            ]
-            hint = (
-                f" Choose {' or '.join(alternatives)} for this language."
-                if alternatives else
-                " No configured ElevenLabs model speaks it."
-            )
-            raise ApiError(
-                f"ElevenLabs model '{body.model}' does not support language "
-                f"'{body.language}'.{hint}", 422,
-            )
+    if body.language and tts_supports_language(
+            body.provider, body.model, body.language) is False:
+        raise ApiError(
+            tts_unsupported_language_message(
+                body.provider, body.model, body.language),
+            422,
+        )
 
     draft_params = strip_speed_params(body.params)
     param_errors = validate_params(
@@ -633,13 +654,13 @@ async def tts_preview(
             segments, pause_ms=body.pause_ms, sample_rate=sample_rate
         )
         ttfa_ms = 1.0
-    elif not model_row.streaming and body.provider == "elevenlabs":
+    elif not model_row.streaming and body.provider in _REST_PREVIEW_PROVIDERS:
         # Models without realtime WebSocket support (Eleven v3) synthesize
         # previews over REST with the dynamically selected model — one call
         # per sentence when a pause gap has to be inserted.
         from shared.providers.base import ProviderConfig
-        from shared.providers.tts.elevenlabs import ElevenLabsTTS
 
+        rest_cls = _rest_preview_client(body.provider)
         reference = provider_row.secret_ref or f"env:{provider_row.code.upper()}_API_KEY"
         if not _provider_secret(provider_row):
             raise ApiError(
@@ -649,8 +670,8 @@ async def tts_preview(
         # Same rate as the WebSocket previews so a v3 voice is judged at the
         # same fidelity as a Flash voice (16 kHz previews sounded duller).
         rest_rate = 24000 if 24000 in (model_row.sample_rates or [24000]) else 16000
-        client = ElevenLabsTTS(ProviderConfig(
-            provider="elevenlabs",
+        client = rest_cls(ProviderConfig(
+            provider=body.provider,
             model=body.model,
             voice=wire_voice,
             language=body.language,
@@ -697,11 +718,7 @@ async def tts_preview(
             api_key=key,
             timeout_seconds=_TEST_TIMEOUT_S,
         )
-        client_cls = (
-            SarvamWebSocketTTSProvider if body.provider == "sarvam"
-            else ElevenLabsWebSocketTTSProvider if body.provider == "elevenlabs"
-            else None
-        )
+        client_cls = _STREAMING_PREVIEW_CLIENTS.get(body.provider)
         if client_cls is None:
             raise ApiError(f"Preview is not supported for provider '{body.provider}'.", 422)
         client = client_cls(stream_settings)

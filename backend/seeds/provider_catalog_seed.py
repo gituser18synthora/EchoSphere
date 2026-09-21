@@ -76,6 +76,35 @@ _DEEPGRAM_FLUX_SCHEMA = {
     },
 }
 
+# Deepgram TTS (Aura / Aura-2, /v1/speak). Deepgram's own surface is almost
+# entirely output formatting — encoding, sample rate and container are decided
+# by the call transport, not by an operator — so only the two knobs that are
+# genuinely a choice are exposed. ``speed`` is here for the catalog's
+# speed-range contract; Delivery tuning owns it and strips it from stored
+# settings (shared/providers/tts/delivery.py).
+_DEEPGRAM_TTS_SCHEMA = {
+    "speed": {
+        "type": "number", "min": 0.7, "max": 1.5, "default": 1.0, "step": 0.05,
+        "label": "Speed", "help": "Playback speed multiplier.",
+    },
+    "region": {
+        # Data residency only. Every region runs the same models with the
+        # same API key; it adds no languages (see shared/providers/languages).
+        "type": "enum", "values": ["default", "global", "in", "eu", "au"],
+        "default": "default", "label": "Region", "advanced": True,
+        "help": "Deepgram endpoint to synthesize on: 'in' keeps inference and "
+                "storage inside India (api.in.deepgram.com), 'default' follows "
+                "the platform's DEEPGRAM_REGION setting. This is a data-"
+                "residency choice and does not change which languages the "
+                "voices speak.",
+    },
+    "mip_opt_out": {
+        "type": "boolean", "default": False, "label": "Opt out of model "
+        "improvement", "advanced": True,
+        "help": "Ask Deepgram not to retain this audio for model improvement.",
+    },
+}
+
 _SARVAM_STT_COMMON = {
     "vad_signals": {
         "type": "boolean", "default": True, "label": "VAD signals",
@@ -484,6 +513,17 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
         "Cheaper GPT-4o mini transcription (batch/REST). Inactive under "
         "platform governance: STT is Sarvam-only."
     ),
+    ("deepgram", "tts", "aura-2"): (
+        "Deepgram Aura-2 low-latency neural voices over /v1/speak (REST and "
+        "realtime WebSocket). Speaks English, Spanish, German, Dutch, French, "
+        "Italian and Japanese only \u2014 NO Indian language. Its English "
+        "voices carry American, British, Australian, Irish and Filipino "
+        "accents; there is no Indian-English voice."
+    ),
+    ("deepgram", "tts", "aura"): (
+        "Deepgram Aura (v1) voices \u2014 English only, cheaper than Aura-2 and "
+        "superseded by it. Same /v1/speak endpoint and streaming support."
+    ),
     ("deepgram", "stt", "flux-general-multi"): (
         "Deepgram Flux multilingual conversational STT (/v2/listen): "
         "model-integrated turn detection (EndOfTurn / EagerEndOfTurn / "
@@ -532,6 +572,19 @@ PROVIDER_MODELS = [
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "Eleven Turbo v2.5 (deprecated)",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _ELEVENLABS_TTS_SCHEMA, False, "inactive", 2),
+    # Deepgram Aura / Aura-2 \u2014 the model code is the Aura GENERATION; the
+    # individual voice (aura-2-thalia-en) is the wire ``model`` parameter and
+    # lives on the voice row. ``languages`` is Deepgram's own wire form: bare
+    # language tags, which is what a voice id's suffix carries. Both
+    # generations stream over the /v1/speak WebSocket.
+    ("deepgram", "tts", "aura-2", "Aura-2 (streaming)",
+     ["en", "es", "de", "nl", "fr", "it", "ja"], ["linear16", "mulaw", "alaw"],
+     [8000, 16000, 24000, 32000, 48000], True,
+     _DEEPGRAM_TTS_SCHEMA, True, "active", 0),
+    ("deepgram", "tts", "aura", "Aura v1 (English, legacy)",
+     ["en"], ["linear16", "mulaw", "alaw"],
+     [8000, 16000, 24000, 32000, 48000], True,
+     _DEEPGRAM_TTS_SCHEMA, False, "active", 1),
     ("mock", "tts", "mock", "Mock TTS", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # OpenAI Whisper — REST/segmented (non-streaming), language auto-detect.
@@ -627,6 +680,43 @@ ELEVENLABS_VOICES = [
     ("vp-el-shivank", "Shivank", "female", "Vf2PzaME4dMzjUBlO0w0"),
 ]
 
+# Deepgram Aura voices. The wire ``model`` parameter IS the voice id, and its
+# suffix is the language it speaks, so a voice row is scoped to the platform
+# English locales only \u2014 Deepgram has no Indian-language voice at all
+# (developers.deepgram.com/docs/tts-models, verified 2026-09-21).
+#
+# The accent column is real: these are American, British and Australian
+# voices. None of them is Indian English, which is why they carry accent
+# labels instead of the "Indian" label the Sarvam/ElevenLabs rows use.
+#
+# (id, name, gender, wire voice id, accent)
+DEEPGRAM_AURA2_VOICES = [
+    ("vp-dg-thalia", "Thalia", "female", "aura-2-thalia-en", "American"),
+    ("vp-dg-andromeda", "Andromeda", "female", "aura-2-andromeda-en", "American"),
+    ("vp-dg-asteria", "Asteria", "female", "aura-2-asteria-en", "American"),
+    ("vp-dg-luna", "Luna", "female", "aura-2-luna-en", "American"),
+    ("vp-dg-pandora", "Pandora", "female", "aura-2-pandora-en", "British"),
+    ("vp-dg-theia", "Theia", "female", "aura-2-theia-en", "Australian"),
+    ("vp-dg-apollo", "Apollo", "male", "aura-2-apollo-en", "American"),
+    ("vp-dg-arcas", "Arcas", "male", "aura-2-arcas-en", "American"),
+    ("vp-dg-zeus", "Zeus", "male", "aura-2-zeus-en", "American"),
+    ("vp-dg-draco", "Draco", "male", "aura-2-draco-en", "British"),
+    ("vp-dg-hyperion", "Hyperion", "male", "aura-2-hyperion-en", "Australian"),
+]
+
+DEEPGRAM_AURA1_VOICES = [
+    ("vp-dg-v1-asteria", "Asteria (v1)", "female", "aura-asteria-en", "American"),
+    ("vp-dg-v1-luna", "Luna (v1)", "female", "aura-luna-en", "American"),
+    ("vp-dg-v1-stella", "Stella (v1)", "female", "aura-stella-en", "American"),
+    ("vp-dg-v1-orion", "Orion (v1)", "male", "aura-orion-en", "American"),
+    ("vp-dg-v1-arcas", "Arcas (v1)", "male", "aura-arcas-en", "American"),
+    ("vp-dg-v1-angus", "Angus (v1)", "male", "aura-angus-en", "Irish"),
+]
+
+#: Platform English locales a Deepgram voice may be selected for. Deliberately
+#: NOT the Indic list: no Aura voice speaks any Indian language.
+_DEEPGRAM_VOICE_LOCALES = ["en-IN", "en-US", "en-GB"]
+
 # Sarvam bulbul:v3 speakers — wire codes are lowercase; display names Title case.
 # Gender labels are catalog data (editable in master data), best-effort here.
 # All 37 verified against the live Sarvam API (2026-07-23): every speaker
@@ -704,6 +794,26 @@ def seed_provider_catalog(db: Session) -> dict:
             ))
             created["provider_voices"] += 1
 
+    for i, (vid, name, gender, wire_id, accent) in enumerate(
+            [*DEEPGRAM_AURA2_VOICES, *DEEPGRAM_AURA1_VOICES]):
+        if db.get(VoiceProfile, vid) is None:
+            family = "aura-2" if wire_id.startswith("aura-2-") else "aura"
+            db.add(VoiceProfile(
+                id=vid, name=name, gender=gender,
+                # Scoped to English: the voice id itself decides the language,
+                # so a voice must never be offered for a locale it cannot say.
+                languages=list(_DEEPGRAM_VOICE_LOCALES),
+                accent=accent, styles=["Natural"], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="deepgram",
+                # Sent to Deepgram as the ``model`` query parameter.
+                provider_voice_id=wire_id,
+                model_codes=[family],
+                provider_settings={},
+                is_default=(vid == "vp-dg-thalia"),
+                sort_order=i,
+            ))
+            created["provider_voices"] += 1
+
     for i, speaker in enumerate(SARVAM_SPEAKERS):
         vid = f"vp-sv-{speaker}"
         if db.get(VoiceProfile, vid) is None:
@@ -737,7 +847,7 @@ ALLOWED_ACTIVE_PROVIDERS: dict[str, set[str]] = {
     "llm": {"openai"},
     "embedding": {"openai"},
     "stt": {"sarvam", "deepgram"},
-    "tts": {"sarvam", "elevenlabs"},
+    "tts": {"sarvam", "elevenlabs", "deepgram"},
     # Voice catalogs follow their TTS vendor's governance.
     "voice": {"platform", "elevenlabs"},
 }

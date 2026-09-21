@@ -1,4 +1,4 @@
-# Voice Provider Configuration (Sarvam AI · OpenAI · ElevenLabs)
+# Voice Provider Configuration (Sarvam AI · OpenAI · ElevenLabs · Deepgram)
 
 The realtime voice stack is fully database-driven: which providers, models,
 languages, voices and parameters a Voice Bot may use comes from the provider
@@ -13,6 +13,8 @@ loaded into the process environment at startup):
 OPENAI_API_KEY=<OPENAI_API_KEY>
 SARVAM_API_KEY=<SARVAM_API_KEY>
 ELEVENLABS_API_KEY=<ELEVENLABS_API_KEY>
+# One Deepgram key serves BOTH capabilities — Flux STT and Aura TTS.
+DEEPGRAM_API_KEY=<DEEPGRAM_API_KEY>
 ```
 
 Rules:
@@ -24,8 +26,26 @@ Rules:
 - Any key that was ever committed or pasted somewhere must be treated as
   compromised and rotated at the provider before being set here.
 
-Optional endpoint overrides: `SARVAM_TTS_WS_URL`, `ELEVENLABS_WS_BASE`
-(regional hosts / gateways / mocked verification).
+Optional endpoint overrides: `SARVAM_TTS_WS_URL`, `ELEVENLABS_WS_BASE`,
+`DEEPGRAM_API_BASE`, `DEEPGRAM_WS_BASE` (regional hosts / gateways / mocked
+verification).
+
+### Deepgram regions
+
+`DEEPGRAM_REGION` selects the endpoint every Deepgram adapter talks to;
+a bot may override it per engine with the Deepgram TTS model's `region`
+parameter. All hosts take the same API key and serve the same API
+(`shared/providers/deepgram_common.py`):
+
+| `DEEPGRAM_REGION` | REST | WebSocket |
+| --- | --- | --- |
+| `global` (default) | `https://api.deepgram.com` | `wss://api.deepgram.com` |
+| `in` | `https://api.in.deepgram.com` | `wss://api.in.deepgram.com` |
+| `eu` | `https://api.eu.deepgram.com` | `wss://api.eu.deepgram.com` |
+| `au` | `https://api.au.deepgram.com` | `wss://api.au.deepgram.com` |
+
+A region is **data residency only**. The India endpoint runs the same models
+as the global one and adds no languages — see the Deepgram TTS note below.
 
 ## Catalog
 
@@ -45,12 +65,37 @@ with 37 speakers (default `shubh`) and 11 languages; ElevenLabs with
 Odia is `or-IN` platform-side and translated to Sarvam's `od-IN` on the wire
 (`shared/providers/languages.py`).
 
+### Deepgram TTS (Aura / Aura-2) — language scope
+
+Deepgram's model code in the catalog is the Aura **generation** (`aura-2`,
+`aura`); the individual voice (`aura-2-thalia-en`) is the wire `model` query
+parameter and lives on the voice row. There is no language parameter at all:
+the language is the voice id's suffix, so the platform locale is never sent
+to Deepgram in any form.
+
+Verified against developers.deepgram.com/docs/tts-models on 2026-09-21,
+Deepgram text-to-speech speaks **English, Spanish, German, Dutch, French,
+Italian and Japanese** — Aura v1 is English-only. It has **no Hindi, Tamil,
+Telugu, Malayalam, Marathi, Gujarati, Punjabi or Urdu voice**, and the India
+endpoint does not add one.
+
+Of the platform's nine enabled languages only `en-IN` maps, to Deepgram's
+English voices — which carry American, British, Australian, Irish and
+Filipino accents. **There is no Indian-English Aura voice**, so a bot that
+needs one belongs on Sarvam or ElevenLabs.
+
+Because Deepgram has no language field to reject a mismatch, selecting an
+unsupported language would produce an English voice reading foreign text
+rather than an API error. Both adapters therefore refuse it themselves,
+against the explicit tables in `shared/providers/languages.py`, and so does
+the preview endpoint.
+
 Current governed live matrix:
 
 | Capability | Active production providers | Platform default |
 | --- | --- | --- |
 | STT | `sarvam`, `deepgram` | `sarvam/saaras:v3` |
-| TTS | `sarvam`, `elevenlabs` | `sarvam/bulbul:v3`, voice `shubh` |
+| TTS | `sarvam`, `elevenlabs`, `deepgram` | `sarvam/bulbul:v3`, voice `shubh` |
 | LLM | `openai` | `openai/gpt-4o-mini` |
 | Embedding | `openai` | `openai/text-embedding-3-small` |
 
