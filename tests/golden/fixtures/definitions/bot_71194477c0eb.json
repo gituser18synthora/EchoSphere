@@ -1,0 +1,1677 @@
+{
+ "bot": {
+  "id": "bot_71194477c0eb",
+  "name": "Honasa Customer Care",
+  "tenant_id": "tn_620d5400d462",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf_c449f1421055",
+   "name": "Honasa order support journey",
+   "version": 5,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 300,
+     "y": 40,
+     "id": "n_ask_order",
+     "kind": "ask",
+     "label": "Ask order ID / phone",
+     "config": {
+      "pattern": "(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])",
+      "question": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+      "variable": "order_ref",
+      "entityType": "text",
+      "unmatchedReply": "I haven't verified an order yet. Please repeat the exact seven-digit order ID slowly, one digit at a time, or share the ten-digit mobile number registered with the order."
+     }
+    },
+    {
+     "x": 560,
+     "y": 40,
+     "id": "n_api_lookup",
+     "kind": "api",
+     "label": "Order Lookup API",
+     "config": {
+      "text": "Thank you! Give me a moment while I pull up your order.",
+      "connection": "Honasa Order Lookup"
+     }
+    },
+    {
+     "x": 820,
+     "y": 40,
+     "id": "n_msg_notfound",
+     "kind": "message",
+     "label": "Order not found",
+     "config": {
+      "text": "I'm sorry — I couldn't find an order with those details in our system."
+     }
+    },
+    {
+     "x": 1080,
+     "y": 40,
+     "id": "n_ask_order2",
+     "kind": "ask",
+     "label": "Re-ask order ID / phone",
+     "config": {
+      "pattern": "(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])",
+      "question": "Please double-check the confirmation message and repeat the exact seven-digit order ID slowly, one digit at a time, or share the ten-digit registered mobile number.",
+      "variable": "order_ref2",
+      "entityType": "text",
+      "unmatchedReply": "I haven't verified an order yet. Please repeat the exact seven-digit order ID slowly, one digit at a time, or share the ten-digit mobile number registered with the order."
+     }
+    },
+    {
+     "x": 1340,
+     "y": 40,
+     "id": "n_api_lookup2",
+     "kind": "api",
+     "label": "Order Lookup API (retry)",
+     "config": {
+      "connection": "Honasa Order Lookup"
+     }
+    },
+    {
+     "x": 40,
+     "y": 170,
+     "id": "n_msg_cant_locate",
+     "kind": "message",
+     "label": "Lookup failed",
+     "config": {
+      "text": "I'm still unable to locate this order in our system."
+     }
+    },
+    {
+     "x": 300,
+     "y": 170,
+     "id": "n_intent_agent_lookup",
+     "kind": "intent",
+     "label": "Offer agent (lookup failed)",
+     "config": {
+      "prompt": "Would you like me to connect you to a support executive who can help find your order?",
+      "unmatchedReply": "I still haven't verified an order. Please share the exact seven-digit order ID or the ten-digit registered mobile number, or clearly say that you want a support executive.",
+      "identifierCorrection": {
+       "target": "n_api_lookup2",
+       "pattern": "(?<![0-9])([0-9]{10}|[0-9]{7})(?![0-9])",
+       "variable": "order_ref2",
+       "entityType": "text"
+      }
+     }
+    },
+    {
+     "x": 560,
+     "y": 170,
+     "id": "n_hub",
+     "kind": "intent",
+     "label": "What do you need?",
+     "config": {
+      "prompt": "I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+      "responseMode": "llm_grounded",
+      "responseDirective": "The caller's order was just found and its verified facts are loaded. Briefly confirm the order was found — you may name the product from the verified order facts — then ask exactly what they need: the order status and delivery details, or help with a return or replacement. Never pick an option for them."
+     }
+    },
+    {
+     "x": 820,
+     "y": 170,
+     "id": "n_msg_order_answer",
+     "kind": "message",
+     "label": "Answer from order facts",
+     "config": {
+      "text": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Answer the caller's most recent order question directly from the verified order facts: order status, expected delivery date or delivered date, courier name and whether tracking is live, order amount and payment mode, discount or cashback applied, and refund status with its amount, date and expected credit date. Lead with the exact fact asked, in one or two short sentences. For a broad question like where is my order, give the status plus the expected delivery or delivered date. If the caller asked about a refund and the refund status is none, say no refund is in process on this order. If the specific fact needed is not present in the verified facts, say it is not available right now and offer to connect a support executive. Never guess or invent a value."
+     }
+    },
+    {
+     "x": 1080,
+     "y": 170,
+     "id": "n_api_tracklink",
+     "kind": "api",
+     "label": "Send Tracking Link API",
+     "config": {
+      "connection": "Honasa Send Tracking Link"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 170,
+     "id": "n_msg_tracklink_ok",
+     "kind": "message",
+     "label": "Tracking link sent",
+     "config": {
+      "text": "Done — I've sent the tracking link on WhatsApp to your registered number. You can tap it anytime to see the live status.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Confirm the tracking link was just sent successfully on WhatsApp to the caller's registered mobile number — the send is system-verified. Do not promise anything else."
+     }
+    },
+    {
+     "x": 40,
+     "y": 300,
+     "id": "n_msg_tracklink_fail",
+     "kind": "message",
+     "label": "Tracking not live",
+     "config": {
+      "text": "I'm sorry — live tracking isn't available for this order yet. It becomes active once the order is shipped."
+     }
+    },
+    {
+     "x": 300,
+     "y": 300,
+     "id": "n_intent_reason",
+     "kind": "intent",
+     "label": "What's the issue?",
+     "config": {
+      "prompt": "Sure, I can help with that. Could you tell me what the issue is — is the product damaged, wrong or missing, is it defective or expired, or do you simply no longer need it?"
+     }
+    },
+    {
+     "x": 560,
+     "y": 300,
+     "id": "n_cond_eligible",
+     "kind": "condition",
+     "label": "Return eligible?",
+     "config": {
+      "value": "true",
+      "operator": "equals",
+      "variable": "return_eligible"
+     }
+    },
+    {
+     "x": 820,
+     "y": 300,
+     "id": "n_intent_ret_confirm",
+     "kind": "intent",
+     "label": "Confirm return",
+     "config": {
+      "prompt": "Good news — this order is eligible for return. Shall I raise the return request now?",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Tell the caller this order is eligible for return under the seven-day return policy — the eligibility is system-verified — and ask exactly whether you should raise the return request now."
+     }
+    },
+    {
+     "x": 1080,
+     "y": 300,
+     "id": "n_api_ret_com",
+     "kind": "api",
+     "label": "Return Request API",
+     "config": {
+      "connection": "Honasa Return Request"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 300,
+     "id": "n_msg_return_ok",
+     "kind": "message",
+     "label": "Return raised",
+     "config": {
+      "text": "Done — I've raised your return request. The return link will be shared over WhatsApp on your registered number; please complete the return by following that link.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Confirm the return request was just raised successfully — it is system-verified — and that the return link is being shared over WhatsApp on the caller's registered number, where they can complete the return by following the link."
+     }
+    },
+    {
+     "x": 40,
+     "y": 430,
+     "id": "n_msg_ret_declined",
+     "kind": "message",
+     "label": "Return declined",
+     "config": {
+      "text": "No problem — I won't raise a return for this order."
+     }
+    },
+    {
+     "x": 300,
+     "y": 430,
+     "id": "n_msg_ret_ineligible",
+     "kind": "message",
+     "label": "Return not eligible",
+     "config": {
+      "text": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Explain politely, using only the verified facts, why this order is not eligible for a return — the seven-day return window has closed, the item category is not returnable, or the order has not been delivered yet. Mention the seven-day policy briefly. Never offer an exception or promise a refund."
+     }
+    },
+    {
+     "x": 560,
+     "y": 430,
+     "id": "n_intent_agent_offer",
+     "kind": "intent",
+     "label": "Offer agent",
+     "config": {
+      "prompt": "Would you like me to connect you to a support executive about this?"
+     }
+    },
+    {
+     "x": 820,
+     "y": 430,
+     "id": "n_msg_okay_more",
+     "kind": "message",
+     "label": "Acknowledged",
+     "config": {
+      "text": "Alright."
+     }
+    },
+    {
+     "x": 1080,
+     "y": 430,
+     "id": "n_ask_dmg",
+     "kind": "ask",
+     "label": "Damage details",
+     "config": {
+      "question": "I'm really sorry about that. Could you tell me which product was damaged and what the damage looks like?",
+      "variable": "damage_details",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 430,
+     "id": "n_intent_dmg_choice",
+     "kind": "intent",
+     "label": "Damaged: replace or refund?",
+     "config": {
+      "prompt": "Thank you for the details. Would you prefer a replacement, or would you like to return it for a refund?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 560,
+     "id": "n_api_dmg_rep",
+     "kind": "api",
+     "label": "Damaged Replacement API",
+     "config": {
+      "connection": "Honasa Damaged Replacement"
+     }
+    },
+    {
+     "x": 300,
+     "y": 560,
+     "id": "n_api_dmg_ret",
+     "kind": "api",
+     "label": "Damaged Return API",
+     "config": {
+      "connection": "Honasa Damaged Return"
+     }
+    },
+    {
+     "x": 560,
+     "y": 560,
+     "id": "n_ask_wrong",
+     "kind": "ask",
+     "label": "Wrong item details",
+     "config": {
+      "question": "I apologize for the inconvenience. Could you tell me what you received, and what you had actually ordered?",
+      "variable": "wrong_details",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 820,
+     "y": 560,
+     "id": "n_intent_wrong_choice",
+     "kind": "intent",
+     "label": "Wrong: replace or refund?",
+     "config": {
+      "prompt": "Thanks for confirming. Would you like the correct product as a replacement, or would you prefer to return it for a refund?"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 560,
+     "id": "n_api_wrong_rep",
+     "kind": "api",
+     "label": "Wrong Item Replacement API",
+     "config": {
+      "connection": "Honasa Wrong Item Replacement"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 560,
+     "id": "n_api_wrong_ret",
+     "kind": "api",
+     "label": "Wrong Item Return API",
+     "config": {
+      "connection": "Honasa Wrong Item Return"
+     }
+    },
+    {
+     "x": 40,
+     "y": 690,
+     "id": "n_ask_missing",
+     "kind": "ask",
+     "label": "Missing item details",
+     "config": {
+      "question": "Sorry about that! Could you tell me which item is missing or incomplete in your order?",
+      "variable": "missing_details",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 300,
+     "y": 690,
+     "id": "n_intent_missing_choice",
+     "kind": "intent",
+     "label": "Missing: send or refund?",
+     "config": {
+      "prompt": "Thank you. Would you like us to send the missing item, or would you prefer a refund for it?"
+     }
+    },
+    {
+     "x": 560,
+     "y": 690,
+     "id": "n_api_missing_rep",
+     "kind": "api",
+     "label": "Missing Item Replacement API",
+     "config": {
+      "connection": "Honasa Missing Item Replacement"
+     }
+    },
+    {
+     "x": 820,
+     "y": 690,
+     "id": "n_api_missing_ret",
+     "kind": "api",
+     "label": "Missing Item Return API",
+     "config": {
+      "connection": "Honasa Missing Item Return"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 690,
+     "id": "n_ask_defect",
+     "kind": "ask",
+     "label": "Defect details",
+     "config": {
+      "question": "I'm sorry about this. Could you tell me which product it is, and whether it's not working properly or past its expiry?",
+      "variable": "defect_details",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 690,
+     "id": "n_intent_defect_choice",
+     "kind": "intent",
+     "label": "Defective: replace or refund?",
+     "config": {
+      "prompt": "Thank you for sharing that. Would you prefer a replacement, or a return with a refund?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 820,
+     "id": "n_api_defect_rep",
+     "kind": "api",
+     "label": "Defective Replacement API",
+     "config": {
+      "connection": "Honasa Defective Replacement"
+     }
+    },
+    {
+     "x": 300,
+     "y": 820,
+     "id": "n_api_defect_ret",
+     "kind": "api",
+     "label": "Defective Return API",
+     "config": {
+      "connection": "Honasa Defective Return"
+     }
+    },
+    {
+     "x": 560,
+     "y": 820,
+     "id": "n_msg_replace_ok",
+     "kind": "message",
+     "label": "Replacement raised",
+     "config": {
+      "text": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Confirm the replacement request was just raised successfully — it is system-verified. The replacement will be arranged, and a link with the next steps is being shared over WhatsApp on the caller's registered number."
+     }
+    },
+    {
+     "x": 820,
+     "y": 820,
+     "id": "n_msg_res_fail",
+     "kind": "message",
+     "label": "Resolution failed",
+     "config": {
+      "text": "I'm sorry — I couldn't raise this request in our system right now."
+     }
+    },
+    {
+     "x": 1080,
+     "y": 820,
+     "id": "n_api_escalate",
+     "kind": "api",
+     "label": "Support Escalation API",
+     "config": {
+      "connection": "Honasa Support Escalation"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 820,
+     "id": "n_handover",
+     "kind": "handover",
+     "label": "Transfer to support",
+     "config": {
+      "text": "Please stay on the line while I connect you to our support team.",
+      "queue": "customer_support"
+     }
+    },
+    {
+     "x": 40,
+     "y": 950,
+     "id": "n_hub_more",
+     "kind": "intent",
+     "label": "Anything else?",
+     "config": {
+      "prompt": "Is there anything else I can help you with — your order, or a return or replacement?"
+     }
+    },
+    {
+     "x": 300,
+     "y": 950,
+     "id": "n_end_thanks",
+     "kind": "end",
+     "label": "End call",
+     "config": {
+      "text": "Thank you for calling Honasa customer care. Have a lovely day!"
+     }
+    },
+    {
+     "x": 560,
+     "y": 950,
+     "id": "n_end_polite",
+     "kind": "end",
+     "label": "End (no agent wanted)",
+     "config": {
+      "text": "Alright! If you need anything later, we're just a call away. Thank you for calling Honasa. Have a great day!"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_n_start__n_ask_order",
+     "to": "n_ask_order",
+     "from": "n_start"
+    },
+    {
+     "id": "e_n_ask_order__n_api_lookup",
+     "to": "n_api_lookup",
+     "from": "n_ask_order"
+    },
+    {
+     "id": "e_n_ask_order__n_msg_cant_locate__5923",
+     "to": "n_msg_cant_locate",
+     "from": "n_ask_order",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_api_lookup__n_hub__3337",
+     "to": "n_hub",
+     "from": "n_api_lookup",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_lookup__n_msg_notfound__2636",
+     "to": "n_msg_notfound",
+     "from": "n_api_lookup",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_notfound__n_ask_order2",
+     "to": "n_ask_order2",
+     "from": "n_msg_notfound"
+    },
+    {
+     "id": "e_n_ask_order2__n_api_lookup2",
+     "to": "n_api_lookup2",
+     "from": "n_ask_order2"
+    },
+    {
+     "id": "e_n_ask_order2__n_msg_cant_locate__5923",
+     "to": "n_msg_cant_locate",
+     "from": "n_ask_order2",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_api_lookup2__n_hub__3337",
+     "to": "n_hub",
+     "from": "n_api_lookup2",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_lookup2__n_msg_cant_locate__2636",
+     "to": "n_msg_cant_locate",
+     "from": "n_api_lookup2",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_cant_locate__n_intent_agent_lookup",
+     "to": "n_intent_agent_lookup",
+     "from": "n_msg_cant_locate"
+    },
+    {
+     "id": "e_n_intent_agent_lookup__n_api_escalate__8350",
+     "to": "n_api_escalate",
+     "from": "n_intent_agent_lookup",
+     "label": "yes/yes please/sure/okay/ok/please do/go ahead/proceed/definitely/raise it/kar do/कर दो/haan/ji haan/हाँ/जी हाँ/ठीक है/ज़रूर/zaroor/connect me/agent/executive"
+    },
+    {
+     "id": "e_n_intent_agent_lookup__n_end_polite__8361",
+     "to": "n_end_polite",
+     "from": "n_intent_agent_lookup",
+     "label": "no/not now/don't/do not/later/leave it/rehne do/रहने दो/mat karo/मत करो/nahi/नहीं/i'll check/i will check/call later"
+    },
+    {
+     "id": "e_n_intent_agent_lookup__n_ask_order2__1131",
+     "to": "n_ask_order2",
+     "from": "n_intent_agent_lookup",
+     "label": "else"
+    },
+    {
+     "id": "e_n_hub__n_msg_order_answer__5292",
+     "to": "n_msg_order_answer",
+     "from": "n_hub",
+     "label": "order status?/where is my order?/when will it arrive?/when will i get it?/delivery date?/expected delivery?/how much did i pay?/order amount?/discount?/cashback?/refund status?/where is my refund?/refund kab milega?/kab aayega?/kitne ka tha?/track my order?/tracking status?/मेरा ऑर्डर कहाँ है?/डिलीवरी कब होगी?/रिफंड कब मिलेगा?/ऑर्डर का स्टेटस?/order status/where is my order/when will it arrive/delivery date/order amount/how much/discount/cashback/refund/tracking status/status/delivery/स्टेटस/रिफंड/डिलीवरी/कैशबैक/डिस्काउंट"
+    },
+    {
+     "id": "e_n_hub__n_api_tracklink__7690",
+     "to": "n_api_tracklink",
+     "from": "n_hub",
+     "label": "tracking link/send the tracking link/share the tracking link/send me the link/whatsapp the link/link bhej do/ट्रैकिंग लिंक/लिंक भेज दो/tracking link?/send the link?"
+    },
+    {
+     "id": "e_n_hub__n_ask_dmg__2290",
+     "to": "n_ask_dmg",
+     "from": "n_hub",
+     "label": "damaged/broken/leaking/leaked/torn/crushed/damage/toota hua/toot gaya/टूटा हुआ/टूट गया/खराब निकला/डैमेज/damaged product?/received a damaged product?"
+    },
+    {
+     "id": "e_n_hub__n_ask_wrong__7945",
+     "to": "n_ask_wrong",
+     "from": "n_hub",
+     "label": "wrong product/wrong item/different product/different item/not what i ordered/kuch aur aaya/galat product/galat item/गलत प्रोडक्ट/गलत आइटम/wrong product?/wrong item?"
+    },
+    {
+     "id": "e_n_hub__n_ask_missing__8277",
+     "to": "n_ask_missing",
+     "from": "n_hub",
+     "label": "missing/item missing/incomplete/not in the box/item short/kam nikla/कम निकला/मिसिंग/missing item?/item missing?"
+    },
+    {
+     "id": "e_n_hub__n_ask_defect__4954",
+     "to": "n_ask_defect",
+     "from": "n_hub",
+     "label": "defective/not working/doesn't work/does not work/stopped working/expired/expiry/past expiry/defect/kaam nahi kar raha/काम नहीं कर रहा/एक्सपायर/डिफेक्टिव/defective?/expired product?"
+    },
+    {
+     "id": "e_n_hub__n_cond_eligible__7566",
+     "to": "n_cond_eligible",
+     "from": "n_hub",
+     "label": "can i return/can i return?/can i still return/return policy/return policy?/is this returnable/returnable?/eligible for return/eligible for return?/रिटर्न हो सकता है/रिटर्न हो सकता है?/return kar sakta/return kar sakti/don't need/dont need/no longer need/don't want it/dont want it/need it anymore/want it anymore/changed my mind/nahi chahiye/नहीं चाहिए/man badal gaya/मन बदल गया"
+    },
+    {
+     "id": "e_n_hub__n_intent_reason__3617",
+     "to": "n_intent_reason",
+     "from": "n_hub",
+     "label": "return/i want to return/return my product/return this order/send it back/return karna hai/wapas karna hai/रिटर्न करना है/वापस करना है/रिटर्न/replace/replacement/exchange/badalna hai/बदलना है"
+    },
+    {
+     "id": "e_n_hub__n_end_thanks__672",
+     "to": "n_end_thanks",
+     "from": "n_hub",
+     "label": "no/nothing/nothing else/no thanks/that's all/thats all/that is all/bye/thank you/thanks/bas/बस/bas itna hi/बस इतना ही/nahi/नहीं/धन्यवाद"
+    },
+    {
+     "id": "e_n_hub_more__n_msg_order_answer__5292",
+     "to": "n_msg_order_answer",
+     "from": "n_hub_more",
+     "label": "order status?/where is my order?/when will it arrive?/when will i get it?/delivery date?/expected delivery?/how much did i pay?/order amount?/discount?/cashback?/refund status?/where is my refund?/refund kab milega?/kab aayega?/kitne ka tha?/track my order?/tracking status?/मेरा ऑर्डर कहाँ है?/डिलीवरी कब होगी?/रिफंड कब मिलेगा?/ऑर्डर का स्टेटस?/order status/where is my order/when will it arrive/delivery date/order amount/how much/discount/cashback/refund/tracking status/status/delivery/स्टेटस/रिफंड/डिलीवरी/कैशबैक/डिस्काउंट"
+    },
+    {
+     "id": "e_n_hub_more__n_api_tracklink__7690",
+     "to": "n_api_tracklink",
+     "from": "n_hub_more",
+     "label": "tracking link/send the tracking link/share the tracking link/send me the link/whatsapp the link/link bhej do/ट्रैकिंग लिंक/लिंक भेज दो/tracking link?/send the link?"
+    },
+    {
+     "id": "e_n_hub_more__n_ask_dmg__2290",
+     "to": "n_ask_dmg",
+     "from": "n_hub_more",
+     "label": "damaged/broken/leaking/leaked/torn/crushed/damage/toota hua/toot gaya/टूटा हुआ/टूट गया/खराब निकला/डैमेज/damaged product?/received a damaged product?"
+    },
+    {
+     "id": "e_n_hub_more__n_ask_wrong__7945",
+     "to": "n_ask_wrong",
+     "from": "n_hub_more",
+     "label": "wrong product/wrong item/different product/different item/not what i ordered/kuch aur aaya/galat product/galat item/गलत प्रोडक्ट/गलत आइटम/wrong product?/wrong item?"
+    },
+    {
+     "id": "e_n_hub_more__n_ask_missing__8277",
+     "to": "n_ask_missing",
+     "from": "n_hub_more",
+     "label": "missing/item missing/incomplete/not in the box/item short/kam nikla/कम निकला/मिसिंग/missing item?/item missing?"
+    },
+    {
+     "id": "e_n_hub_more__n_ask_defect__4954",
+     "to": "n_ask_defect",
+     "from": "n_hub_more",
+     "label": "defective/not working/doesn't work/does not work/stopped working/expired/expiry/past expiry/defect/kaam nahi kar raha/काम नहीं कर रहा/एक्सपायर/डिफेक्टिव/defective?/expired product?"
+    },
+    {
+     "id": "e_n_hub_more__n_cond_eligible__7566",
+     "to": "n_cond_eligible",
+     "from": "n_hub_more",
+     "label": "can i return/can i return?/can i still return/return policy/return policy?/is this returnable/returnable?/eligible for return/eligible for return?/रिटर्न हो सकता है/रिटर्न हो सकता है?/return kar sakta/return kar sakti/don't need/dont need/no longer need/don't want it/dont want it/need it anymore/want it anymore/changed my mind/nahi chahiye/नहीं चाहिए/man badal gaya/मन बदल गया"
+    },
+    {
+     "id": "e_n_hub_more__n_intent_reason__3617",
+     "to": "n_intent_reason",
+     "from": "n_hub_more",
+     "label": "return/i want to return/return my product/return this order/send it back/return karna hai/wapas karna hai/रिटर्न करना है/वापस करना है/रिटर्न/replace/replacement/exchange/badalna hai/बदलना है"
+    },
+    {
+     "id": "e_n_hub_more__n_end_thanks__672",
+     "to": "n_end_thanks",
+     "from": "n_hub_more",
+     "label": "no/nothing/nothing else/no thanks/that's all/thats all/that is all/bye/thank you/thanks/bas/बस/bas itna hi/बस इतना ही/nahi/नहीं/धन्यवाद"
+    },
+    {
+     "id": "e_n_msg_order_answer__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_order_answer"
+    },
+    {
+     "id": "e_n_api_tracklink__n_msg_tracklink_ok__3337",
+     "to": "n_msg_tracklink_ok",
+     "from": "n_api_tracklink",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_tracklink__n_msg_tracklink_fail__2636",
+     "to": "n_msg_tracklink_fail",
+     "from": "n_api_tracklink",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_tracklink_ok__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_tracklink_ok"
+    },
+    {
+     "id": "e_n_msg_tracklink_fail__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_tracklink_fail"
+    },
+    {
+     "id": "e_n_intent_reason__n_ask_dmg__2290",
+     "to": "n_ask_dmg",
+     "from": "n_intent_reason",
+     "label": "damaged/broken/leaking/leaked/torn/crushed/damage/toota hua/toot gaya/टूटा हुआ/टूट गया/खराब निकला/डैमेज/damaged product?/received a damaged product?"
+    },
+    {
+     "id": "e_n_intent_reason__n_ask_wrong__7945",
+     "to": "n_ask_wrong",
+     "from": "n_intent_reason",
+     "label": "wrong product/wrong item/different product/different item/not what i ordered/kuch aur aaya/galat product/galat item/गलत प्रोडक्ट/गलत आइटम/wrong product?/wrong item?"
+    },
+    {
+     "id": "e_n_intent_reason__n_ask_missing__8277",
+     "to": "n_ask_missing",
+     "from": "n_intent_reason",
+     "label": "missing/item missing/incomplete/not in the box/item short/kam nikla/कम निकला/मिसिंग/missing item?/item missing?"
+    },
+    {
+     "id": "e_n_intent_reason__n_ask_defect__4954",
+     "to": "n_ask_defect",
+     "from": "n_intent_reason",
+     "label": "defective/not working/doesn't work/does not work/stopped working/expired/expiry/past expiry/defect/kaam nahi kar raha/काम नहीं कर रहा/एक्सपायर/डिफेक्टिव/defective?/expired product?"
+    },
+    {
+     "id": "e_n_intent_reason__n_cond_eligible__5486",
+     "to": "n_cond_eligible",
+     "from": "n_intent_reason",
+     "label": "no longer need/don't need/dont need/don't want/dont want/need it anymore/want it anymore/changed my mind/just return/simply return/no longer/nothing wrong/nahi chahiye/नहीं चाहिए/man badal gaya/मन बदल गया"
+    },
+    {
+     "id": "e_n_intent_reason__n_cond_eligible__1131",
+     "to": "n_cond_eligible",
+     "from": "n_intent_reason",
+     "label": "else"
+    },
+    {
+     "id": "e_n_cond_eligible__n_intent_ret_confirm__9249",
+     "to": "n_intent_ret_confirm",
+     "from": "n_cond_eligible",
+     "label": "true"
+    },
+    {
+     "id": "e_n_cond_eligible__n_msg_ret_ineligible__7716",
+     "to": "n_msg_ret_ineligible",
+     "from": "n_cond_eligible",
+     "label": "false"
+    },
+    {
+     "id": "e_n_intent_ret_confirm__n_api_ret_com__9042",
+     "to": "n_api_ret_com",
+     "from": "n_intent_ret_confirm",
+     "label": "yes/yes please/sure/okay/ok/please do/go ahead/proceed/definitely/raise it/kar do/कर दो/haan/ji haan/हाँ/जी हाँ/ठीक है/ज़रूर/zaroor"
+    },
+    {
+     "id": "e_n_intent_ret_confirm__n_msg_ret_declined__5162",
+     "to": "n_msg_ret_declined",
+     "from": "n_intent_ret_confirm",
+     "label": "no/not now/don't/do not/later/leave it/rehne do/रहने दो/mat karo/मत करो/nahi/नहीं/cancel/rehne dijiye"
+    },
+    {
+     "id": "e_n_api_ret_com__n_msg_return_ok__3337",
+     "to": "n_msg_return_ok",
+     "from": "n_api_ret_com",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_ret_com__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_ret_com",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_return_ok__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_return_ok"
+    },
+    {
+     "id": "e_n_msg_ret_declined__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_ret_declined"
+    },
+    {
+     "id": "e_n_msg_ret_ineligible__n_intent_agent_offer",
+     "to": "n_intent_agent_offer",
+     "from": "n_msg_ret_ineligible"
+    },
+    {
+     "id": "e_n_intent_agent_offer__n_api_escalate__8350",
+     "to": "n_api_escalate",
+     "from": "n_intent_agent_offer",
+     "label": "yes/yes please/sure/okay/ok/please do/go ahead/proceed/definitely/raise it/kar do/कर दो/haan/ji haan/हाँ/जी हाँ/ठीक है/ज़रूर/zaroor/connect me/agent/executive"
+    },
+    {
+     "id": "e_n_intent_agent_offer__n_msg_okay_more__6715",
+     "to": "n_msg_okay_more",
+     "from": "n_intent_agent_offer",
+     "label": "no/not now/don't/do not/later/leave it/rehne do/रहने दो/mat karo/मत करो/nahi/नहीं/it's okay/its okay/theek hai"
+    },
+    {
+     "id": "e_n_intent_agent_offer__n_msg_okay_more__1131",
+     "to": "n_msg_okay_more",
+     "from": "n_intent_agent_offer",
+     "label": "else"
+    },
+    {
+     "id": "e_n_msg_okay_more__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_okay_more"
+    },
+    {
+     "id": "e_n_ask_dmg__n_intent_dmg_choice",
+     "to": "n_intent_dmg_choice",
+     "from": "n_ask_dmg"
+    },
+    {
+     "id": "e_n_ask_dmg__n_intent_agent_offer__5923",
+     "to": "n_intent_agent_offer",
+     "from": "n_ask_dmg",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_intent_dmg_choice__n_api_dmg_rep__3986",
+     "to": "n_api_dmg_rep",
+     "from": "n_intent_dmg_choice",
+     "label": "replacement/replace/replace it/new one/naya bhej do/नया भेज दो/badal do/बदल दो/exchange"
+    },
+    {
+     "id": "e_n_intent_dmg_choice__n_api_dmg_ret__4693",
+     "to": "n_api_dmg_ret",
+     "from": "n_intent_dmg_choice",
+     "label": "refund/return/money back/paise wapas/पैसे वापस/रिफंड/refund chahiye"
+    },
+    {
+     "id": "e_n_api_dmg_rep__n_msg_replace_ok__3337",
+     "to": "n_msg_replace_ok",
+     "from": "n_api_dmg_rep",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_dmg_rep__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_dmg_rep",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_api_dmg_ret__n_msg_return_ok__3337",
+     "to": "n_msg_return_ok",
+     "from": "n_api_dmg_ret",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_dmg_ret__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_dmg_ret",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_ask_wrong__n_intent_wrong_choice",
+     "to": "n_intent_wrong_choice",
+     "from": "n_ask_wrong"
+    },
+    {
+     "id": "e_n_ask_wrong__n_intent_agent_offer__5923",
+     "to": "n_intent_agent_offer",
+     "from": "n_ask_wrong",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_intent_wrong_choice__n_api_wrong_rep__8704",
+     "to": "n_api_wrong_rep",
+     "from": "n_intent_wrong_choice",
+     "label": "replacement/replace/correct product/correct item/sahi wala bhej do/सही वाला भेज दो/exchange"
+    },
+    {
+     "id": "e_n_intent_wrong_choice__n_api_wrong_ret__7463",
+     "to": "n_api_wrong_ret",
+     "from": "n_intent_wrong_choice",
+     "label": "refund/return/money back/paise wapas/पैसे वापस/रिफंड"
+    },
+    {
+     "id": "e_n_api_wrong_rep__n_msg_replace_ok__3337",
+     "to": "n_msg_replace_ok",
+     "from": "n_api_wrong_rep",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_wrong_rep__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_wrong_rep",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_api_wrong_ret__n_msg_return_ok__3337",
+     "to": "n_msg_return_ok",
+     "from": "n_api_wrong_ret",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_wrong_ret__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_wrong_ret",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_ask_missing__n_intent_missing_choice",
+     "to": "n_intent_missing_choice",
+     "from": "n_ask_missing"
+    },
+    {
+     "id": "e_n_ask_missing__n_intent_agent_offer__5923",
+     "to": "n_intent_agent_offer",
+     "from": "n_ask_missing",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_intent_missing_choice__n_api_missing_rep__8746",
+     "to": "n_api_missing_rep",
+     "from": "n_intent_missing_choice",
+     "label": "send the missing item/send it/send the item/replacement/replace/bhej do/भेज दो/missing item bhejo"
+    },
+    {
+     "id": "e_n_intent_missing_choice__n_api_missing_ret__9756",
+     "to": "n_api_missing_ret",
+     "from": "n_intent_missing_choice",
+     "label": "refund/money back/paise wapas/पैसे वापस/रिफंड"
+    },
+    {
+     "id": "e_n_api_missing_rep__n_msg_replace_ok__3337",
+     "to": "n_msg_replace_ok",
+     "from": "n_api_missing_rep",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_missing_rep__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_missing_rep",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_api_missing_ret__n_msg_return_ok__3337",
+     "to": "n_msg_return_ok",
+     "from": "n_api_missing_ret",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_missing_ret__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_missing_ret",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_ask_defect__n_intent_defect_choice",
+     "to": "n_intent_defect_choice",
+     "from": "n_ask_defect"
+    },
+    {
+     "id": "e_n_ask_defect__n_intent_agent_offer__5923",
+     "to": "n_intent_agent_offer",
+     "from": "n_ask_defect",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_intent_defect_choice__n_api_defect_rep__8432",
+     "to": "n_api_defect_rep",
+     "from": "n_intent_defect_choice",
+     "label": "replacement/replace/new one/naya bhej do/नया भेज दो/exchange"
+    },
+    {
+     "id": "e_n_intent_defect_choice__n_api_defect_ret__7463",
+     "to": "n_api_defect_ret",
+     "from": "n_intent_defect_choice",
+     "label": "refund/return/money back/paise wapas/पैसे वापस/रिफंड"
+    },
+    {
+     "id": "e_n_api_defect_rep__n_msg_replace_ok__3337",
+     "to": "n_msg_replace_ok",
+     "from": "n_api_defect_rep",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_defect_rep__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_defect_rep",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_api_defect_ret__n_msg_return_ok__3337",
+     "to": "n_msg_return_ok",
+     "from": "n_api_defect_ret",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_defect_ret__n_msg_res_fail__2636",
+     "to": "n_msg_res_fail",
+     "from": "n_api_defect_ret",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_msg_replace_ok__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_msg_replace_ok"
+    },
+    {
+     "id": "e_n_msg_res_fail__n_intent_agent_offer",
+     "to": "n_intent_agent_offer",
+     "from": "n_msg_res_fail"
+    },
+    {
+     "id": "e_n_api_escalate__n_handover",
+     "to": "n_handover",
+     "from": "n_api_escalate"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_59c696535b36",
+   "name": "cancellation_out_of_scope",
+   "code": "cancellation_out_of_scope",
+   "samples": [
+    "cancel my order",
+    "i want to cancel my order",
+    "how do i cancel my order",
+    "please cancel this order",
+    "order cancel karna hai",
+    "cancel the order",
+    "मुझे ऑर्डर कैंसिल करना है",
+    "ऑर्डर कैंसिल कर दो"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_2c9d73885d4f",
+   "name": "complaint_escalation",
+   "code": "complaint_escalation",
+   "samples": [
+    "my issue is not resolved",
+    "i want to file a complaint",
+    "i want to complain",
+    "this is my third call about this",
+    "i want to speak to a senior",
+    "escalate this issue",
+    "shikayat karni hai",
+    "शिकायत दर्ज करनी है",
+    "मेरी समस्या हल नहीं हुई"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_9aa195c069d1",
+   "name": "damaged_or_quality_issue",
+   "code": "damaged_or_quality_issue",
+   "samples": [
+    "i received a damaged product",
+    "my product is damaged",
+    "product is damaged",
+    "came broken",
+    "arrived broken",
+    "arrived damaged",
+    "product is broken",
+    "broken product",
+    "the bottle is leaking",
+    "product is defective",
+    "my product is not working",
+    "i received an expired product",
+    "the product is expired",
+    "damaged product mila",
+    "product toota hua aaya",
+    "product kharab nikla",
+    "product kaam nahi kar raha",
+    "मुझे खराब प्रोडक्ट मिला",
+    "प्रोडक्ट टूटा हुआ आया",
+    "प्रोडक्ट एक्सपायर हो गया है",
+    "प्रोडक्ट काम नहीं कर रहा"
+   ],
+   "route": "workflow:wf_c449f1421055",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_9c6a7107385c",
+   "name": "order_fact_question",
+   "code": "order_fact_question",
+   "samples": [
+    "what was my order amount again",
+    "which courier is delivering my order",
+    "what date was my order delivered",
+    "when was my order placed",
+    "how much refund will i get",
+    "what is the expected date of my refund",
+    "what was the discount on my order",
+    "kitna cashback mila tha",
+    "मेरा ऑर्डर कब डिलीवर हुआ था",
+    "कितना रिफंड मिलेगा"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_f0d6c8c0e7c7",
+   "name": "order_information",
+   "code": "order_information",
+   "samples": [
+    "where is my order",
+    "order status",
+    "what is the status of my order",
+    "tell me where my order is",
+    "i want to check my order",
+    "check my order status",
+    "when will my order arrive",
+    "when will i get my order",
+    "when will my order be delivered",
+    "track my order",
+    "can you share the tracking link",
+    "send me the tracking link",
+    "what is my order amount",
+    "how much was my order",
+    "did i receive a discount",
+    "did i get cashback on my order",
+    "where is my refund",
+    "what is my refund status",
+    "refund status of my order",
+    "mera order kahan hai",
+    "mera delivery kahan hai",
+    "meri delivery kahan hai",
+    "delivery kaha hai",
+    "aap meri delivery bata sakte ho",
+    "order ka status batao",
+    "mera refund kahan hai",
+    "मेरा ऑर्डर कहाँ है",
+    "ऑर्डर का स्टेटस बताइए",
+    "डिलीवरी कब होगी",
+    "मेरा डिलीवरी कहाँ है",
+    "मेरी डिलीवरी कहाँ है",
+    "मेरा ऑर्डर डिलीवरी कहाँ है",
+    "आप मेरी डिलीवरी बता सकते हैं",
+    "मेरा रिफंड कहाँ है",
+    "ट्रैकिंग लिंक भेज दो"
+   ],
+   "route": "workflow:wf_c449f1421055",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_32f8c1b9e877",
+   "name": "return_eligibility",
+   "code": "return_eligibility",
+   "samples": [
+    "can i return my product",
+    "is my product returnable",
+    "am i eligible for a return",
+    "can i still return my order",
+    "is my order eligible for return",
+    "kya main product return kar sakta hoon",
+    "क्या मैं प्रोडक्ट रिटर्न कर सकती हूँ",
+    "क्या मेरा ऑर्डर रिटर्न हो सकता है"
+   ],
+   "route": "workflow:wf_c449f1421055",
+   "workflow_id": null,
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_6884ecff2fe8",
+   "name": "return_replacement_request",
+   "code": "return_replacement_request",
+   "samples": [
+    "i want to return my product",
+    "return my order",
+    "i want to return this",
+    "how do i return my product",
+    "i want a replacement",
+    "replace my product",
+    "i want to exchange my product",
+    "i want my money back for this product",
+    "return karna hai",
+    "product wapas karna hai",
+    "replace karna hai",
+    "रिटर्न करना है",
+    "प्रोडक्ट वापस करना है",
+    "रिप्लेस करना है",
+    "मुझे प्रोडक्ट बदलना है"
+   ],
+   "route": "workflow:wf_c449f1421055",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_292998d849e2",
+   "name": "wrong_or_missing_item",
+   "code": "wrong_or_missing_item",
+   "samples": [
+    "i received the wrong product",
+    "wrong item delivered",
+    "this is not what i ordered",
+    "i got a different product",
+    "an item is missing from my order",
+    "product is missing",
+    "my order is incomplete",
+    "one item is not in the box",
+    "galat product aaya hai",
+    "order mein item missing hai",
+    "मुझे गलत प्रोडक्ट मिला",
+    "ऑर्डर में आइटम मिसिंग है",
+    "ऑर्डर अधूरा आया है"
+   ],
+   "route": "workflow:wf_c449f1421055",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_02975959d2af",
+   "name": "Honasa Defective Return",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_0c143efa2b7b",
+   "name": "Honasa Damaged Return",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_2be8f946ce70",
+   "name": "Honasa Damaged Replacement",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_7c34bcbde6d5",
+   "name": "Honasa Missing Item Return",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_7c787fe7498d",
+   "name": "Honasa Order Lookup",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "verified",
+     "target": "customer_verified"
+    },
+    {
+     "source": "order_id",
+     "target": "order_id"
+    },
+    {
+     "source": "customer_name",
+     "target": "customer_name"
+    },
+    {
+     "source": "order_status",
+     "target": "order_status"
+    },
+    {
+     "source": "product_summary",
+     "target": "order_items"
+    },
+    {
+     "source": "item_count",
+     "target": "item_count"
+    },
+    {
+     "source": "order_placed_on",
+     "target": "order_placed_on"
+    },
+    {
+     "source": "shipped_on",
+     "target": "shipped_on"
+    },
+    {
+     "source": "expected_delivery_date",
+     "target": "expected_delivery_date"
+    },
+    {
+     "source": "delivered_on",
+     "target": "delivered_on"
+    },
+    {
+     "source": "days_since_delivery",
+     "target": "days_since_delivery"
+    },
+    {
+     "source": "courier_name",
+     "target": "courier_name"
+    },
+    {
+     "source": "tracking_available",
+     "target": "tracking_available"
+    },
+    {
+     "source": "order_amount_inr",
+     "target": "order_amount_inr"
+    },
+    {
+     "source": "payment_mode",
+     "target": "payment_mode"
+    },
+    {
+     "source": "discount_inr",
+     "target": "discount_inr"
+    },
+    {
+     "source": "cashback_inr",
+     "target": "cashback_inr"
+    },
+    {
+     "source": "refund_status",
+     "target": "refund_status"
+    },
+    {
+     "source": "refund_amount_inr",
+     "target": "refund_amount_inr"
+    },
+    {
+     "source": "refund_initiated_on",
+     "target": "refund_initiated_on"
+    },
+    {
+     "source": "refund_expected_by",
+     "target": "refund_expected_by"
+    },
+    {
+     "source": "refund_mode",
+     "target": "refund_mode"
+    },
+    {
+     "source": "return_eligible",
+     "target": "return_eligible"
+    },
+    {
+     "source": "return_window_days",
+     "target": "return_window_days"
+    },
+    {
+     "source": "return_window_days_left",
+     "target": "return_window_days_left"
+    },
+    {
+     "source": "return_ineligible_reason",
+     "target": "return_ineligible_reason"
+    },
+    {
+     "source": "registered_phone_masked",
+     "target": "registered_phone_masked"
+    },
+    {
+     "source": "multiple_orders_on_phone",
+     "target": "multiple_orders_on_phone"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_aa89c118683a",
+   "name": "Honasa Support Escalation",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "escalation_ticket_id"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_b3c65c8407c7",
+   "name": "Honasa Wrong Item Replacement",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_bc39d3322b42",
+   "name": "Honasa Defective Replacement",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_c0ab57d7ae89",
+   "name": "Honasa Missing Item Replacement",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_cf555419b60a",
+   "name": "Honasa Send Tracking Link",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "sent",
+     "target": "tracking_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_e604b5caeee0",
+   "name": "Honasa Return Request",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_e9953c9a3a9c",
+   "name": "Honasa Wrong Item Return",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "request_id",
+     "target": "resolution_request_id"
+    },
+    {
+     "source": "resolution",
+     "target": "resolution_type"
+    },
+    {
+     "source": "issue_type",
+     "target": "resolution_issue_type"
+    },
+    {
+     "source": "whatsapp_link_sent",
+     "target": "whatsapp_link_sent"
+    },
+    {
+     "source": "whatsapp_number_masked",
+     "target": "whatsapp_number_masked"
+    }
+   ],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": [
+  {
+   "id": "rcs_9b3d4ba47f02",
+   "name": "Verified order facts",
+   "test_payload": {
+    "order_id": "7001001",
+    "order_items": "Mamaearth Vitamin C Face Wash and Mamaearth Onion Hair Oil",
+    "cashback_inr": 0,
+    "courier_name": "Delhivery",
+    "delivered_on": "recently delivered",
+    "discount_inr": 50,
+    "order_status": "delivered",
+    "payment_mode": "prepaid",
+    "customer_name": "Rekha Nair",
+    "refund_status": "none",
+    "return_eligible": true,
+    "order_amount_inr": 698,
+    "identity_verified": false,
+    "return_window_days": 7
+   },
+   "fields": []
+  }
+ ]
+}

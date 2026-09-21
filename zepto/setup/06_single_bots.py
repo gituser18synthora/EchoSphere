@@ -1147,7 +1147,11 @@ def build_mdnd_workflow() -> tuple[list, list]:
         "Natural Hinglish, one short question only, offering the options "
         "customer, guard, ghar ka koi member, ya koi aur.")
     nodes = layout([
-        N("n_start", "start", "Call starts", {"semanticSlots": "mdnd_v1"}),
+        # Behaviour v2: a 'question'-labelled incident narrative at the
+        # free-text ask is stored as the answer (cv_7786bc42deca) — declared
+        # HERE, on the tenant's definition, not in the shared engine.
+        N("n_start", "start", "Call starts", {"semanticSlots": "mdnd_v1",
+                                              "behavior": {"version": 2}}),
         N("n_ask_issue_desc", "ask", "Ticket readout + what happened", {
             "question": ("आपके ticket पर MDND का deduction दिख रहा है। "
                          "बताइए — क्या हुआ था?"),

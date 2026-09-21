@@ -297,6 +297,35 @@ class Release(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     checklist: Mapped[list | None] = mapped_column(JSON, nullable=True)
     diff: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # {workflow_id: version} frozen when this release was published — the
+    # runtime executes exactly these workflow revisions (see
+    # shared/orchestration/workflow_engine.load_workflow_definition).
+    # Deferred: environments without migration a1b2c3d4e5f6 keep working.
+    pinned_workflows: Mapped[dict | None] = mapped_column(JSON, nullable=True, deferred=True)
+
+
+class WorkflowRevision(Base, TimestampMixin):
+    """Immutable snapshot of a workflow definition at one saved version.
+
+    Written on every workflow save (when the table exists); read when a
+    published release pins a version older than the workflow's latest save.
+    """
+
+    __tablename__ = "workflow_revisions"
+    __table_args__ = (
+        Index("ix_workflow_revisions_wf_version", "workflow_id", "version", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(String(ID_LEN), ForeignKey("workflows.id"), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(ID_LEN), nullable=False, index=True)
+    bot_id: Mapped[str] = mapped_column(String(ID_LEN), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    nodes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    edges: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    behavior_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(ID_LEN), nullable=True)
 
 
 class PlatformTemplate(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):

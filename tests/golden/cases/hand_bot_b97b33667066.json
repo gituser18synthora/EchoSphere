@@ -1,0 +1,88 @@
+{
+ "bot": "bot_b97b33667066",
+ "cases": [
+  {
+   "bot": "bot_b97b33667066",
+   "name": "collections 8-30: partial commit",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "aadha abhi de sakta hoon"
+    },
+    {
+     "text": "haan"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_8_30_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "aadha abhi de sakta hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 8-30 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 8-30 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_ptype"
+     ],
+     "reply": "Bahut achha! Kya aap apna poora overdue amount pay karenge, ya partial payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

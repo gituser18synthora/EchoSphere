@@ -471,8 +471,9 @@ Two wire formats, selected by the `transport` query parameter on the WS URL
   (up to ~2 s of already-shipped audio); disable via
   `FREESWITCH_SEND_KILL_AUDIO=false` for module builds that reject it.
 
-- **`mod_audio_fork`** (`?transport=audio_fork`): fork started in `mono 16k`
-  mode — inbound binary frames are caller-only mono L16 PCM at **16 kHz**
+- **`mod_audio_fork`** (`?transport=audio_fork`): fork started in `mono 8k`
+  mode — inbound binary frames are caller-only mono L16 PCM at **8 kHz** (the
+  native telephony rate; the runtime and streaming STT consume it unchanged)
   (this rate also feeds STT directly). Bot audio out:
 
   ```json

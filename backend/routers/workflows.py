@@ -19,6 +19,7 @@ from shared.db.mysql import get_db
 from shared.models import User, VoiceBot, Workflow
 from shared.readiness import refresh_readiness
 from backend.serializers import serialize_workflow
+from shared.orchestration.behavior import LATEST_BEHAVIOR_VERSION, stamp_behavior
 
 router = APIRouter(tags=["Workflows"])
 
@@ -38,6 +39,23 @@ def _latest_workflow(db: Session, bot_id: str) -> Workflow | None:
         .limit(1)
     )
     return db.get(Workflow, latest_id) if latest_id else None
+
+
+def _snapshot_revision(db: Session, w: Workflow, user: User) -> None:
+    """Store an immutable copy of this save so a published release can keep
+    executing it after later edits. No-op until migration a1b2c3d4e5f6."""
+    from shared.db.schema_features import table_exists
+    from shared.models import WorkflowRevision
+    from shared.orchestration.behavior import resolve_behavior
+
+    if not table_exists("workflow_revisions") or not (w.nodes or []):
+        return
+    db.add(WorkflowRevision(
+        id=new_id("wfr"), workflow_id=w.id, tenant_id=w.tenant_id, bot_id=w.bot_id,
+        version=w.version, name=w.name, nodes=w.nodes, edges=w.edges,
+        behavior_version=resolve_behavior({"nodes": w.nodes or []}).version,
+        created_by=user.id,
+    ))
 
 
 def _bot_checked(db: Session, bot_id: str, user: User) -> VoiceBot:
@@ -215,6 +233,11 @@ def save_bot_workflow(
         errors, computed_issues = validate_definition(nodes, edges)
         if errors:
             raise ApiError("Workflow validation failed.", 422, errors=errors)
+        if w.version == 0 and not (w.nodes or []):
+            # A brand-new definition runs on the latest engine behaviour;
+            # existing definitions keep the version they were tested under
+            # (see shared/orchestration/behavior.py).
+            stamp_behavior(nodes, LATEST_BEHAVIOR_VERSION)
         w.nodes = nodes
         w.edges = edges
         # Issues are server-computed and authoritative — client-supplied
@@ -224,6 +247,7 @@ def save_bot_workflow(
         w.status = body.status
     w.version += 1
     w.updated_by = user.id
+    _snapshot_revision(db, w, user)
     refresh_readiness(db, bot, keys=("r5",))
     record_audit(
         db, user=user, action="Saved workflow", entity_type="workflow", entity_id=w.id,

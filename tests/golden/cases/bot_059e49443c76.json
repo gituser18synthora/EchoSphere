@@ -1,0 +1,2729 @@
+{
+ "bot": "bot_059e49443c76",
+ "cases": [
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "01 graduate books seat (mocked booking success)",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "graduation complete ho gayi"
+    },
+    {
+     "text": "haan kar do book"
+    },
+    {
+     "text": "haan pakka aaunga"
+    },
+    {
+     "text": "haan papa aayenge",
+     "mocks": {
+      "Frankfinn Book Seminar Seat": null
+     }
+    },
+    {
+     "text": "haan mil gaya"
+    },
+    {
+     "text": "nahi bas, thank you"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "graduation complete ho gayi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan kar do book",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan pakka aaunga",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sure",
+      "n_ask_parents"
+     ],
+     "reply": "Perfect! और क्या आपके parents आपके साथ आ पाएँगे? Parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship मिल सकती है।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan papa aayenge",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_parents",
+      "n_api_book",
+      "n_msg_confirmed",
+      "n_hub_sms"
+     ],
+     "reply": "बहुत बढ़िया! एक moment दीजिए — मैं आपकी seat book कर रही हूँ। बधाई हो — आपकी seat confirm हो गई है! मैंने आपको SMS भेज दिया है, जिसमें center का address, आपका appointment number, date और timing है। क्या आपको SMS मिला? क्या आपको SMS receive हुआ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "haan papa aayenge",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan mil gaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sms",
+      "n_msg_id",
+      "n_hub_anything"
+     ],
+     "reply": "और एक बहुत ज़रूरी बात — seminar में entry के लिए अपना और साथ आने वाले parents का Aadhaar card ज़रूर लेकर आइएगा — Aadhaar के बिना entry नहीं हो पाती। साथ में SMS वाला appointment number भी। और जब भी आपको call करनी हो, हमारा inbound number है 1 8 0 0, 2 5 8, 7 3 3 2। क्या मैं आपकी किसी और बात में help कर सकती हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "haan papa aayenge",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi bas, thank you",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_anything",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "Thank you very much for your time! आप बात कर रहे थे Priya से, Frankfinn Institute की तरफ़ से। Seminar में मिलते हैं — have a nice day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "haan papa aayenge",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "02 twelfth-pass gets 11-month track",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "main 12th pass hoon"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "main 12th pass hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_ug_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "03 third-year final-year probe -> 8-month track",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "abhi third year chal raha hai"
+    },
+    {
+     "text": "haan final year hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "abhi third year chal raha hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_hub_finalyear"
+     ],
+     "reply": "अच्छा, third year — क्या यह आपकी graduation का final year है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan final year hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_finalyear",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "04 third-year not final -> 11-month track",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "teesra saal hai"
+    },
+    {
+     "text": "nahi abhi aur saal baaki hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "teesra saal hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_hub_finalyear"
+     ],
+     "reply": "अच्छा, third year — क्या यह आपकी graduation का final year है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi abhi aur saal baaki hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_finalyear",
+      "n_msg_ug_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "05 below twelfth -> polite not-eligible close",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "main abhi 12th mein hoon"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "main abhi 12th mein hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_not_eligible",
+      "n_end"
+     ],
+     "reply": "मैं आपका interest सच में appreciate करती हूँ, लेकिन हमारे courses और seminar के लिए 12th pass होना ज़रूरी है। जैसे ही आपकी 12th complete हो जाए, आप हमें हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर call कर सकते हैं। आपके future के लिए all the best! धन्यवाद।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "06 fees question answered, then books",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "graduation complete ho gayi"
+    },
+    {
+     "text": "fees kitni hai?"
+    },
+    {
+     "text": "theek hai haan kar do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "graduation complete ho gayi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "fees kitni hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_msg_fees",
+      "n_hub_book"
+     ],
+     "reply": "अच्छा सवाल! Seminar बिल्कुल FREE है — इसमें कोई charges नहीं हैं, और call पर कोई payment नहीं होती। Course की fees और scholarship options की पूरी जानकारी seminar में हमारे senior counsellors आपको detail में देंगे — इसीलिए seminar attend करना best रहेगा। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "theek hai haan kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "07 declined once, soft counter, then books",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "main 12th pass hoon"
+    },
+    {
+     "text": "nahi mujhe nahi karna"
+    },
+    {
+     "text": "chalo theek hai kar do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "main 12th pass hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_ug_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi mujhe nahi karna",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_msg_objection",
+      "n_hub_book2"
+     ],
+     "reply": "कोई बात नहीं! बस एक बात बता दूँ — यह seminar बिल्कुल FREE है, सिर्फ़ 45 minute का है, और कोई obligation नहीं है। आपको सिर्फ़ चारों industries के career options की सही जानकारी मिलेगी। तो बताइए — क्या मैं आपके लिए एक seat reserve कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "chalo theek hai kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book2",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "08 declined twice -> polite close",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "main 12th pass hoon"
+    },
+    {
+     "text": "nahi karna mujhe"
+    },
+    {
+     "text": "nahi bhai rehne do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "main 12th pass hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_ug_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi karna mujhe",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_msg_objection",
+      "n_hub_book2"
+     ],
+     "reply": "कोई बात नहीं! बस एक बात बता दूँ — यह seminar बिल्कुल FREE है, सिर्फ़ 45 minute का है, और कोई obligation नहीं है। आपको सिर्फ़ चारों industries के career options की सही जानकारी मिलेगी। तो बताइए — क्या मैं आपके लिए एक seat reserve कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi bhai rehne do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book2",
+      "n_msg_polite_close",
+      "n_end"
+     ],
+     "reply": "कोई बात नहीं! अगर आप बाद में हमारा FREE career counselling seminar attend करना चाहें, तो हमारे number 1 8 0 0, 2 5 8, 7 3 3 2 पर call कर सकते हैं। आपके career के लिए all the best! धन्यवाद, have a nice day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "09 busy -> callback captured and close",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "main abhi busy hoon baad mein call karna"
+    },
+    {
+     "text": "shaam ko 6 baje"
+    }
+   ],
+   "expected": [
+    {
+     "text": "main abhi busy hoon baad mein call karna",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "busy_callback",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening",
+      "n_ask_callback"
+     ],
+     "reply": "जी बिल्कुल, कोई बात नहीं! आपको call करने के लिए कौन सा time सही रहेगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "shaam ko 6 baje",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_callback",
+      "n_msg_callback_close",
+      "n_end"
+     ],
+     "reply": "ठीक है, मैं आपको उसी time call कर लूँगी। यह Frankfinn के FREE career counselling seminar के बारे में है, जिसमें आपने interest दिखाया था। धन्यवाद, have a nice day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_time": "shaam ko 6 baje"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "10 wrong number -> apology close",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "aapne galat number lagaya hai, yahan is naam ka koi nahi"
+    }
+   ],
+   "expected": [
+    {
+     "text": "aapne galat number lagaya hai, yahan is naam ka koi nahi",
+     "signal": "wrong_person",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "wrong_number",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening",
+      "n_msg_wrong",
+      "n_end"
+     ],
+     "reply": "ओह, माफ़ कीजिएगा — लगता है number ग़लत लग गया। आपका समय लेने के लिए sorry। धन्यवाद, have a nice day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "11 do-not-call -> platform call_control close",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "mujhe dobara call mat karna, mera number hata do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mujhe dobara call mat karna, mera number hata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "call_control",
+      "reason": "dnc_phrase",
+      "intent": null,
+      "action": "do_not_call"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "12 booking API unavailable -> graceful SMS fallback",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "graduation complete ho gayi"
+    },
+    {
+     "text": "haan kar do"
+    },
+    {
+     "text": "pakka aaunga"
+    },
+    {
+     "text": "haan mummy papa aayenge"
+    },
+    {
+     "text": "nahi bas"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "graduation complete ho gayi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "pakka aaunga",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sure",
+      "n_ask_parents"
+     ],
+     "reply": "Perfect! और क्या आपके parents आपके साथ आ पाएँगे? Parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship मिल सकती है।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan mummy papa aayenge",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_parents",
+      "n_api_book",
+      "n_msg_confirmed",
+      "n_hub_sms"
+     ],
+     "reply": "बहुत बढ़िया! एक moment दीजिए — मैं आपकी seat book कर रही हूँ। बधाई हो — आपकी seat confirm हो गई है! मैंने आपको SMS भेज दिया है, जिसमें center का address, आपका appointment number, date और timing है। क्या आपको SMS मिला? क्या आपको SMS receive हुआ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "haan mummy papa aayenge",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi bas",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sms",
+      "n_msg_sms_later",
+      "n_msg_id",
+      "n_hub_anything"
+     ],
+     "reply": "कोई बात नहीं — SMS कुछ ही देर में आ जाएगा। मैं आपको address बता देती हूँ: Frankfinn Institute, third floor, Mocha Cafe के पास, C G Road, Ahmedabad. Appointment number आप SMS में देख लीजिएगा। और एक बहुत ज़रूरी बात — seminar में entry के लिए अपना और साथ आने वाले parents का Aadhaar card ज़रूर लेकर आइएगा — Aadhaar के बिना entry नहीं हो पाती। साथ में SMS वाला appointment number भी। और जब भी आपको call करनी हो, हमारा inbound number है 1 8 0 0, 2 5 8, 7 3 3 2। क्या मैं आपकी किसी और बात में help कर सकती हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "haan mummy papa aayenge",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "13 SMS not received -> address spoken",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "graduation complete ho gayi"
+    },
+    {
+     "text": "haan kar do"
+    },
+    {
+     "text": "pakka"
+    },
+    {
+     "text": "akela aaunga",
+     "mocks": {
+      "Frankfinn Book Seminar Seat": null
+     }
+    },
+    {
+     "text": "nahi aaya SMS"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "graduation complete ho gayi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "pakka",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sure",
+      "n_ask_parents"
+     ],
+     "reply": "Perfect! और क्या आपके parents आपके साथ आ पाएँगे? Parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship मिल सकती है।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "akela aaunga",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_parents",
+      "n_api_book",
+      "n_msg_confirmed",
+      "n_hub_sms"
+     ],
+     "reply": "बहुत बढ़िया! एक moment दीजिए — मैं आपकी seat book कर रही हूँ। बधाई हो — आपकी seat confirm हो गई है! मैंने आपको SMS भेज दिया है, जिसमें center का address, आपका appointment number, date और timing है। क्या आपको SMS मिला? क्या आपको SMS receive हुआ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "akela aaunga",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "nahi aaya SMS",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_sms",
+      "n_msg_sms_later",
+      "n_msg_id",
+      "n_hub_anything"
+     ],
+     "reply": "कोई बात नहीं — SMS कुछ ही देर में आ जाएगा। मैं आपको address बता देती हूँ: Frankfinn Institute, third floor, Mocha Cafe के पास, C G Road, Ahmedabad. Appointment number आप SMS में देख लीजिएगा। और एक बहुत ज़रूरी बात — seminar में entry के लिए अपना और साथ आने वाले parents का Aadhaar card ज़रूर लेकर आइएगा — Aadhaar के बिना entry नहीं हो पाती। साथ में SMS वाला appointment number भी। और जब भी आपको call करनी हो, हमारा inbound number है 1 8 0 0, 2 5 8, 7 3 3 2। क्या मैं आपकी किसी और बात में help कर सकती हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "appointment_number": "FRK-AHD-104217",
+      "center_address": "3rd Floor, near Mocha Cafe, C G Road, Ahmedabad",
+      "center_name": "Frankfinn Institute - Ahmedabad (C G Road) Centre",
+      "entry_window": "10:15 AM to 11:30 AM",
+      "parents_joining": "akela aaunga",
+      "scholarship_note": "Exclusive scholarship up to Rs 40,000 applicable when parents attend, first come first serve",
+      "seminar_date": "tomorrow",
+      "seminar_start_time": "11:40 AM",
+      "sms_number_masked": "XXXXXX6337",
+      "sms_sent": true,
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "14 KB question mid-booking answered, flow resumes",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "main 12th pass hoon"
+    },
+    {
+     "text": "seminar mein kya hoga?"
+    },
+    {
+     "text": "haan kar do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "main 12th pass hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_ug_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। 12th pass और undergraduate students के लिए हमारा 11 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "seminar mein kya hoga?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_kb_answer",
+      "n_hub_book"
+     ],
+     "reply": "इसकी exact जानकारी seminar में हमारे senior counsellors आपको detail में देंगे — वहीं सब कुछ clear हो जाएगा। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "15 explicit human request -> senior counsellor handover",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "mujhe kisi senior counsellor se baat karao"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "mujhe kisi senior counsellor se baat karao",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_handover"
+     ],
+     "reply": "जी बिल्कुल — मैं आपकी बात हमारे senior counsellor से करा रही हूँ। एक moment line पर बने रहिए।",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "frankfinn/tests/run_chat_scenarios.py",
+   "name": "16 off-script question mid-flow, flow resumes",
+   "bot": "bot_059e49443c76",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "haan bata do"
+    },
+    {
+     "text": "22 saal"
+    },
+    {
+     "text": "Maninagar se"
+    },
+    {
+     "text": "graduation complete ho gayi"
+    },
+    {
+     "text": "aap log Delhi mein bhi ho kya?"
+    },
+    {
+     "text": "haan seat book kar do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "opening_identity_confirm",
+      "action": "wf_9f3b1b6928cc"
+     },
+     "trace": [
+      "n_start",
+      "n_hub_opening"
+     ],
+     "reply": "जी! आपने कुछ समय पहले Frankfinn Institute में interest दिखाया था — aviation, hospitality और travel industry में अपना career बनाने के लिए। इन्हीं career options को अच्छे से समझने के लिए Frankfinn एक बिल्कुल FREE career counselling seminar conduct कर रहा है। हमारे students को training के बाद highest salary दो लाख सैंतालीस हज़ार रुपये per month तक offer हुई है — as a cabin crew, international airlines में। क्या मैं आपकी eligibility check करके seminar की details बता दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bata do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_opening",
+      "n_ask_age"
+     ],
+     "reply": "बहुत बढ़िया! आगे बढ़ने से पहले मैं आपकी eligibility check करना चाहूँगी। सबसे पहले — आपकी age क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "22 saal",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_age",
+      "n_ask_area"
+     ],
+     "reply": "ठीक है! और आप कौन से area में रहते हैं? — ताकि मैं confirm कर सकूँ कि हमारा C G Road वाला center आपके लिए convenient रहेगा।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal"
+     }
+    },
+    {
+     "text": "Maninagar se",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_area",
+      "n_hub_qual"
+     ],
+     "reply": "और आपने अभी तक highest qualification क्या complete की है — 12th pass हैं, graduation चल रही है, या graduation complete हो चुकी है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "graduation complete ho gayi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_qual",
+      "n_msg_grad_track",
+      "n_msg_boom",
+      "n_msg_seminar",
+      "n_hub_book"
+     ],
+     "reply": "Congratulations! आप हमारे FREE career counselling seminar के लिए perfectly eligible हैं। Graduates और final year students के लिए हमारा 8 months का certificate course रहता है। और आपके लिए हमारा Ahmedabad C G Road center — third floor, Mocha Cafe के पास — बिल्कुल convenient रहेगा। और सबसे अच्छी बात यह है — इस वक़्त aviation, hospitality, travel और customer service, इन चारों industries में ज़बरदस्त BOOM आया हुआ है। लाखों नई naukriyaan आ रही हैं — अभी, इसी साल! इसीलिए यह FREE career counselling seminar आपके लिए perfect है — सिर्फ़ 45 minute का। Industry experts और senior counsellors आपको चारों industries के high salary career options detail में बताएँगे। Seminar और scholarship seats limited हैं। और एक special बात — parents के साथ आने पर आपको 40 हज़ार रुपये तक की exclusive scholarship भी मिल सकती है, first come first serve basis पर। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "aap log Delhi mein bhi ho kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_msg_fees",
+      "n_hub_book"
+     ],
+     "reply": "अच्छा सवाल! Seminar बिल्कुल FREE है — इसमें कोई charges नहीं हैं, और call पर कोई payment नहीं होती। Course की fees और scholarship options की पूरी जानकारी seminar में हमारे senior counsellors आपको detail में देंगे — इसीलिए seminar attend करना best रहेगा। तो क्या मैं कल के लिए आपकी seat book कर दूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    },
+    {
+     "text": "haan seat book kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Frankfinn seminar booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_book",
+      "n_hub_sure"
+     ],
+     "reply": "बहुत बढ़िया! कल entry timing 10:15 से 11:30 बजे तक की है — 11:40 पर seminar start हो जाता है। हमारी seats non-cancellable और non-transferable होती हैं, इसलिए confirm कर लीजिए — क्या आप 100% sure हैं कि आप कल आ पाएँगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "student_age": "22 saal",
+      "student_area": "Maninagar se"
+     }
+    }
+   ]
+  }
+ ]
+}

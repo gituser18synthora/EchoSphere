@@ -1,0 +1,2867 @@
+{
+ "bot": "bot_e8cf0b05bb79",
+ "cases": [
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "01 system confirmation only (601001)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "my booking id is 601001"
+    },
+    {
+     "text": "Rahul Sharma"
+    },
+    {
+     "text": "no, that's all, thank you"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "my booking id is 601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "no, that's all, thank you",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "02 cancelled + dispute -> transfer (601002)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "is my booking confirmed"
+    },
+    {
+     "text": "601002"
+    },
+    {
+     "text": "Priya Verma"
+    },
+    {
+     "text": "no, I never cancelled this booking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "is my booking confirmed",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601002",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601002"
+     }
+    },
+    {
+     "text": "Priya Verma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601002",
+      "guest_name": "Priya Verma"
+     }
+    },
+    {
+     "text": "no, I never cancelled this booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601002",
+      "guest_name": "Priya Verma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "03 cancelled by customer (601013)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "booking status please"
+    },
+    {
+     "text": "601013"
+    },
+    {
+     "text": "Nisha Reddy"
+    },
+    {
+     "text": "yes, I cancelled it myself"
+    }
+   ],
+   "expected": [
+    {
+     "text": "booking status please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601013",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601013"
+     }
+    },
+    {
+     "text": "Nisha Reddy",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601013",
+      "guest_name": "Nisha Reddy"
+     }
+    },
+    {
+     "text": "yes, I cancelled it myself",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601013",
+      "guest_name": "Nisha Reddy"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "04 PM confirms booking (601001)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "I want to confirm my booking with the hotel"
+    },
+    {
+     "text": "601001"
+    },
+    {
+     "text": "Rahul Sharma"
+    },
+    {
+     "text": "please confirm with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to confirm my booking with the hotel",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "please confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "05 PM no answer -> stock confirms (601003)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "check-in confirmation"
+    },
+    {
+     "text": "601003"
+    },
+    {
+     "text": "Arjun Mehta"
+    },
+    {
+     "text": "yes please check with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "check-in confirmation",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "checkin_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601003",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601003"
+     }
+    },
+    {
+     "text": "Arjun Mehta",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601003",
+      "guest_name": "Arjun Mehta"
+     }
+    },
+    {
+     "text": "yes please check with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601003",
+      "guest_name": "Arjun Mehta"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "06 overbooked -> shift accepted (601004)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my booking"
+    },
+    {
+     "text": "601004"
+    },
+    {
+     "text": "Sneha Iyer"
+    },
+    {
+     "text": "confirm with the property please"
+    },
+    {
+     "text": "yes please"
+    },
+    {
+     "text": "yes, go ahead"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601004",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004"
+     }
+    },
+    {
+     "text": "Sneha Iyer",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004",
+      "guest_name": "Sneha Iyer"
+     }
+    },
+    {
+     "text": "confirm with the property please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601004",
+      "guest_name": "Sneha Iyer"
+     }
+    },
+    {
+     "text": "yes please",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004",
+      "guest_name": "Sneha Iyer"
+     }
+    },
+    {
+     "text": "yes, go ahead",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking",
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004",
+      "guest_name": "Sneha Iyer"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "07 overbooked-but-available -> penalty accepted (601005)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my booking with the hotel"
+    },
+    {
+     "text": "601005"
+    },
+    {
+     "text": "Vikram Singh"
+    },
+    {
+     "text": "please verify with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my booking with the hotel",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601005",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005"
+     }
+    },
+    {
+     "text": "Vikram Singh",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005",
+      "guest_name": "Vikram Singh"
+     }
+    },
+    {
+     "text": "please verify with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601005",
+      "guest_name": "Vikram Singh"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "08 maintenance + alternate room (601006)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "booking confirmation"
+    },
+    {
+     "text": "601006"
+    },
+    {
+     "text": "Ananya Das"
+    },
+    {
+     "text": "confirm with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "booking confirmation",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601006",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601006"
+     }
+    },
+    {
+     "text": "Ananya Das",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601006",
+      "guest_name": "Ananya Das"
+     }
+    },
+    {
+     "text": "confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601006",
+      "guest_name": "Ananya Das"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "09 maintenance no room -> shift declined (601007)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "check my booking"
+    },
+    {
+     "text": "601007"
+    },
+    {
+     "text": "Rohan Kapoor"
+    },
+    {
+     "text": "please confirm with the property"
+    },
+    {
+     "text": "no, don't shift"
+    }
+   ],
+   "expected": [
+    {
+     "text": "check my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601007",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007"
+     }
+    },
+    {
+     "text": "Rohan Kapoor",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007",
+      "guest_name": "Rohan Kapoor"
+     }
+    },
+    {
+     "text": "please confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601007",
+      "guest_name": "Rohan Kapoor"
+     }
+    },
+    {
+     "text": "no, don't shift",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007",
+      "guest_name": "Rohan Kapoor"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "10 price meets ARR -> honored (601008)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "is my reservation confirmed"
+    },
+    {
+     "text": "601008"
+    },
+    {
+     "text": "Meera Nair"
+    },
+    {
+     "text": "confirm with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "is my reservation confirmed",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601008",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601008"
+     }
+    },
+    {
+     "text": "Meera Nair",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601008",
+      "guest_name": "Meera Nair"
+     }
+    },
+    {
+     "text": "confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601008",
+      "guest_name": "Meera Nair"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "11 price below ARR -> compensation added (601009)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "booking confirmation"
+    },
+    {
+     "text": "601009"
+    },
+    {
+     "text": "Aditya Rao"
+    },
+    {
+     "text": "confirm with the property"
+    }
+   ],
+   "expected": [
+    {
+     "text": "booking confirmation",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601009",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009"
+     }
+    },
+    {
+     "text": "Aditya Rao",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009",
+      "guest_name": "Aditya Rao"
+     }
+    },
+    {
+     "text": "confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601009",
+      "guest_name": "Aditya Rao"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "12 price refused -> shift (601010)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my booking"
+    },
+    {
+     "text": "601010"
+    },
+    {
+     "text": "Kavita Joshi"
+    },
+    {
+     "text": "please confirm with the property"
+    },
+    {
+     "text": "yes"
+    },
+    {
+     "text": "yes, proceed"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601010",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010"
+     }
+    },
+    {
+     "text": "Kavita Joshi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010",
+      "guest_name": "Kavita Joshi"
+     }
+    },
+    {
+     "text": "please confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601010",
+      "guest_name": "Kavita Joshi"
+     }
+    },
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010",
+      "guest_name": "Kavita Joshi"
+     }
+    },
+    {
+     "text": "yes, proceed",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "clarify",
+      "reason": "too_short",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking",
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010",
+      "guest_name": "Kavita Joshi"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "13 PM + stock unavailable -> shift (601011)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "check-in confirmation"
+    },
+    {
+     "text": "601011"
+    },
+    {
+     "text": "Sanjay Gupta"
+    },
+    {
+     "text": "confirm with the property"
+    },
+    {
+     "text": "yes please"
+    },
+    {
+     "text": "okay"
+    }
+   ],
+   "expected": [
+    {
+     "text": "check-in confirmation",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "checkin_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601011",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011"
+     }
+    },
+    {
+     "text": "Sanjay Gupta",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011",
+      "guest_name": "Sanjay Gupta"
+     }
+    },
+    {
+     "text": "confirm with the property",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601011",
+      "guest_name": "Sanjay Gupta"
+     }
+    },
+    {
+     "text": "yes please",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011",
+      "guest_name": "Sanjay Gupta"
+     }
+    },
+    {
+     "text": "okay",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "smalltalk",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking",
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011",
+      "guest_name": "Sanjay Gupta"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "14 voucher to email on file (601001)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "I need my booking voucher"
+    },
+    {
+     "text": "601001"
+    },
+    {
+     "text": "Rahul Sharma"
+    },
+    {
+     "text": "send me the voucher"
+    },
+    {
+     "text": "yes please"
+    },
+    {
+     "text": "no thanks"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I need my booking voucher",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_voucher",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "send me the voucher",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "yes please",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_ack",
+      "n_api_dispo",
+      "n_end_main"
+     ],
+     "reply": "Understood. Since this booking stands cancelled, there is nothing pending on it. For a new booking, our support team or the OYO app can help you anytime. Thank you for calling Oh-Yo. Have a great day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "no thanks",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "short_signal",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking",
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "15 voucher, no email on file (601012)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "booking voucher please"
+    },
+    {
+     "text": "601012"
+    },
+    {
+     "text": "Farhan Ali"
+    },
+    {
+     "text": "email the voucher"
+    },
+    {
+     "text": "farhan.ali@example.com"
+    },
+    {
+     "text": "nothing else"
+    }
+   ],
+   "expected": [
+    {
+     "text": "booking voucher please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_voucher",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601012",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012"
+     }
+    },
+    {
+     "text": "Farhan Ali",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012",
+      "guest_name": "Farhan Ali"
+     }
+    },
+    {
+     "text": "email the voucher",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601012",
+      "guest_name": "Farhan Ali"
+     }
+    },
+    {
+     "text": "farhan.ali@example.com",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012",
+      "guest_name": "Farhan Ali"
+     }
+    },
+    {
+     "text": "nothing else",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "clarify",
+      "reason": "too_short",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking",
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012",
+      "guest_name": "Farhan Ali"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "16 booking details answered immediately (601001)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "share my booking details"
+    },
+    {
+     "text": "601001"
+    },
+    {
+     "text": "Rahul Sharma"
+    },
+    {
+     "text": "booking details please"
+    },
+    {
+     "text": "please email my booking voucher"
+    }
+   ],
+   "expected": [
+    {
+     "text": "share my booking details",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_details",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "booking details please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "please email my booking voucher",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "32 direct hotel-name answer after verification (601001)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my upcoming booking details"
+    },
+    {
+     "text": "601001"
+    },
+    {
+     "text": "Rahul Sharma"
+    },
+    {
+     "text": "Can you confirm my hotel name?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my upcoming booking details",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    },
+    {
+     "text": "Can you confirm my hotel name?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_cancel",
+      "n_msg_cancel_dispute",
+      "n_api_ivr_esc",
+      "n_handover_esc"
+     ],
+     "reply": "I understand — you did not cancel this booking yourself. This needs immediate attention, so let me transfer you to a support executive who can investigate the cancellation right away. Transferring you now — please stay on the line.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "31 guest FAQ from knowledge (overbooked policy)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "what happens if the property is overbooked?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "what happens if the property is overbooked?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "17 verification failure (601001, wrong name)",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my booking"
+    },
+    {
+     "text": "601001"
+    },
+    {
+     "text": "Amit Kumar"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001"
+     }
+    },
+    {
+     "text": "Amit Kumar",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601001",
+      "guest_name": "Amit Kumar"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "18 unknown booking id",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "confirm my booking"
+    },
+    {
+     "text": "999999"
+    },
+    {
+     "text": "Rahul Sharma"
+    }
+   ],
+   "expected": [
+    {
+     "text": "confirm my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "999999",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_booking",
+      "n_ask_name"
+     ],
+     "reply": "Thank you. For verification, may I know the guest name on this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "999999"
+     }
+    },
+    {
+     "text": "Rahul Sharma",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO booking support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_name",
+      "n_api_verify",
+      "n_api_booking",
+      "n_cond_confirmed",
+      "n_msg_cancelled",
+      "n_intent_cancel"
+     ],
+     "reply": "I've checked, and I'm sorry to share that this booking is showing as cancelled in our system, along with the cancellation date on record. Did you cancel this booking yourself?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "999999",
+      "guest_name": "Rahul Sharma"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "19 out of scope -> handoff",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "I want to cancel my booking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to cancel my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "cancel_booking",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "20 out of scope refund -> handoff",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "where is my refund"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my refund",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "refund_status",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "32 refund word inside a booking question stays in the flow",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "I don't need any refund, please check my booking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I don't need any refund, please check my booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "booking_confirmation",
+      "action": "oyo_booking_support_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "33 explicit agent request transfers",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "Please connect me to an agent"
+    }
+   ],
+   "expected": [
+    {
+     "text": "Please connect me to an agent",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "explicit_transfer_request",
+      "intent": null,
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "34 current date is grounded",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "What is today's date?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "What is today's date?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "35 bare affirmation does not start a workflow",
+   "bot": "bot_e8cf0b05bb79",
+   "turns": [
+    {
+     "text": "हाँ"
+    }
+   ],
+   "expected": [
+    {
+     "text": "हाँ",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "short_signal",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_booking"
+     ],
+     "reply": "I can help you with that. Please say your six-digit booking ID slowly, one digit at a time.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

@@ -71,6 +71,8 @@ from shared.providers.stt_language_policy import (
 )
 from voice_runtime.audio_gate import CallerAudioGate
 from voice_runtime.barge_in import WordConfirmedBargeInStrategy
+from voice_runtime.caller_level import CallerLevelBaseline
+from voice_runtime.playback_duck import PlaybackDuck
 from voice_runtime.silence_policy import SilencePolicy
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.latency_filler import LatencyFillerProcessor, get_filler_library
@@ -792,6 +794,30 @@ def build_voice_pipeline(
             lambda active: audio_gate.begin_backchannel_window()
             if active else audio_gate.end_backchannel_window()
         )
+    # Background-speech guard (voice_runtime.caller_level): the caller's own
+    # speech level, learned per call from accepted turns, classifies later
+    # segments as caller vs background-suspect. Needs the gate (it is the
+    # level source); with the guard OFF the baseline still runs in shadow
+    # mode so verdicts land on the call's event stream for tuning.
+    caller_level = (
+        CallerLevelBaseline(
+            margin_db=turn["background_speech_margin_db"],
+            bot_audio_allowance_db=turn["background_bot_audio_allowance_db"],
+            min_segments=int(round(turn["background_baseline_min_segments"])),
+            enforce=turn["background_speech_guard"] >= 0.5,
+        )
+        if audio_gate is not None
+        else None
+    )
+    # Hybrid barge-in (voice_runtime.playback_duck): pause the reply the
+    # moment provisional caller speech is detected, commit or resume once the
+    # arbiter decides. Tenant opt-in; only meaningful with the local VAD
+    # strategies (Flux owns its own turn boundaries).
+    playback_duck = (
+        PlaybackDuck(recorder=recorder)
+        if turn["barge_in_duck_enabled"] >= 0.5 and use_vad and not provider_owns_turns
+        else None
+    )
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
@@ -822,6 +848,10 @@ def build_voice_pipeline(
         # post-hold grace remains a platform setting.
         silence_policy=resolve_silence_policy(turn),
         latency_filler=latency_filler,
+        caller_level=caller_level,
+        # Speech heard during a reply that never confirmed a barge-in is
+        # held, not dispatched at reply end (tenant opt-in).
+        held_segment_guard=turn["held_segment_guard_enabled"] >= 0.5,
     )
     processors = [transport.input()]
     if audio_gate is not None:
@@ -877,6 +907,33 @@ def build_voice_pipeline(
                     "barge_in_confirmed", reason=why,
                     sustained_s=round(sustained, 2) if sustained is not None else None,
                 ),
+                # Hybrid mode: provisional pause at VAD start, commit after
+                # barge_in_commit_secs or the word threshold, resume otherwise.
+                provisional_duck=playback_duck is not None,
+                commit_secs=turn["barge_in_commit_secs"],
+                on_provisional=(
+                    playback_duck.set_provisional if playback_duck is not None else None
+                ),
+                on_provisional_change=lambda state, sustained: recorder.add_event(
+                    "barge_in_provisional" if state == "provisional" else "barge_in_resumed",
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                ),
+                # Background-speech guard: live gated speech far below the
+                # caller's own level must not cancel the reply — neither by
+                # sustained VAD nor by a multi-word transcript. None until a
+                # baseline exists, so early-call behaviour is unchanged.
+                speech_classifier=(
+                    (lambda: caller_level.classify_live(audio_gate))
+                    if caller_level is not None else None
+                ),
+                enforce_background=caller_level.enforce if caller_level is not None else False,
+                on_suppressed=lambda arbiter, sustained, verdict, enforced: recorder.add_event(
+                    "barge_in_background_suppressed" if enforced
+                    else "barge_in_background_shadow",
+                    arbiter=arbiter,
+                    sustained_s=round(sustained, 2) if sustained is not None else None,
+                    **verdict.as_event(),
+                ),
             )
             if barge_in_min_words > 0
             else VADUserTurnStartStrategy()
@@ -908,6 +965,10 @@ def build_voice_pipeline(
         # After the TTS service so it sees reply audio the moment it exists
         # (cut point), before the transport so its own chunks reach the wire.
         processors.append(latency_filler)
+    if playback_duck is not None:
+        # Last stop before the wire: holds reply audio during a provisional
+        # barge-in and releases or discards it once the arbiter decides.
+        processors.append(playback_duck)
     processors.append(transport.output())
 
     if get_settings().voice_call_recording_enabled:

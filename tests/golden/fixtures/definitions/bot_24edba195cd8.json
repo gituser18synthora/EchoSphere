@@ -1,0 +1,459 @@
+{
+ "bot": {
+  "id": "bot_24edba195cd8",
+  "name": "Demo Bot",
+  "tenant_id": "tn_41bf1ea68aae",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf_94a697661141",
+   "name": "CredFlow outbound qualification + demo routing v6",
+   "version": 20,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 200,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call Starts",
+     "config": {}
+    },
+    {
+     "x": 258,
+     "y": 246,
+     "id": "n_confirm_thanks",
+     "kind": "message",
+     "label": "Identity Confirmed - Thanks",
+     "config": {
+      "text": "confirm karne ke liye dhanyawaad.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Thank the customer for confirming and address them by their own name followed by 'ji' - the name is customer_name from the call context, for example 'confirm karne ke liye dhanyawaad Udbhav ji'. If the customer's name is not available in the call context, thank them without any name - never invent or guess a name. Exactly one short sentence: no introduction, no product claim, no question, nothing else."
+     }
+    },
+    {
+     "x": 480,
+     "y": 200,
+     "id": "n_qualify",
+     "kind": "intent",
+     "label": "Introduction + Accounting Software Question",
+     "config": {
+      "prompt": "Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Say two things in one turn and nothing else. First the company introduction: CredFlow provides software that streamlines payment collection and also helps with E-invoice and E-way bill generation, and it integrates easily with the customer's existing accounting software. Then ask which accounting software they use in their business. No pricing, no other feature, no demo offer yet, no second question.",
+      "responseMustInclude": [
+       "payment collection",
+       "E-invoice",
+       "E-way bill",
+       "accounting software"
+      ]
+     }
+    },
+    {
+     "x": 700,
+     "y": 60,
+     "id": "n_tally_demo_offer",
+     "kind": "message",
+     "label": "Tally/BUSY - Thanks + Demo Offer",
+     "config": {
+      "text": "confirm karne ke liye dhanyawaad. Actually, hum aapko ek quick demo dikha sakte hain jisme aap dekh paayenge ki kaise payment follow-ups automate hote hain, collection improve ho jaata hai, aur invoicing process fast ho jata hai. Kya mai apko demo ke liye apne sahayak se connect krun?",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Thank the customer for confirming, then make the demo offer: a quick demo that shows how payment follow-ups get automated, collection improves, and invoicing gets faster. End by asking whether you may connect them to the demo assistant now. Exactly one question."
+     }
+    },
+    {
+     "x": 1020,
+     "y": 60,
+     "id": "n_demo_connect",
+     "kind": "intent",
+     "label": "Demo Connection Decision",
+     "config": {
+      "prompt": "",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Ask again, in one short sentence, whether you may connect them to the demo assistant now. Do not repeat the introduction or the demo benefits."
+     }
+    },
+    {
+     "x": 1340,
+     "y": 20,
+     "id": "n_human_agent",
+     "kind": "handover",
+     "label": "Route to Client Human Agent",
+     "config": {
+      "text": "Main aapko abhi humari team se connect kar raha hoon."
+     }
+    },
+    {
+     "x": 700,
+     "y": 220,
+     "id": "n_not_supported",
+     "kind": "message",
+     "label": "Not Tally/BUSY - Close",
+     "config": {
+      "text": "Samajh gaya. Filhaal yeh software Tally aur Busy users ke saath best work karta hai. Aapka time dene ke liye dhanyawaad. Have a great day!",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Acknowledge their answer, say that for now this software works best for Tally and BUSY users, thank them for their time and wish them a good day. No question, no alternative offer, no pitch."
+     }
+    },
+    {
+     "x": 1020,
+     "y": 220,
+     "id": "n_end_not_supported",
+     "kind": "end",
+     "label": "End - Not Tally/BUSY",
+     "config": {}
+    },
+    {
+     "x": 1340,
+     "y": 160,
+     "id": "n_demo_schedule",
+     "kind": "ask",
+     "label": "Demo Date (time bhi capture karta hai)",
+     "config": {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)\\b(?:kal|parso|parson|aaj|today|tomorrow|day after tomorrow|next\\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day|this\\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day|(?:mon|tues|wednes|thurs|fri|satur|sun)day|somwar|mangalwar|budhwar|guruwar|shukrawar|shanivar|ravivar|\\d{1,2}\\s*(?:st|nd|rd|th)?\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b|(?<![\\wऀ-ॿ])(?:कल|परसों|परसो|आज|सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार)"
+      },
+      "question": "Kya aap mujhe ek convenient date aur time bata sakte hain demo ke liye?",
+      "variable": "preferred_date",
+      "alsoCapture": [
+       {
+        "entity": {
+         "dataType": "text",
+         "regexPattern": "(?i)(?:subah|dopahar|shaam|sham|raat|morning|afternoon|evening|night)\\s*(?:ko\\s*)?\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.|baje|bje|o'?clock)|\\b(?:morning|afternoon|evening|noon|subah|dopahar|shaam|raat)\\b|\\d{1,2}\\s*बजे|(?<![\\wऀ-ॿ])(?:सुबह|दोपहर|शाम|रात)"
+        },
+        "variable": "preferred_time"
+       }
+      ],
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Ask for a convenient date and time for the demo. One question only. Never say the demo is booked or confirmed - only the customer's preference is being noted."
+     }
+    },
+    {
+     "x": 1660,
+     "y": 160,
+     "id": "n_demo_time",
+     "kind": "ask",
+     "label": "Demo Time (sirf jab missing ho)",
+     "config": {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)(?:subah|dopahar|shaam|sham|raat|morning|afternoon|evening|night)\\s*(?:ko\\s*)?\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.|baje|bje|o'?clock)|\\b(?:morning|afternoon|evening|noon|subah|dopahar|shaam|raat)\\b|\\d{1,2}\\s*बजे|(?<![\\wऀ-ॿ])(?:सुबह|दोपहर|शाम|रात)"
+      },
+      "question": "Aapne jo date choose ki hai, uske liye kya aap time bata sakte hain?",
+      "variable": "preferred_time",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. The demo date is already captured in preferred_date. Say it back as an explicit calendar date, then ask ONLY for the time. To get that date, read today's date from the 'Current date and time' section and compute from it on THIS call: aaj/today is that date; kal/tomorrow is that date plus one day; parso/day after tomorrow is that date plus two days; a weekday name is the next occurrence of that weekday after today; an explicit date the customer gave is itself. Speak the result as day plus month name. Never reuse a date from an example, from an earlier conversation or from memory, and never repeat the relative word back to the customer. If the 'Current date and time' section is missing, ask the customer for a specific date instead of guessing. Never ask for the date again, never invent a time, never say the demo is booked."
+     }
+    },
+    {
+     "x": 1980,
+     "y": 160,
+     "id": "n_demo_details",
+     "kind": "message",
+     "label": "Date + Time Captured",
+     "config": {
+      "text": "Thank you. Aapki demo ki preferred date aur time note kar liya hai.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Confirm the captured slot in one short sentence: the date as an explicit calendar date and the time exactly as the customer gave it, then thank them. To get that date, read today's date from the 'Current date and time' section and compute from it on THIS call: aaj/today is that date; kal/tomorrow is that date plus one day; parso/day after tomorrow is that date plus two days; a weekday name is the next occurrence of that weekday after today; an explicit date the customer gave is itself. Speak the result as day plus month name. Never reuse a date from an example, from an earlier conversation or from memory, and never repeat the relative word back to the customer. If the 'Current date and time' section is missing, ask the customer for a specific date instead of guessing. Say the preference has been noted - never that the demo is booked, scheduled or confirmed by the team."
+     }
+    },
+    {
+     "x": 1980,
+     "y": 320,
+     "id": "n_demo_no_slot",
+     "kind": "message",
+     "label": "Koi Slot Nahi Mila",
+     "config": {
+      "text": "Koi baat nahi, hum aapko baad mein call karke demo ka time fix kar lenge. Aapka time dene ke liye dhanyawaad.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Close politely: the time could not be noted now, the team will call back to arrange it, and thank them. No booking claim."
+     }
+    },
+    {
+     "x": 2300,
+     "y": 240,
+     "id": "n_end_demo",
+     "kind": "end",
+     "label": "End - Demo Details Captured",
+     "config": {}
+    },
+    {
+     "x": 700,
+     "y": 400,
+     "id": "n_end_wrong",
+     "kind": "end",
+     "label": "End - Wrong Person / Unavailable",
+     "config": {
+      "text": "Koi baat nahi, disturb karne ke liye maaf kijiye. Aapka din shubh rahe.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Apologise briefly for the disturbance, thank them and close. No pitch, no introduction, no question."
+     }
+    },
+    {
+     "x": 700,
+     "y": 540,
+     "id": "n_callback_close",
+     "kind": "message",
+     "label": "Customer Abhi Busy Hai",
+     "config": {
+      "text": "Koi baat nahi, main aapko baad mein call kar lunga. Aapka time dene ke liye dhanyawaad.",
+      "responseMode": "llm_grounded",
+      "responseDirective": "Reply in the SAME language the customer is speaking - English for an English customer, Hinglish for a Hindi, Hinglish or mixed customer. Never use a gendered honorific: no Sir and no Maam, and never guess gender from the voice. Say you will call back later and thank them for their time. No pitch, no question."
+     }
+    },
+    {
+     "x": 1020,
+     "y": 540,
+     "id": "n_end_callback",
+     "kind": "end",
+     "label": "End - Call Back Later",
+     "config": {}
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_start_thanks",
+     "to": "n_confirm_thanks",
+     "from": "n_start"
+    },
+    {
+     "id": "e_thanks_qualify",
+     "to": "n_qualify",
+     "from": "n_confirm_thanks"
+    },
+    {
+     "id": "e_qualify_tally",
+     "to": "n_tally_demo_offer",
+     "from": "n_qualify",
+     "label": "tally/tally prime/tally erp/tally me/tally pe/busy erp/busy use/busy pe/busy software/busy chal/टैली/बिज़ी/busy"
+    },
+    {
+     "id": "e_qualify_other",
+     "to": "n_not_supported",
+     "from": "n_qualify",
+     "label": "zoho/quickbooks/quick books/sap/marg/vyapar/khatabook/excel/koi aur software/dusra software/manual/software nahi/जोहो/एक्सेल"
+    },
+    {
+     "id": "e_qualify_callback",
+     "to": "n_callback_close",
+     "from": "n_qualify",
+     "label": "abhi busy/busy hoon/baad mein/call back/thodi der/abhi time nahi/व्यस्त/बाद में"
+    },
+    {
+     "id": "e_qualify_wrong",
+     "to": "n_end_wrong",
+     "from": "n_qualify",
+     "label": "galat number/wrong number/wrong person/main nahi hoon/koi aur hai/available nahi/ghar par nahi/not available/गलत नंबर/मैं नहीं हूं"
+    },
+    {
+     "id": "e_tally_connect",
+     "to": "n_demo_connect",
+     "from": "n_tally_demo_offer"
+    },
+    {
+     "id": "e_connect_yes",
+     "to": "n_human_agent",
+     "from": "n_demo_connect",
+     "label": "haan/ji haan/haan ji/yes/yes please/sure/ok/okay/bilkul/connect/connect kar dijiye/kar dijiye/please connect/हां/जी हां/बिल्कुल/कर दीजिए"
+    },
+    {
+     "id": "e_connect_no",
+     "to": "n_demo_schedule",
+     "from": "n_demo_connect",
+     "label": "nahi/no/not now/abhi nahi/baad mein/later/kal/tomorrow/parso/next week/kisi aur din/shaam/subah/नहीं/बाद में/कल/परसों"
+    },
+    {
+     "id": "e_connect_else",
+     "to": "n_demo_connect",
+     "from": "n_demo_connect",
+     "label": "else"
+    },
+    {
+     "id": "e_other_end",
+     "to": "n_end_not_supported",
+     "from": "n_not_supported"
+    },
+    {
+     "id": "e_schedule_time",
+     "to": "n_demo_time",
+     "from": "n_demo_schedule"
+    },
+    {
+     "id": "e_schedule_fallback",
+     "to": "n_demo_no_slot",
+     "from": "n_demo_schedule",
+     "label": "fallback"
+    },
+    {
+     "id": "e_time_details",
+     "to": "n_demo_details",
+     "from": "n_demo_time"
+    },
+    {
+     "id": "e_time_fallback",
+     "to": "n_demo_no_slot",
+     "from": "n_demo_time",
+     "label": "fallback"
+    },
+    {
+     "id": "e_details_end",
+     "to": "n_end_demo",
+     "from": "n_demo_details"
+    },
+    {
+     "id": "e_no_slot_end",
+     "to": "n_end_demo",
+     "from": "n_demo_no_slot"
+    },
+    {
+     "id": "e_callback_end",
+     "to": "n_end_callback",
+     "from": "n_callback_close"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_0cef93e36827",
+   "name": "Identity confirm",
+   "code": "identity_confirm",
+   "samples": [
+    "हां",
+    "हाँ",
+    "हांजी",
+    "हाँजी",
+    "जी",
+    "जी हां",
+    "जी हाँ",
+    "हां जी",
+    "हाँ जी",
+    "जी बोलिए",
+    "हां बोलिए",
+    "जी बताइए",
+    "हां बताइए",
+    "बिल्कुल",
+    "जी हां बोलिए",
+    "haan",
+    "haan ji",
+    "ji haan",
+    "ji",
+    "ji boliye",
+    "haan boliye",
+    "ji bataiye",
+    "haan bataiye",
+    "bilkul",
+    "yes",
+    "yes speaking",
+    "speaking",
+    "yes this is me",
+    "yes i am",
+    "yes tell me",
+    "yes please tell me",
+    "हां मैं ही बोल रहा हूं",
+    "मैं ही बोल रहा हूं",
+    "मैं ही बोल रही हूं",
+    "हां मैं ही हूं",
+    "मैं बोल रहा हूं",
+    "मैं बोल रही हूं",
+    "haan main hi hoon",
+    "main hi hoon",
+    "haan main bol raha hoon",
+    "main bol raha hoon",
+    "main bol rahi hoon"
+   ],
+   "route": "workflow:wf_94a697661141",
+   "workflow_id": "wf_94a697661141",
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_056f10551021",
+   "name": "Not interested",
+   "code": "lead_decline",
+   "samples": [
+    "नहीं चाहिए",
+    "मुझे नहीं चाहिए",
+    "इंटरेस्ट नहीं है",
+    "कोई जरूरत नहीं है",
+    "nahi chahiye",
+    "mujhe nahi chahiye",
+    "interest nahi hai",
+    "koi zarurat nahi hai",
+    "not interested",
+    "i am not interested",
+    "we don't need it"
+   ],
+   "route": "workflow:wf_94a697661141",
+   "workflow_id": "wf_94a697661141",
+   "confidence_threshold": 0.5,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_18afea59a0a8",
+   "name": "Wrong person or unavailable",
+   "code": "identity_wrong",
+   "samples": [
+    "गलत नंबर",
+    "यह गलत नंबर है",
+    "मैं वो नहीं हूं",
+    "कोई और है",
+    "यह उनका नंबर नहीं है",
+    "वो अभी उपलब्ध नहीं हैं",
+    "वो अभी नहीं हैं",
+    "वो घर पर नहीं हैं",
+    "मैं नहीं हूं",
+    "यह मैं नहीं हूं",
+    "नहीं मैं नहीं हूं",
+    "galat number",
+    "ye galat number hai",
+    "main woh nahi hoon",
+    "main wo nahi hoon",
+    "koi aur hai",
+    "ye unka number nahi hai",
+    "woh abhi available nahi hai",
+    "woh abhi nahi hai",
+    "woh ghar par nahi hain",
+    "main nahi hoon",
+    "nahi main nahi hoon",
+    "ye main nahi hoon",
+    "wrong number",
+    "wrong person",
+    "no this is not him",
+    "no this is not her",
+    "he is not available",
+    "she is not available",
+    "they are not available",
+    "not available right now",
+    "no i am not",
+    "this is not me"
+   ],
+   "route": "workflow:wf_94a697661141",
+   "workflow_id": "wf_94a697661141",
+   "confidence_threshold": 0.5,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [],
+ "context_schemas": [
+  {
+   "id": "rcs_2496f0538b5f",
+   "name": "User details",
+   "test_payload": {
+    "customer_name": "Varun"
+   },
+   "fields": [
+    {
+     "key": "customer_name",
+     "type": "string",
+     "label": "Name"
+    }
+   ]
+  }
+ ]
+}

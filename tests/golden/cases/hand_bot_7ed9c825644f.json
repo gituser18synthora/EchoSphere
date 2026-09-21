@@ -1,0 +1,112 @@
+{
+ "bot": "bot_7ed9c825644f",
+ "cases": [
+  {
+   "bot": "bot_7ed9c825644f",
+   "name": "collections 30-60: hardship then question",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "naukri chali gayi"
+    },
+    {
+     "text": "kitna dena hai?"
+    },
+    {
+     "text": "kal karunga"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_30_60_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_history_ask"
+     ],
+     "reply": "Aapke profile par dikh raha hai ki aapne pehle kai baar loan time se repay kiya hai — aap mPokket ke ek achhe user rahe hain, aur main nahi chahta ki aapka yeh record kharab ho. System records ke hisaab se pehle bhi payment ke baare mein baat hui thi aur promise ke baad bhi payment receive nahi hui, aur aapki last payment ke baad se koi naya payment update nahi hua hai. Kya aap abhi payment complete karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "naukri chali gayi",
+     "signal": "hardship",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 30-60 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_history_ask"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "kitna dena hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 30-60 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_history_ask"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "kal karunga",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 30-60 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_history_ask",
+      "n_callback"
+     ],
+     "reply": "Koi baat nahi, hum aapko baad mein call kar lenge. Kripya jitni jaldi ho sake mPokket app se apna payment complete kar dijiye, taaki koi extra charges na lagen. Dhanyavaad, aapka din shubh ho!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

@@ -324,6 +324,11 @@ class CallerAudioGate(FrameProcessor):
             "snr_db": round(mean_dbfs - floor, 1),
             "speech_dbfs": round(mean_dbfs, 1),
             "during_bot_audio": self._segment_during_bot_audio,
+            # Gated speech duration and whether the segment is still open —
+            # the caller-level baseline (voice_runtime.caller_level) trains
+            # only on long-enough finished segments.
+            "segment_ms": round(self._segment_ms, 1),
+            "live": self._open,
         }
 
     def stats(self) -> dict:

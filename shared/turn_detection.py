@@ -26,6 +26,7 @@ TURN_DETECTION_SECTIONS = (
     {"id": "speech_buffering", "label": "Speech Timing / Buffering", "description": "Speech confirmation, trailing audio and leading-audio preservation."},
     {"id": "echo_protection", "label": "Echo Protection", "description": "Extra confirmation while or shortly after the bot is speaking."},
     {"id": "no_response", "label": "No-response Handling", "description": "How long the bot waits in silence before checking whether the caller is still there."},
+    {"id": "background_speech", "label": "Background Speech", "description": "Speech much quieter than the caller's own established level is treated as another person near the phone: it is held instead of answered and cannot interrupt the bot."},
 )
 TURN_DETECTION_MODES = (
     {"id": "system_default", "label": "System Default", "description": "Use current runtime defaults with no tenant overrides."},
@@ -53,6 +54,18 @@ TURN_DETECTION_FIELDS: tuple[dict[str, Any], ...] = (
     {"group": "turn_detection", "key": "short_reply_endpoint", "section": "end_of_turn", "label": "Short-reply endpoint", "description": "Silence used for self-contained replies such as yes, no or okay.", "input": "number", "valueType": "number", "unit": "s", "min": 0.0, "max": 1.0, "step": 0.05, "default": {"browser": 0.12, "telephony": 0.1}, "recommended": {"browser": 0.25, "telephony": 0.3}},
     {"group": "turn_detection", "key": "barge_in_min_words", "section": "interruption", "label": "Barge-in word threshold", "description": "Transcript words required before caller speech interrupts a bot reply; zero disables the word gate.", "input": "number", "valueType": "integer", "unit": "words", "min": 0.0, "max": 10.0, "step": 1.0, "default": {"browser": 2.0, "telephony": 2.0}, "recommended": {"browser": 2.0, "telephony": 2.0}},
     {"group": "turn_detection", "key": "barge_in_vad_fallback_secs", "section": "interruption", "label": "Barge-in VAD fallback", "description": "Sustained gated speech that confirms interruption when no interim transcript arrives; zero disables it.", "input": "number", "valueType": "number", "unit": "s", "min": 0.0, "max": 5.0, "step": 0.05, "default": {"browser": 1.0, "telephony": 1.0}, "recommended": {"browser": 0.5, "telephony": 0.8}},
+    # Hybrid barge-in (voice_runtime.playback_duck + barge_in provisional
+    # mode): pause the reply at VAD start, commit after `barge_in_commit_secs`
+    # of sustained speech or the word threshold, otherwise resume. OFF by
+    # default — the pre-existing fallback policy stays in force until a tenant
+    # opts in.
+    {"group": "turn_detection", "key": "barge_in_duck_enabled", "section": "interruption", "label": "Provisional pause on barge-in", "description": "Pause the reply as soon as caller speech starts; cancel it only once the speech is confirmed (commit window or word threshold), otherwise resume where it paused.", "input": "toggle", "valueType": "boolean", "unit": "on/off", "min": 0.0, "max": 1.0, "step": 1.0, "default": {"browser": 0.0, "telephony": 0.0}, "recommended": {"browser": 0.0, "telephony": 0.0}},
+    {"group": "turn_detection", "key": "barge_in_commit_secs", "section": "interruption", "label": "Barge-in commit window", "description": "With the provisional pause on: sustained caller speech that commits the interruption. Shorter speech resumes the reply.", "input": "number", "valueType": "number", "unit": "s", "min": 0.3, "max": 3.0, "step": 0.05, "default": {"browser": 1.0, "telephony": 1.0}, "recommended": {"browser": 1.0, "telephony": 1.0}},
+    # Speech captured while the bot talks that did NOT confirm a barge-in:
+    # with the guard on, a multi-word segment is held and only merged into
+    # the caller's next turn (bot quiet) — never dispatched merely because the
+    # reply ended. OFF by default (today's behaviour dispatches it).
+    {"group": "turn_detection", "key": "held_segment_guard_enabled", "section": "interruption", "label": "Hold unconfirmed speech heard during replies", "description": "Multi-word speech heard while the bot talks, but not confirmed as an interruption, is held and only used if the caller keeps talking once the bot is quiet; otherwise it is discarded. Short acknowledgements keep today's behaviour.", "input": "toggle", "valueType": "boolean", "unit": "on/off", "min": 0.0, "max": 1.0, "step": 1.0, "default": {"browser": 0.0, "telephony": 0.0}, "recommended": {"browser": 0.0, "telephony": 0.0}},
     {"group": "turn_detection", "key": "finalize_grace", "section": "timing_debounce", "label": "Transcript finalization grace", "description": "Maximum wait for late final transcript fragments before routing begins.", "input": "number", "valueType": "number", "unit": "s", "min": 0.0, "max": 1.5, "step": 0.05, "default": {"browser": 0.3, "telephony": 0.12}, "recommended": {"browser": 0.18, "telephony": 0.2}},
     {"group": "turn_detection", "key": "finalize_settle", "section": "timing_debounce", "label": "Transcript settle window", "description": "How recently a final transcript may arrive before the finalization debounce is skipped.", "input": "number", "valueType": "number", "unit": "s", "min": 0.0, "max": 1.0, "step": 0.05, "default": {"browser": 0.15, "telephony": 0.1}, "recommended": {"browser": 0.1, "telephony": 0.12}},
     # Platform no-response ladder (voice_runtime.silence_policy): quiet seconds
@@ -62,6 +75,16 @@ TURN_DETECTION_FIELDS: tuple[dict[str, Any], ...] = (
     {"group": "turn_detection", "key": "silence_prompt_seconds", "section": "no_response", "label": "Silence prompt timeout", "description": "Seconds of caller silence before the bot first asks whether the caller can hear it. Minimum 5 seconds, maximum 15 seconds.", "input": "number", "valueType": "integer", "unit": "seconds", "min": 5.0, "max": 15.0, "step": 1.0, "default": {"browser": 15.0, "telephony": 15.0}, "recommended": {"browser": 15.0, "telephony": 15.0}},
     {"group": "turn_detection", "key": "silence_retry_seconds", "section": "no_response", "label": "Silence retry interval", "description": "Seconds of continued silence between one check-in prompt and the next. Minimum 5 seconds, maximum 15 seconds.", "input": "number", "valueType": "integer", "unit": "seconds", "min": 5.0, "max": 15.0, "step": 1.0, "default": {"browser": 15.0, "telephony": 15.0}, "recommended": {"browser": 15.0, "telephony": 15.0}},
     {"group": "turn_detection", "key": "silence_max_prompts", "section": "no_response", "label": "Silence prompts before closing", "description": "How many check-in prompts the bot speaks before it closes the call politely. Minimum 1, maximum 5.", "input": "number", "valueType": "integer", "unit": "prompts", "min": 1.0, "max": 5.0, "step": 1.0, "default": {"browser": 3.0, "telephony": 3.0}, "recommended": {"browser": 3.0, "telephony": 3.0}},
+    # Background-speech guard (voice_runtime.caller_level): a per-call
+    # baseline of the caller's OWN speech level, learned from accepted
+    # multi-word turns; speech this far below it is treated as another person
+    # near the handset (held + reconfirmed, never a barge-in). OFF by default:
+    # verdicts are still recorded on every call (shadow mode) so a tenant's
+    # margin can be validated on its own calls before the guard is enabled.
+    {"group": "turn_detection", "key": "background_speech_guard", "section": "background_speech", "label": "Background-speech guard", "description": "Hold speech that is much quieter than the caller's established level instead of answering it, and never let it interrupt the bot. Off records the verdicts without acting on them.", "input": "toggle", "valueType": "boolean", "unit": "on/off", "min": 0.0, "max": 1.0, "step": 1.0, "default": {"browser": 0.0, "telephony": 0.0}, "recommended": {"browser": 0.0, "telephony": 0.0}},
+    {"group": "turn_detection", "key": "background_speech_margin_db", "section": "background_speech", "label": "Background level margin", "description": "How far below the caller's own speech level a segment must be to count as background. Smaller values reject more background but risk holding a soft caller.", "input": "number", "valueType": "number", "unit": "dB", "min": 4.0, "max": 20.0, "step": 0.5, "default": {"browser": 12.0, "telephony": 12.0}, "recommended": {"browser": 12.0, "telephony": 12.0}},
+    {"group": "turn_detection", "key": "background_bot_audio_allowance_db", "section": "background_speech", "label": "Allowance while bot speaks", "description": "Extra margin for speech heard while the bot is talking: phones and browsers attenuate the caller during playback, so a genuine interruption measures quieter than the same caller's normal turns.", "input": "number", "valueType": "number", "unit": "dB", "min": 0.0, "max": 20.0, "step": 0.5, "default": {"browser": 12.0, "telephony": 12.0}, "recommended": {"browser": 12.0, "telephony": 12.0}},
+    {"group": "turn_detection", "key": "background_baseline_min_segments", "section": "background_speech", "label": "Agreeing baseline turns required", "description": "Accepted multi-word caller turns that must agree with each other (within 6 dB) before the caller's level is trusted. Until then the guard does nothing.", "input": "number", "valueType": "integer", "unit": "turns", "min": 2.0, "max": 6.0, "step": 1.0, "default": {"browser": 3.0, "telephony": 3.0}, "recommended": {"browser": 3.0, "telephony": 3.0}},
     {"group": "noise_gate", "key": "enabled", "section": "noise_suppression", "label": "Adaptive noise gate", "description": "Reject low-energy noise before it reaches voice activity detection.", "input": "toggle", "valueType": "boolean", "unit": "on/off", "min": 0.0, "max": 1.0, "step": 1.0, "default": {"browser": 1.0, "telephony": 1.0}, "recommended": {"browser": 1.0, "telephony": 1.0}},
     {"group": "noise_gate", "key": "noise_margin_db", "section": "noise_suppression", "label": "Noise-floor margin", "description": "Required loudness above the learned background-noise floor.", "input": "number", "valueType": "number", "unit": "dB", "min": 3.0, "max": 24.0, "step": 0.5, "default": {"browser": 10.0, "telephony": 8.0}, "recommended": {"browser": 9.0, "telephony": 8.0}},
     {"group": "noise_gate", "key": "min_threshold_dbfs", "section": "noise_suppression", "label": "Minimum speech threshold", "description": "Absolute lower energy threshold; more negative values admit quieter audio.", "input": "number", "valueType": "number", "unit": "dBFS", "min": -70.0, "max": -20.0, "step": 1.0, "default": {"browser": -50.0, "telephony": -50.0}, "recommended": {"browser": -50.0, "telephony": -52.0}},
@@ -108,7 +131,7 @@ def validate_turn_detection(value: Any, *, prefix: str = "Turn detection") -> li
         return []
     if not isinstance(value, dict):
         return [f"{prefix}: must be an object."]
-    return _validate_bounded(value, TURN_DETECTION_BOUNDS, prefix=prefix)
+    return _validate_bounded(value, TURN_DETECTION_BOUNDS, prefix=prefix, group="turn_detection")
 
 
 def validate_noise_gate(value: Any, *, prefix: str = "Noise gate") -> list[str]:
@@ -117,7 +140,7 @@ def validate_noise_gate(value: Any, *, prefix: str = "Noise gate") -> list[str]:
         return []
     if not isinstance(value, dict):
         return [f"{prefix}: must be an object."]
-    return _validate_bounded(value, NOISE_GATE_BOUNDS, prefix=prefix, allow_enabled_bool=True)
+    return _validate_bounded(value, NOISE_GATE_BOUNDS, prefix=prefix, group="noise_gate")
 
 
 def _validate_bounded(
@@ -125,9 +148,10 @@ def _validate_bounded(
     bounds_by_key: dict[str, tuple[float, float]],
     *,
     prefix: str,
-    allow_enabled_bool: bool = False,
+    group: str,
 ) -> list[str]:
     errors: list[str] = []
+    fields = _FIELDS_BY_GROUP.get(group, {})
     for key in value:
         if key not in bounds_by_key:
             errors.append(f"{prefix}: unknown parameter '{key}'.")
@@ -136,7 +160,10 @@ def _validate_bounded(
         if bounds is None:
             continue
         if isinstance(raw, bool):
-            if allow_enabled_bool and key == "enabled":
+            # Toggles (noise gate `enabled`, the background-speech guard) may
+            # be stored as booleans; every other field is numeric.
+            spec = fields.get(key)
+            if spec is not None and spec["valueType"] == "boolean":
                 continue
             errors.append(f"{prefix}: '{key}' must be a number.")
             continue
