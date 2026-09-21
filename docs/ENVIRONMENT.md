@@ -167,6 +167,7 @@ variable derived from the name; raw credentials are rejected by the API.
 | --- | --- | --- |
 | `VOICE_WORKER_HOST` | `0.0.0.0` | Worker bind host. |
 | `VOICE_WORKER_PORT` | `9002` | Worker HTTP/WebSocket port. |
+| `VOICE_PUBLIC_WS_BASE` | empty | Public `ws://`/`wss://` base for browser test calls; empty derives it from the page (same origin over HTTPS, `host:VOICE_WORKER_PORT` over HTTP). |
 | `VOICE_WORKER_CONCURRENCY` | `20` | Maximum concurrent sessions admitted by the worker. |
 | `VOICE_SESSION_TIMEOUT` | `900` | Inactive session timeout in seconds. |
 | `MAX_CALL_DURATION` | `3600` | Hard call-duration limit in seconds. |

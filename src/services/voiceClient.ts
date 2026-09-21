@@ -1,6 +1,7 @@
 /* Browser voice client for live bot testing.
    - Creates a voice session (REST) then connects a raw WebSocket to the
-     runtime worker (`ws://<host>:<workerPort><wsPath>`).
+     runtime worker (see `voiceSocketUrl` for how the URL is derived — it is
+     NOT always `ws://<host>:<workerPort>`; an HTTPS page must use wss://).
    - Streams 16 kHz mono Int16 PCM mic audio up in ~32 ms chunks
      (AudioWorklet, ScriptProcessor fallback); if the capture AudioContext
      refuses to run at 16 kHz the samples are linearly resampled first.
@@ -64,6 +65,24 @@ const CLOSE_MESSAGES: Record<number, string> = {
   4429: "The voice worker is at capacity — try again in a moment.",
   4500: "Voice engine configuration error — check the bot's provider and voice settings.",
 };
+
+/** Where the browser should open the voice socket for an issued session.
+
+    A page loaded over HTTPS may not open a `ws://` socket at all — browsers
+    block mixed content in the WebSocket constructor, before any connection
+    is attempted — and the worker port terminates no TLS of its own. So on a
+    secure page the socket goes to the page's own origin, where the TLS proxy
+    routes `/ws/voice/*` to the worker; only plain HTTP (local dev) addresses
+    the worker port directly. An explicit VOICE_PUBLIC_WS_BASE overrides both. */
+export function voiceSocketUrl(
+  session: { wsPath: string; workerPort?: number; wsBase?: string },
+  loc: { protocol: string; hostname: string; host: string } = location,
+): string {
+  const base = (session.wsBase ?? "").trim().replace(/\/+$/, "");
+  if (base) return `${base}${session.wsPath}`;
+  if (loc.protocol === "https:") return `wss://${loc.host}${session.wsPath}`;
+  return `ws://${loc.hostname}:${session.workerPort}${session.wsPath}`;
+}
 
 /** Linear resampler for mono Float32 PCM (capture-path safety net). */
 export function downsampleLinear(
@@ -256,7 +275,7 @@ export class VoiceClient {
     }
     this.micStream = stream;
 
-    await this.openSocket(`ws://${location.hostname}:${session.workerPort}${session.wsPath}`);
+    await this.openSocket(voiceSocketUrl(session));
     await this.startCapture(stream);
   }
 

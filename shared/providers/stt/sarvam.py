@@ -1,63 +1,54 @@
 """Sarvam AI STT (Saaras) — lazy-imports the sarvamai SDK.
 
-Migrated from the legacy voice engines sarvam_adapter.py. Fixes the legacy Odia
-inconsistency: the BCP-47 code is "or-IN" everywhere (the legacy STT mapping
-used the invalid "od-IN" while TTS used "or-IN").
+Migrated from the legacy voice engines sarvam_adapter.py. This adapter keeps no
+locale table of its own: the platform→Sarvam spelling lives in
+``shared.providers.languages`` (the one provider-mapping module), so the STT
+and TTS sides cannot drift apart. Urdu is the one enabled platform language
+Sarvam transcribes but cannot speak, which is why the STT locale set is defined
+separately from the TTS one.
 """
 
 import asyncio
+import logging
 import time
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, STTProvider, STTResult
+from shared.providers.languages import (
+    SARVAM_STT_SUPPORTED_LOCALES,
+    sarvam_stt_language_code,
+    to_platform_language,
+)
 from shared.audio.pcm import pcm_to_wav_bytes
 
-# Internal short codes → Sarvam BCP-47. Odia accepts both "od" and "or"
-# internally but always maps to "or-IN" on the wire.
-_LANG_TO_SARVAM = {
-    "en": "en-IN",
-    "hi": "hi-IN",
-    "bn": "bn-IN",
-    "kn": "kn-IN",
-    "ml": "ml-IN",
-    "mr": "mr-IN",
-    "od": "or-IN",
-    "or": "or-IN",
-    "pa": "pa-IN",
-    "ta": "ta-IN",
-    "te": "te-IN",
-    "gu": "gu-IN",
-}
+logger = logging.getLogger("providers.stt.sarvam")
 
 
 def _base_language(language: str) -> str:
     """Normalize a platform locale or short code to the internal base code.
 
     Callers hand this provider both spellings — the bot's configured locale
-    ("hi-IN") and the short code ("hi"). Only the short code is a key of
-    :data:`_LANG_TO_SARVAM`; the locale used to miss the table and silently
-    turned every "pinned" batch request (language rescue, identifier
-    recovery) into an auto-detect request, so the retry answered with the
-    very same misdetected language it was meant to correct.
+    ("hi-IN") and the short code ("hi"). The shared mapper accepts both; this
+    helper only produces the short label a transcript is tagged with.
     """
     return (language or "").strip().split("-")[0].lower()
 
 
 def sarvam_language_code(language: str | None) -> str:
     """The wire ``language_code`` for a platform language ("hi-IN"/"hi" →
-    "hi-IN"); blank, "auto" and unmapped languages request auto-detect."""
-    base = _base_language(language or "")
-    if base in ("", "auto", "unknown"):
-        return "unknown"
-    return _LANG_TO_SARVAM.get(base, "unknown")
+    "hi-IN"); blank, "auto" and languages the recognizer cannot pin request
+    auto-detect. Thin wrapper over the shared provider mapping."""
+    return sarvam_stt_language_code(language)
 
 
 def _sarvam_lang_to_internal(code: str | None, fallback: str) -> str:
     """Map a Sarvam language_code (e.g. "hi-IN") back to an internal short code."""
     if not code:
         return fallback
-    base = code.split("-")[0].lower()
-    return base if base in _LANG_TO_SARVAM else fallback
+    platform = to_platform_language("sarvam", code)
+    if platform not in SARVAM_STT_SUPPORTED_LOCALES:
+        return fallback
+    return _base_language(platform)
 
 
 class SarvamSTT(STTProvider):
@@ -96,13 +87,20 @@ class SarvamSTT(STTProvider):
             return STTResult(text="")
         started = time.perf_counter()
         wav = pcm_to_wav_bytes(audio, sample_rate)
-        lang = _base_language(language or self._language or "en")
+        requested = language or self._language or "en"
+        lang = _base_language(requested)
+        wire = sarvam_language_code(requested)
+        if wire == "unknown" and lang not in ("", "auto", "unknown"):
+            logger.warning(
+                "sarvam-stt: language '%s' cannot be pinned — transcribing with "
+                "auto-detect instead", requested,
+            )
         try:
             response = await asyncio.wait_for(
                 self._client.speech_to_text.transcribe(
                     file=("audio.wav", wav, "audio/wav"),
                     model=self._model,
-                    language_code=sarvam_language_code(lang),
+                    language_code=wire,
                 ),
                 timeout=self._timeout,
             )

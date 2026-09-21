@@ -50,7 +50,14 @@ def provider(monkeypatch):
 class TestWireLanguageCode:
     @pytest.mark.parametrize("language,expected", [
         ("hi", "hi-IN"), ("hi-IN", "hi-IN"), ("HI-in", "hi-IN"), ("en-IN", "en-IN"),
-        ("ml-IN", "ml-IN"), ("or", "or-IN"), ("od-IN", "or-IN"),
+        ("ml-IN", "ml-IN"),
+        # Urdu is an enabled platform language the private table never knew:
+        # it used to fall through to auto-detect, i.e. exactly the misdetection
+        # the rescue path exists to correct.
+        ("ur-IN", "ur-IN"), ("ur", "ur-IN"),
+        # Odia now follows the module's canonical alias (or-IN → od-IN) instead
+        # of the adapter's private spelling. Odia is not an enabled language.
+        ("or", "od-IN"), ("od-IN", "od-IN"),
         ("", "unknown"), (None, "unknown"), ("auto", "unknown"), ("unknown", "unknown"),
         ("xx-YY", "unknown"),
     ])

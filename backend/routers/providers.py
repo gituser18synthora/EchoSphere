@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
 
 import httpx
@@ -31,6 +32,10 @@ from backend.core.deps import (
     is_super_admin,
     require_permission,
     require_tenant_member,
+)
+from shared.providers.languages import (
+    elevenlabs_models_speaking,
+    elevenlabs_supports_language,
 )
 from backend.core.provider_catalog import (
     CAPABILITIES,
@@ -63,6 +68,8 @@ from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import TTSStreamSettings
 
 router = APIRouter(tags=["Providers"])
+
+logger = logging.getLogger("api.providers")
 
 _TEST_TIMEOUT_S = 8.0
 _PREVIEW_TIMEOUT_S = 15.0
@@ -416,13 +423,59 @@ _PREVIEW_ERROR_SUMMARIES = {
 
 def _preview_provider_error(provider_name: str, exc: ProviderError) -> ApiError:
     """Readable preview failure. ProviderError messages are sanitized at the
-    adapter layer and redacted again here before becoming user-facing."""
+    adapter layer and redacted again here before becoming user-facing.
+
+    The provider's own words are always carried through — including for auth
+    failures, where the category alone ("credentials rejected") hides the
+    difference between a wrong key, an expired plan and an unpaid invoice. The
+    message is redacted, never a raw response body.
+    """
     from shared.logging_utils import redact_secrets
 
     summary = _PREVIEW_ERROR_SUMMARIES.get(exc.category, "the provider call failed")
     detail = redact_secrets(str(exc)).split("] ", 1)[-1].strip()
-    suffix = f" ({detail[:180]})" if detail and exc.category != "auth" else ""
+    suffix = f" ({detail[:300]})" if detail else ""
+    # 502 is this endpoint's "the provider failed" status; a 422 means the
+    # PLATFORM rejected the request (catalog/schema/capability validation),
+    # which the voice-settings UI and its tests rely on to tell the two apart.
+    logger.warning(
+        "tts-preview: %s failed (category=%s): %s",
+        provider_name, exc.category, detail[:500],
+    )
     return ApiError(f"{provider_name} preview failed: {summary}{suffix}.", 502)
+
+
+async def _diagnose_silent_elevenlabs(
+    body, provider_row, wire_voice: str, params: dict
+) -> ProviderError | None:
+    """Ask the REST endpoint why a stream produced no audio.
+
+    The ElevenLabs realtime socket reports account-level failures (an unpaid
+    invoice, a suspended key, an exhausted quota) by closing the generation
+    with no audio and no error frame. REST answers the same request with a
+    structured reason, so on an empty stream we ask it once — only on the
+    failure path, so a working preview is never billed twice.
+    """
+    from shared.providers.base import ProviderConfig
+    from shared.providers.tts.elevenlabs import ElevenLabsTTS
+
+    reference = provider_row.secret_ref or f"env:{provider_row.code.upper()}_API_KEY"
+    client = ElevenLabsTTS(ProviderConfig(
+        provider="elevenlabs", model=body.model, voice=wire_voice,
+        language=body.language, api_key_reference=reference,
+        timeout_seconds=_PREVIEW_TIMEOUT_S, extra=dict(params),
+    ))
+    try:
+        await client.synthesize(
+            body.text[:100] or "test", voice=wire_voice, language=body.language,
+        )
+    except ProviderError as exc:
+        return exc
+    except Exception:  # noqa: BLE001 — diagnosis must never mask the original
+        logger.warning("tts-preview: ElevenLabs diagnosis failed", exc_info=True)
+    finally:
+        await client.aclose()
+    return None
 
 
 async def _preview_sentences(text: str, pause_ms: int | None) -> list[str]:
@@ -526,6 +579,26 @@ async def tts_preview(
     # on eleven_v3) being previewed with settings a real call could never use.
     # Delivery owns pace/speed, so those are stripped rather than rejected —
     # the canonical `speed` field below is the one authoritative control.
+    # Capability check before anything is synthesized: a model that cannot
+    # speak the requested language is a configuration error the operator can
+    # fix, not a provider outage. Only the platform's own languages are
+    # modelled, so an unmodelled combination (None) is never rejected here.
+    if body.provider == "elevenlabs" and body.language:
+        if elevenlabs_supports_language(body.model, body.language) is False:
+            alternatives = [
+                m for m in elevenlabs_models_speaking(body.language)
+                if m != body.model
+            ]
+            hint = (
+                f" Choose {' or '.join(alternatives)} for this language."
+                if alternatives else
+                " No configured ElevenLabs model speaks it."
+            )
+            raise ApiError(
+                f"ElevenLabs model '{body.model}' does not support language "
+                f"'{body.language}'.{hint}", 422,
+            )
+
     draft_params = strip_speed_params(body.params)
     param_errors = validate_params(
         model_row.params_schema, draft_params, prefix=f"{body.provider}/{body.model}"
@@ -632,14 +705,40 @@ async def tts_preview(
         if client_cls is None:
             raise ApiError(f"Preview is not supported for provider '{body.provider}'.", 422)
         client = client_cls(stream_settings)
+        pcm, ttfa_ms = b"", None
+        stream_error: ProviderError | None = None
         try:
             pcm, ttfa_ms = await _collect_preview_audio(
                 client, sentences, pause_ms=body.pause_ms, sample_rate=sample_rate
             )
         except ProviderError as exc:
-            raise _preview_provider_error(provider_row.name, exc) from exc
+            stream_error = exc
         finally:
             await client.close()
+        # ElevenLabs' realtime socket signals account-level failures (an unpaid
+        # invoice, a suspended key, an exhausted quota) by ending the
+        # generation with no audio and no reason. Whenever a stream produced
+        # nothing and the failure is still unexplained, ask REST — it answers
+        # the same request with a structured error. Specific failures
+        # (unsupported language, auth, timeout) are already actionable and are
+        # never re-diagnosed.
+        unexplained = stream_error is None or stream_error.category == "upstream"
+        if body.provider == "elevenlabs" and not pcm and unexplained:
+            diagnosed = await _diagnose_silent_elevenlabs(
+                body, provider_row, wire_voice, params
+            )
+            if diagnosed is not None:
+                stream_error = diagnosed
+        if stream_error is not None:
+            raise _preview_provider_error(provider_row.name, stream_error)
+
+    if not pcm:
+        # Checked before the audit/usage writes below: a preview that produced
+        # nothing is a failure and must not be recorded as billable characters.
+        raise ApiError(
+            f"{provider_row.name} preview failed: the provider returned no audio "
+            "for this voice/model/language combination.", 502,
+        )
 
     total_ms = (time.perf_counter() - started) * 1000
     record_audit(
@@ -667,8 +766,6 @@ async def tts_preview(
             commit=False,
         )
     db.commit()
-    if not pcm:
-        raise ApiError("The provider returned no audio.", 502)
     wav = pcm_to_wav_bytes(pcm, sample_rate=sample_rate)
     return ok({
         "audioBase64": base64.b64encode(wav).decode("ascii"),

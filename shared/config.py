@@ -181,6 +181,11 @@ class Settings(BaseSettings):
     # ── Voice runtime ────────────────────────────────────────────
     voice_worker_host: str = "0.0.0.0"
     voice_worker_port: int = 9002
+    # Public ws://|wss:// base browsers use to reach the worker. Needed when
+    # the app is served over HTTPS: a secure page may not open a ws:// socket
+    # and the worker port carries no TLS, so the socket has to go through the
+    # TLS proxy. Empty = same origin on HTTPS, host:voice_worker_port on HTTP.
+    voice_public_ws_base: str = ""
     voice_worker_concurrency: int = 20
     voice_session_timeout: int = 900
     max_call_duration: int = 3600

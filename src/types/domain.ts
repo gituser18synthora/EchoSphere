@@ -330,6 +330,8 @@ export interface VoiceSessionInfo {
   channel: string;
   wsPath: string;
   workerPort: number;
+  /** Public ws(s):// base from VOICE_PUBLIC_WS_BASE; empty = derive it. */
+  wsBase?: string;
   expiresInSeconds: number;
 }
 

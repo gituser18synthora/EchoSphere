@@ -7,6 +7,7 @@ import {
   PcmPlaybackQueue,
   VoiceClient,
   downsampleLinear,
+  voiceSocketUrl,
   type PlaybackContextLike,
 } from "./voiceClient";
 
@@ -480,5 +481,40 @@ describe("VoiceClient mic mute", () => {
     client.setMuted(false);
     internals.pushSamples(frame);
     expect(new Int16Array(sent[2]).some((v) => v !== 0)).toBe(true);
+  });
+});
+
+describe("voiceSocketUrl", () => {
+  const session = { wsPath: "/ws/voice/vs-1", workerPort: 9002 };
+  const http = { protocol: "http:", hostname: "localhost", host: "localhost:5199" };
+  const https = { protocol: "https:", hostname: "app.example.com", host: "app.example.com" };
+
+  it("addresses the worker port directly over plain HTTP (local dev)", () => {
+    expect(voiceSocketUrl(session, http)).toBe("ws://localhost:9002/ws/voice/vs-1");
+  });
+
+  it("never emits ws:// from an HTTPS page — browsers block that outright", () => {
+    const url = voiceSocketUrl(session, https);
+    expect(url.startsWith("wss://")).toBe(true);
+    expect(url).toBe("wss://app.example.com/ws/voice/vs-1");
+  });
+
+  it("keeps a non-default HTTPS port so the proxy origin still matches", () => {
+    expect(voiceSocketUrl(session, { ...https, host: "app.example.com:8443" }))
+      .toBe("wss://app.example.com:8443/ws/voice/vs-1");
+  });
+
+  it("prefers an explicit public base over both derived forms", () => {
+    expect(voiceSocketUrl({ ...session, wsBase: "wss://voice.example.com/" }, https))
+      .toBe("wss://voice.example.com/ws/voice/vs-1");
+    expect(voiceSocketUrl({ ...session, wsBase: "ws://10.0.0.5:9002" }, http))
+      .toBe("ws://10.0.0.5:9002/ws/voice/vs-1");
+  });
+
+  it("treats an empty or blank base as unset", () => {
+    for (const wsBase of ["", "   "]) {
+      expect(voiceSocketUrl({ ...session, wsBase }, https))
+        .toBe("wss://app.example.com/ws/voice/vs-1");
+    }
   });
 });

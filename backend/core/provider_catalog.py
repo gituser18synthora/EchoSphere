@@ -697,6 +697,35 @@ def validate_voice_settings(
             else:
                 errors.append(f"Voice mapping [{locale}]: invalid entry.")
 
+    # A bot language WITHOUT its own mapping falls through to the default
+    # engine at runtime (shared.orchestration.voice_identity.
+    # resolve_language_engine: exact locale → base code → default). The block
+    # above only checks the languages that do have a mapping, so a language
+    # the default engine cannot speak used to save cleanly and then fail mid
+    # call — ElevenLabs answers an unsupported language_code with HTTP 400 /
+    # a 1008 "unsupported_language" frame. Surfaced as a warning, not an
+    # error: an existing configuration must stay saveable, and the runtime
+    # now drops the unsupported enforcement code instead of going mute.
+    if tts_model_row is not None and tts_model_row.languages and bot_languages:
+        mapped = {
+            locale for locale, entry in lang_map.items()
+            if locale != "default" and isinstance(entry, (dict, str))
+        }
+        unsupported = sorted(
+            locale for locale in bot_languages
+            if locale not in mapped
+            and not matches_model_language(
+                tts_provider, locale, tts_model_row.languages)
+        )
+        if unsupported:
+            warnings.append(
+                f"TTS: {tts_provider}/{tts_model_row.code} does not support "
+                f"{', '.join(unsupported)} — these bot languages have no voice "
+                "mapping of their own, so live calls fall back to this engine "
+                "and will not be spoken correctly. Add a per-language voice "
+                "override on a provider that supports them."
+            )
+
     # ── Audio / transport settings ──
     audio = payload.get("audio_settings") or {}
     for transport, spec in audio.items():

@@ -102,6 +102,9 @@ async def create_session(
             "channel": body.channel,
             "wsPath": f"/ws/voice/{session['session_id']}",
             "workerPort": settings.voice_worker_port,
+            # Explicit public base wins; empty lets the browser derive one
+            # (same origin over HTTPS, host:workerPort over plain HTTP).
+            "wsBase": (settings.voice_public_ws_base or "").strip().rstrip("/"),
             "expiresInSeconds": settings.voice_session_timeout,
         }
     )

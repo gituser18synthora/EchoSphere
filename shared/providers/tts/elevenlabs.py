@@ -24,7 +24,12 @@ import httpx
 
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
-from shared.providers.languages import to_provider_language
+from shared.providers.languages import (
+    ELEVENLABS_LANGUAGE_ENFORCING_MODELS,
+    elevenlabs_language_code,
+    elevenlabs_models_speaking,
+    elevenlabs_supports_language,
+)
 from shared.providers.tts.delivery import provider_speed
 
 logger = logging.getLogger("providers.tts.elevenlabs")
@@ -40,15 +45,39 @@ _SUPPORTED_PCM_RATES = (8000, 16000, 22050, 24000)
 # direct ProviderConfig construction without one. Matches the WS adapter.
 _DEFAULT_MODEL = "eleven_flash_v2_5"
 
-# Models that accept the language_code enforcement parameter (official docs:
-# Flash/Turbo v2.5 only — Eleven v3 rejects it).
-_LANGUAGE_ENFORCING_MODELS = {"eleven_flash_v2_5", "eleven_turbo_v2_5"}
+# Which models accept the language_code enforcement parameter, and which
+# languages each one speaks, both live in shared.providers.languages — the one
+# place that knows ElevenLabs' wire spelling (bare ISO 639-1, never a locale).
+_LANGUAGE_ENFORCING_MODELS = ELEVENLABS_LANGUAGE_ENFORCING_MODELS
 
 # voice_settings fields per model family. Eleven v3 (alpha) supports only the
 # documented v3 settings; sending speed/use_speaker_boost is rejected.
 _V3_VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style")
 _FULL_VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style",
                             "use_speaker_boost", "speed")
+
+
+def _unsupported_language_error(provider: str, model: str, language: str) -> ProviderError:
+    """Refusal for a model that provably cannot speak the language.
+
+    Omitting ``language_code`` is NOT a workaround: the model still cannot
+    produce that language, and ElevenLabs either rejects the request outright
+    (HTTP 400 / a 1008 ``unsupported_language`` frame) or returns unusable
+    audio. The operator has to pick a model that speaks it, or map the
+    language to a different engine in the bot's per-language voice map.
+    """
+    alternatives = [m for m in elevenlabs_models_speaking(language) if m != model]
+    hint = (
+        f" Use {' or '.join(alternatives)} for this language, or map it to "
+        "another engine in the bot's per-language voice settings."
+        if alternatives else
+        " No configured ElevenLabs model speaks it — map this language to "
+        "another provider in the bot's per-language voice settings."
+    )
+    return ProviderError(
+        provider, "invalid_input",
+        f"ElevenLabs model '{model}' does not support language '{language}'.{hint}",
+    )
 
 
 def voice_setting_keys(model: str) -> tuple[str, ...]:
@@ -123,10 +152,12 @@ class ElevenLabsTTS(TTSProvider):
         voice_settings = self._voice_settings(speed)
         if voice_settings:
             payload["voice_settings"] = voice_settings
+        if language and elevenlabs_supports_language(self._model, language) is False:
+            raise _unsupported_language_error(self.name, self._model, language)
         if language and self._model in _LANGUAGE_ENFORCING_MODELS:
-            iso = to_provider_language("elevenlabs", language)
+            iso = elevenlabs_language_code(self._model, language)
             if iso:
-                payload["language_code"] = iso.split("-")[0]
+                payload["language_code"] = iso
         started = time.perf_counter()
         try:
             response = await self._client.post(
