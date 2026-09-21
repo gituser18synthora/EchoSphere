@@ -8,6 +8,7 @@ secrets) are never emitted.
 import re
 from datetime import date, datetime
 
+from shared.orchestration.behavior import resolve_behavior
 from shared.models import (
     AiConfigProfile,
     ApiConnection,
@@ -602,6 +603,7 @@ def serialize_workflow(w: Workflow, *, updated_by_name: str) -> dict:
         "nodes": w.nodes or [],
         "edges": w.edges or [],
         "issues": w.issues or [],
+        "behaviorVersion": resolve_behavior({"nodes": w.nodes or []}).version,
         "updatedAt": iso(w.updated_at),
         "updatedBy": updated_by_name,
     }

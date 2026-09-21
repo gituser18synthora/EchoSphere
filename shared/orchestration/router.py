@@ -13,9 +13,11 @@ the legacy VoiceBot rag_router/intent_engine, simplified and made stateless.
 """
 
 import re
-import string
 from dataclasses import dataclass, field
 from enum import Enum
+
+from shared.orchestration import lang as _lang
+from shared.orchestration import signals as _signals
 
 
 class RouteKind(str, Enum):
@@ -47,247 +49,22 @@ class RouteDecision:
 # ── user-signal classification ──────────────────────────────────────────────
 # Context-free semantic classification of a caller utterance (or of a
 # workflow edge-label token) into the conversation signals the workflow layer
-# reasons about. Hindi (Devanagari), Hinglish (Latin) and English are covered
-# by every pattern. ORDER MATTERS:
-#  - complaints about the conversation itself outrank everything (a caller
-#    saying "you are not listening" must never be matched as a refusal),
-#  - negated commitments ("nahi karunga") must be seen by hardship/refusal
-#    BEFORE the positive payment patterns can match their verb.
-#
-# NOTE: Python's \b misfires after Devanagari matra-final words — Devanagari
-# alternates stay outside \b groups (same convention as detect_hangup above).
+# reasons about. The MEANINGS live in signal packs
+# (shared/orchestration/signals: core + domain packs), the SURFACE FORMS per
+# language in language packs (shared/orchestration/lang). This module only
+# composes them — it spells no caller-language word itself.
 
-# ── Malayalam / Tamil deterministic vocabulary ───────────────────────────────
-# The regex signals below are language-agnostic by construction: each list
-# carries the Hindi/Hinglish/English surface forms. Malayalam and Tamil callers
-# reached the LLM for a bare "yes"/"no" because no ml/ta forms existed. These
-# groups add the everyday forms (native script + common romanizations that
-# collide with no Hindi/English word); the patterns splice them in. Malayalam
-# and Tamil vowel signs are combining marks, so word ends are enforced with a
-# not-another-letter lookahead instead of ``\b`` (same rule as Devanagari).
-_ML_TA_LETTER = "ഀ-ൿ஀-௿"
-_ML_TA_AFFIRM_TOKENS = (
-    # Includes the colloquial phone-call yes-sounds ("ഹാ", "ആ", "ആഹ്", "ഉം",
-    # "ആങ്", Tamil "ஆங்") — every use site anchors them at the start of the
-    # utterance and requires the token to END (no following letter), so a
-    # bare "ആ" never fires inside a longer word.
-    r"|അതെ|അതേ|ശരി|ഉവ്വ്|ഉവ്വ|ഓക്കേ|ഓകെ|ഹാ|ആഹ്|ആങ്|ഉം|ഊം|ആ"
-    r"|ஆமாம்|ஆமா|ஆம்|சரி|ஓகே|ஆகட்டும்|ஆங்"
-    r"|athe|athey|seri|aamaam|aamam|aama"
-)
-_ML_TA_NO_TOKENS = (
-    r"ഇല്ല|ഇല്ലാ|അല്ല|വേണ്ട|പറ്റില്ല|കഴിയില്ല|இல்லை|இல்ல|வேண்டாம்|முடியாது|முடியல"
-    r"|illai|illa|alla|venda|vendam|mudiyathu|mudiyadhu|pattilla"
-)
-_ML_TA_REFUSAL = (
-    r"|^\W*(?:" + _ML_TA_NO_TOKENS + r")(?:\W+(?:" + _ML_TA_NO_TOKENS + r"))*"
-    r"(?:\W+(?:please|pls|thanks|thank you|നന്ദി|நன்றி))?\W*$"
-)
-_ML_TA_HARDSHIP = (
-    r"|(?:പണം|പണവും|കാശ്|കാശും)\s*(?:ഇപ്പോൾ\s*)?(?:ഇല്ല|ഇല്ലാ)|പണമില്ല|കാശില്ല"
-    r"|(?:അടയ്ക്കാൻ|അടക്കാൻ|തരാൻ|കൊടുക്കാൻ)\s*(?:ഇപ്പോൾ\s*)?(?:പറ്റില്ല|കഴിയില്ല|സാധിക്കില്ല)"
-    r"|(?:பணம்|பணமும்|காசு|காசும்)\s*(?:இப்போ(?:து)?\s*)?(?:இல்லை|இல்ல)|பணமில்லை|காசில்லை"
-    r"|(?:கட்ட|தர|செலுத்த)\s*(?:இப்போ(?:து)?\s*)?(?:முடியாது|முடியல|முடியவில்லை)"
-    r"|ആശുപത്രി|மருத்துவமனை"
-)
-_ML_TA_PAYMENT_INTENT = (
-    r"|അടയ്ക്കാം|അടക്കാം|അടയ്ക്കും|അടച്ചോളാം|അടയ്ക്കാൻ\s*(?:തയ്യാറാണ്|റെഡിയാണ്)"
-    r"|പേയ്?‌?മെന്റ്\s*(?:ചെയ്യാം|ചെയ്യും)|യുപിഐ|യു\s*പി\s*ഐ|ഗൂഗിൾ\s*പേ|ഫോൺ\s*പേ"
-    r"|கட்டுகிறேன்|கட்டுறேன்|கட்றேன்|கட்டிடுறேன்|கட்டுவேன்|கட்டிடலாம்|கட்டலாம்"
-    r"|செலுத்துகிறேன்|செலுத்துவேன்|பேமெண்ட்\s*(?:பண்ணுறேன்|பண்றேன்|பண்ணுவேன்|செய்கிறேன்|செய்வேன்)"
-    r"|யூபிஐ|யு\s*பி\s*ஐ|கூகுள்\s*பே|போன்\s*பே"
-)
-
-_SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
-    # The caller says the bot is not listening / keeps repeating itself.
-    ("complaint", re.compile(
-        r"(?:sun|सुन)\w*\s+(?:(?:hi|ही)\s+)?(?:nahi|nahin|नहीं|नही)"
-        r"|(?:nahi|nahin|नहीं|नही)\s+(?:sun|सुन)"
-        r"|not listening|listen nahi|(?:samajh|समझ)\w*\s+(?:hi\s+)?"
-        r"(?:nahi|nahin|नहीं|नही)\s+(?:rahe|rahi|rhe|rhi|रहे|रही)"
-        r"|not understanding me|(?:wahi|वही|same)\s+(?:baat|बात)"
-        r"|baar baar|बार बार|(?:repeat|रिपीट)\s+(?:kar|कर|ho|हो)",
-        re.I,
-    )),
-    # The caller did not understand the bot.
-    ("clarify", re.compile(
-        r"(?:samajh|समझ)(?:\s+(?:mein|में))?\s+(?:nahi|nahin|नहीं|नही)\s+"
-        r"(?:aaya|aayi|आया|आयी|आई)"
-        r"|matlab kya|kya matlab|kya (?:kaha|bola)|मतलब क्या|क्या मतलब"
-        r"|क्या (?:कहा|बोला)|didn'?t (?:under)?stand|did not understand",
-        re.I,
-    )),
-    # Claims the payment was already made.
-    ("already_paid", re.compile(
-        r"already paid"
-        r"|(?:payment|पेमेंट|paisa|paise|पैसा|पैसे|amount)\W+(?:\w+\W+){0,4}"
-        r"(?:kar (?:di|diya|chuka|chuki)|ho (?:gaya|gayi|chuka|chuki)|"
-        r"kat (?:gaya|gayi)|bhar (?:diya|di)|कर (?:दी|दिया|चुका|चुकी)|"
-        r"हो (?:गया|गई|चुका|चुकी)|कट (?:गया|गई)|भर (?:दिया|दी))"
-        r"|^\W*(?:paid|kar (?:di|diya|chuka|chuki)|ho (?:chuki|chuka|gaya|gayi)|"
-        r"kat (?:gaya|gayi)|कर (?:दी|दिया|चुका|चुकी)|हो (?:चुकी|चुका|गया|गई)|"
-        r"कट (?:गया|गई))\W*$",
-        re.I,
-    )),
-    # Wrong person / not my loan.
-    ("wrong_person", re.compile(
-        r"galat number|wrong number|main (?:woh|wo|vo) nahi|koi aur"
-        r"|mera loan nahi|loan (?:liya hi nahi|nahi liya)|is naam"
-        r"|गलत नंबर|मैं (?:वो|वह) नहीं|कोई और|मेरा लोन नहीं|इस नाम"
-        # Malayalam / Tamil: wrong number, "he/she is not here", and a
-        # relation answering for the customer ("അമ്മയാണ്" = "it's his
-        # mother", "மனைவி பேசுறேன்") — these must never read as the
-        # customer confirming identity.
-        r"|തെറ്റായ നമ്പർ|റോങ് നമ്പർ|(?:അയാൾ|അവൻ|അവൾ|അവർ|അദ്ദേഹം|പുള്ളി)\s*(?:ഇല്ല|ഇവിടെ ഇല്ല)"
-        r"|(?<![ഀ-ൿ])(?:അമ്മ|അച്ഛൻ|അച്ഛ|ഭാര്യ|ഭർത്താവ്|മകൻ|മകൾ|സഹോദരൻ|സഹോദരി|ചേട്ടൻ|ചേച്ചി"
-        r"|അനിയൻ|അനിയത്തി|അമ്മായി|അമ്മാവൻ|മുത്തശ്ശി|മുത്തശ്ശൻ|ബന്ധു)(?:യാണ്|ആണ്|യ|യുടെ)?(?![ഀ-ൿ])"
-        r"|தவறான எண்|ராங் நம்பர்|(?:அவர்|அவன்|அவள்)\s*இல்லை"
-        r"|(?<![஀-௿])(?:அம்மா|அப்பா|மனைவி|கணவர்|மகன்|மகள்|அண்ணன்|தம்பி|அக்கா|தங்கை|உறவினர்)(?![஀-௿])",
-        re.I,
-    )),
-    # Wants a human.
-    ("agent_request", re.compile(
-        r"\b(?:agent|customer care|supervisor|manager|human|representative)\b"
-        r"|insaan se|aadmi se|एजेंट|कस्टमर केयर|इंसान से|आदमी से|सुपरवाइज़र|मैनेजर",
-        re.I,
-    )),
-    # Financial / medical hardship — cannot pay.
-    ("hardship", re.compile(
-        r"(?:paisa|paise|money|funds|पैसा|पैसे)\s*(?:hi\s+|ही\s+)?"
-        r"(?:bhi\s+|भी\s+)?"
-        r"(?:(?:abhi|filhaal)\s+|(?:अभी|फिलहाल|फ़िलहाल)\s+)?"
-        r"(?:nahi|nahin|नहीं|नही)"
-        r"|no money|i (?:do not|don't|cannot|can't) have (?:any )?money"
-        r"|i have no money|can ?not (?:pay|afford)|can'?t (?:pay|afford)"
-        r"|afford nahi|(?:payment|पेमेंट|pay|पे|bhugtan|भुगतान)\s+"
-        r"(?:nahi|nahin|नहीं|नही)\s+(?:kar|कर|de|दे|ho|हो)"
-        r"|(?:nahi|nahin|नहीं|नही)\s+(?:de|दे|bhar|भर)\s+"
-        r"(?:sakta|sakti|paunga|paungi|sakenge|सकता|सकती|पाऊंगा|पाऊँगा|पाऊंगी)"
-        r"|financial (?:problem|difficulty|issue)|आर्थिक|वित्तीय"
-        r"|paise ki (?:dikkat|kami|tangi)|पैसों? की (?:दिक्कत|कमी|तंगी)"
-        r"|medical emergency|hospital|bimaar|bimar|beemar|ilaaj|ilaj"
-        r"|बीमार|बिमार|अस्पताल|इलाज|मेडिकल"
-        r"|(?:naukri|job|नौकरी)\s*(?:nahi|nahin|chali gayi|chhut|khatam|नहीं|चली गई|छूट)"
-        r"|(?:salary|सैलरी|pagar|पगार|tankhwah|तनख्वाह)\s*(?:nahi|nahin|नहीं|नही)"
-        r"|berozgar|बेरोज़गार|बेरोजगार|majboori|majburi|मजबूरी|मज़बूरी"
-        + _ML_TA_HARDSHIP,
-        re.I,
-    )),
-    # "Wait a moment / stay on the line" — a HOLD, not a callback. Checked
-    # before callback because "ek minute ruko" and "ek minute baad call karo"
-    # share the time phrase: explicit callback wording anywhere in the
-    # utterance (call back / later / baad mein / call karo) hands the turn to
-    # the callback pattern below instead.
-    ("hold", re.compile(
-        r"^(?!.*(?:call ?back|call (?:me )?later"
-        r"|(?<![\wऀ-ॿ])(?:baad (?:mein|me)|बाद में)"
-        r"|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)))"
-        r"(?=.*(?:"
-        # "ek minute ruko / do minute do / thoda time dijiye / paanch second wait"
-        r"(?:ek|do|एक|दो|one|two|a|paanch|panch|पाँच|पांच|thoda|थोड़ा|\d+)?\s*"
-        r"(?:minutes?|mins?|mint|seconds?|secs?|moment|मिनट|मिनिट|सेकंड|सेकेंड|पल)"
-        r"\s*(?:ruk|रुक|hold|wait|do(?![\w])|दो|dijiye|दीजिए|dena|देना|de(?![\w])|दे(?![\wऀ-ॿ]))"
-        # bare "ek minute" / "one minute" / "just a minute"
-        r"|^\W*(?:haan\s+|हाँ\s+|ji\s+|जी\s+|bas\s+|बस\s+|just\s+)?"
-        r"(?:ek|एक|one|1|do|दो|two|2|a)\s*(?:minute|min|mint|मिनट|मिनिट|second|sec|सेकंड|moment)\W*$"
-        # ruko / rukiye / ruk jao / thehro
-        r"|(?<![\wऀ-ॿ])(?:ruk(?:o|iye|iyega|na|\s+ja(?:o|iye|na)?)|रुको|रुकिए|रुकिये|रुकना|रुक\s*जा(?:ओ|इए|ना)?|thehr\w*|ठहर\w*)"
-        # hold / wait / hang on / line par raho
-        r"|\bhold(?:\s+on|\s+karo|\s+kijiye|\s+the\s+line)?\b|होल्ड|\bhang\s+on\b"
-        r"|\bwait(?:\s+(?:a\s+)?(?:minute|moment|second|sec|karo|kijiye|kar))?\b(?!ing)|वेट"
-        r"|(?:line|लाइन)\s*(?:par|pe|pr|पर|पे)"
-        # "rakhna mat / rakho mat / kat mat karo / mat kato / don't disconnect"
-        r"|(?:rakh|रख)(?:na|o|iye|ना|ो|िए)?\s*(?:mat|मत|nahi|nahin|नहीं|नही)"
-        r"|(?:kat+\w*|kaat\w*|cut|काट\w*|कट|band|बंद)\s*(?:mat|मत|na|ना|nahi|nahin|नहीं|नही)"
-        r"|(?:mat|मत)\s*(?:kat+\w*|kaat\w*|cut|काट\w*|कट|rakh\w*|रख\w*|band|बंद)"
-        r"|don'?t\s+(?:hang\s+up|disconnect|cut|go)|do\s+not\s+(?:hang\s+up|disconnect|cut)"
-        # "abhi aata hoon / abhi aaya" — stepping away for a moment
-        r"|(?:abhi|अभी)\s*(?:aata|aaya|aati|aayi|आता|आया|आती|आई)"
-        r"))",
-        re.I,
-    )),
-    # Busy now / call me later.
-    ("callback", re.compile(
-        # Not `\b`: Devanagari vowel signs are combining marks outside `\w`,
-        # so a boundary formed inside "अहमदाबाद में" and a caller naming
-        # their city became a callback. Require a real word start instead.
-        r"call ?back|call (?:me )?later"
-        r"|(?<![\wऀ-ॿ])(?:baad (?:mein|me|में)|बाद में)"
-        r"|(?<![\wऀ-ॿ])(?:kal|parso|कल|परसों)\s+"
-        r"(?:call|karunga|karungi|kar|karo|कॉल|करूंगा|करूंगी|कर)"
-        # "शाम को कॉल करना", "subah call karo" — a time + an imperative call.
-        r"|(?:shaam|sham|subah|dopahar|शाम|सुबह|दोपहर)\s*(?:ko|को)?\s*"
-        r"(?:call|कॉल|phone|फोन)"
-        r"|(?:call|कॉल|phone|फोन)\s*(?:kar(?:na|o|iye)|karn[ae]|करना|करो|कीजिए|kijiye)"
-        r"|\bbusy\b|meeting|vyast|व्यस्त|मीटिंग|gaadi chala|गाड़ी चला|driv(?:e|ing)"
-        r"|(?:baat|बात)\s+(?:nahi|nahin|नहीं|नही)\s+kar\s+(?:sakta|sakti|सकता|सकती)"
-        r"|time chahiye|samay chahiye|समय चाहिए|टाइम चाहिए|more time"
-        r"|(?:agle|अगले)\s+(?:hafte|week|mahine|हफ़्ते|हफ्ते|महीने)",
-        re.I,
-    )),
-    # A question about amounts / process / consequences.
-    ("question", re.compile(
-        r"kitn[aei]\w*|कितन[ाेी]?"
-        r"|^\s*(?:kya|kab|kaise|kyun|kyon|kahan|क्या|कब|कैसे|क्यों|कहाँ|कहां)\b"
-        r"|\?\s*$",
-        re.I,
-    )),
-    # Refusal — negated commitment or a bare "no". Callers naturally repeat
-    # the negation ("no no", "nahi nahi nahi") and may close politely ("no,
-    # no thanks") — that is still one refusal, never an unknown utterance.
-    ("refusal", re.compile(
-        r"(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|"
-        r"करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)"
-        r"|(?:nahi|nahin|नहीं|नही)(?:\s+\w+){0,2}\s+"
-        r"(?:kar|कर)\s+(?:raha|rahi|रहा|रही|riha|रिहा)"
-        r"|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)"
-        r"|^\W*(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*"
-        r"(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)"
-        r"(?:\W+(?:nahi|nahin|no|nope|नहीं|नही|ji|जी))*"
-        r"(?:\W+(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
-        r"shukriya|धन्यवाद|शुक्रिया))?\W*$"
-        + _ML_TA_REFUSAL,
-        re.I,
-    )),
-    # Positive commitment to pay (verbs, not the bare noun "payment").
-    ("payment_intent", re.compile(
-        r"(?:payment|पेमेंट|pay|पे|bhugtan|भुगतान|paisa|paise|पैसा|पैसे|amount)\s+"
-        r"(?:\w+\s+)?(?:kar|कर|bhar|भर)\w*"
-        r"|(?:kar|कर)\s*(?:dunga|dungi|deta|deti|दूंगा|दूंगी|देता|देती)"
-        r"|karunga|karungi|करूंगा|करूंगी"
-        r"|\b(?:upi|bhim|paytm|g ?pay|google pay|phone ?pe|debit|card|atm)\b"
-        r"|यूपीआई|भीम|पेटीएम|फोन ?पे|गूगल ?पे|डेबिट|कार्ड|एटीएम"
-        r"|i (?:will|can) pay|ready to pay|taiyar|तैयार"
-        + _ML_TA_PAYMENT_INTENT,
-        re.I,
-    )),
-    # A bare confirmation ("haan", "theek hai") — meaningful only in context.
-    # Natural speech repeats it ("yes yes", "haan haan", "okay okay") and may
-    # add a courtesy tail ("yes, yes please") — still one confirmation.
-    ("affirm", re.compile(
-        r"^\W*(?:(?:haan(?: ji)?|han ?ji|haanji|ji haan|ji|yes|yeah|ok(?:ay)?(?: ji)?|"
-        r"theek(?: hai)?|thik(?: hai)?|bilkul|zaroor|jarur|sahi(?: hai)?|sure|"
-        r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी(?: हाँ| हां)?|ठीक(?: है)?|बिल्कुल|ज़रूर|जरूर|सही(?: है)?|"
-        r"ओके(?: जी)?|अच्छा" + _ML_TA_AFFIRM_TOKENS + r")\W*){1,4}"
-        r"(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|"
-        r"shukriya|धन्यवाद|शुक्रिया|നന്ദി|நன்றி)?\W*$",
-        re.I,
-    )),
-]
+def classify_user_signal(text: str, *, languages: list[str] | None = None) -> str | None:
+    """Semantic signal of an utterance (hardship, refusal, complaint, clarify,
+    hold, callback, payment_intent, already_paid, wrong_person, agent_request,
+    question, affirm — or None). Deliberately conservative (None over a guess).
+    ``languages`` restricts the surface forms to a bot's languages; the
+    default is every registered language."""
+    return _signals.classify(text, languages=languages)
 
 
-def classify_user_signal(text: str) -> str | None:
-    """Semantic signal of an utterance: hardship, refusal, complaint,
-    clarify, hold, callback, payment_intent, already_paid, wrong_person,
-    agent_request, question, affirm — or None. Language-agnostic across
-    Hindi/Hinglish/English; deliberately conservative (None over a guess)."""
-    stripped = (text or "").strip()
-    if not stripped:
-        return None
-    for name, pattern in _SIGNAL_PATTERNS:
-        if pattern.search(stripped):
-            return name
-    return None
+# Compatibility view of the classifier table for code that iterates it.
+_SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = list(_signals.compiled())
 
 
 # ── opening affirmation ──────────────────────────────────────────────────────
@@ -297,25 +74,15 @@ def classify_user_signal(text: str) -> str | None:
 # carry a different meaning), and sample matching scores a lone "yes" inside a
 # five-word sentence far below any intent threshold — so the confirmation fell
 # to plain chat and the configured workflow never started.
+# Word ends are enforced with a not-another-letter lookahead over every
+# registered script (Devanagari / Malayalam / Tamil vowel signs are combining
+# marks outside ``\w``, so ``\b`` never forms after them).
 _LEADING_AFFIRM = re.compile(
-    r"^\W*(?:haan|han|haanji|hanji|ji|yes|yeah|yep|ok|okay|theek|thik|bilkul|"
-    r"zaroor|jarur|sure|correct|right|"
-    r"हाँजी|हांजी|हाँ|हां|हा|हनां|जी|ठीक|बिल्कुल|ज़रूर|जरूर|सही|ओके|अच्छा"
-    + _ML_TA_AFFIRM_TOKENS + r")"
-    # Not `\b`: Devanagari vowel signs/candrabindu are combining marks, which
-    # `\w` excludes, so a word boundary never forms after "हाँ". Require the
-    # token to END here instead (space, punctuation or end of text). Same for
-    # Malayalam/Tamil vowel signs.
-    r"(?![\wऀ-ॿ" + _ML_TA_LETTER + r"])",
+    r"^\W*(?:" + _lang.alternatives("leading_affirm_tokens") + r")"
+    r"(?![\w" + _lang.letters() + r"])",
     re.I,
 )
-_AFFIRM_CONTRADICTION = re.compile(
-    r"\b(?:no|nope|not|nahi|nahin|nai|mat|never|don't|dont|can't|cannot|"
-    r"wrong|galat|bye|goodbye|alvida|rakhta|rakhti|rakho|baad mein|later)\b"
-    r"|(?<![\wऀ-ॿ])(?:नहीं|नही|मत|गलत|बाय|अलविदा|रखता|रखती|रखो|बाद में)"
-    r"|(?<![\w" + _ML_TA_LETTER + r"])(?:ഇല്ല|അല്ല|വേണ്ട|இல்லை|இல்ல|வேண்டாம்)",
-    re.I,
-)
+_AFFIRM_CONTRADICTION = re.compile(_lang.alternatives("contradiction"), re.I)
 _LEADING_AFFIRM_MAX_TOKENS = 10
 
 
@@ -334,103 +101,30 @@ def leading_affirmation(text: str) -> bool:
 
 
 _SMALLTALK = re.compile(
-    r"^\s*(hi|hii+|hello|hey|good (morning|afternoon|evening)|namaste|"
-    r"thanks?( you)?( so much)?|thank you|ok(ay)?|yes|yeah|no|nope|sure|great|"
-    r"bye|goodbye|see you|talk (to you )?later)( there| everyone| all)?\s*[.!?]*\s*$",
-    re.IGNORECASE,
+    "|".join(p.smalltalk for p in _lang.packs() if p.smalltalk) or r"(?!)", re.IGNORECASE,
 )
 
-# ── multilingual hang-up detection ──────────────────────────────────────────
-# Deterministic, transcription-tolerant matching for Hindi (Devanagari),
-# Hinglish (Latin) and English. Checked before EVERYTHING else (including an
-# active workflow) — a caller asking to hang up must never receive another
-# payment pitch, clarification or LLM fallback.
-#
-# NOTE: Python's \b misfires after Devanagari matra-final words — Devanagari
-# alternates stay outside \b groups.
-
-# Negations must never hang up: "फोन मत काटो", "call mat kato", "don't hang
-# up". Both orders are covered (neg before verb, and "kaatna mat").
-_HANGUP_NEGATION = re.compile(
-    r"(?:\bmat\b|\bna\b|\bnahin?\b|\bdon'?t\b|\bdo not\b|मत|ना|नहीं)\W*"
-    r"(?:\w+\W+)?(?:kat+\w*|kaat\w*|cut|band|bandh|khat[ae]?m|rakh\w*|hang|"
-    r"disconnect|काट\w*|कट|बंद|ख़?त्म|रख)"
-    r"|(?:kat+n[aei]|kaatn[aei]|काटना|कट करना)\W+(?:mat\b|मत)"
-    # Verb → negation (→ auxiliary): "कट मत करो", "kat mat karo", "call kat
-    # mat karna", "phone cut na karo", "band mat karo", "rakho mat", "रखो मत".
-    # The negation must FOLLOW the verb directly ("kaat do" / "band karo" carry
-    # none), so genuine imperatives are untouched.
-    r"|(?:kat+\w*|kaat\w*|cut|band|bandh|काट\w*|कट|बंद|rakh\w*|रख\w*|"
-    r"disconnect|hang\s+up)\W+(?:mat|na|nahin?|मत|ना|नहीं|नही)(?![\wऀ-ॿ])",
-    re.I,
-)
-
-_HANGUP_PATTERNS: list[re.Pattern] = [
-    # English.
-    re.compile(
-        r"\b(hang ?up|end (the |this )?call|disconnect( the| this)?( call| phone)?|"
-        r"(cut|stop|drop) (the |this )?call)\b",
-        re.I,
-    ),
-    # phone/call + cut/band/khatam/rakh verb (Latin and Devanagari nouns).
-    re.compile(
-        r"(?:\b(?:phone|phon|fone|call|kaal)\b|फ़?ोन|फ़ोन|फोन|कॉल|काल)\W*(?:ko\W+|को\W*)?"
-        r"(?:kat+\w*|kaat\w*|cut|band\w*|khat[ae]?m|khatm|rakh\w*|काट\w*|कट|बंद|ख़?त्म|रख)",
-        re.I,
-    ),
-    # Bare imperative cut verb: "cut kar do", "cut karo", "cut karu",
-    # "kaat do", "काट दो", "कट करो". Past tense ("paise kat gaye" — money got
-    # deducted) deliberately does NOT match: only imperative aux verbs listed.
-    re.compile(
-        r"\b(?:kat+|kaat|cut)\s+(?:kar\w*|kr\w*|do|de|dijiye|dena)\b",
-        re.I,
-    ),
-    re.compile(r"(?:काट|कट)\s*(?:कर\s*)?(?:दो|दे|दीजिए|करो|करिए)"),
-    # band/khatam without a phone/call noun needs a "bas" style terminator so
-    # "SMS band karo" (stop the messages) can't kill the call.
-    re.compile(
-        r"\bbas\b.{0,16}\b(?:band|bandh|khat[ae]?m|khatm)\s+kar\w*",
-        re.I,
-    ),
-    re.compile(r"बस.{0,16}(?:बंद|ख़?त्म)\s*कर"),
-]
+# ── multilingual call control (hang-up / do-not-call / emergency / consent) ─
+# Deterministic, transcription-tolerant and checked before EVERYTHING else
+# (including an active workflow): a caller asking to hang up, revoking
+# contact consent or reporting an emergency must never receive another pitch,
+# rung, clarification or LLM fallback. Each language pack contributes its own
+# patterns; a negation ("don't hang up", "फोन मत काटो") from any language wins.
+_HANGUP_NEGATION = _lang.compile_alternation("hangup_negation")
+_HANGUP_PATTERNS: list[re.Pattern] = _lang.compile_any("hangup_patterns")
 
 
 def detect_hangup(text: str) -> bool:
-    """Deterministic multilingual hang-up intent (hi / hinglish / en)."""
+    """Deterministic multilingual hang-up intent."""
     stripped = (text or "").strip()
     if not stripped:
         return False
-    if _HANGUP_NEGATION.search(stripped):
+    if _HANGUP_NEGATION is not None and _HANGUP_NEGATION.search(stripped):
         return False
     return any(p.search(stripped) for p in _HANGUP_PATTERNS)
 
 
-# ── do-not-call / emergency / consent refusal (platform-critical) ────────────
-# Like hang-up these are deterministic, multilingual and checked before any
-# workflow, intent model or LLM: a caller revoking contact consent or
-# reporting an emergency must never receive another pitch first.
-
-_DNC_PATTERNS: list[re.Pattern] = [
-    re.compile(
-        r"\b(?:do ?n[o']t|never|stop) call(?:ing)?( me| again| back)?\b"
-        r"|\bremove (?:my|this) number\b|\bstop (?:these|the) calls\b"
-        r"|\btake me off\b|\bunsubscribe\b",
-        re.I,
-    ),
-    # "dobara/phir/aage call mat karna", "फिर मत करना कॉल"
-    re.compile(
-        r"(?:dobara|dubara|phir|firse|fir se|aage|kabhi|दोबारा|दुबारा|फिर|आगे|कभी)\s*"
-        r"(?:se\s*|से\s*)?(?:call|phone|कॉल|फोन)?\s*(?:mat|मत|na|नहीं|nahi)\s*"
-        r"(?:kar|कर|karna|करना|karo|करो)",
-        re.I,
-    ),
-    re.compile(
-        r"(?:call|phone|कॉल|फोन)\s*(?:mat|मत)\s*(?:kar|कर)\w*"
-        r"|(?:mat|मत)\s*(?:karo|करो|karna|करना)\s*(?:call|phone|कॉल|फोन)",
-        re.I,
-    ),
-]
+_DNC_PATTERNS: list[re.Pattern] = _lang.compile_any("dnc_patterns")
 
 
 def detect_do_not_call(text: str) -> bool:
@@ -441,55 +135,45 @@ def detect_do_not_call(text: str) -> bool:
     return any(p.search(stripped) for p in _DNC_PATTERNS)
 
 
-_EMERGENCY = re.compile(
-    r"\bemergency\b|\bambulance\b|\bpolice\b|heart attack|accident (?:ho|हो)"
-    r"|(?:mar|मर) (?:raha|rahi|रहा|रही)|suicide|khudkushi|आत्महत्या"
-    r"|एम्बुलेंस|इमरजेंसी|पुलिस|एक्सीडेंट",
-    re.I,
-)
+_EMERGENCY = _lang.compile_alternation("emergency")
 
 
 def detect_emergency(text: str) -> bool:
     """Emergency / safety language — escalate to a human, never a pitch."""
     stripped = (text or "").strip()
-    return bool(stripped) and bool(_EMERGENCY.search(stripped))
+    return bool(stripped) and _EMERGENCY is not None and bool(_EMERGENCY.search(stripped))
 
 
 # "don't record", "recording band karo" — consent refusal for recording.
-_CONSENT_REFUSAL = re.compile(
-    r"(?:do ?n[o']t|stop|no)\s+record(?:ing)?"
-    r"|record(?:ing)?\s*(?:mat|मत|band|बंद)\s*(?:kar|कर)?"
-    r"|रिकॉर्ड(?:िंग)?\s*(?:मत|बंद)"
-    r"|consent\s+(?:nahi|नहीं|withdraw)",
-    re.I,
-)
+_CONSENT_REFUSAL = _lang.compile_alternation("consent_refusal")
 
 
 def detect_consent_refusal(text: str) -> bool:
     stripped = (text or "").strip()
-    return bool(stripped) and bool(_CONSENT_REFUSAL.search(stripped))
+    return bool(stripped) and _CONSENT_REFUSAL is not None and bool(_CONSENT_REFUSAL.search(stripped))
 
 
 _CALL_CONTROL: list[tuple[re.Pattern, str]] = [
     # hang-up lives in detect_hangup() (multilingual + negation-guarded),
     # checked before this list ever runs.
-    (re.compile(r"\b(transfer|connect) (me )?(to )?(a |an )?(human|agent|person|representative|someone)\b", re.I), "transfer"),
-    (re.compile(r"\b(speak|talk) (to|with) (a |an )?(human|agent|person|representative)\b", re.I), "transfer"),
-    (re.compile(r"\b(repeat|say (that|it) again|pardon|come again)\b", re.I), "repeat"),
-    (re.compile(r"\b(speak|talk|go) (more )?slow(ly|er)?\b", re.I), "slower"),
+    (re.compile(pattern, re.I), action)
+    for pack in _lang.packs() for pattern, action in pack.call_control_patterns
 ]
 
-_HANDOFF = re.compile(r"\b(human|agent|supervisor|manager|representative)\b", re.I)
+_HANDOFF = re.compile(
+    r"\b(" + "|".join(p.handoff_words for p in _lang.packs() if p.handoff_words) + r")\b", re.I,
+)
 
-# Question shapes that usually need tenant knowledge.
+# Question shapes that usually need tenant knowledge: the languages' question
+# words plus the domain vocabulary of the active signal packs (generic
+# service words in core, policy words in the insurance pack, …).
 _KB_SIGNALS = re.compile(
-    r"\b(what|how|when|where|which|why|can i|do you|is there|are there|"
-    r"policy|policies|coverage|premium|claim|deadline|grace period|charges?|"
-    r"fees?|interest|rate|document|procedure|process|eligib|terms?|"
-    r"conditions?|renewal|refund|cancel(lation)?|timings?|hours|address)\b",
+    r"\b(" + "|".join([w for p in _lang.packs() for w in p.kb_question_words]
+                      + list(_signals.knowledge_terms())) + r")\b",
     re.I,
 )
 
+# Platform safety: a caller reading out a secret. Not a language matter.
 _UNSAFE = re.compile(
     r"\b(card number|cvv|otp|one[- ]time password|password) (is|was)?\s*[:\-]?\s*\d",
     re.I,
@@ -500,42 +184,35 @@ _UNSAFE = re.compile(
 # Clause boundaries: sentence punctuation and the connectors callers use to
 # append a question to an answer ("… waise …", "… aur …", "… but …").
 _CLAUSE_SPLIT = re.compile(
-    r"[.?!।]+|(?<!\w)(?:waise|vaise|aur|and|but|lekin|magar|phir|also|वैसे|और|लेकिन|मगर|फिर)(?!\w)",
+    r"[" + re.escape(_lang.sentence_terminators()) + r"]+|(?<!\w)(?:"
+    + _lang.alternatives("clause_connectors") + r")(?!\w)",
     re.I,
 )
-# Question shape in Hindi / Hinglish / English (a "?" counts too).
+# Question shape in every registered language (a "?" counts too). This wide
+# form — interrogatives AND English auxiliaries anywhere — feeds knowledge
+# vocabulary filtering; ``looks_like_question`` below is the stricter shape.
 _QUESTION_MARKERS = re.compile(
-    r"\?|(?<!\w)(?:kya|kyu|kyun|kyon|kaise|kab|kitn[aei]|kaun|kahan|kis|what|why|how|when|"
-    r"which|where|is|are|can|could|do|does|will|would|should|explain|tell|batao|bataiye|"
-    r"क्या|क्यों|क्यूँ|क्यूं|कैसे|कब|कितन[ाीे]|कौन|कहाँ|कहां|किस|बताओ|बताइए|समझाओ)(?!\w)",
+    r"\?|(?<!\w)(?:" + _lang.alternatives("question_markers")
+    + "|" + _lang.alternatives("question_aux") + r")(?!\w)",
     re.I,
 )
-
-
+_QUESTION_MARKERS_ANYWHERE = re.compile(
+    r"\?|(?<!\w)(?:" + _lang.alternatives("question_markers") + r")(?!\w)", re.I,
+)
 # English auxiliaries open a question only at the start of a clause AND
 # followed by an English subject ("is it refunded?", "do you support Tally?").
 # Elsewhere they are Hinglish words: "is" = यह ("is baar"), "do" = दो ("bata
 # do", "mark do hai" — an STT slip for "ho"), "are" = अरे ("Are maine deliver
 # kar diya", cv_7786bc42deca), "can"/"will" inside a statement.
-_ENGLISH_AUX_WORDS = r"(?:is|are|can|could|do|does|will|would|should)"
-_ENGLISH_SUBJECT_WORDS = (
-    r"(?:you|u|i|we|they|he|she|it|this|that|these|those|there|the|my|your|our|"
-    r"his|her|their|any|anyone|anybody|someone|somebody|me)"
-)
-_QUESTION_MARKERS_ANYWHERE = re.compile(
-    r"\?|(?<!\w)(?:kya|kyu|kyun|kyon|kaise|kab|kitn[aei]|kaun|kahan|kis|what|why|how|when|"
-    r"which|where|explain|tell|batao|bataiye|"
-    r"क्या|क्यों|क्यूँ|क्यूं|कैसे|कब|कितन[ाीे]|कौन|कहाँ|कहां|किस|बताओ|बताइए|समझाओ)(?!\w)",
-    re.I,
-)
 _QUESTION_CLAUSE_START = re.compile(
-    r"^\W*" + _ENGLISH_AUX_WORDS + r"\s+" + _ENGLISH_SUBJECT_WORDS + r"(?!\w)", re.I,
+    r"^\W*(?:" + _lang.alternatives("question_aux") + r")\s+(?:"
+    + _lang.alternatives("question_subjects") + r")(?!\w)", re.I,
 )
 
 
 def looks_like_question(text: str) -> bool:
-    """Deterministic question shape: a "?" or an interrogative word in Hindi,
-    Hinglish or English. The workflow engine uses it to double-check an LLM
+    """Deterministic question shape: a "?" or an interrogative word in any
+    registered language. The workflow engine uses it to double-check an LLM
     'question' label before that label is allowed to park a caller's literal
     answer off-script ("मैं टैली यूज़ करता हूँ।" was labelled a question with
     confidence 0.0 in live calls and re-asked six times).
@@ -550,20 +227,8 @@ def looks_like_question(text: str) -> bool:
     return any(_QUESTION_CLAUSE_START.match(clause) for clause in _CLAUSE_SPLIT.split(text))
 
 
-# Function words that never identify a knowledge TOPIC.
-_KNOWLEDGE_STOP_TOKENS = frozenset({
-    "hai", "hain", "hota", "hoti", "hote", "hoga", "hogi", "the", "and", "for",
-    "with", "from", "this", "that", "these", "those", "same", "every", "mera",
-    "mere", "meri", "main", "mujhe", "aap", "aapko", "kar", "karta", "karti",
-    "karte", "sakta", "sakti", "sakte", "liye", "mein", "me", "se", "ka", "ki",
-    "ke", "ko", "par", "pe", "ye", "yeh", "wo", "woh", "hu", "hoon", "tha",
-    "thi", "the", "gaya", "gayi", "gaye", "raha", "rahi", "rahe", "kata",
-    "kati", "kate", "cut", "kab", "kaise", "kya", "kyu", "kyun", "not", "was",
-    "were", "been", "have", "has", "had", "will", "your", "you", "our", "one",
-    "होती", "होता", "होते", "हैं", "है", "क्या", "क्यों", "कैसे", "मेरे", "मेरा", "मेरी",
-    "लिए", "सभी", "दे", "सकते", "सकता", "सकती", "रही", "रहा", "गया", "गई", "कब",
-    "कटेगा", "कटती", "काटी", "जाती", "जाता", "किस",
-})
+# Function words that never identify a knowledge TOPIC (per language pack).
+_KNOWLEDGE_STOP_TOKENS = _lang.union("stop_tokens")
 
 
 # ── intent sample matching ───────────────────────────────────────────────────
@@ -574,7 +239,7 @@ _KNOWLEDGE_STOP_TOKENS = frozenset({
 # and hyphen/slash compounds split ("check-in" ≡ "check in").
 
 _TOKEN_SEPARATORS = re.compile(r"[-–—/_]+")
-_TOKEN_STRIP = string.punctuation + "।॥॰…‘’“”«»؟"
+_TOKEN_STRIP = _lang.token_strip_chars()
 
 
 def match_tokens(text: str) -> list[str]:
@@ -655,9 +320,10 @@ class TurnRouter:
                 continue
             for sample in intent.get("samples") or []:
                 for token in match_tokens(str(sample)):
-                    # Devanagari words are short in code points ("फी" = STT's
-                    # spelling of fee is two), so the length floor is script-aware.
-                    floor = 2 if any("\u0900" <= ch <= "\u097f" for ch in token) else 3
+                    # Indic words are short in code points ("फी" = STT's
+                    # spelling of fee is two), so the length floor is script-aware
+                    # (each language pack declares its own floor).
+                    floor = _lang.short_token_floor(token)
                     if len(token) >= floor and token not in _KNOWLEDGE_STOP_TOKENS \
                             and not _QUESTION_MARKERS.fullmatch(token):
                         vocab.add(token)

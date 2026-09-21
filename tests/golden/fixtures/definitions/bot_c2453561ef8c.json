@@ -1,0 +1,797 @@
+{
+ "bot": {
+  "id": "bot_c2453561ef8c",
+  "name": "mPokket Collections – DPD 0-7 (Early Overdue)",
+  "tenant_id": "tn_22a809aecf66",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf_7e27c8fde7f9",
+   "name": "DPD 0-7 collection call",
+   "version": 3,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Outbound call connected"
+    },
+    {
+     "x": 40,
+     "y": 150,
+     "id": "n_push",
+     "kind": "intent",
+     "label": "Rung 1: push",
+     "config": {
+      "prompt": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 260,
+     "id": "n_benefits",
+     "kind": "intent",
+     "label": "Rung 2: benefits",
+     "config": {
+      "prompt": "Ek achhi baat bata dun — agar aap abhi call par payment complete karte hain, toh aapki credit limit gradually ₹50,000 tak badhne ke high chances hain. BHIM UPI se payment par ₹40 tak ka discount mil sakta hai, aur Paytm UPI se ₹10 se ₹300 tak ka cashback aur mahine mein ek baar ₹2,000 tak ka Paytm voucher milne ka chance bhi hai. Toh kya aap abhi UPI se payment complete karenge?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 370,
+     "id": "n_promise_funds",
+     "kind": "intent",
+     "label": "Rung 3: promise_funds",
+     "config": {
+      "prompt": "System records ke hisaab se pehle bhi aapse payment ke baare mein baat hui thi aur aapne payment ka promise kiya tha, lekin abhi tak payment receive nahi hui hai. Aapne pehle kai baar bina kisi extra charges ke time par repay kiya hai. Aap apni savings se, ya kisi friend ya family se arrange karke bhi payment kar sakte hain — isse aapko koi penalty nahi deni hogi. Kya aap payment ka intezaam kar lenge?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 480,
+     "id": "n_penalty",
+     "kind": "intent",
+     "label": "Rung 4: penalty",
+     "config": {
+      "prompt": "Main aapko inform karna chahta hun ki due date par payment na karne se penalty daily badhti hai aur extra charges lagte rehte hain. Extra charges avoid karne ke liye abhi payment complete kar dijiye. Kya aap abhi payment karenge?"
+     }
+    },
+    {
+     "x": 40,
+     "y": 590,
+     "id": "n_cibil",
+     "kind": "intent",
+     "label": "Rung 5: cibil",
+     "config": {
+      "prompt": "Ek aur zaroori baat — time par repayment na karne se aapka CIBIL score impact hota hai, aur aaj ke time mein CIBIL bahut important hai. Emergency mein — jaise medical ya family needs — loan ki zarurat kabhi bhi pad sakti hai. Agar CIBIL low hoga toh loan milne mein dikkat ho sakti hai, ya interest rate kaafi high ho sakta hai. Isliye request hai ki abhi payment complete kar dijiye aur apna CIBIL safe rakhiye. Kya aap payment karenge?"
+     }
+    },
+    {
+     "x": 360,
+     "y": 150,
+     "id": "n_ptype",
+     "kind": "ask",
+     "label": "Full or partial payment",
+     "config": {
+      "question": "Bahut achha! Kya aap apna poora overdue amount pay karenge, ya partial payment karenge?",
+      "synonyms": {
+       "full": [
+        "poora",
+        "pura",
+        "puri",
+        "complete",
+        "whole",
+        "saara",
+        "sara",
+        "full",
+        "पूरा",
+        "पूरी",
+        "सारा",
+        "पूर्ण"
+       ],
+       "partial": [
+        "partial",
+        "part payment",
+        "aadha",
+        "adha",
+        "half",
+        "thoda",
+        "installment",
+        "instalment",
+        "kisht",
+        "आधा",
+        "आधी",
+        "थोड़ा",
+        "थोड़ी",
+        "किस्त",
+        "किश्त"
+       ]
+      },
+      "variable": "payment_type",
+      "entityType": "list"
+     }
+    },
+    {
+     "x": 360,
+     "y": 260,
+     "id": "n_mop",
+     "kind": "ask",
+     "label": "Mode of payment",
+     "config": {
+      "question": "Kaunse madhyam se aapka payment hoga – Debit Card ya UPI?",
+      "synonyms": {
+       "UPI": [
+        "upi",
+        "bhim",
+        "paytm",
+        "gpay",
+        "google pay",
+        "phonepe",
+        "phone pe",
+        "qr",
+        "यूपीआई",
+        "यू पी आई",
+        "भीम",
+        "पेटीएम",
+        "फोनपे",
+        "फोन पे",
+        "गूगल पे",
+        "क्यूआर"
+       ],
+       "Debit Card": [
+        "debit",
+        "card",
+        "atm",
+        "डेबिट",
+        "कार्ड",
+        "एटीएम"
+       ]
+      },
+      "variable": "payment_method",
+      "entityType": "list"
+     }
+    },
+    {
+     "x": 360,
+     "y": 370,
+     "id": "n_guide",
+     "kind": "message",
+     "label": "Payment guidance",
+     "config": {
+      "text": "Dhanyavaad! Kripya mPokket app kholkar apna payment abhi complete kar dijiye. BHIM UPI ya Paytm UPI se payment karne par discount ya cashback milne ke chances bhi hain. Payment complete hote hi aapka profile turant update ho jayega aur koi extra penalty charges nahi lagenge. Main call par kabhi card number, PIN ya OTP nahi maangta — yeh details kisi ke saath share na karein."
+     }
+    },
+    {
+     "x": 360,
+     "y": 480,
+     "id": "n_close",
+     "kind": "end",
+     "label": "Close call",
+     "config": {
+      "text": "mPokket mein samay dene ke liye dhanyavaad, aapka din shubh ho!"
+     }
+    },
+    {
+     "x": 40,
+     "y": 700,
+     "id": "n_refuse_end",
+     "kind": "end",
+     "label": "Refusal close",
+     "config": {
+      "text": "Theek hai, main aapki baat note kar raha hun. Kripya yaad rakhiye — jitni jaldi aap payment complete karenge, utna hi aap extra penalty aur CIBIL impact se bachenge. Kripya aaj hi mPokket app se apna payment complete karne ki koshish kijiye. mPokket mein samay dene ke liye dhanyavaad, aapka din shubh ho!"
+     }
+    },
+    {
+     "x": 660,
+     "y": 150,
+     "id": "n_callback",
+     "kind": "end",
+     "label": "Callback close",
+     "config": {
+      "text": "Koi baat nahi, hum aapko baad mein call kar lenge. Kripya jitni jaldi ho sake mPokket app se apna payment complete kar dijiye, taaki koi extra charges na lagen. Dhanyavaad, aapka din shubh ho!"
+     }
+    },
+    {
+     "x": 660,
+     "y": 260,
+     "id": "n_wrong",
+     "kind": "end",
+     "label": "Wrong person close",
+     "config": {
+      "text": "Maaf kijiye, lagta hai yeh call galat number par lag gayi. Aapka samay lene ke liye khed hai. Dhanyavaad, aapka din shubh ho!"
+     }
+    },
+    {
+     "x": 660,
+     "y": 370,
+     "id": "n_paid",
+     "kind": "handover",
+     "label": "Already paid — verify",
+     "config": {
+      "text": "Agar aapne payment already complete kar di hai, toh dhanyavaad! Main aapko hamare agent se connect kar raha hun jo aapki payment verify kar denge. Kripya line par bane rahiye."
+     }
+    },
+    {
+     "x": 660,
+     "y": 480,
+     "id": "n_agent",
+     "kind": "handover",
+     "label": "Agent handover",
+     "config": {
+      "text": "Main aapko hamare ek agent se connect kar raha hun. Kripya line par bane rahiye."
+     }
+    },
+    {
+     "x": 660,
+     "y": 590,
+     "id": "n_hardship",
+     "kind": "intent",
+     "label": "Financial or medical hardship",
+     "config": {
+      "prompt": "Main aapki baat samajh raha hun. Aapki financial ya family situation ke liye mujhe afsos hai. Main abhi payment ke liye aap par pressure nahi daalunga. Kya aap chahenge ki hum baad mein baat karein, ya main aapko support agent se connect karun?"
+     }
+    },
+    {
+     "x": 920,
+     "y": 590,
+     "id": "n_hardship_close",
+     "kind": "end",
+     "label": "Hardship — respectful close",
+     "config": {
+      "text": "Theek hai, main samajh gaya hun. Aap pehle apni zaroori needs ka dhyan rakhiye. Jab aapke liye possible ho, mPokket app mein repayment options check kar sakte hain. Dhanyavaad, aapka din shubh ho."
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_start",
+     "to": "n_push",
+     "from": "n_start"
+    },
+    {
+     "id": "e_push_paid",
+     "to": "n_paid",
+     "from": "n_push",
+     "label": "paid,already,kar di,kar diya,kar chuka,kar chuki,ho chuki,ho chuka,ho gaya,ho gayi,kat gaya,kat gayi,कर दी,कर दिया,कर चुका,हो चुकी,हो चुका,हो गया,हो गई,कट गया,कट गई"
+    },
+    {
+     "id": "e_push_hardship",
+     "to": "n_hardship",
+     "from": "n_push",
+     "label": "paise nahi,paisa nahi,no money,cannot pay,can't pay,can not pay,afford nahi,not afford,financial problem,financial difficulty,medical emergency,hospital,bimaar,bimar,beemar,illness,bereavement,job nahi,naukri nahi,salary nahi,पैसे नहीं,पैसा नहीं,भुगतान नहीं कर,पेमेंट नहीं कर,आर्थिक दिक्कत,वित्तीय दिक्कत,बीमार,बिमार,अस्पताल,इलाज,मेडिकल,मृत्यु,नौकरी नहीं,सैलरी नहीं"
+    },
+    {
+     "id": "e_push_wrong",
+     "to": "n_wrong",
+     "from": "n_push",
+     "label": "galat number,wrong number,main woh nahi,mai woh nahi,koi aur,is naam,mera loan nahi,loan liya hi nahi,गलत नंबर,मैं वो नहीं,कोई और,इस नाम,मेरा लोन नहीं"
+    },
+    {
+     "id": "e_push_cb",
+     "to": "n_callback",
+     "from": "n_push",
+     "label": "busy,meeting,call back,callback,baad mein call,call karna,drive,gaadi,vyast,बाद में कॉल,कॉल करना,व्यस्त,मीटिंग,गाड़ी"
+    },
+    {
+     "id": "e_push_agent",
+     "to": "n_agent",
+     "from": "n_push",
+     "label": "agent,customer care,insaan,supervisor,manager,adhikari,एजेंट,कस्टमर केयर,इंसान,सुपरवाइज़र,मैनेजर"
+    },
+    {
+     "id": "e_push_refuse",
+     "to": "n_benefits",
+     "from": "n_push",
+     "label": "nahi,nahin,paise,dikkat,problem,mushkil,baad,kal,parso,salary,agle,pagar,tankhwah,नहीं,नही,पैसे,पैसा,दिक्कत,मुश्किल,बाद,कल,परसों,सैलरी,अगले"
+    },
+    {
+     "id": "e_push_agree",
+     "to": "n_ptype",
+     "from": "n_push",
+     "label": "haan,yes,okay,theek,bilkul,zaroor,jarur,taiyar,ready,kar deta,kar dunga,kar doonga,karunga,karungi,upi,debit,card,हाँ,हां,जी,ठीक,बिल्कुल,ज़रूर,जरूर,तैयार,कर देता,कर दूंगा,करूंगा,करूंगी,यूपीआई,डेबिट,कार्ड"
+    },
+    {
+     "id": "e_push_else",
+     "to": "n_benefits",
+     "from": "n_push",
+     "label": "else"
+    },
+    {
+     "id": "e_benefits_paid",
+     "to": "n_paid",
+     "from": "n_benefits",
+     "label": "paid,already,kar di,kar diya,kar chuka,kar chuki,ho chuki,ho chuka,ho gaya,ho gayi,kat gaya,kat gayi,कर दी,कर दिया,कर चुका,हो चुकी,हो चुका,हो गया,हो गई,कट गया,कट गई"
+    },
+    {
+     "id": "e_benefits_hardship",
+     "to": "n_hardship",
+     "from": "n_benefits",
+     "label": "paise nahi,paisa nahi,no money,cannot pay,can't pay,can not pay,afford nahi,not afford,financial problem,financial difficulty,medical emergency,hospital,bimaar,bimar,beemar,illness,bereavement,job nahi,naukri nahi,salary nahi,पैसे नहीं,पैसा नहीं,भुगतान नहीं कर,पेमेंट नहीं कर,आर्थिक दिक्कत,वित्तीय दिक्कत,बीमार,बिमार,अस्पताल,इलाज,मेडिकल,मृत्यु,नौकरी नहीं,सैलरी नहीं"
+    },
+    {
+     "id": "e_benefits_cb",
+     "to": "n_callback",
+     "from": "n_benefits",
+     "label": "busy,meeting,call back,callback,baad mein call,call karna,drive,gaadi,vyast,बाद में कॉल,कॉल करना,व्यस्त,मीटिंग,गाड़ी"
+    },
+    {
+     "id": "e_benefits_agent",
+     "to": "n_agent",
+     "from": "n_benefits",
+     "label": "agent,customer care,insaan,supervisor,manager,adhikari,एजेंट,कस्टमर केयर,इंसान,सुपरवाइज़र,मैनेजर"
+    },
+    {
+     "id": "e_benefits_refuse",
+     "to": "n_promise_funds",
+     "from": "n_benefits",
+     "label": "nahi,nahin,paise,dikkat,problem,mushkil,baad,kal,parso,salary,agle,pagar,tankhwah,नहीं,नही,पैसे,पैसा,दिक्कत,मुश्किल,बाद,कल,परसों,सैलरी,अगले"
+    },
+    {
+     "id": "e_benefits_agree",
+     "to": "n_ptype",
+     "from": "n_benefits",
+     "label": "haan,yes,okay,theek,bilkul,zaroor,jarur,taiyar,ready,kar deta,kar dunga,kar doonga,karunga,karungi,upi,debit,card,हाँ,हां,जी,ठीक,बिल्कुल,ज़रूर,जरूर,तैयार,कर देता,कर दूंगा,करूंगा,करूंगी,यूपीआई,डेबिट,कार्ड"
+    },
+    {
+     "id": "e_benefits_else",
+     "to": "n_promise_funds",
+     "from": "n_benefits",
+     "label": "else"
+    },
+    {
+     "id": "e_promise_funds_paid",
+     "to": "n_paid",
+     "from": "n_promise_funds",
+     "label": "paid,already,kar di,kar diya,kar chuka,kar chuki,ho chuki,ho chuka,ho gaya,ho gayi,kat gaya,kat gayi,कर दी,कर दिया,कर चुका,हो चुकी,हो चुका,हो गया,हो गई,कट गया,कट गई"
+    },
+    {
+     "id": "e_promise_funds_hardship",
+     "to": "n_hardship",
+     "from": "n_promise_funds",
+     "label": "paise nahi,paisa nahi,no money,cannot pay,can't pay,can not pay,afford nahi,not afford,financial problem,financial difficulty,medical emergency,hospital,bimaar,bimar,beemar,illness,bereavement,job nahi,naukri nahi,salary nahi,पैसे नहीं,पैसा नहीं,भुगतान नहीं कर,पेमेंट नहीं कर,आर्थिक दिक्कत,वित्तीय दिक्कत,बीमार,बिमार,अस्पताल,इलाज,मेडिकल,मृत्यु,नौकरी नहीं,सैलरी नहीं"
+    },
+    {
+     "id": "e_promise_funds_cb",
+     "to": "n_callback",
+     "from": "n_promise_funds",
+     "label": "busy,meeting,call back,callback,baad mein call,call karna,drive,gaadi,vyast,बाद में कॉल,कॉल करना,व्यस्त,मीटिंग,गाड़ी"
+    },
+    {
+     "id": "e_promise_funds_agent",
+     "to": "n_agent",
+     "from": "n_promise_funds",
+     "label": "agent,customer care,insaan,supervisor,manager,adhikari,एजेंट,कस्टमर केयर,इंसान,सुपरवाइज़र,मैनेजर"
+    },
+    {
+     "id": "e_promise_funds_refuse",
+     "to": "n_penalty",
+     "from": "n_promise_funds",
+     "label": "nahi,nahin,paise,dikkat,problem,mushkil,baad,kal,parso,salary,agle,pagar,tankhwah,नहीं,नही,पैसे,पैसा,दिक्कत,मुश्किल,बाद,कल,परसों,सैलरी,अगले"
+    },
+    {
+     "id": "e_promise_funds_agree",
+     "to": "n_ptype",
+     "from": "n_promise_funds",
+     "label": "haan,yes,okay,theek,bilkul,zaroor,jarur,taiyar,ready,kar deta,kar dunga,kar doonga,karunga,karungi,upi,debit,card,हाँ,हां,जी,ठीक,बिल्कुल,ज़रूर,जरूर,तैयार,कर देता,कर दूंगा,करूंगा,करूंगी,यूपीआई,डेबिट,कार्ड"
+    },
+    {
+     "id": "e_promise_funds_else",
+     "to": "n_penalty",
+     "from": "n_promise_funds",
+     "label": "else"
+    },
+    {
+     "id": "e_penalty_paid",
+     "to": "n_paid",
+     "from": "n_penalty",
+     "label": "paid,already,kar di,kar diya,kar chuka,kar chuki,ho chuki,ho chuka,ho gaya,ho gayi,kat gaya,kat gayi,कर दी,कर दिया,कर चुका,हो चुकी,हो चुका,हो गया,हो गई,कट गया,कट गई"
+    },
+    {
+     "id": "e_penalty_hardship",
+     "to": "n_hardship",
+     "from": "n_penalty",
+     "label": "paise nahi,paisa nahi,no money,cannot pay,can't pay,can not pay,afford nahi,not afford,financial problem,financial difficulty,medical emergency,hospital,bimaar,bimar,beemar,illness,bereavement,job nahi,naukri nahi,salary nahi,पैसे नहीं,पैसा नहीं,भुगतान नहीं कर,पेमेंट नहीं कर,आर्थिक दिक्कत,वित्तीय दिक्कत,बीमार,बिमार,अस्पताल,इलाज,मेडिकल,मृत्यु,नौकरी नहीं,सैलरी नहीं"
+    },
+    {
+     "id": "e_penalty_cb",
+     "to": "n_callback",
+     "from": "n_penalty",
+     "label": "busy,meeting,call back,callback,baad mein call,call karna,drive,gaadi,vyast,बाद में कॉल,कॉल करना,व्यस्त,मीटिंग,गाड़ी"
+    },
+    {
+     "id": "e_penalty_agent",
+     "to": "n_agent",
+     "from": "n_penalty",
+     "label": "agent,customer care,insaan,supervisor,manager,adhikari,एजेंट,कस्टमर केयर,इंसान,सुपरवाइज़र,मैनेजर"
+    },
+    {
+     "id": "e_penalty_refuse",
+     "to": "n_cibil",
+     "from": "n_penalty",
+     "label": "nahi,nahin,paise,dikkat,problem,mushkil,baad,kal,parso,salary,agle,pagar,tankhwah,नहीं,नही,पैसे,पैसा,दिक्कत,मुश्किल,बाद,कल,परसों,सैलरी,अगले"
+    },
+    {
+     "id": "e_penalty_agree",
+     "to": "n_ptype",
+     "from": "n_penalty",
+     "label": "haan,yes,okay,theek,bilkul,zaroor,jarur,taiyar,ready,kar deta,kar dunga,kar doonga,karunga,karungi,upi,debit,card,हाँ,हां,जी,ठीक,बिल्कुल,ज़रूर,जरूर,तैयार,कर देता,कर दूंगा,करूंगा,करूंगी,यूपीआई,डेबिट,कार्ड"
+    },
+    {
+     "id": "e_penalty_else",
+     "to": "n_cibil",
+     "from": "n_penalty",
+     "label": "else"
+    },
+    {
+     "id": "e_cibil_paid",
+     "to": "n_paid",
+     "from": "n_cibil",
+     "label": "paid,already,kar di,kar diya,kar chuka,kar chuki,ho chuki,ho chuka,ho gaya,ho gayi,kat gaya,kat gayi,कर दी,कर दिया,कर चुका,हो चुकी,हो चुका,हो गया,हो गई,कट गया,कट गई"
+    },
+    {
+     "id": "e_cibil_hardship",
+     "to": "n_hardship",
+     "from": "n_cibil",
+     "label": "paise nahi,paisa nahi,no money,cannot pay,can't pay,can not pay,afford nahi,not afford,financial problem,financial difficulty,medical emergency,hospital,bimaar,bimar,beemar,illness,bereavement,job nahi,naukri nahi,salary nahi,पैसे नहीं,पैसा नहीं,भुगतान नहीं कर,पेमेंट नहीं कर,आर्थिक दिक्कत,वित्तीय दिक्कत,बीमार,बिमार,अस्पताल,इलाज,मेडिकल,मृत्यु,नौकरी नहीं,सैलरी नहीं"
+    },
+    {
+     "id": "e_cibil_cb",
+     "to": "n_callback",
+     "from": "n_cibil",
+     "label": "busy,meeting,call back,callback,baad mein call,call karna,drive,gaadi,vyast,बाद में कॉल,कॉल करना,व्यस्त,मीटिंग,गाड़ी"
+    },
+    {
+     "id": "e_cibil_agent",
+     "to": "n_agent",
+     "from": "n_cibil",
+     "label": "agent,customer care,insaan,supervisor,manager,adhikari,एजेंट,कस्टमर केयर,इंसान,सुपरवाइज़र,मैनेजर"
+    },
+    {
+     "id": "e_cibil_refuse",
+     "to": "n_refuse_end",
+     "from": "n_cibil",
+     "label": "nahi,nahin,paise,dikkat,problem,mushkil,baad,kal,parso,salary,agle,pagar,tankhwah,नहीं,नही,पैसे,पैसा,दिक्कत,मुश्किल,बाद,कल,परसों,सैलरी,अगले"
+    },
+    {
+     "id": "e_cibil_agree",
+     "to": "n_ptype",
+     "from": "n_cibil",
+     "label": "haan,yes,okay,theek,bilkul,zaroor,jarur,taiyar,ready,kar deta,kar dunga,kar doonga,karunga,karungi,upi,debit,card,हाँ,हां,जी,ठीक,बिल्कुल,ज़रूर,जरूर,तैयार,कर देता,कर दूंगा,करूंगा,करूंगी,यूपीआई,डेबिट,कार्ड"
+    },
+    {
+     "id": "e_cibil_else",
+     "to": "n_refuse_end",
+     "from": "n_cibil",
+     "label": "else"
+    },
+    {
+     "id": "e_ptype_ok",
+     "to": "n_mop",
+     "from": "n_ptype",
+     "label": "next"
+    },
+    {
+     "id": "e_ptype_fb",
+     "to": "n_agent",
+     "from": "n_ptype",
+     "label": "fallback"
+    },
+    {
+     "id": "e_mop_ok",
+     "to": "n_guide",
+     "from": "n_mop",
+     "label": "next"
+    },
+    {
+     "id": "e_mop_fb",
+     "to": "n_agent",
+     "from": "n_mop",
+     "label": "fallback"
+    },
+    {
+     "id": "e_guide",
+     "to": "n_close",
+     "from": "n_guide"
+    },
+    {
+     "id": "e_hardship_agent",
+     "to": "n_agent",
+     "from": "n_hardship",
+     "label": "agent,customer care,support agent,insaan,एजेंट,कस्टमर केयर,इंसान"
+    },
+    {
+     "id": "e_hardship_callback",
+     "to": "n_callback",
+     "from": "n_hardship",
+     "label": "baad mein,call back,callback,haan,yes,ठीक,बाद में,कॉल बैक,हां,हाँ"
+    },
+    {
+     "id": "e_hardship_close",
+     "to": "n_hardship_close",
+     "from": "n_hardship",
+     "label": "nahi,no,rehne do,नहीं,नही,रहने दो"
+    },
+    {
+     "id": "e_hardship_else",
+     "to": "n_hardship_close",
+     "from": "n_hardship",
+     "label": "else"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_65d97cd89a6f",
+   "name": "already_paid_claim",
+   "code": "already_paid_claim",
+   "samples": [
+    "payment kar di",
+    "already paid",
+    "paisa kat gaya",
+    "payment ho chuki",
+    "ho gaya payment",
+    "kar diya payment",
+    "पेमेंट कर दी",
+    "पैसा कट गया",
+    "पेमेंट हो चुकी",
+    "कर दिया पेमेंट"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_a570554d4b25",
+   "name": "call_opening_response",
+   "code": "call_opening_response",
+   "samples": [
+    "haan",
+    "haan ji",
+    "ji haan",
+    "haanji",
+    "bolo",
+    "boliye",
+    "batao",
+    "bataiye",
+    "theek hai",
+    "kaun bol raha",
+    "sun raha hun",
+    "हाँ",
+    "हां",
+    "बोलो",
+    "बताओ",
+    "ठीक है",
+    "yes"
+   ],
+   "route": "workflow:dpd_0_7_collection_call",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 50
+  },
+  {
+   "id": "in_c18556ecd45d",
+   "name": "callback_request",
+   "code": "callback_request",
+   "samples": [
+    "busy hun",
+    "meeting mein",
+    "baad mein call",
+    "call back karna",
+    "kal call karna",
+    "gaadi chala raha",
+    "abhi baat nahi kar sakta",
+    "बाद में कॉल",
+    "व्यस्त हूं",
+    "मीटिंग में",
+    "कल कॉल",
+    "अभी बात नहीं"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_2f2e658f87a7",
+   "name": "dispute_amount",
+   "code": "dispute_amount",
+   "samples": [
+    "itna nahi hai",
+    "amount galat",
+    "galat amount",
+    "itna kyun",
+    "zyada dikha raha",
+    "maine itna nahi liya",
+    "loan nahi liya",
+    "इतना नहीं",
+    "गलत अमाउंट",
+    "ज़्यादा दिखा",
+    "लोन नहीं लिया"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_acdffba50598",
+   "name": "human_agent_request",
+   "code": "human_agent_request",
+   "samples": [
+    "agent se baat",
+    "customer care",
+    "kisi insaan se",
+    "supervisor",
+    "aadmi se baat",
+    "एजेंट से बात",
+    "कस्टमर केयर",
+    "इंसान से बात",
+    "सुपरवाइज़र"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_cca557607f42",
+   "name": "loan_details_query",
+   "code": "loan_details_query",
+   "samples": [
+    "kitna baki hai",
+    "kitna overdue",
+    "due amount",
+    "kitne din",
+    "outstanding",
+    "loan status",
+    "कितना बकाया",
+    "कितना ओवरड्यू",
+    "कितने दिन",
+    "लोन स्टेटस"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_155e8d8a6262",
+   "name": "payment_difficulty",
+   "code": "payment_difficulty",
+   "samples": [
+    "paise nahi",
+    "abhi nahi kar",
+    "salary nahi",
+    "time chahiye",
+    "baad mein karunga",
+    "agle hafte",
+    "kal karunga",
+    "abhi mushkil",
+    "dikkat hai",
+    "पैसे नहीं",
+    "अभी नहीं",
+    "समय चाहिए",
+    "बाद में करूंगा",
+    "अगले हफ्ते",
+    "कल करूंगा",
+    "सैलरी"
+   ],
+   "route": "workflow:dpd_0_7_collection_call",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 50
+  },
+  {
+   "id": "in_7550b4f7e2b2",
+   "name": "payment_method_query",
+   "code": "payment_method_query",
+   "samples": [
+    "kaise pay",
+    "payment kaise",
+    "upi se discount",
+    "cashback",
+    "bhim upi",
+    "paytm se",
+    "voucher",
+    "पेमेंट कैसे",
+    "कैशबैक",
+    "डिस्काउंट",
+    "भीम",
+    "पेटीएम"
+   ],
+   "route": "workflow:dpd_0_7_collection_call",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 50
+  },
+  {
+   "id": "in_f5d478936da7",
+   "name": "penalty_cibil_query",
+   "code": "penalty_cibil_query",
+   "samples": [
+    "penalty kitni",
+    "late fee",
+    "extra charges",
+    "jurmana",
+    "cibil kharab",
+    "credit score",
+    "limit kam",
+    "limit badhegi",
+    "cibil impact",
+    "पेनल्टी",
+    "लेट फीस",
+    "सिबिल",
+    "क्रेडिट स्कोर",
+    "लिमिट"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  },
+  {
+   "id": "in_be662ed26d92",
+   "name": "ready_to_pay",
+   "code": "ready_to_pay",
+   "samples": [
+    "payment karna hai",
+    "abhi pay",
+    "pay kar deta",
+    "payment kar dunga",
+    "paisa bharna",
+    "repay karna",
+    "payment complete",
+    "upi se kar",
+    "पेमेंट करना है",
+    "पैसे भर",
+    "अभी पे",
+    "भुगतान",
+    "पेमेंट कर दूंगा",
+    "अभी कर देता"
+   ],
+   "route": "workflow:dpd_0_7_collection_call",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 50
+  },
+  {
+   "id": "in_860b9f81c147",
+   "name": "wrong_person",
+   "code": "wrong_person",
+   "samples": [
+    "galat number",
+    "wrong number",
+    "main woh nahi",
+    "koi aur hai",
+    "is naam ka koi nahi",
+    "mera loan nahi",
+    "गलत नंबर",
+    "मैं वो नहीं",
+    "इस नाम का कोई नहीं",
+    "मेरा लोन नहीं"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 40
+  }
+ ],
+ "connections": [],
+ "context_schemas": []
+}

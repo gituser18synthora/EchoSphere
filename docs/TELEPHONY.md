@@ -198,7 +198,9 @@ Two integration surfaces (`voice_runtime/freeswitch.py`):
     `{"type": "killAudio"}` (`FREESWITCH_SEND_KILL_AUDIO`, default on) so the
     module drops already-buffered playback.
   - `mod_audio_fork` (WS URL with `?transport=audio_fork`): inbound binary
-    **mono** L16 @ 16 kHz (the fork is started in `mono 16k` mode); bot audio
+    **mono** L16 @ 8 kHz (the fork is started in `mono 8k` mode; the caller leg
+    stays native narrowband end to end and streaming STT receives the same
+    8 kHz PCM without resampling); bot audio
     goes out in the module's `playAudio` JSON envelope; barge-in also sends
     `killAudio`.
 - **Control**: `ESLClient`, a minimal asyncio Event Socket Layer client (inbound

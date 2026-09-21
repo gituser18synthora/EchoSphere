@@ -1,0 +1,185 @@
+{
+ "bot": "bot_78b6aa83d94a",
+ "cases": [
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "29 stock team confirms (601011)",
+   "bot": "bot_78b6aa83d94a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601011"
+    },
+    {
+     "text": "yes, the booking will be honoured"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "stock_call_opening",
+      "action": "oyo_stock_validation_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID that needs validation?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601011",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO stock validation journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_stock"
+     ],
+     "reply": "The property has not confirmed this booking so far. Could you check whether this booking can be honored at check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011"
+     }
+    },
+    {
+     "text": "yes, the booking will be honoured",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO stock validation journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_stock",
+      "n_api_report_h",
+      "n_end_ok"
+     ],
+     "reply": "Perfect, thank you for validating. We'll inform the guest that the booking stands confirmed. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601011"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "30 stock team cannot confirm (601004)",
+   "bot": "bot_78b6aa83d94a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601004"
+    },
+    {
+     "text": "no, we cannot confirm, no inventory"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "stock_call_opening",
+      "action": "oyo_stock_validation_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID that needs validation?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601004",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO stock validation journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_stock"
+     ],
+     "reply": "The property has not confirmed this booking so far. Could you check whether this booking can be honored at check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004"
+     }
+    },
+    {
+     "text": "no, we cannot confirm, no inventory",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO stock validation journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_stock",
+      "n_api_report_nh",
+      "n_end_no"
+     ],
+     "reply": "Understood. We'll proceed with offering the guest an alternate property. Thank you for checking.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004"
+     }
+    }
+   ]
+  }
+ ]
+}

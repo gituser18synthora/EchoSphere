@@ -1,0 +1,458 @@
+{
+ "bot": "bot_faf32177a32e",
+ "cases": [
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "ONBOARDING 01 Hinglish caller, paid at joining, mocked ticket",
+   "bot": "bot_faf32177a32e",
+   "turns": [
+    {
+     "text": "onboarding fee ka deduction hua hai"
+    },
+    {
+     "text": "15 June ko join kiya tha"
+    },
+    {
+     "text": "1000 rupees"
+    },
+    {
+     "text": "is month ki 5 tarikh ko"
+    },
+    {
+     "text": "haan 500 rupees diye the",
+     "mocks": {
+      "Zepto Register Onboarding Fee Concern": null
+     }
+    },
+    {
+     "text": "bas"
+    }
+   ],
+   "expected": [
+    {
+     "text": "onboarding fee ka deduction hua hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "onboarding_concern",
+      "action": "wf_469fbdafb2b9"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_o_date_of_joining"
+     ],
+     "reply": "सबसे पहले — आपकी Date of Joining क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "15 June ko join kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_date_of_joining",
+      "n_ask_o_deduction_amount"
+     ],
+     "reply": "आपका deduction amount कितना था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "15 June ko join kiya tha"
+     }
+    },
+    {
+     "text": "1000 rupees",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_deduction_amount",
+      "n_ask_o_deduction_date"
+     ],
+     "reply": "यह deduction किस date या week में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "15 June ko join kiya tha",
+      "o_deduction_amount": "1000 rupees"
+     }
+    },
+    {
+     "text": "is month ki 5 tarikh ko",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_deduction_date",
+      "n_ask_o_paid_on_joining"
+     ],
+     "reply": "क्या आपने join करते समय कोई amount pay किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "15 June ko join kiya tha",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "is month ki 5 tarikh ko"
+     }
+    },
+    {
+     "text": "haan 500 rupees diye the",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_paid_on_joining",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक moment दीजिए — मैं आपकी concern support team में register कर रही हूँ। सारी जानकारी देने के लिए धन्यवाद। आपकी concern register हो गई है, और हमारी support team जल्द ही आपसे connect करेगी। क्या मैं आपकी किसी और चीज़ में help कर सकती हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "o_date_of_joining": "15 June ko join kiya tha",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "is month ki 5 tarikh ko",
+      "o_paid_on_joining": "haan 500 rupees diye the",
+      "sms_sent": true,
+      "ticket_concern": "Onboarding Fee related deduction",
+      "ticket_id": "ZPT-ONBF-66931",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "bas",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "Zepto Support को contact करने के लिए धन्यवाद! आपका दिन शुभ हो!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "o_date_of_joining": "15 June ko join kiya tha",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "is month ki 5 tarikh ko",
+      "o_paid_on_joining": "haan 500 rupees diye the",
+      "sms_sent": true,
+      "ticket_concern": "Onboarding Fee related deduction",
+      "ticket_id": "ZPT-ONBF-66931",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "ONBOARDING 02 English caller, paid nothing, live API fallback",
+   "bot": "bot_faf32177a32e",
+   "turns": [
+    {
+     "text": "an onboarding fee was deducted from my payout"
+    },
+    {
+     "text": "I joined on 15 June"
+    },
+    {
+     "text": "1000 rupees"
+    },
+    {
+     "text": "on the 5th of this month"
+    },
+    {
+     "text": "no, I paid nothing when I joined"
+    },
+    {
+     "text": "no, that's all"
+    }
+   ],
+   "expected": [
+    {
+     "text": "an onboarding fee was deducted from my payout",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "onboarding_concern",
+      "action": "wf_469fbdafb2b9"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_o_date_of_joining"
+     ],
+     "reply": "सबसे पहले — आपकी Date of Joining क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "I joined on 15 June",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_date_of_joining",
+      "n_ask_o_deduction_amount"
+     ],
+     "reply": "आपका deduction amount कितना था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "I joined on 15 June"
+     }
+    },
+    {
+     "text": "1000 rupees",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_deduction_amount",
+      "n_ask_o_deduction_date"
+     ],
+     "reply": "यह deduction किस date या week में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "I joined on 15 June",
+      "o_deduction_amount": "1000 rupees"
+     }
+    },
+    {
+     "text": "on the 5th of this month",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_deduction_date",
+      "n_ask_o_paid_on_joining"
+     ],
+     "reply": "क्या आपने join करते समय कोई amount pay किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "o_date_of_joining": "I joined on 15 June",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "on the 5th of this month"
+     }
+    },
+    {
+     "text": "no, I paid nothing when I joined",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_o_paid_on_joining",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक moment दीजिए — मैं आपकी concern support team में register कर रही हूँ। सारी जानकारी देने के लिए धन्यवाद। आपकी concern register हो गई है, और हमारी support team जल्द ही आपसे connect करेगी। क्या मैं आपकी किसी और चीज़ में help कर सकती हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "o_date_of_joining": "I joined on 15 June",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "on the 5th of this month",
+      "o_paid_on_joining": "no, I paid nothing when I joined",
+      "sms_sent": true,
+      "ticket_concern": "Onboarding Fee related deduction",
+      "ticket_id": "ZPT-ONBF-66931",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "no, that's all",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto onboarding fee deduction journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "Zepto Support को contact करने के लिए धन्यवाद! आपका दिन शुभ हो!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "o_date_of_joining": "I joined on 15 June",
+      "o_deduction_amount": "1000 rupees",
+      "o_deduction_date": "on the 5th of this month",
+      "o_paid_on_joining": "no, I paid nothing when I joined",
+      "sms_sent": true,
+      "ticket_concern": "Onboarding Fee related deduction",
+      "ticket_id": "ZPT-ONBF-66931",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "ONBOARDING 03 explicit human request -> support handover",
+   "bot": "bot_faf32177a32e",
+   "turns": [
+    {
+     "text": "manager se baat karao"
+    }
+   ],
+   "expected": [
+    {
+     "text": "manager se baat karao",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "human_handoff",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_o_date_of_joining"
+     ],
+     "reply": "सबसे पहले — आपकी Date of Joining क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "ONBOARDING 04 policy question routes to the FAQ KB",
+   "bot": "bot_faf32177a32e",
+   "turns": [
+    {
+     "text": "onboarding fee kya hoti hai?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "onboarding fee kya hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "intent",
+      "reason": "configured_intent",
+      "intent": "policy_question",
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_o_date_of_joining"
+     ],
+     "reply": "सबसे पहले — आपकी Date of Joining क्या है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

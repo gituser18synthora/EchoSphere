@@ -1,0 +1,360 @@
+{
+ "bot": {
+  "id": "bot-101",
+  "name": "Appointment Concierge",
+  "tenant_id": "tn-001",
+  "status": "published"
+ },
+ "workflows": [
+  {
+   "id": "wf-01",
+   "name": "Booking journey",
+   "version": 12,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n1",
+     "sub": "Voice · WhatsApp",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 40,
+     "y": 150,
+     "id": "n2",
+     "sub": "Prompt v4",
+     "kind": "message",
+     "label": "Welcome greeting"
+    },
+    {
+     "x": 40,
+     "y": 260,
+     "id": "n3",
+     "sub": "6 intents",
+     "kind": "intent",
+     "label": "Detect intent"
+    },
+    {
+     "x": 252,
+     "y": 190,
+     "id": "n4",
+     "sub": "GET · 340ms p50",
+     "kind": "api",
+     "label": "EHR Slot Availability"
+    },
+    {
+     "x": 252,
+     "y": 310,
+     "id": "n5",
+     "sub": "available_times > 0",
+     "kind": "condition",
+     "label": "Slots found?"
+    },
+    {
+     "x": 462,
+     "y": 250,
+     "id": "n6",
+     "sub": "POST",
+     "kind": "api",
+     "label": "Create Appointment"
+    },
+    {
+     "x": 462,
+     "y": 370,
+     "id": "n7",
+     "sub": "Prompt v3",
+     "kind": "message",
+     "label": "Confirm & recap"
+    },
+    {
+     "x": 252,
+     "y": 60,
+     "id": "n8",
+     "sub": "4 sources",
+     "kind": "knowledge",
+     "label": "Answer from knowledge"
+    },
+    {
+     "x": 462,
+     "y": 60,
+     "id": "n9",
+     "sub": "Queue: reception",
+     "kind": "handover",
+     "label": "Front desk handover"
+    },
+    {
+     "x": 462,
+     "y": 480,
+     "id": "n10",
+     "sub": "Survey via SMS",
+     "kind": "end",
+     "label": "End call"
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1",
+     "to": "n2",
+     "from": "n1"
+    },
+    {
+     "id": "e2",
+     "to": "n3",
+     "from": "n2"
+    },
+    {
+     "id": "e3",
+     "to": "n4",
+     "from": "n3",
+     "label": "book / reschedule"
+    },
+    {
+     "id": "e4",
+     "to": "n8",
+     "from": "n3",
+     "label": "FAQ"
+    },
+    {
+     "id": "e5",
+     "to": "n5",
+     "from": "n4"
+    },
+    {
+     "id": "e6",
+     "to": "n6",
+     "from": "n5",
+     "label": "yes"
+    },
+    {
+     "id": "e7",
+     "to": "n9",
+     "from": "n5",
+     "label": "no slots"
+    },
+    {
+     "id": "e8",
+     "to": "n7",
+     "from": "n6"
+    },
+    {
+     "id": "e9",
+     "to": "n9",
+     "from": "n8",
+     "label": "low confidence"
+    },
+    {
+     "id": "e10",
+     "to": "n10",
+     "from": "n7"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in-01",
+   "name": "book_appointment",
+   "code": null,
+   "samples": [
+    "I need to see a doctor",
+    "book me an appointment",
+    "can I come in tomorrow",
+    "schedule a visit with Dr. Reyes",
+    "I want to make an appointment for my son"
+   ],
+   "route": "Booking workflow",
+   "workflow_id": null,
+   "confidence_threshold": 0.72,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in-03",
+   "name": "cancel_appointment",
+   "code": null,
+   "samples": [
+    "cancel my appointment",
+    "I need to cancel Friday's visit"
+   ],
+   "route": "Cancel workflow",
+   "workflow_id": null,
+   "confidence_threshold": 0.75,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_e64ea4ad7e0c",
+   "name": "Claim Status 1f27ef1b",
+   "code": "claim_status_1f27ef1b",
+   "samples": [
+    "what is the status of my claim",
+    "check my claim status please",
+    "has my claim CLM-123456 been approved"
+   ],
+   "route": "",
+   "workflow_id": null,
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 1
+  },
+  {
+   "id": "in-06",
+   "name": "clinic_hours",
+   "code": null,
+   "samples": [
+    "what time do you open",
+    "are you open Saturday"
+   ],
+   "route": "Knowledge answer",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in-04",
+   "name": "insurance_question",
+   "code": null,
+   "samples": [
+    "do you take Blue Cross",
+    "is my insurance accepted"
+   ],
+   "route": "Knowledge answer",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "needs_samples",
+   "priority": 100
+  },
+  {
+   "id": "in-02",
+   "name": "reschedule_appointment",
+   "code": null,
+   "samples": [
+    "change my appointment",
+    "move my visit to next week",
+    "I can't make it Friday"
+   ],
+   "route": "Reschedule workflow",
+   "workflow_id": null,
+   "confidence_threshold": 0.72,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in-05",
+   "name": "talk_to_human",
+   "code": null,
+   "samples": [
+    "let me talk to someone",
+    "front desk please",
+    "operator"
+   ],
+   "route": "Human handover",
+   "workflow_id": null,
+   "confidence_threshold": 0.6,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_285257d41d91",
+   "name": "SSRF 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_58a899054fe3",
+   "name": "SSRF2 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_869880254e79",
+   "name": "CRM 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": "status < 400"
+  },
+  {
+   "id": "api_b6535aea6ec3",
+   "name": "Local 1f27ef1b",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": "status < 400"
+  },
+  {
+   "id": "api-01",
+   "name": "EHR Slot Availability",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "available_times",
+     "from": "$.slots[*].start"
+    },
+    {
+     "to": "provider_name",
+     "from": "$.slots[*].provider.name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-02",
+   "name": "Create Appointment",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "appointment_id",
+     "from": "$.appointment.id"
+    },
+    {
+     "to": "appointment_date",
+     "from": "$.appointment.confirmed_at"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-03",
+   "name": "SMS Confirmation",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "sms_id",
+     "from": "$.message_id"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-04",
+   "name": "Billing Balance Lookup",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "balance_due",
+     "from": "$.balance.amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api-05",
+   "name": "On-call Roster",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "to": "oncall_number",
+     "from": "$.oncall.phone"
+    }
+   ],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": []
+}

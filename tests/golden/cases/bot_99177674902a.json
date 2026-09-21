@@ -1,0 +1,1039 @@
+{
+ "bot": "bot_99177674902a",
+ "cases": [
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "21 PM confirms (601012)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601012"
+    },
+    {
+     "text": "yes, the booking is confirmed"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601012",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012"
+     }
+    },
+    {
+     "text": "yes, the booking is confirmed",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_api_report_h",
+      "n_end_ok"
+     ],
+     "reply": "Thank you for confirming — the guest will proceed with check-in as planned. We appreciate your support. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601012"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "22 PM overbooked but availability -> penalty -> accepts (601005)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601005"
+    },
+    {
+     "text": "we cannot honor this booking"
+    },
+    {
+     "text": "the property is overbooked"
+    },
+    {
+     "text": "okay, we will honor the booking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601005",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005"
+     }
+    },
+    {
+     "text": "we cannot honor this booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_ask_reason"
+     ],
+     "reply": "I understand. Could you please help me understand the reason for declining the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005"
+     }
+    },
+    {
+     "text": "the property is overbooked",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reason",
+      "n_cond_r_overbook",
+      "n_api_occ",
+      "n_cond_avail",
+      "n_api_report_nh_ob",
+      "n_end_deny"
+     ],
+     "reply": "I understand. We will arrange an alternate stay for the guest, and our team may follow up regarding this booking. Thank you for your time.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005",
+      "deny_reason": "the property is overbooked"
+     }
+    },
+    {
+     "text": "okay, we will honor the booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_confirms",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601005",
+      "deny_reason": "the property is overbooked"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "23 PM genuinely overbooked (601004)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601004"
+    },
+    {
+     "text": "no, we are overbooked"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601004",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004"
+     }
+    },
+    {
+     "text": "no, we are overbooked",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_api_occ",
+      "n_cond_avail",
+      "n_api_report_nh_ob",
+      "n_end_deny"
+     ],
+     "reply": "I understand. We will arrange an alternate stay for the guest, and our team may follow up regarding this booking. Thank you for your time.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601004"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "24 PM maintenance, no alternate room (601007)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601007"
+    },
+    {
+     "text": "we cannot honor it"
+    },
+    {
+     "text": "the property is under maintenance"
+    },
+    {
+     "text": "no, nothing available"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601007",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007"
+     }
+    },
+    {
+     "text": "we cannot honor it",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_ask_reason"
+     ],
+     "reply": "I understand. Could you please help me understand the reason for declining the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007"
+     }
+    },
+    {
+     "text": "the property is under maintenance",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reason",
+      "n_cond_r_overbook",
+      "n_cond_r_full",
+      "n_cond_r_noroom",
+      "n_cond_r_mnt",
+      "n_intent_altroom"
+     ],
+     "reply": "I'm sorry to hear about the maintenance. Do you have any alternate rooms available that could accommodate this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007",
+      "deny_reason": "the property is under maintenance"
+     }
+    },
+    {
+     "text": "no, nothing available",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_altroom",
+      "n_api_report_nh_mnt",
+      "n_end_deny"
+     ],
+     "reply": "I understand. We will arrange an alternate stay for the guest, and our team may follow up regarding this booking. Thank you for your time.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601007",
+      "deny_reason": "the property is under maintenance"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "25 PM maintenance with alternate room (601006)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601006"
+    },
+    {
+     "text": "cannot honor, maintenance work is going on"
+    },
+    {
+     "text": "yes, we can arrange another room"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601006",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601006"
+     }
+    },
+    {
+     "text": "cannot honor, maintenance work is going on",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_intent_altroom"
+     ],
+     "reply": "I'm sorry to hear about the maintenance. Do you have any alternate rooms available that could accommodate this booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601006"
+     }
+    },
+    {
+     "text": "yes, we can arrange another room",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_altroom",
+      "n_api_report_h_altroom",
+      "n_end_ok"
+     ],
+     "reply": "Thank you for confirming — the guest will proceed with check-in as planned. We appreciate your support. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601006"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "26 PM price low, meets ARR -> accepts (601008)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601008"
+    },
+    {
+     "text": "no, the booking price is too low"
+    },
+    {
+     "text": "okay, we will accept the booking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601008",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601008"
+     }
+    },
+    {
+     "text": "no, the booking price is too low",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_api_pricing",
+      "n_cond_arr",
+      "n_msg_comp",
+      "n_intent_comp"
+     ],
+     "reply": "I understand the concern on the rate. To bridge the gap, OYO can add a complimentary compensation amount to this reservation from our side. With this additional compensation added, would you be willing to honor the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601008"
+     }
+    },
+    {
+     "text": "okay, we will accept the booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_comp",
+      "n_api_comp",
+      "n_api_report_h_comp",
+      "n_end_ok"
+     ],
+     "reply": "Excellent — I've added the complimentary amount to this booking on OYO's side. Thank you for confirming — the guest will proceed with check-in as planned. We appreciate your support. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601008"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "27 PM price low, below ARR -> compensation -> accepts (601009)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601009"
+    },
+    {
+     "text": "we cannot accommodate, price is very low"
+    },
+    {
+     "text": "the booking price is too low"
+    },
+    {
+     "text": "yes, that works for us"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601009",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009"
+     }
+    },
+    {
+     "text": "we cannot accommodate, price is very low",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_ask_reason"
+     ],
+     "reply": "I understand. Could you please help me understand the reason for declining the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009"
+     }
+    },
+    {
+     "text": "the booking price is too low",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reason",
+      "n_cond_r_overbook",
+      "n_cond_r_full",
+      "n_cond_r_noroom",
+      "n_cond_r_mnt",
+      "n_cond_r_renov",
+      "n_cond_r_repair",
+      "n_cond_r_price",
+      "n_api_pricing",
+      "n_cond_arr",
+      "n_msg_comp",
+      "n_intent_comp"
+     ],
+     "reply": "I understand the concern on the rate. To bridge the gap, OYO can add a complimentary compensation amount to this reservation from our side. With this additional compensation added, would you be willing to honor the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009",
+      "deny_reason": "the booking price is too low"
+     }
+    },
+    {
+     "text": "yes, that works for us",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_comp",
+      "n_api_comp",
+      "n_api_report_h_comp",
+      "n_end_ok"
+     ],
+     "reply": "Excellent — I've added the complimentary amount to this booking on OYO's side. Thank you for confirming — the guest will proceed with check-in as planned. We appreciate your support. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601009",
+      "deny_reason": "the booking price is too low"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "oyo/tests/run_chat_scenarios.py",
+   "name": "28 PM price refused even with compensation (601010)",
+   "bot": "bot_99177674902a",
+   "turns": [
+    {
+     "text": "hello"
+    },
+    {
+     "text": "601010"
+    },
+    {
+     "text": "no, we cannot take this booking"
+    },
+    {
+     "text": "the price is too low"
+    },
+    {
+     "text": "no, we cannot accept this rate"
+    }
+   ],
+   "expected": [
+    {
+     "text": "hello",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "pm_call_opening",
+      "action": "oyo_property_verification_journey"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_bid"
+     ],
+     "reply": "Could you please confirm the booking ID for the reservation, as shown in your OYO manager app?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "601010",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_bid",
+      "n_api_booking",
+      "n_intent_pm"
+     ],
+     "reply": "Thank you. Could you please confirm whether this booking will be honored for check-in?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010"
+     }
+    },
+    {
+     "text": "no, we cannot take this booking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_pm",
+      "n_ask_reason"
+     ],
+     "reply": "I understand. Could you please help me understand the reason for declining the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010"
+     }
+    },
+    {
+     "text": "the price is too low",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reason",
+      "n_cond_r_overbook",
+      "n_cond_r_full",
+      "n_cond_r_noroom",
+      "n_cond_r_mnt",
+      "n_cond_r_renov",
+      "n_cond_r_repair",
+      "n_cond_r_price",
+      "n_api_pricing",
+      "n_cond_arr",
+      "n_msg_comp",
+      "n_intent_comp"
+     ],
+     "reply": "I understand the concern on the rate. To bridge the gap, OYO can add a complimentary compensation amount to this reservation from our side. With this additional compensation added, would you be willing to honor the booking?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010",
+      "deny_reason": "the price is too low"
+     }
+    },
+    {
+     "text": "no, we cannot accept this rate",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:OYO property verification journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_comp",
+      "n_api_report_nh_price",
+      "n_end_deny"
+     ],
+     "reply": "I understand. We will arrange an alternate stay for the guest, and our team may follow up regarding this booking. Thank you for your time.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "booking_id": "601010",
+      "deny_reason": "the price is too low"
+     }
+    }
+   ]
+  }
+ ]
+}

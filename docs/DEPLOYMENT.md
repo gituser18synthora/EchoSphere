@@ -294,7 +294,8 @@ backend.cli migrate` (then `pg-migrate` and `seed` the same way).
 
 - Media: a dialplan attaches `mod_audio_stream` (default; stereo L16 @ 8 kHz
   inbound, `streamAudio` JSON out) or `mod_audio_fork`
-  (`?transport=audio_fork`; mono L16 @ 16 kHz inbound, `playAudio` JSON out) to
+  (`?transport=audio_fork`; mono L16 @ 8 kHz inbound — native telephony rate,
+  no resampling before STT — `playAudio` JSON out at 8 kHz) to
   `ws://<voice-worker>/ws/telephony/freeswitch/{session_id}` — details in
   [TELEPHONY.md](TELEPHONY.md#freeswitch).
 - Call control: enable `mod_event_socket` at `127.0.0.1:9004`, set its

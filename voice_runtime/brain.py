@@ -165,6 +165,12 @@ from shared.orchestration.voice_identity import (
 )
 from shared.providers.base import LLMProvider, ProviderError
 from shared.providers.languages import to_platform_language
+from voice_runtime.caller_level import (
+    LABEL_CALLER,
+    CallerLevelBaseline,
+    qualifies_for_baseline,
+)
+from voice_runtime.language_evidence import content_words
 from shared.bot_config import ResolvedBotConfig
 from shared.customer_context import CustomerContextSnapshot
 from shared.runtime_context import (
@@ -439,6 +445,30 @@ _VOICE_STYLE_INSTRUCTION = (
 # Hindi, "haan I can pay tomorrow" stays English, and one borrowed word can
 # never oscillate the call's language.
 _MIN_SWITCH_WORDS = 2
+# Language-switch evidence: fillers and bare acknowledgements ("hmm hmm try
+# ya") carry no language of their own, and Sarvam's auto-detector labels them
+# essentially at random. A switch on fewer than this many CONTENT words
+# (voice_runtime.language_evidence) needs the same language detected on two
+# consecutive finals instead (the existing candidate counter).
+_MIN_SWITCH_CONTENT_WORDS = 3
+# Background-speech guard (voice_runtime.caller_level): a background-suspect
+# segment is HELD — never a turn on its own, never a trainer of the caller
+# baseline. Repeating quiet speech is not evidence of who spoke it, so there
+# is no "reconfirm by repetition"; only independent speaker evidence could
+# re-base the baseline. Held segments are kept (bounded) for evidence only.
+_SUSPECT_BUFFER_MAX = 6
+# Held-segment guard (tenant `held_segment_guard_enabled`): speech captured
+# while the bot talks that did NOT confirm a barge-in and carries this many
+# meaningful words is held rather than dispatched when the reply ends. It is
+# merged only if the caller continues with the bot quiet within the window;
+# otherwise it is discarded. Repetition is not speaker evidence and plays no
+# part here.
+_HELD_MULTIWORD_MIN_WORDS = 3
+_HELD_CONTINUATION_WINDOW_S = 5.0
+# Trusted caller-level seeds (identity confirmed / identifier validated /
+# workflow advanced) accept shorter segments than the candidate bootstrap:
+# the turn is vouched for, only the level measurement must be stable enough.
+_TRUSTED_MIN_SEGMENT_MS = 400.0
 # Unsupported languages still require repetition before the client is warned:
 # a single mislabel must not surface a false "caller speaks Tamil" notice.
 _UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
@@ -533,6 +563,8 @@ class ConversationBrain(FrameProcessor):
         batch_transcriber=None,
         silence_policy: SilencePolicy | None = None,
         latency_filler=None,
+        caller_level: CallerLevelBaseline | None = None,
+        held_segment_guard: bool = False,
     ) -> None:
         super().__init__()
         self._config = config
@@ -912,6 +944,31 @@ class ConversationBrain(FrameProcessor):
         self._latency.conversation_id = getattr(recorder, "control_plane_id", "") or ""
         self._turn_counter = 0
         self._audio_gate = audio_gate
+        # Background-speech guard: the caller's own speech-level baseline and
+        # the segments it judged background-suspect (held, never dispatched
+        # on their own — see _apply_caller_level). None = no gate/no guard.
+        self._caller_level = caller_level
+        self._suspect_segments: list[dict] = []
+        self._suspect_in_turn = False
+        self._suspects_held_during_bot_audio = 0
+        self._last_gate_snapshot: dict | None = None
+        self._vad_started_at: float | None = None
+        self._last_vad_speech_s: float | None = None
+        # Held-segment guard: multi-word speech heard during a reply that
+        # never confirmed a barge-in waits here for the caller to continue
+        # with the bot quiet; a timer discards it otherwise.
+        self._held_segment_guard = bool(held_segment_guard)
+        self._held_multiword: list[dict] = []
+        self._held_continuation_task: asyncio.Task | None = None
+        # Physical speech episode counter (VAD starts): a held segment may be
+        # reclaimed only by a barge-in confirmed within the same episode.
+        self._vad_episode = 0
+        # Trusted caller-level bootstrap: per-final level samples of the
+        # segments that make up the turn being dispatched, so a turn the call
+        # later vouches for (identity confirmed, identifier validated,
+        # workflow advanced on-script) can seed the caller baseline.
+        self._pending_level_samples: list[dict] = []
+        self._open_turn_level_samples: list[dict] = []
         # The bot turn whose latency row is completed once its audio starts.
         self._pending_latency_record: TurnRecord | None = None
         # Whether any audio of the CURRENT open turn's reply has started
@@ -1138,12 +1195,21 @@ class ConversationBrain(FrameProcessor):
 
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._physical_speech_active = True
+            self._vad_episode += 1
+            self._vad_started_at = time.monotonic()
             await self._on_physical_speech_resumed()
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._physical_speech_active = False
+            if self._vad_started_at is not None:
+                # Physical speech duration of the segment whose final is
+                # about to arrive — evidence for the caller-level record.
+                self._last_vad_speech_s = round(
+                    time.monotonic() - self._vad_started_at, 2
+                )
+                self._vad_started_at = None
             await self.push_frame(frame, direction)
             return
 
@@ -1176,6 +1242,11 @@ class ConversationBrain(FrameProcessor):
             self._disarm_silence_timer()
             if isinstance(frame, UserStartedSpeakingFrame):
                 self._turn_active = True
+                if self._held_multiword:
+                    # A confirmed interruption may reclaim held text only
+                    # from this same speech episode; older held text was
+                    # never confirmed as the caller's and is discarded.
+                    await self._reclaim_held_for_confirmed_barge_in()
             # The caller resumed speaking: whatever is buffered belongs to the
             # SAME utterance — hold it (cancel any scheduled finalization) so
             # the closed turn runs once, with the full text.
@@ -1244,6 +1315,14 @@ class ConversationBrain(FrameProcessor):
                 # recording notice, a foreign hallucination): the caller has
                 # not shown up, so the ladder resumes where it was.
                 self._arm_silence_timer()
+                if self._suspect_in_turn:
+                    # The turn's only speech was judged background: if its
+                    # audio had cut the reply (a barge-in confirmed before the
+                    # level verdict), the reply resumes — same mechanism as a
+                    # recording notice that interrupted the bot.
+                    self._suspect_in_turn = False
+                    await self._maybe_resume_interrupted_reply()
+            self._suspect_in_turn = False
             if (
                 self._pending_segments
                 and not self._finalize_pending()
@@ -1276,6 +1355,10 @@ class ConversationBrain(FrameProcessor):
             # caller stops waiting, so it closes the turn's latency measurement.
             self._reply_audio_started = True
             self._bot_speaking = True
+            if self._held_multiword:
+                # A new reply is starting (a silence prompt, a workflow step):
+                # speech held from the previous reply is stale now.
+                await self._discard_held_multiword("stale_new_reply")
             if self._reply_audio_started_at is None:
                 self._reply_audio_started_at = time.monotonic()
             self._disarm_silence_timer()
@@ -1297,6 +1380,22 @@ class ConversationBrain(FrameProcessor):
                     self._mark_reply_heard()
             await self.push_frame(frame, direction)
             await self._flush_pending_controls()
+            if self._suspects_held_during_bot_audio:
+                # Background-suspect segments heard while this reply played
+                # are NOT dispatched now (the pre-guard behaviour answered
+                # them the moment the bot fell quiet). They stay in the
+                # suspect buffer: the caller repeating themselves reconfirms,
+                # anything else goes to the no-response ladder below.
+                self._recorder.add_event(
+                    "background_suspect_not_dispatched",
+                    segments=self._suspects_held_during_bot_audio,
+                )
+                self._suspects_held_during_bot_audio = 0
+            if self._held_multiword:
+                # Unconfirmed multi-word speech heard during this reply is
+                # NOT dispatched now: the caller has this long to continue
+                # with the bot quiet, else it is discarded.
+                self._start_held_continuation_timer()
             if (
                 self._pending_segments
                 and not self._turn_active
@@ -1566,6 +1665,7 @@ class ConversationBrain(FrameProcessor):
     def _attach_local_evidence(self, quality, text: str) -> None:
         """Add EchoSphere-measured signals to provider quality metadata."""
         quality.interim_agreement = self._interim_agreement(text)
+        self._last_gate_snapshot = None
         gate = self._audio_gate
         if gate is None:
             return
@@ -1576,8 +1676,294 @@ class ConversationBrain(FrameProcessor):
             logger.debug("audio gate snapshot unavailable", exc_info=True)
         if not snapshot:
             return
+        self._last_gate_snapshot = dict(snapshot)
         quality.snr_db = snapshot.get("snr_db")
         quality.during_bot_audio = bool(snapshot.get("during_bot_audio"))
+
+    # ── held-segment guard (speech during a reply, no confirmed barge-in) ──
+
+    def _captured_during_bot_audio(self) -> bool:
+        snapshot = self._last_gate_snapshot or {}
+        return bool(self._bot_speaking or snapshot.get("during_bot_audio"))
+
+    def _should_hold_multiword(self, text: str) -> bool:
+        """Multi-word, unconfirmed (no open turn), captured while the bot
+        was audibly speaking."""
+        if self._turn_active or not self._captured_during_bot_audio():
+            return False
+        return len(meaningful_language_words(text)) >= _HELD_MULTIWORD_MIN_WORDS
+
+    async def _hold_multiword_segment(self, text: str) -> None:
+        # Remember WHICH physical speech episode produced the segment: only a
+        # barge-in confirmed within that same episode may reclaim it (the
+        # flush final and the confirmed interruption are one utterance).
+        self._held_multiword.append({
+            "text": text,
+            "at": time.monotonic(),
+            "episode": self._vad_episode if self._physical_speech_active else None,
+        })
+        del self._held_multiword[:-_SUSPECT_BUFFER_MAX]
+        self._interim_texts.clear()
+        self._latency.count("held_multiword_segments")
+        self._recorder.add_event(
+            "stt_segment_held_multiword",
+            text=text[:200],
+            reason="unconfirmed_during_bot_audio",
+            bot_speaking=self._bot_speaking,
+        )
+        if not self._bot_speaking:
+            # The reply already ended (the final arrived late): the
+            # continuation window starts now, and the caller's silence is
+            # measured as if nothing had been heard.
+            self._start_held_continuation_timer()
+            self._arm_silence_timer()
+
+    async def _supersede_held_multiword(self) -> None:
+        """A new accepted caller segment is about to be buffered.
+
+        Unconfirmed speech held from the bot's reply is NEVER prepended to
+        it: the later turn is the caller's, the held text may have been
+        anybody's, and joining them would smuggle background words into the
+        caller's request. Whatever is still held is discarded (logged);
+        the new segment is processed on its own. Another unconfirmed snippet
+        captured during bot audio does not count as a caller turn either —
+        the held text simply stays held until the reply ends.
+        """
+        if not self._held_multiword:
+            return
+        if self._captured_during_bot_audio() and not self._turn_active:
+            return
+        await self._discard_held_multiword(
+            "superseded_by_barge_in" if self._turn_active else "superseded_by_caller_turn"
+        )
+
+    async def _reclaim_held_for_confirmed_barge_in(self) -> None:
+        """The turn controller confirmed an interruption. Held text produced
+        by THIS SAME physical speech episode (a mid-utterance flush final of
+        the speech that just got confirmed) is the caller's utterance and is
+        reclaimed into the turn; anything held from an earlier episode is
+        discarded — it was never confirmed as the caller's."""
+        if not self._held_multiword:
+            return
+        same = [
+            entry for entry in self._held_multiword
+            if entry.get("episode") is not None
+            and entry["episode"] == self._vad_episode
+            and self._physical_speech_active
+        ]
+        other = [entry for entry in self._held_multiword if entry not in same]
+        self._held_multiword = other
+        if same:
+            self._cancel_held_continuation_timer()
+            for entry in same:
+                self._pending_segments.append(entry["text"])
+            self._recorder.add_event(
+                "stt_held_segment_merged",
+                segments=len(same),
+                texts=[e["text"][:60] for e in same[-3:]],
+                via="confirmed_barge_in_same_utterance",
+            )
+        if other:
+            await self._discard_held_multiword("superseded_by_barge_in")
+
+    async def _discard_held_multiword(self, reason: str) -> None:
+        self._cancel_held_continuation_timer()
+        if not self._held_multiword:
+            return
+        texts = [entry["text"] for entry in self._held_multiword]
+        self._held_multiword.clear()
+        self._latency.count("held_multiword_discarded")
+        self._recorder.add_event(
+            "stt_held_segment_discarded",
+            reason=reason,
+            segments=len(texts),
+            texts=[t[:60] for t in texts[-3:]],
+        )
+
+    def _start_held_continuation_timer(self) -> None:
+        if not self._held_multiword:
+            return
+        self._cancel_held_continuation_timer()
+        self._held_continuation_task = self.create_task(
+            self._held_continuation_watch(_HELD_CONTINUATION_WINDOW_S)
+        )
+
+    def _cancel_held_continuation_timer(self) -> None:
+        task, self._held_continuation_task = self._held_continuation_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _held_continuation_watch(self, window: float) -> None:
+        await asyncio.sleep(window)
+        self._held_continuation_task = None
+        if self._closing:
+            return
+        await self._discard_held_multiword("no_continuation")
+
+    # ── trusted caller-level bootstrap ───────────────────────────────────
+
+    def _note_trusted_turn(self, reason: str, *, min_words: int = 1) -> None:
+        """The call vouched for the turn being handled: seed or refresh the
+        caller baseline from that turn's own level samples.
+
+        Only samples that were captured with the bot quiet, accepted plainly
+        by the transcript gate (no rescue), not judged background-suspect,
+        and long/contentful enough are used. Each dispatched turn seeds once.
+        """
+        baseline = self._caller_level
+        if baseline is None or not self._open_turn_level_samples:
+            return
+        applied = 0
+        for sample in self._open_turn_level_samples:
+            if sample["during_bot_audio"] or sample["suspect"] or sample["reason"] != "ok":
+                continue
+            segment_ms = sample["segment_ms"]
+            if segment_ms is None or segment_ms < _TRUSTED_MIN_SEGMENT_MS:
+                continue
+            if sample["words"] < min_words or sample["level"] is None:
+                continue
+            before = baseline.baseline_dbfs
+            seeded, after = baseline.observe_trusted(sample["level"])
+            applied += 1
+            self._recorder.add_event(
+                "caller_baseline_trusted",
+                reason=reason,
+                speech_dbfs=sample["level"],
+                seeded=seeded,
+                baseline_before=before,
+                baseline_after=after,
+                trusted_segments=baseline.trusted_segments,
+            )
+        if applied:
+            self._open_turn_level_samples = []
+
+    def _discard_suspects(self, reason: str) -> None:
+        """Drop held background-suspect segments (evidence event only)."""
+        if not self._suspect_segments:
+            return
+        self._recorder.add_event(
+            "background_suspect_discarded",
+            reason=reason,
+            segments=len(self._suspect_segments),
+            texts=[entry["text"][:60] for entry in self._suspect_segments[-3:]],
+        )
+        self._suspect_segments.clear()
+
+    async def _apply_caller_level(self, text: str, quality, verdict) -> str:
+        """Caller-relative level check for one ACCEPTED final segment.
+
+        Returns ``"accepted"`` (continue as a normal caller segment) or
+        ``"held"`` (the segment was judged another speaker's and must not
+        become a turn now). Every decision is recorded as a
+        ``caller_level_segment`` event; the baseline learns only from segments
+        that :func:`qualifies_for_baseline` vouches for.
+
+        Policy, when the guard is ENFORCED and the segment is suspect:
+
+        - bot audibly speaking → held (``background_during_bot_audio``); it is
+          never dispatched when the bot stops (see BotStoppedSpeakingFrame);
+        - bot quiet → held (``background_quiet``); the no-response ladder runs
+          as if nothing had been heard.
+
+        A held segment never trains or re-bases the baseline: quiet speech
+        repeating itself is not evidence of who spoke it. Any caller-level
+        segment discards held suspects (another speaker's words never merge
+        into the caller's turn). With the guard OFF the verdict is recorded
+        and the segment continues unchanged (shadow).
+        """
+        baseline = self._caller_level
+        snapshot = self._last_gate_snapshot
+        if baseline is None or not snapshot:
+            return "accepted"
+        level = snapshot.get("speech_dbfs")
+        segment_ms = snapshot.get("segment_ms")
+        during_bot = (
+            bool(quality.during_bot_audio)
+            or bool(snapshot.get("during_bot_audio"))
+            or self._bot_speaking
+        )
+        words = len(meaningful_language_words(text))
+        level_verdict = baseline.classify(level, during_bot_audio=during_bot)
+        # Identifier dictation is exempt: digit fragments accumulate across
+        # segments, and holding one of them corrupts the number the caller is
+        # reading out. The verdict is still recorded for evidence.
+        enforced = baseline.enforce and self._identifier_capture is None
+        suspect = level_verdict.suspect
+        action, reason = "accepted", level_verdict.label
+        trained = False
+        if suspect and not enforced:
+            reason = (
+                "background_suspect_identifier_exempt"
+                if baseline.enforce else "background_suspect_shadow"
+            )
+        if suspect and enforced:
+            self._suspect_in_turn = True
+            if self._bot_speaking:
+                action, reason = "held", "background_during_bot_audio"
+                self._suspects_held_during_bot_audio += 1
+            else:
+                action, reason = "held", "background_quiet"
+        elif level_verdict.label == LABEL_CALLER:
+            self._discard_suspects("caller_spoke")
+        if action == "accepted" and not trained and qualifies_for_baseline(
+            accepted=True,
+            verdict_reason=verdict.reason,
+            during_bot_audio=during_bot,
+            segment_ms=segment_ms,
+            words=words,
+            suspect=suspect,
+        ):
+            baseline.observe(level)
+            trained = True
+        self._recorder.add_event(
+            "caller_level_segment",
+            text=text[:120],
+            words=words,
+            segment_ms=segment_ms,
+            vad_speech_s=self._last_vad_speech_s,
+            during_bot_audio=during_bot,
+            bot_speaking=self._bot_speaking,
+            action=action,
+            reason=reason,
+            enforced=enforced,
+            trained=trained,
+            baseline_after=baseline.baseline_dbfs,
+            baseline_trusted=baseline.established,
+            candidates=baseline.segments,
+            **level_verdict.as_event(),
+        )
+        if action != "held":
+            # Level evidence for the turn this segment will join; consumed by
+            # _note_trusted_turn once the call vouches for the dispatched turn.
+            self._pending_level_samples.append({
+                "level": level,
+                "segment_ms": segment_ms,
+                "words": words,
+                "during_bot_audio": during_bot,
+                "suspect": suspect,
+                "reason": verdict.reason,
+            })
+            del self._pending_level_samples[:-12]
+            return "accepted"
+        logger.info(
+            "turn[%s] background-suspect segment held (%s, %.1f dB below caller)",
+            self._recorder.session_id, reason, -(level_verdict.delta_db or 0.0),
+        )
+        self._latency.count("background_suspect_held")
+        self._suspect_segments.append({
+            "text": text,
+            "level_dbfs": level,
+            "delta_db": level_verdict.delta_db,
+            "at": time.monotonic(),
+            "during_bot_audio": during_bot,
+        })
+        del self._suspect_segments[:-_SUSPECT_BUFFER_MAX]
+        self._interim_texts.clear()
+        if not self._turn_active and not self._bot_speaking:
+            # An orphan final (no open turn) would otherwise leave the
+            # no-response ladder disarmed: the caller has not shown up.
+            self._arm_silence_timer()
+        return "held"
 
     async def _on_transcription(self, frame: TranscriptionFrame) -> None:
         text = (frame.text or "").strip()
@@ -1673,6 +2059,13 @@ class ConversationBrain(FrameProcessor):
         text = self._strip_answered_prefix(text)
         if not text:
             return
+        # Background-speech guard: is this the CALLER's voice, judged by level
+        # against their own established baseline? A background-suspect
+        # segment is held here — before hang-up/DNC detection, language
+        # following and buffering — so another speaker's words can neither
+        # end the call nor steer it (voice_runtime.caller_level).
+        if await self._apply_caller_level(text, quality, verdict) == "held":
+            return
         raw = getattr(frame, "language", None)
         if raw is not None and verdict.reason != "digit_payload":
             # A rescued digit payload carries a misdetected label by
@@ -1692,6 +2085,16 @@ class ConversationBrain(FrameProcessor):
             self._append_segment(text, provenance)
             await self._begin_do_not_call(" ".join(self._pending_segments).strip())
             return
+        if self._held_segment_guard:
+            # Multi-word speech heard while the bot talks that the turn
+            # controller did NOT confirm as a barge-in: hold it. It is only
+            # ever merged into the caller's own continuation once the bot is
+            # quiet (or into a confirmed barge-in), never dispatched because
+            # the reply happened to end.
+            if self._should_hold_multiword(text):
+                await self._hold_multiword_segment(text)
+                return
+            await self._supersede_held_multiword()
         self._append_segment(text, provenance)
         live_signal = classify_user_signal(" ".join(self._pending_segments).strip())
         if is_serious_caller_state(live_signal):
@@ -1907,6 +2310,21 @@ class ConversationBrain(FrameProcessor):
             recovered=recovered[:200],
         )
         return recovered, rescued_quality, rescued_verdict
+
+    @staticmethod
+    def _recognizable_reply(text: str) -> bool:
+        """Whether a short utterance reads as a reply the platform knows
+        (router signal, leading affirmation, self-contained short reply) —
+        the evidence that lets a two-content-word turn switch the language
+        without a repeat."""
+        stripped = (text or "").strip()
+        if not stripped:
+            return False
+        return (
+            classify_user_signal(stripped) is not None
+            or bool(leading_affirmation(stripped))
+            or is_short_complete_reply(stripped)
+        )
 
     @staticmethod
     def _unrecognized_latin_fragment(text: str) -> bool:
@@ -2500,6 +2918,11 @@ class ConversationBrain(FrameProcessor):
         text = " ".join(self._pending_segments).strip()
         self._pending_segments.clear()
         self._last_buffered_final = None
+        # Level samples of the segments in THIS turn travel with it, so a
+        # trusted signal raised while handling the turn can seed the caller
+        # baseline from the right audio.
+        self._open_turn_level_samples = list(self._pending_level_samples)
+        self._pending_level_samples.clear()
         if not text:
             return
         text = await self._merge_clarified_fragment(text)
@@ -2712,6 +3135,32 @@ class ConversationBrain(FrameProcessor):
             await self._speak_unsupported_language_notice(detected)
             return
 
+        content = content_words(meaningful)
+        if len(content) < _MIN_SWITCH_CONTENT_WORDS:
+            # Low-content evidence ("Hmm hmm try ya", "ok ok sir"): fillers
+            # and bare acknowledgements do not identify a language, and the
+            # auto-detector's label on them is a coin toss. Such a turn only
+            # NOMINATES the language. A turn with one content word or none
+            # never switches by itself; a two-content-word turn switches only
+            # when it reads as a known reply ("yes speaking") or the previous
+            # final already nominated the same language (the caller keeps
+            # speaking it). Real content switches at once.
+            confirmed = self._observe_language_candidate(target)
+            recognizable = (
+                len(content) >= _MIN_SWITCH_CONTENT_WORDS - 1
+                and self._recognizable_reply(text)
+            )
+            if len(content) < _MIN_SWITCH_CONTENT_WORDS - 1 or not (confirmed or recognizable):
+                self._recorder.add_event(
+                    "language_switch_blocked",
+                    detected=detected,
+                    reason="low_content",
+                    words=len(meaningful),
+                    content_words=len(content),
+                    confirmations=self._language_candidate_count,
+                    current=self._conversation_language,
+                )
+                return
         # Supported language, confidently detected: switch NOW. The reply to
         # THIS utterance is generated in the caller's language.
         self._reset_language_candidate()
@@ -2850,6 +3299,8 @@ class ConversationBrain(FrameProcessor):
         self._disarm_silence_timer()
         self._pending_segments.clear()
         self._last_buffered_final = None
+        self._held_multiword.clear()
+        self._cancel_held_continuation_timer()
         self._pending_controls.clear()
         self._end_identifier_capture()
         self._discard_decision_prefetch(NO_RESPONSE_END_REASON)
@@ -3013,6 +3464,8 @@ class ConversationBrain(FrameProcessor):
         self._disarm_silence_timer()
         self._pending_segments.clear()
         self._last_buffered_final = None
+        self._held_multiword.clear()
+        self._cancel_held_continuation_timer()
         self._pending_controls.clear()
         self._active_workflow = None
         self._end_identifier_capture()
@@ -4036,7 +4489,12 @@ class ConversationBrain(FrameProcessor):
             or decision.kind == RouteKind.WORKFLOW
         )
         if self._policy is not None:
+            was_verified = bool(self._policy.verified)
             self._policy.observe_user(text, signal, decision=orchestrated)
+            if self._policy.verified and not was_verified:
+                # Identity confirmed on THIS turn: independent evidence that
+                # its audio is the primary caller's (caller-level bootstrap).
+                self._note_trusted_turn("identity_confirmed")
             plan = self._policy.plan_turn(
                 text, signal, workflow_active=workflow_owns_turn
             )
@@ -5133,6 +5591,7 @@ class ConversationBrain(FrameProcessor):
             user_text=text,
             language=self._conversation_language,
             initial_slots=initial_slots,
+            pinned_versions=getattr(self._config, "workflow_pins", None) or None,
             context_values=(
                 self._runtime_context.prompt_values()
                 if self._runtime_context is not None else self._call_context
@@ -5144,6 +5603,15 @@ class ConversationBrain(FrameProcessor):
             **({"pause_for_context": True} if classification is not None
                and classification.context_question else {}),
         )
+        if (
+            not result.get("offScript")
+            and result.get("trace")
+            and result.get("status") != "error"
+        ):
+            # The flow advanced on-script: the turn answered the node's
+            # question. Weaker than an identity/identifier match (a bare
+            # "haan" matches a yes/no edge), so a single word never seeds.
+            self._note_trusted_turn("workflow_advanced", min_words=2)
         extraction_usage = result.get("extractionUsage")
         if extraction_usage:
             counters = self._recorder.usage
@@ -5432,6 +5900,11 @@ class ConversationBrain(FrameProcessor):
             node=capture.node,
             variable=capture.variable,
         )
+        if validated:
+            # A dictated identifier that validated is the caller's own data:
+            # trusted evidence for the caller-level baseline. Digits are not
+            # "meaningful words", so no word minimum applies here.
+            self._note_trusted_turn("identifier_validated", min_words=0)
 
     async def _adapt_scripted_ask(self, script: str) -> str | None:
         """Constrained translation of an input-collecting workflow step.

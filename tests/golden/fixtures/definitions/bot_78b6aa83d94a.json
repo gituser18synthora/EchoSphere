@@ -1,0 +1,529 @@
+{
+ "bot": {
+  "id": "bot_78b6aa83d94a",
+  "name": "OYO Stock Team Validation",
+  "tenant_id": "tn_de5cc992b1e9",
+  "status": "draft"
+ },
+ "workflows": [
+  {
+   "id": "wf_9bb6c57ff978",
+   "name": "OYO stock validation journey",
+   "version": 5,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 300,
+     "y": 40,
+     "id": "n_ask_bid",
+     "kind": "ask",
+     "label": "Confirm booking ID",
+     "config": {
+      "pattern": "(?:BK[-\\s]?)?([0-9]{4,10})",
+      "question": "Could you please confirm the booking ID that needs validation?",
+      "variable": "booking_id",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 560,
+     "y": 40,
+     "id": "n_api_booking",
+     "kind": "api",
+     "label": "Booking Details API",
+     "config": {
+      "connection": "OYO Booking Details"
+     }
+    },
+    {
+     "x": 820,
+     "y": 40,
+     "id": "n_intent_stock",
+     "kind": "intent",
+     "label": "Can it be honored?",
+     "config": {
+      "prompt": "The property has not confirmed this booking so far. Could you check whether this booking can be honored at check-in?"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 40,
+     "id": "n_api_report_h",
+     "kind": "api",
+     "label": "Report: honoured",
+     "config": {
+      "connection": "OYO Stock Report Honored"
+     }
+    },
+    {
+     "x": 1340,
+     "y": 40,
+     "id": "n_api_report_nh",
+     "kind": "api",
+     "label": "Report: cannot confirm",
+     "config": {
+      "connection": "OYO Stock Report Not Honored"
+     }
+    },
+    {
+     "x": 40,
+     "y": 170,
+     "id": "n_end_ok",
+     "kind": "end",
+     "label": "End (validated)",
+     "config": {
+      "text": "Perfect, thank you for validating. We'll inform the guest that the booking stands confirmed. Have a good day!"
+     }
+    },
+    {
+     "x": 300,
+     "y": 170,
+     "id": "n_end_no",
+     "kind": "end",
+     "label": "End (not confirmed)",
+     "config": {
+      "text": "Understood. We'll proceed with offering the guest an alternate property. Thank you for checking."
+     }
+    },
+    {
+     "x": 560,
+     "y": 170,
+     "id": "n_end_nores",
+     "kind": "end",
+     "label": "End (no booking ref)",
+     "config": {
+      "text": "No problem — I'll route this validation through the dashboard instead. Thank you!"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_n_start__n_ask_bid",
+     "to": "n_ask_bid",
+     "from": "n_start"
+    },
+    {
+     "id": "e_n_ask_bid__n_api_booking",
+     "to": "n_api_booking",
+     "from": "n_ask_bid"
+    },
+    {
+     "id": "e_n_ask_bid__n_end_nores__4634",
+     "to": "n_end_nores",
+     "from": "n_ask_bid",
+     "label": "fallback"
+    },
+    {
+     "id": "e_n_api_booking__n_intent_stock__3784",
+     "to": "n_intent_stock",
+     "from": "n_api_booking",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api_booking__n_end_nores__9881",
+     "to": "n_end_nores",
+     "from": "n_api_booking",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_intent_stock__n_api_report_h__3823",
+     "to": "n_api_report_h",
+     "from": "n_intent_stock",
+     "label": "yes/confirmed/will be honored/honoured/valid/it can be/haan/हाँ/okay/sure/stands"
+    },
+    {
+     "id": "e_n_intent_stock__n_api_report_nh__31",
+     "to": "n_api_report_nh",
+     "from": "n_intent_stock",
+     "label": "no/we cannot/cannot/can't/not possible/unavailable/won't/nahi/नहीं/out of stock/no inventory"
+    },
+    {
+     "id": "e_n_api_report_h__n_end_ok",
+     "to": "n_end_ok",
+     "from": "n_api_report_h"
+    },
+    {
+     "id": "e_n_api_report_nh__n_end_no",
+     "to": "n_end_no",
+     "from": "n_api_report_nh"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_d3e71fe6b547",
+   "name": "stock_call_opening",
+   "code": "stock_call_opening",
+   "samples": [
+    "hello",
+    "hi",
+    "yes",
+    "speaking",
+    "haan",
+    "go ahead",
+    "हाँ"
+   ],
+   "route": "workflow:oyo_stock_validation_journey",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_8b3af32df227",
+   "name": "stock_response",
+   "code": "stock_response",
+   "samples": [
+    "booking will be honored",
+    "it is confirmed",
+    "cannot honor",
+    "let me check",
+    "checking the booking",
+    "which booking"
+   ],
+   "route": "workflow:oyo_stock_validation_journey",
+   "workflow_id": null,
+   "confidence_threshold": 0.05,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_04102ed52308",
+   "name": "OYO PM Report Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_0821972f0993",
+   "name": "OYO Booking Details",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "booking_status",
+     "target": "booking_status"
+    },
+    {
+     "source": "hotel_name",
+     "target": "hotel_name"
+    },
+    {
+     "source": "property_id",
+     "target": "property_id"
+    },
+    {
+     "source": "checkin_date",
+     "target": "checkin_date"
+    },
+    {
+     "source": "checkout_date",
+     "target": "checkout_date"
+    },
+    {
+     "source": "occupancy",
+     "target": "occupancy_details"
+    },
+    {
+     "source": "payment_status",
+     "target": "payment_status"
+    },
+    {
+     "source": "amount_pending",
+     "target": "amount_pending"
+    },
+    {
+     "source": "guest_email",
+     "target": "guest_email"
+    },
+    {
+     "source": "cancelled_on",
+     "target": "cancelled_on"
+    },
+    {
+     "source": "cancelled_by",
+     "target": "cancelled_by"
+    },
+    {
+     "source": "city",
+     "target": "hotel_city"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_0b158ef8ff5a",
+   "name": "OYO PM Report Denied — Price",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_1231ba6a72de",
+   "name": "OYO PM Report Honored — Alternate Room",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_1653f45e7bc0",
+   "name": "OYO Booking Voucher",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "sent",
+     "target": "voucher_sent"
+    },
+    {
+     "source": "email",
+     "target": "voucher_email"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_32d69da658d0",
+   "name": "OYO PM Verification Call",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "call_status",
+     "target": "pm_call_status"
+    },
+    {
+     "source": "booking_honored",
+     "target": "pm_booking_honored"
+    },
+    {
+     "source": "deny_reason",
+     "target": "pm_deny_reason"
+    },
+    {
+     "source": "resolution",
+     "target": "pm_resolution"
+    },
+    {
+     "source": "source",
+     "target": "pm_outcome_source"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_3942c3bf2ff4",
+   "name": "OYO Stock Report Not Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_39920ea4e04d",
+   "name": "OYO Stock Team Call",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "call_status",
+     "target": "stock_call_status"
+    },
+    {
+     "source": "stock_status",
+     "target": "stock_status"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_3a5d8d73d3b7",
+   "name": "OYO PM Report Honored — Compensation",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_4ddfe5df0a42",
+   "name": "OYO Property Status",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "under_maintenance",
+     "target": "under_maintenance"
+    },
+    {
+     "source": "operational_status",
+     "target": "operational_status"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_65f49efab9f1",
+   "name": "OYO Shift Booking",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "status",
+     "target": "shift_status"
+    },
+    {
+     "source": "new_property_name",
+     "target": "shift_property_name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_675ddf9b1aa7",
+   "name": "OYO Alternate Properties",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "count",
+     "target": "alternates_count"
+    },
+    {
+     "source": "top_alternate_name",
+     "target": "alternate_property_name"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_75aa5bf12968",
+   "name": "OYO PM Report Denied — Overbooked",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_a32188dc8ce3",
+   "name": "OYO PM Report Honored — ARR Pitch",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_a6a381d64930",
+   "name": "OYO PM Report Not Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_bc3224a2199b",
+   "name": "OYO Property Pricing",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "rate_vs_arr",
+     "target": "rate_vs_arr"
+    },
+    {
+     "source": "arr_7day",
+     "target": "arr_7day"
+    },
+    {
+     "source": "booking_rate",
+     "target": "booking_rate"
+    },
+    {
+     "source": "complimentary_amount",
+     "target": "complimentary_amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_cd2465c9301a",
+   "name": "OYO Stock Report Honored",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_d0b64dc475dc",
+   "name": "OYO Add Complimentary Amount",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "added",
+     "target": "comp_added"
+    },
+    {
+     "source": "amount",
+     "target": "comp_amount"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d17fd09d1233",
+   "name": "OYO Customer Verification",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "verified",
+     "target": "customer_verified"
+    },
+    {
+     "source": "matched_on",
+     "target": "verified_via"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d1b90241a041",
+   "name": "OYO Property Occupancy",
+   "response_schema": null,
+   "response_mapping": [
+    {
+     "source": "has_availability",
+     "target": "has_availability"
+    },
+    {
+     "source": "occupancy_pct",
+     "target": "occupancy_pct"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_d780c119e759",
+   "name": "OYO PM Report Denied — Maintenance",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_eadf312159ad",
+   "name": "OYO PM Report Honored — Penalty Advisory",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_ee9e3346635d",
+   "name": "OYO IVR Transfer",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  },
+  {
+   "id": "api_f699fb517e27",
+   "name": "OYO Call Disposition",
+   "response_schema": null,
+   "response_mapping": [],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": []
+}

@@ -1,0 +1,114 @@
+{
+ "bot": "bot_39db9985b7d5",
+ "cases": [
+  {
+   "bot": "bot_39db9985b7d5",
+   "name": "collections 60+: refusal ladder",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "nahi"
+    },
+    {
+     "text": "nahi dunga"
+    },
+    {
+     "text": "bilkul nahi"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "call_opening_response",
+      "action": "dpd_60_210_collection_call"
+     },
+     "trace": [
+      "n_start",
+      "n_push"
+     ],
+     "reply": "Aap call par rehte hue hi UPI ke through abhi payment complete kar dijiye, taaki hum turant aapki help kar sakein aur payment se related koi dikkat na ho. Saath hi aapka profile bhi turant update ho jayega. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 60-210 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_push",
+      "n_history_ask"
+     ],
+     "reply": "Aapke profile par dikh raha hai ki aapne pehle kai baar loan time se repay kiya hai — aap mPokket ke ek achhe user rahe hain, aur main nahi chahta ki aapka yeh record kharab ho. System records ke hisaab se pehle bhi payment ke baare mein baat hui thi aur promise ke baad bhi payment receive nahi hui, aur aapki last payment ke baad se koi naya payment update nahi hua hai. Kya aap abhi payment complete karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "nahi dunga",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 60-210 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_history_ask",
+      "n_funds"
+     ],
+     "reply": "Aap apni savings se, ya kisi friend ya family se arrange karke bhi payment kar sakte hain — isse aapko koi extra penalty nahi deni hogi. Kya aap payment ka intezaam kar sakte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "bilkul nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:DPD 60-210 collection call",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_funds",
+      "n_penalty_long"
+     ],
+     "reply": "Dekhiye, repayment date par payment na hone se penalty charges din-b-din badhte rehte hain, aur already kaafi extra amount lag chuka hai. Hum nahi chahte ki delay ki wajah se aapko aur extra charges dene paden — woh amount aap kisi aur zaroori kaam mein use kar sakte hain. Isliye request hai ki abhi hi payment complete kar dijiye. Kya aap abhi payment karenge?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

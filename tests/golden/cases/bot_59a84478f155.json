@@ -1,0 +1,3605 @@
+{
+ "bot": "bot_59a84478f155",
+ "cases": [
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 01 reference-call replay (Hinglish), mocked ticket + summary",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha"
+    },
+    {
+     "text": "nahi, cx support se koi call nahi aaya"
+    },
+    {
+     "text": "ji sahi hai",
+     "mocks": {
+      "Zepto Register MDND Concern": null
+     }
+    },
+    {
+     "text": "nahi bas, ye refund kab tak aa jayega?"
+    },
+    {
+     "text": "theek hai thank you"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "ghar ke aage",
+      "m_handover_recipient": "place (kept at a spot)",
+      "m_issue_description": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi, cx support se koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order ghar ke aage रखा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "ghar ke aage",
+      "m_handover_recipient": "place (kept at a spot)",
+      "m_issue_description": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "ji sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "ghar ke aage",
+      "m_handover_recipient": "place (kept at a spot)",
+      "m_issue_description": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "nahi bas, ye refund kab tak aa jayega?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "ghar ke aage",
+      "m_handover_recipient": "place (kept at a spot)",
+      "m_issue_description": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "theek hai thank you",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "सारी details share करने के लिए धन्यवाद। आपके ticket की सारी details मैंने note कर ली हैं — आप बिल्कुल निश्चिंत रहिए, हमारी team आपके case को review करके आपसे जल्दी connect करेगी। आपका समय देने के लिए शुक्रिया!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "ghar ke aage",
+      "m_handover_recipient": "place (kept at a spot)",
+      "m_issue_description": "maine deliver kiya tha product, maine call kiya tha, customer ne bola ghar ke aage rakh do, maine wahan rakh diya, uske baad deduction hua jo nahi hona chahiye tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 02 multi-answer: one utterance answers every enquiry",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd wala issue hai"
+    },
+    {
+     "text": "haan maine call kiya tha aur uske location par bhi gaya tha, order guard ko de diya tha, cx support se call bhi aaya tha, phir bhi deduction hua"
+    },
+    {
+     "text": "sahi hai"
+    },
+    {
+     "text": "nahi bas"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd wala issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "haan maine call kiya tha aur uske location par bhi gaya tha, order guard ko de diya tha, cx support se call bhi aaya tha, phir bhi deduction hua",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "haan maine call kiya tha aur uske location par bhi gaya tha, order guard ko de diya tha, cx support se call bhi aaya tha, phir bhi deduction hua",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "haan maine call kiya tha aur uske location par bhi gaya tha, order guard ko de diya tha, cx support se call bhi aaya tha, phir bhi deduction hua",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "nahi bas",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "सारी details share करने के लिए धन्यवाद। आपके ticket की सारी details मैंने note कर ली हैं — आप बिल्कुल निश्चिंत रहिए, हमारी team आपके case को review करके आपसे जल्दी connect करेगी। आपका समय देने के लिए शुक्रिया!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "haan maine call kiya tha aur uske location par bhi gaya tha, order guard ko de diya tha, cx support se call bhi aaya tha, phir bhi deduction hua",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 03 partial answer: only the missing questions are asked",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd ka issue hai"
+    },
+    {
+     "text": "location par pahunch kar order guard ko de diya tha maine, phir bhi deduction aa gaya"
+    },
+    {
+     "text": "haan call kiya tha"
+    },
+    {
+     "text": "haan, cx se call aaya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd ka issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahunch kar order guard ko de diya tha maine, phir bhi deduction aa gaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या आपने delivery से पहले customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "location par pahunch kar order guard ko de diya tha maine, phir bhi deduction aa gaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan call kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "location par pahunch kar order guard ko de diya tha maine, phir bhi deduction aa gaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan, cx se call aaya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "location par pahunch kar order guard ko de diya tha maine, phir bhi deduction aa gaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 04 combined question + correction at the verification step",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "bas deduction hua hai galat"
+    },
+    {
+     "text": "haan dono kiya tha"
+    },
+    {
+     "text": "customer ko de diya tha"
+    },
+    {
+     "text": "nahi"
+    },
+    {
+     "text": "nahi galat hai"
+    },
+    {
+     "text": "actually order maine guard ko diya tha customer ko nahi"
+    },
+    {
+     "text": "haan ab sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "bas deduction hua hai galat",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_cond_called",
+      "n_ask_reached_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "haan dono kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reached_called",
+      "n_ask_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "customer ko de diya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi galat hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction"
+     ],
+     "reply": "ठीक है — कौन सी बात सही नहीं है? कृपया ठीक करके बताइए।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "actually order maine guard ko diya tha customer ko nahi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_correction",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_correction": "actually order maine guard ko diya tha customer ko nahi",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan ab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_correction": "actually order maine guard ko diya tha customer ko nahi",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "bas deduction hua hai galat",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 05 English caller end to end, live API fallback",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "I have an MDND issue"
+    },
+    {
+     "text": "I reached the customer location and delivered the order but still got a deduction of 400 rupees"
+    },
+    {
+     "text": "yes I called the customer"
+    },
+    {
+     "text": "I handed it to the security guard"
+    },
+    {
+     "text": "no, nobody called me from support"
+    },
+    {
+     "text": "yes all correct"
+    },
+    {
+     "text": "no thanks"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I have an MDND issue",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या आपने delivery से पहले customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "yes I called the customer",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "I handed it to the security guard",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "no, nobody called me from support",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "yes all correct",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    },
+    {
+     "text": "no thanks",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "सारी details share करने के लिए धन्यवाद। आपके ticket की सारी details मैंने note कर ली हैं — आप बिल्कुल निश्चिंत रहिए, हमारी team आपके case को review करके आपसे जल्दी connect करेगी। आपका समय देने के लिए शुक्रिया!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "I reached the customer location and delivered the order but still got a deduction of 400 rupees",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 06 explicit human request -> support handover",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mujhe kisi support executive se baat karni hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mujhe kisi support executive se baat karni hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "human_handoff",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 07 policy question routes to the FAQ KB",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "MDND kya hota hai?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "MDND kya hota hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "intent",
+      "reason": "configured_intent",
+      "intent": "policy_question",
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 08 no context: every value captured together -> verify",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai",
+     "options": {
+      "contextSource": "none"
+     }
+    },
+    {
+     "text": "deduction 400 rupees tha, order 9203 tha, 4 August ko hua; main location par pahuncha, customer ko call kiya aur guard ko de diya, guard ka naam Ramesh tha, aur cx support se call aaya tha",
+     "options": {
+      "contextSource": "none"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "deduction 400 rupees tha, order 9203 tha, 4 August ko hua; main location par pahuncha, customer ko call kiya aur guard ko de diya, guard ka naam Ramesh tha, aur cx support se call aaya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_guard_name": "Ramesh",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "deduction 400 rupees tha, order 9203 tha, 4 August ko hua; main location par pahuncha, customer ko call kiya aur guard ko de diya, guard ka naam Ramesh tha, aur cx support se call aaya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 09 no context partial: asks only missing date, then CX",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai",
+     "options": {
+      "contextSource": "none"
+     }
+    },
+    {
+     "text": "400 rupees ka deduction hai, order 9203 hai; location par pahuncha, call kiya aur guard ko diya",
+     "options": {
+      "contextSource": "none"
+     }
+    },
+    {
+     "text": "4 August ko",
+     "options": {
+      "contextSource": "none"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "400 rupees ka deduction hai, order 9203 hai; location par pahuncha, call kiya aur guard ko diya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "400 rupees ka deduction hai, order 9203 hai; location par pahuncha, call kiya aur guard ko diya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "4 August ko",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx"
+     ],
+     "reply": "माफ़ कीजिए, मैं आपकी बात ठीक से समझ नहीं पाया। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "400 rupees ka deduction hai, order 9203 hai; location par pahuncha, call kiya aur guard ko diya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 10 confirmation registers at once (MDND-only line)",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx support se koi call nahi aaya"
+    },
+    {
+     "text": "haan sab sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx support se koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx support se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan sab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx support se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 11 interrupted combined answer remains captured",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahunch gaya tha, customer ko call kiya aur order customer ke haath me de diya, support se koi call nahi",
+     "options": {
+      "interrupted": true
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahunch gaya tha, customer ko call kiya aur order customer ke haath me de diya, support se koi call nahi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahunch gaya tha, customer ko call kiya aur order customer ke haath me de diya, support se koi call nahi",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 12 combined question, half answered -> only the call half",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "deduction galat hua hai"
+    },
+    {
+     "text": "haan pahuncha tha"
+    },
+    {
+     "text": "nahi, call nahi laga tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "deduction galat hua hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_cond_called",
+      "n_ask_reached_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "haan pahuncha tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reached_called",
+      "n_ask_reached",
+      "n_ask_called"
+     ],
+     "reply": "और क्या आपने delivery से पहले customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi, call nahi laga tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 13 combined question, split answer extracted independently",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "deduction galat hua hai"
+    },
+    {
+     "text": "location par pahuncha tha par call nahi kiya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "deduction galat hua hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_cond_called",
+      "n_ask_reached_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha tha par call nahi kiya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reached_called",
+      "n_ask_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "no",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "no (did not call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 13b combined question answered no to both",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "deduction galat hua hai"
+    },
+    {
+     "text": "nahi, dono nahi kiya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "deduction galat hua hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_cond_called",
+      "n_ask_reached_called"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। क्या आप delivery के लिए customer की location पर पहुंचे थे, और क्या आपने customer को call किया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "nahi, dono nahi kiya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_reached_called",
+      "n_ask_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "no",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "no (did not call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "deduction galat hua hai",
+      "m_order_last4": "9203",
+      "m_reached_location": "no (did not reach the location)",
+      "reached_location": "no"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 14 family-member handover (mother) -> no guard detour",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha"
+    },
+    {
+     "text": "customer ki mother ko de diya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "customer ki mother ko de diya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "family_member",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "mother",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 14b doorstep handover",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha"
+    },
+    {
+     "text": "darwaze par rakh diya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "darwaze par rakh diya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "doorstep",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_drop_location": "darwaze par",
+      "m_handover_recipient": "left at door",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 14c brother handover in the narrative",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location pe pahuncha, customer ko call kiya aur order uske bhai ko de diya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location pe pahuncha, customer ko call kiya aur order uske bhai ko de diya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "family_member",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "brother",
+      "m_issue_description": "location pe pahuncha, customer ko call kiya aur order uske bhai ko de diya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 14d not handed over -> hand_over_product No",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha"
+    },
+    {
+     "text": "kisi ko nahi de paya, order wapas le aaya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha aur call kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "kisi ko nahi de paya, order wapas le aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "other",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "not handed over",
+      "m_issue_description": "location par pahuncha aur call kiya tha",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 15 inline correction at verify: no 'which part' question",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya"
+    },
+    {
+     "text": "nahi, maine call nahi kiya tha"
+    },
+    {
+     "text": "haan ab sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi, maine call nahi kiya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call नहीं किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "no",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "no (did not call)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan ab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "no",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "no (did not call)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 16 correction names a field: only that field is re-asked",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya"
+    },
+    {
+     "text": "nahi, cx wala galat hai"
+    },
+    {
+     "text": "haan, call aaya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi, cx wala galat hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan, call aaya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 18 cv_a00399bcc37b narrative: nothing re-asked",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।"
+    },
+    {
+     "text": "नहीं, कोई कॉल नहीं आया था।"
+    },
+    {
+     "text": "नहीं नहीं नहीं, मुझे इसमें थोड़ा सा चेंज करना है कि प्रोडक्ट मैंने उनकी माँ को नहीं दिया था। सिक्योरिटी गार्ड को।"
+    },
+    {
+     "text": "security guard ko diya tha"
+    },
+    {
+     "text": "haan ab sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "family_member",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "mother",
+      "m_issue_description": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "नहीं, कोई कॉल नहीं आया था।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer की माँ को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "family_member",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "mother",
+      "m_issue_description": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "नहीं नहीं नहीं, मुझे इसमें थोड़ा सा चेंज करना है कि प्रोडक्ट मैंने उनकी माँ को नहीं दिया था। सिक्योरिटी गार्ड को।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover"
+     ],
+     "reply": "ये order आपने किसको सौंपा था — customer को, guard को, घर के किसी member को, या customer के कहने पर कहीं रख दिया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "unknown",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_issue_description": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "security guard ko diya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "haan ab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_api",
+      "n_confirmed",
+      "n_hub_more"
+     ],
+     "reply": "धन्यवाद। एक मिनट दीजिए — मैं आपकी concern support team में register कर रही हूँ। आपने MDND के बारे में जो बताया, वो note कर लिया है। इसके अलावा payout में कोई और issue है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "callback_eta": "within 24 to 48 hours",
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "हाँ, मैंने कस्टमर को प्रोडक्ट जो था कस्टमर के घर पर जाकर डिलीवर किया और डिलीवर करने से पहले ना मैं कस्टमर को कॉल भी किया तो कस्टमर बोला कि मेरी मम्मी है मेरी मम्मी के पास ही प्रोडक्ट दे दो तो मैं उनके मम्मी को दिया, उनके माँ को प्रोडक्ट दिया और मैं चला आया।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes",
+      "sms_sent": true,
+      "ticket_concern": "Mark Delivered but Not Delivered",
+      "ticket_id": "ZPT-MDND-73412",
+      "ticket_status": "registered"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 19 cv_25e68bad6919 narrative: nothing re-asked",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "हा. हाँ, मैं लोकेशन पर पहुँचा था और कॉल भी किया था, तो कस्टमर बोला कि मेरे घर पर मेरी माँ है। माँ के हाथ में दे दो। तो मैंने माँ को दे दिया था।"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "हा. हाँ, मैं लोकेशन पर पहुँचा था और कॉल भी किया था, तो कस्टमर बोला कि मेरे घर पर मेरी माँ है। माँ के हाथ में दे दो। तो मैंने माँ को दे दिया था।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "family_member",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "mother",
+      "m_issue_description": "हा. हाँ, मैं लोकेशन पर पहुँचा था और कॉल भी किया था, तो कस्टमर बोला कि मेरे घर पर मेरी माँ है। माँ के हाथ में दे दो। तो मैंने माँ को दे दिया था।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 20 guard handover (Devanagari) -> no name question, CX next",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "मैंने कस्टमर को कॉल किया, लोकेशन पर पहुँच के कॉल किया। कस्टमर ने बोला गार्ड को दे दो। तो मैं गार्ड के हाथों में ही हैंडओवर कर दिया था।"
+    },
+    {
+     "text": "हाँ, CX support से कॉल आया था।"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "मैंने कस्टमर को कॉल किया, लोकेशन पर पहुँच के कॉल किया। कस्टमर ने बोला गार्ड को दे दो। तो मैं गार्ड के हाथों में ही हैंडओवर कर दिया था।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "मैंने कस्टमर को कॉल किया, लोकेशन पर पहुँच के कॉल किया। कस्टमर ने बोला गार्ड को दे दो। तो मैं गार्ड के हाथों में ही हैंडओवर कर दिया था।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "हाँ, CX support से कॉल आया था।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "yes",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "yes (received CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "मैंने कस्टमर को कॉल किया, लोकेशन पर पहुँच के कॉल किया। कस्टमर ने बोला गार्ड को दे दो। तो मैं गार्ड के हाथों में ही हैंडओवर कर दिया था।",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 21 guard handover (Hinglish) -> no name question, CX next",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "location par pahuncha, call kiya aur guard ko de diya"
+    },
+    {
+     "text": "nahi, koi call nahi aaya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha, call kiya aur guard ko de diya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। और क्या इस delivery के बारे में आपको CX support से कोई call आया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "location par pahuncha, call kiya aur guard ko de diya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "nahi, koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order guard को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "guard",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "guard / security",
+      "m_issue_description": "location par pahuncha, call kiya aur guard ko de diya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_single_bot_scenarios.py",
+   "name": "MDND 17 correction via the which-part answer, then re-verify",
+   "bot": "bot_59a84478f155",
+   "turns": [
+    {
+     "text": "mdnd issue hai"
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya"
+    },
+    {
+     "text": "galat hai"
+    },
+    {
+     "text": "location wala galat hai, main location par nahi pahuncha tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mdnd issue hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "mdnd_concern",
+      "action": "wf_7e4cf166c7bd"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_issue_desc"
+     ],
+     "reply": "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "unknown",
+      "cx_support_called": "unknown",
+      "delivery_handoff": "unknown",
+      "reached_location": "unknown"
+     }
+    },
+    {
+     "text": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_issue_desc",
+      "n_ask_amount",
+      "n_ask_order",
+      "n_ask_date",
+      "n_msg_empathy",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "मैं आपकी बात समझ सकता हूँ। आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "galat hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction"
+     ],
+     "reply": "ठीक है — कौन सी बात सही नहीं है? कृपया ठीक करके बताइए।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "yes (reached the location)",
+      "reached_location": "yes"
+     }
+    },
+    {
+     "text": "location wala galat hai, main location par nahi pahuncha tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto MDND concern journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_correction",
+      "n_cond_reached",
+      "n_ask_called",
+      "n_ask_handover",
+      "n_ask_cx",
+      "n_hub_verify"
+     ],
+     "reply": "आपके द्वारा दी गई जानकारी को एक बार confirm कर लेता हूँ। आपने customer को call किया था, आप customer की location पर नहीं पहुँचे थे, आपने order customer को सौंपा था, और आपको CX Support से call नहीं आया था। क्या ये सब सही है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "customer_called": "yes",
+      "cx_support_called": "no",
+      "delivery_handoff": "customer",
+      "m_called_customer": "yes (called the customer)",
+      "m_correction": "location wala galat hai, main location par nahi pahuncha tha",
+      "m_cx_support_call": "no (no CX support call)",
+      "m_deduction_amount": "400 rupees",
+      "m_deduction_date": "4 August",
+      "m_handover_recipient": "customer (direct)",
+      "m_issue_description": "location par pahuncha, call kiya aur customer ko de diya, cx se koi call nahi aaya",
+      "m_order_last4": "9203",
+      "m_reached_location": "no (did not reach the location)",
+      "reached_location": "no"
+     }
+    }
+   ]
+  }
+ ]
+}

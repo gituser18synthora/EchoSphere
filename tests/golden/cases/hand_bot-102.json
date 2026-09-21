@@ -1,0 +1,88 @@
+{
+ "bot": "bot-102",
+ "cases": [
+  {
+   "bot": "bot-102",
+   "name": "billing: question then agent",
+   "language": "en-US",
+   "turns": [
+    {
+     "text": "yes"
+    },
+    {
+     "text": "what is my bill amount?"
+    },
+    {
+     "text": "agent please"
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "smalltalk",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n1",
+      "n2"
+     ],
+     "reply": "How can I help you today?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "what is my bill amount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Billing journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n2"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "agent please",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Billing journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n2",
+      "n4"
+     ],
+     "reply": "I'm having trouble capturing that. Let me connect you with an agent.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

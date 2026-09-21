@@ -1,0 +1,6463 @@
+{
+ "bot": "bot_4b8d6fe95cb1",
+ "cases": [
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-01 Hindi, all yes -> consistent, mocked ticket update, final fields",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "हाँ जी, बोलिए"
+    },
+    {
+     "text": "हाँ, बताया गया था"
+    },
+    {
+     "text": "हाँ, पाँच सौ रुपये बताया था"
+    },
+    {
+     "text": "जी, उतना ही कटा है"
+    },
+    {
+     "text": "हाँ सही है"
+    },
+    {
+     "text": "नहीं, बस इतना ही",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "हाँ जी, बोलिए",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "हाँ, बताया गया था",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "हाँ, पाँच सौ रुपये बताया था",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "जी, उतना ही कटा है",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "हाँ सही है",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    },
+    {
+     "text": "नहीं, बस इतना ही",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-02 Hindi, first answer NO ('kisi ne kuch nahi bataya') -> explained, only the amount asked, not-communicated outcome",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "हाँ बोलिए"
+    },
+    {
+     "text": "नहीं, मुझे किसी ने कुछ नहीं बताया था"
+    },
+    {
+     "text": "छह सौ रुपये कटे"
+    },
+    {
+     "text": "जी सही है"
+    },
+    {
+     "text": "नहीं",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "हाँ बोलिए",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "नहीं, मुझे किसी ने कुछ नहीं बताया था",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "छह सौ रुपये कटे",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में नहीं बताया गया था, न ही ये कि कितना amount deduct होगा — actually आपके payout से 600 रुपये deduct हुए हैं। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "600",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "जी सही है",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_msg_not_communicated",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — मैंने note कर लिया है कि onboarding के time deduct होने वाला amount आपको communicate नहीं किया गया था। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "600",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_not_communicated"
+     }
+    },
+    {
+     "text": "नहीं",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "600",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_not_communicated"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-03 Hinglish, amount NOT communicated -> recorded, deduction never called correct",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan ji bol raha hoon"
+    },
+    {
+     "text": "haan bataya tha, par kitna katega ye nahi bataya tha"
+    },
+    {
+     "text": "aath sau rupaye kate hain"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "nahi bas",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan ji bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, par kitna katega ye nahi bataya tha",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "aath sau rupaye kate hain",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, लेकिन ये नहीं बताया गया था कि कितना amount deduct होगा — actually आपके payout से 800 रुपये deduct हुए हैं। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "800",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_msg_not_communicated",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — मैंने note कर लिया है कि onboarding के time deduct होने वाला amount आपको communicate नहीं किया गया था। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "800",
+      "deduction_explained": "yes",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_not_communicated"
+     }
+    },
+    {
+     "text": "nahi bas",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "800",
+      "deduction_explained": "yes",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_not_communicated"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-04 Hinglish, deducted amount MISMATCH -> discrepancy captured, no resolution invented",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan boliye"
+    },
+    {
+     "text": "haan bataya tha"
+    },
+    {
+     "text": "haan, 500 rupees bola tha"
+    },
+    {
+     "text": "nahi, zyada kata hai"
+    },
+    {
+     "text": "700 kata hai"
+    },
+    {
+     "text": "pichle hafte ke payout mein"
+    },
+    {
+     "text": "haan sab sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan boliye",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "haan, 500 rupees bola tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "nahi, zyada kata hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "700 kata hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "pichle hafte ke payout mein",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 500 रुपये बताए गए थे — लेकिन आपके payout से actually 700 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 200 रुपये का difference है। और ये deduction pichle hafte ke payout mein के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "pichle hafte ke payout mein",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "haan sab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "pichle hafte ke payout mein",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "pichle hafte ke payout mein",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-05 one utterance answers all three -> straight to readback, nothing re-asked",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan ji"
+    },
+    {
+     "text": "haan, deduction ke baare mein bataya tha aur bola tha 500 rupees katega, aur utna hi kata hai"
+    },
+    {
+     "text": "haan sahi hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan ji",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan, deduction ke baare mein bataya tha aur bola tha 500 rupees katega, aur utna hi kata hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-06 corrected amount -> confirm the dependent match again",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata"
+    },
+    {
+     "text": "nahi, 500 nahi — 600 bataya tha"
+    },
+    {
+     "text": "haan utna hi kata"
+    },
+    {
+     "text": "haan ab sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "nahi, 500 nahi — 600 bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "600"
+     }
+    },
+    {
+     "text": "haan utna hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 600 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "600"
+     }
+    },
+    {
+     "text": "haan ab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "600",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "600",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-06b field named wrong without a value -> only that question re-asked",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata"
+    },
+    {
+     "text": "nahi, match wala galat hai"
+    },
+    {
+     "text": "nahi, 700 kata"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "nahi, match wala galat hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "nahi, 700 kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_amounts_differ_post",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-09 incomplete: amount not remembered stays empty in the final fields",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan"
+    },
+    {
+     "text": "yaad nahi hai exact"
+    },
+    {
+     "text": "haan utna hi"
+    },
+    {
+     "text": "sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount"
+     ],
+     "reply": "और कितना amount बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "yaad nahi hai exact",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "not remembered"
+     }
+    },
+    {
+     "text": "haan utna hi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको not remembered रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "not remembered"
+     }
+    },
+    {
+     "text": "sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "not remembered",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "not remembered",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-10 interrupted readback still confirms; additional concern noted in the partner's words",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata"
+    },
+    {
+     "text": "haan sahi hai",
+     "mocks": {
+      "interrupted": null
+     }
+    },
+    {
+     "text": "haan, ek aur baat — is hafte bhi ek deduction dikh raha hai",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    },
+    {
+     "text": "haan, ek aur baat — is hafte bhi ek deduction dikh raha hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_ask_additional",
+      "n_msg_additional_noted",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "ठीक है, ये additional point भी मैंने note कर लिया है। आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "additional_concern": "haan, ek aur baat — is hafte bhi ek deduction dikh raha hai",
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-11 off-script question mid-flow answered from the document, flow resumes",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "ye onboarding fee kitni hoti hai?"
+    },
+    {
+     "text": "haan bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ye onboarding fee kitni hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-12 human request at the readback -> support executive handover",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata"
+    },
+    {
+     "text": "nahi, mujhe kisi agent se baat karao"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha, utna hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "nahi, mujhe kisi agent se baat karao",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_handover"
+     ],
+     "reply": "ठीक है — मैं आपकी बात हमारे support executive से करा रहा हूँ। कृपया line पर बने रहिए।",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-12b human request in reply to the greeting -> handoff route",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "mujhe kisi agent se baat karao"
+    }
+   ],
+   "expected": [
+    {
+     "text": "mujhe kisi agent se baat karao",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "human_handoff",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-12c human request while a question is pending -> not refused, flow continues",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "mujhe kisi agent se baat karao"
+    },
+    {
+     "text": "haan bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "mujhe kisi agent se baat karao",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-13 first answer NO -> explanation spoken (fixed text), deducted amount asked, then Q2",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan boliye"
+    },
+    {
+     "text": "nahi"
+    },
+    {
+     "text": "400 rupaye"
+    },
+    {
+     "text": "nahi"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan boliye",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "400 rupaye",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में नहीं बताया गया था, न ही ये कि कितना amount deduct होगा — actually आपके payout से 400 रुपये deduct हुए हैं। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_msg_not_communicated",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — मैंने note कर लिया है कि onboarding के time deduct होने वाला amount आपको communicate नहीं किया गया था। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_not_communicated"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_not_communicated"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-14 example 1: informed 300 / deducted 400 in one utterance -> nothing re-asked, derived mismatch",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Mujhe onboarding fee ke baare mein bataya gaya tha. Bola tha 300 katega, lekin 400 cut gaya."
+    },
+    {
+     "text": "pichle hafte"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Mujhe onboarding fee ke baare mein bataya gaya tha. Bola tha 300 katega, lekin 400 cut gaya.",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "pichle hafte",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 300 रुपये बताए गए थे — लेकिन आपके payout से actually 400 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction pichle hafte के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-32 cv_1979484122a8: '200 ke bajaye mera 300 … ka tha' (no deduction verb) -> both figures kept, nothing re-asked",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "Haan bol raha hoon"
+    },
+    {
+     "text": "Haan mujhe bataya gaya tha ki anurodhan fee jo hai do sau rupaya katega Aur do sau ke bajaye mera teen sau rupaye onloading fees ka tha"
+    },
+    {
+     "text": "Ye last Tuesday ko hua tha"
+    },
+    {
+     "text": "Haan sab sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "Haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Haan mujhe bataya gaya tha ki anurodhan fee jo hai do sau rupaya katega Aur do sau ke bajaye mera teen sau rupaye onloading fees ka tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "Ye last Tuesday ko hua tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 200 रुपये बताए गए थे — लेकिन आपके payout से actually 300 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction last Tuesday के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "last Tuesday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "Haan sab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "last Tuesday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "last Tuesday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-33 contrast variants (ki jagah / Devanagari / English instead-of) -> figures captured, week asked next",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, do sau ki jagah teen sau kat gaya"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, do sau ki jagah teen sau kat gaya",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-33b Devanagari contrast",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "हाँ बताया था, दो सौ के बजाय मेरा तीन सौ कटा।"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "हाँ बताया था, दो सौ के बजाय मेरा तीन सौ कटा।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-33c English contrast",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "yes",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, they told me. Instead of 200 they took 300 from my payout.",
+     "mocks": {
+      "language": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Yes, they told me. Instead of 200 they took 300 from my payout.",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-33e 'told, 300 instead of 200' -> contrast beats the generic told-figure capture",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "yes",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "yes I was told, 300 instead of 200",
+     "mocks": {
+      "language": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "yes I was told, 300 instead of 200",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-34 cv_3c3e42bd6519: confirmed readback (200/500/Monday) -> outcome without re-reading the figures",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 200 katega bola tha, lekin 500 kata"
+    },
+    {
+     "text": "Monday ko"
+    },
+    {
+     "text": "Haan sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 200 katega bola tha, lekin 500 kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "Monday ko",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 200 रुपये बताए गए थे — लेकिन आपके payout से actually 500 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 300 रुपये का difference है। और ये deduction Monday के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "Haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-34b confirmed readback, English caller -> outcome without figures",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "yes",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, I was told 200 but 500 was deducted",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "last Monday",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "yes, that's correct",
+     "mocks": {
+      "language": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Yes, I was told 200 but 500 was deducted",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "last Monday",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 200 रुपये बताए गए थे — लेकिन आपके payout से actually 500 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 300 रुपये का difference है। और ये deduction last Monday के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "last Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "yes, that's correct",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "last Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-34c rejected readback -> correction ask, no outcome",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 200 katega bola tha, lekin 500 kata"
+    },
+    {
+     "text": "Monday ko"
+    },
+    {
+     "text": "nahi galat hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 200 katega bola tha, lekin 500 kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "Monday ko",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 200 रुपये बताए गए थे — लेकिन आपके payout से actually 500 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 300 रुपये का difference है। और ये deduction Monday के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "nahi galat hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction"
+     ],
+     "reply": "ठीक है — कौन सी बात सही नहीं है? कृपया ठीक करके बताइए।",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "500",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-33d a question about values with the same wording fills nothing",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "kya 200 ke bajaye 300 kat sakta hai?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "kya 200 ke bajaye 300 kat sakta hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-15 example 2/3: fee not explained + 400 cut -> explain, skip the amount question, ask Q2",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Mujhe fee ke baare mein nahi bataya tha aur 400 rupaye cut gaye."
+    },
+    {
+     "text": "nahi, kuch nahi bataya tha"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Mujhe fee ke baare mein nahi bataya tha aur 400 rupaye cut gaye.",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_ask_amount_informed"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "nahi, kuch nahi bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में नहीं बताया गया था, न ही ये कि कितना amount deduct होगा — actually आपके payout से 400 रुपये deduct हुए हैं। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_msg_not_communicated",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — मैंने note कर लिया है कि onboarding के time deduct होने वाला amount आपको communicate नहीं किया गया था। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_not_communicated"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_not_communicated"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-16 English: told three hundred, four hundred deducted -> same structured facts",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "Yes, speaking",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "They told me three hundred but four hundred was deducted.",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Last week",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, all correct",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "No, that's all",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     },
+     "options": {
+      "language": "en-IN"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "Yes, speaking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "They told me three hundred but four hundred was deducted.",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "Last week",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 300 रुपये बताए गए थे — लेकिन आपके payout से actually 400 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction Last week के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "Last week",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "Yes, all correct",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "Last week",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "No, that's all",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "Everything you confirmed has been noted on your ticket. That is all. Thank you for confirming the details. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "Last week",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-17 mixed script: 300 बताया था लेकिन 400 कट गया",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "हाँ"
+    },
+    {
+     "text": "Mujhe 300 बताया था लेकिन 400 कट गया."
+    }
+   ],
+   "expected": [
+    {
+     "text": "हाँ",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Mujhe 300 बताया था लेकिन 400 कट गया.",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-18 same amount without figures; then a Yes -> No change at the readback",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, amount bhi bataya tha aur same amount kata"
+    },
+    {
+     "text": "yaad nahi"
+    },
+    {
+     "text": "nahi nahi, mujhe deduction ke baare mein nahi bataya gaya tha"
+    },
+    {
+     "text": "paanch sau hi kata"
+    },
+    {
+     "text": "haan ab sahi hai",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, amount bhi bataya tha aur same amount kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount"
+     ],
+     "reply": "और कितना amount बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "yaad nahi",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको not remembered रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "not remembered"
+     }
+    },
+    {
+     "text": "nahi nahi, mujhe deduction ke baare mein nahi bataya gaya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_ask_correction",
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "informed_amount": "not remembered"
+     }
+    },
+    {
+     "text": "paanch sau hi kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में नहीं बताया गया था। कितना amount deduct होगा, ये आपको बताया गया था। Actually 500 रुपये deduct हुए। आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deducted_amount": "500",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "informed_amount": "not remembered"
+     }
+    },
+    {
+     "text": "haan ab sahi hai",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deducted_amount": "500",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes",
+      "informed_amount": "not remembered",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-19 standalone KB queries before the flow (hi / Hinglish / en) answer from the document",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "ऑनबोर्डिंग फीस क्या होती है?"
+    },
+    {
+     "text": "onboarding fee ek baar me pay kar sakte hain kya?"
+    },
+    {
+     "text": "Is the onboarding fee the same for every store?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "upfront fee kya hoti hai?"
+    },
+    {
+     "text": "remaining amount weekly payout se deduct hota hai kya?"
+    },
+    {
+     "text": "OB fee aur standard deduction kya hota hai?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "ऑनबोर्डिंग फीस क्या होती है?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "intent",
+      "reason": "configured_intent",
+      "intent": "policy_question",
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "onboarding fee ek baar me pay kar sakte hain kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Is the onboarding fee the same for every store?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "upfront fee kya hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "remaining amount weekly payout se deduct hota hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "OB fee aur standard deduction kya hota hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-20 KB question while Q1 is pending -> answered from KB, state kept, Q1 re-asked",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "waise ye onboarding fee kyu lete hain?"
+    },
+    {
+     "text": "nahi bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "waise ye onboarding fee kyu lete hain?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "nahi bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-21 workflow answer + KB question in one utterance (Q1 = no + 'fee hoti kya hai')",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Nahi bataya tha. Waise onboarding fee kya hoti hai?"
+    },
+    {
+     "text": "400 rupaye"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Nahi bataya tha. Waise onboarding fee kya hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_cond_explanation_given",
+      "n_msg_explain",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है, समझ गया कि आपको onboarding के time ये नहीं बताया गया था। थोड़ा बता देता हूँ — Zepto join करने पर नए rider से onboarding fee ली जाती है। यह fee अलग-अलग stores के लिए अलग हो सकती है और समय-समय पर change भी हो सकती है। इसे एक साथ pay किया जा सकता है, या joining पर एक minimum upfront amount देकर बाकी amount installments में weekly payout से deduct किया जा सकता है — ये installments admin panel में OB Fee या Standard Deduction के नाम से दिखती हैं। ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    },
+    {
+     "text": "400 rupaye",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deducted_amount": "400",
+      "deduction_explained": "no",
+      "explanation_given_on_call": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-22 300/400 facts + store-fee KB question -> all captured, KB answered, nothing repeated",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Mujhe 300 bataya tha but 400 cut hua. Waise har store ki onboarding fee same hoti hai kya?"
+    },
+    {
+     "text": "pichle hafte"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Mujhe 300 bataya tha but 400 cut hua. Waise har store ki onboarding fee same hoti hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "pichle hafte",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 300 रुपये बताए गए थे — लेकिन आपके payout से actually 400 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction pichle hafte के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-23 KB questions never become slots (amount / installment questions)",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Onboarding fee kitni hoti hai?"
+    },
+    {
+     "text": "Installment me cut hoti hai kya?"
+    },
+    {
+     "text": "haan bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Onboarding fee kitni hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Installment me cut hoti hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-24 upfront-fee question + deducted amount in one utterance (C)",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha"
+    },
+    {
+     "text": "nahi"
+    },
+    {
+     "text": "Upfront fee kya hai aur mere 500 cut gaye."
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_deducted_amount"
+     ],
+     "reply": "ठीक है — आपके payout से कितना amount deduct हुआ है?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "Upfront fee kya hai aur mere 500 cut gaye.",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, लेकिन ये नहीं बताया गया था कि कितना amount deduct होगा — actually आपके payout से 500 रुपये deduct हुए हैं। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "no",
+      "deducted_amount": "500",
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-25 unsupported policy questions -> 'not specified', no invented policy",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Can onboarding fee be refunded?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Can the fee be waived?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "What is the exact onboarding fee?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Who decides the onboarding fee?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Can I cancel the deduction?",
+     "mocks": {
+      "language": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Can onboarding fee be refunded?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Can the fee be waived?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "What is the exact onboarding fee?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Who decides the onboarding fee?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Can I cancel the deduction?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-26 unrelated questions during the flow -> no fake KB answer, flow state kept",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Aaj weather kaisa hai?"
+    },
+    {
+     "text": "Meri salary kab aayegi?"
+    },
+    {
+     "text": "Store manager ka number kya hai?"
+    },
+    {
+     "text": "haan bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Aaj weather kaisa hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Meri salary kab aayegi?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Store manager ka number kya hai?",
+     "signal": "agent_request",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-27 questions about values never populate personal slots",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Can I pay in installments?",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "500 onboarding fee hoti hai kya?"
+    },
+    {
+     "text": "Kya 400 rupees cut hona chahiye?"
+    },
+    {
+     "text": "Upfront fee 300 hoti hai kya?"
+    },
+    {
+     "text": "haan bataya tha"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Can I pay in installments?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "500 onboarding fee hoti hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Kya 400 rupees cut hona chahiye?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "Upfront fee 300 hoti hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-28 workflow facts + unsupported KB question (refund) in one utterance",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Mujhe 300 bola tha but 400 cut gaya. Waise onboarding fee refund hoti hai kya?"
+    },
+    {
+     "text": "pichle hafte"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Mujhe 300 bola tha but 400 cut gaya. Waise onboarding fee refund hoti hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "pichle hafte",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 300 रुपये बताए गए थे — लेकिन आपके payout से actually 400 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction pichle hafte के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-29 natural readback: 200 told / 300 deducted / last week Monday -> combined sentence, derived difference",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya gaya tha"
+    },
+    {
+     "text": "haan, mujhe bataya tha ki 200 katega, lekin 300 kata"
+    },
+    {
+     "text": "पिछले हफ्ते मंडे को।"
+    },
+    {
+     "text": "नहीं, Sunday नहीं, Monday को हुआ था."
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "nahi",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya gaya tha",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "haan, mujhe bataya tha ki 200 katega, lekin 300 kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "पिछले हफ्ते मंडे को।",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 200 रुपये बताए गए थे — लेकिन आपके payout से actually 300 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction पिछले हफ्ते मंडे के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "पिछले हफ्ते मंडे",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "नहीं, Sunday नहीं, Monday को हुआ था.",
+     "signal": "complaint",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify"
+     ],
+     "reply": "ठीक है, मैं update कर लेता हूँ — और ये deduction Monday के payout में हुआ था। बाकी सारी details सही हैं ना?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "300",
+      "deduction_date_or_week": "Monday",
+      "deduction_explained": "yes",
+      "informed_amount": "200",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-30 equal amounts -> no difference spoken; readback stays one confirmation",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha aur 500 hi kate"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 500 katega bola tha aur 500 hi kate",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_cond_amounts_equal",
+      "n_set_amounts_equal",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और उतना ही amount deduct हुआ है। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deducted_amount": "500",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-31 three KB questions after the outcome -> answered without the verbatim closing line every time",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "haan bataya tha, 300 katega bola tha, 400 kata"
+    },
+    {
+     "text": "pichle hafte"
+    },
+    {
+     "text": "haan sahi hai"
+    },
+    {
+     "text": "upfront fee kya hoti hai?"
+    },
+    {
+     "text": "installment ka option hai kya?"
+    },
+    {
+     "text": "OB fee kya hota hai?"
+    },
+    {
+     "text": "to ye refund kab tak aayega mera?"
+    },
+    {
+     "text": "nahi bas",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, 300 katega bola tha, 400 kata",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_cond_amounts_differ",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "pichle hafte",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 300 रुपये बताए गए थे — लेकिन आपके payout से actually 400 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 100 रुपये का difference है। और ये deduction pichle hafte के payout में हुआ था। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300"
+     }
+    },
+    {
+     "text": "haan sahi hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "upfront fee kya hoti hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "installment ka option hai kya?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "OB fee kya hota hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "to ye refund kab tak aayega mera?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "nahi bas",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "400",
+      "deduction_date_or_week": "pichle hafte",
+      "deduction_explained": "yes",
+      "informed_amount": "300",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-07 Indian English end to end, live API fallback (no mock)",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "Yes, speaking",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, it was explained to me during onboarding",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "They told me five hundred rupees would be deducted",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "No, they deducted seven hundred",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "I don't remember the week",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, all correct",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "No, that's all, thank you",
+     "mocks": {
+      "language": null
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "Yes, speaking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Yes, it was explained to me during onboarding",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "They told me five hundred rupees would be deducted",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "No, they deducted seven hundred",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_amounts_differ_post",
+      "n_msg_amounts_differ",
+      "n_cond_matches_no",
+      "n_ask_deducted_amount",
+      "n_cond_ded_next",
+      "n_cond_week_needed",
+      "n_ask_deduction_week"
+     ],
+     "reply": "ठीक है — आपने जो दोनों amounts बताए, उनमें difference है; मैं note कर लेता हूँ। और ये deduction किस date या week के payout में हुआ था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "I don't remember the week",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_deduction_week",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, और आपको 500 रुपये बताए गए थे — लेकिन आपके payout से actually 700 रुपये deduct हुए हैं, यानी बताए गए amount और actual deduction में 200 रुपये का difference है। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "not remembered",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "Yes, all correct",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_mismatch",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है — जो amount आपको बताया गया था और जो actually deduct हुआ, उसमें difference है; ये बात मैंने आपके ticket पर clearly note कर ली है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "not remembered",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "amount_mismatch"
+     }
+    },
+    {
+     "text": "No, that's all, thank you",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "आपने जो confirm किया, वो सब आपके ticket पर note हो गया है। बस इतना ही था। Details confirm करने के लिए धन्यवाद! आपका दिन शुभ हो।",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "no",
+      "deducted_amount": "700",
+      "deduction_date_or_week": "not remembered",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "amount_mismatch"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "zepto/tests/run_ob_deduction_scenarios.py",
+   "name": "OB-08 language switching: Hindi -> Hinglish -> English, slots and flow unaffected",
+   "bot": "bot_4b8d6fe95cb1",
+   "turns": [
+    {
+     "text": "हाँ जी बोलिए"
+    },
+    {
+     "text": "haan bataya tha, sab explain kiya tha"
+    },
+    {
+     "text": "yes"
+    },
+    {
+     "text": "I think they said around five hundred rupees",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes, exactly the same amount was deducted",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "Yes that's correct",
+     "mocks": {
+      "language": null
+     }
+    },
+    {
+     "text": "No, nothing else",
+     "mocks": {
+      "Zepto Register OB Fee Verification": null
+     },
+     "options": {
+      "language": "en-IN"
+     }
+    }
+   ],
+   "expected": [
+    {
+     "text": "हाँ जी बोलिए",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "start_enquiries",
+      "action": "wf_fac5f8fae156"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_explained"
+     ],
+     "reply": "सबसे पहले — onboarding के time क्या आपको इस onboarding fee deduction के बारे में बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan bataya tha, sab explain kiya tha",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_explained",
+      "n_cond_explained_no",
+      "n_ask_amount_informed"
+     ],
+     "reply": "क्या आपको बताया गया था कि कितना amount deduct होगा?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_informed",
+      "n_cond_amount_informed",
+      "n_ask_informed_amount"
+     ],
+     "reply": "और कितना amount बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes"
+     }
+    },
+    {
+     "text": "I think they said around five hundred rupees",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_informed_amount",
+      "n_cond_ded_known",
+      "n_ask_amount_matches"
+     ],
+     "reply": "और जो amount actually आपके payout से deduct हुआ है, क्या वो उतना ही है जितना आपको बताया गया था?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "Yes, exactly the same amount was deducted",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_amount_matches",
+      "n_cond_ded_known_post",
+      "n_cond_matches_no",
+      "n_hub_verify"
+     ],
+     "reply": "आपने जो बताया, उसे मैं एक बार confirm कर लेता हूँ। Onboarding के time आपको इस deduction के बारे में बताया गया था, आपको 500 रुपये बताए गए थे और आपके हिसाब से उतना ही amount deduct हुआ। क्या ये सारी details सही हैं?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500"
+     }
+    },
+    {
+     "text": "Yes that's correct",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_verify",
+      "n_cond_out_informed_2",
+      "n_cond_out_matches",
+      "n_msg_consistent",
+      "n_hub_more"
+     ],
+     "reply": "ठीक है। इस case में ये deduction आपको onboarding के time दी गई information के हिसाब से consistent लग रहा है। क्या इस deduction के बारे में कोई और बात है जो आप हमसे check करवाना चाहेंगे?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_type": "onboarding_fee_deduction",
+      "verification_status": "consistent"
+     }
+    },
+    {
+     "text": "No, nothing else",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Zepto OB fee deduction verification (outbound)",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_api",
+      "n_confirmed",
+      "n_msg_close",
+      "n_end"
+     ],
+     "reply": "Everything you confirmed has been noted on your ticket. That is all. Thank you for confirming the details. Have a good day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "amount_informed": "yes",
+      "amount_matches": "yes",
+      "deduction_explained": "yes",
+      "informed_amount": "500",
+      "ticket_reference": "ZPT-OBF-70412",
+      "ticket_type": "onboarding_fee_deduction",
+      "ticket_update_status": "updated",
+      "verification_status": "consistent"
+     }
+    }
+   ]
+  }
+ ]
+}

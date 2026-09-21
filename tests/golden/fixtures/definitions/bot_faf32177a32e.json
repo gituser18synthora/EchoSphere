@@ -1,0 +1,620 @@
+{
+ "bot": {
+  "id": "bot_faf32177a32e",
+  "name": "Zepto Onboarding Fee Deduction Support",
+  "tenant_id": "tn_04250683f1b3",
+  "status": "draft"
+ },
+ "workflows": [
+  {
+   "id": "wf_469fbdafb2b9",
+   "name": "Zepto onboarding fee deduction journey",
+   "version": 2,
+   "status": "approved",
+   "nodes": [
+    {
+     "x": 40,
+     "y": 40,
+     "id": "n_start",
+     "kind": "start",
+     "label": "Call starts"
+    },
+    {
+     "x": 300,
+     "y": 40,
+     "id": "n_ask_o_date_of_joining",
+     "kind": "ask",
+     "label": "Ask — o_date_of_joining",
+     "config": {
+      "question": "सबसे पहले — आपकी Date of Joining क्या है?",
+      "variable": "o_date_of_joining",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 560,
+     "y": 40,
+     "id": "n_ask_o_deduction_amount",
+     "kind": "ask",
+     "label": "Ask — o_deduction_amount",
+     "config": {
+      "question": "आपका deduction amount कितना था?",
+      "variable": "o_deduction_amount",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 820,
+     "y": 40,
+     "id": "n_ask_o_deduction_date",
+     "kind": "ask",
+     "label": "Ask — o_deduction_date",
+     "config": {
+      "question": "यह deduction किस date या week में हुआ था?",
+      "variable": "o_deduction_date",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 40,
+     "id": "n_ask_o_paid_on_joining",
+     "kind": "ask",
+     "label": "Ask — o_paid_on_joining",
+     "config": {
+      "question": "क्या आपने join करते समय कोई amount pay किया था?",
+      "variable": "o_paid_on_joining",
+      "entityType": "text"
+     }
+    },
+    {
+     "x": 40,
+     "y": 170,
+     "id": "n_api",
+     "kind": "api",
+     "label": "Register concern",
+     "config": {
+      "text": "धन्यवाद। एक moment दीजिए — मैं आपकी concern support team में register कर रही हूँ।",
+      "connection": "Zepto Register Onboarding Fee Concern"
+     }
+    },
+    {
+     "x": 300,
+     "y": 170,
+     "id": "n_confirmed",
+     "kind": "message",
+     "label": "Registered (grounded)",
+     "config": {
+      "text": "सारी जानकारी देने के लिए धन्यवाद। आपकी concern register हो गई है, और हमारी support team जल्द ही आपसे connect करेगी।",
+      "responseMode": "llm_grounded",
+      "responseDirective": "The concern ticket was just registered successfully — the ticket facts (ticket reference, concern name, callback expectation) are in this conversation's system results. In the caller's language (default: natural Hinglish — Hindi in Devanagari with everyday English terms), thank the partner for providing all the information, tell them their concern has been registered, state the ticket reference exactly as given, and assure them the support team will connect with them within the stated callback window. Never invent any detail."
+     }
+    },
+    {
+     "x": 560,
+     "y": 170,
+     "id": "n_pending",
+     "kind": "message",
+     "label": "Script closing (API unavailable)",
+     "config": {
+      "text": "सारी जानकारी देने के लिए धन्यवाद। Rest assured — हमारी team जल्द ही आपसे connect करेगी।"
+     }
+    },
+    {
+     "x": 820,
+     "y": 170,
+     "id": "n_hub_more",
+     "kind": "intent",
+     "label": "Anything else?",
+     "config": {
+      "prompt": "क्या मैं आपकी किसी और चीज़ में help कर सकती हूँ?",
+      "unmatchedReply": "अगर इसी concern से जुड़ा कोई और सवाल है तो बताइए। कोई दूसरा concern है तो मैं support executive से connect कर सकती हूँ — या 'नहीं' बोलिए और मैं call close कर दूँ।"
+     }
+    },
+    {
+     "x": 1080,
+     "y": 170,
+     "id": "n_msg_close",
+     "kind": "message",
+     "label": "Scripted closing",
+     "config": {
+      "text": "Zepto Support को contact करने के लिए धन्यवाद! आपका दिन शुभ हो!"
+     }
+    },
+    {
+     "x": 40,
+     "y": 300,
+     "id": "n_handover",
+     "kind": "handover",
+     "label": "Support executive handover",
+     "config": {
+      "text": "ठीक है — मैं आपकी बात हमारे support executive से करा रही हूँ। कृपया line पर बने रहिए।",
+      "queue": "partner_support"
+     }
+    },
+    {
+     "x": 300,
+     "y": 300,
+     "id": "n_end",
+     "kind": "end",
+     "label": "Call ends"
+    }
+   ],
+   "edges": [
+    {
+     "id": "e_n_start__n_ask_o_date_of_joining",
+     "to": "n_ask_o_date_of_joining",
+     "from": "n_start"
+    },
+    {
+     "id": "e_n_ask_o_date_of_joining__n_ask_o_deduction_amount",
+     "to": "n_ask_o_deduction_amount",
+     "from": "n_ask_o_date_of_joining"
+    },
+    {
+     "id": "e_n_ask_o_deduction_amount__n_ask_o_deduction_date",
+     "to": "n_ask_o_deduction_date",
+     "from": "n_ask_o_deduction_amount"
+    },
+    {
+     "id": "e_n_ask_o_deduction_date__n_ask_o_paid_on_joining",
+     "to": "n_ask_o_paid_on_joining",
+     "from": "n_ask_o_deduction_date"
+    },
+    {
+     "id": "e_n_ask_o_paid_on_joining__n_api",
+     "to": "n_api",
+     "from": "n_ask_o_paid_on_joining"
+    },
+    {
+     "id": "e_n_api__n_confirmed__1990",
+     "to": "n_confirmed",
+     "from": "n_api",
+     "label": "success"
+    },
+    {
+     "id": "e_n_api__n_pending__8902",
+     "to": "n_pending",
+     "from": "n_api",
+     "label": "failure"
+    },
+    {
+     "id": "e_n_confirmed__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_confirmed"
+    },
+    {
+     "id": "e_n_pending__n_hub_more",
+     "to": "n_hub_more",
+     "from": "n_pending"
+    },
+    {
+     "id": "e_n_hub_more__n_handover__4612",
+     "to": "n_handover",
+     "from": "n_hub_more",
+     "label": "another issue/one more issue/ek aur issue/aur ek issue/doosra issue/dusra issue/aur bhi issue/dusri concern/एक और इशू/और एक इशू/दूसरा इशू/और भी इशू/दूसरी कंसर्न"
+    },
+    {
+     "id": "e_n_hub_more__n_handover__6244",
+     "to": "n_handover",
+     "from": "n_hub_more",
+     "label": "agent/human/executive/supervisor/manager/support executive/customer care/insaan se/aadmi se/kisi se baat karao/एजेंट/सुपरवाइज़र/मैनेजर/इंसान से/आदमी से/किसी से बात कराओ"
+    },
+    {
+     "id": "e_n_hub_more__n_msg_close__7077",
+     "to": "n_msg_close",
+     "from": "n_hub_more",
+     "label": "no/nothing/nahi/bas/bas itna hi/that's all/thats all/thank you/thanks/theek hai bas/nothing else/ho gaya/nahi bas/नहीं/बस/बस इतना ही/धन्यवाद/शुक्रिया/ठीक है बस/हो गया"
+    },
+    {
+     "id": "e_n_msg_close__n_end",
+     "to": "n_end",
+     "from": "n_msg_close"
+    }
+   ]
+  }
+ ],
+ "intents": [
+  {
+   "id": "in_3c94c7854a5c",
+   "name": "deduction_concern_general",
+   "code": "deduction_concern_general",
+   "samples": [
+    "paisa kat gaya",
+    "paisa kata hai",
+    "mera deduction hua hai",
+    "payout se paisa kata",
+    "amount kat gaya",
+    "deduction issue",
+    "deduction hua hai",
+    "mujhe complaint karni hai",
+    "i have a deduction issue",
+    "money was deducted from my payout",
+    "पैसा कट गया",
+    "पैसा कटा है",
+    "डिडक्शन हुआ है",
+    "अमाउंट कट गया",
+    "शिकायत करनी है"
+   ],
+   "route": "workflow:wf_469fbdafb2b9",
+   "workflow_id": null,
+   "confidence_threshold": 0.45,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_598017b5ca8c",
+   "name": "human_handoff",
+   "code": "human_handoff",
+   "samples": [
+    "kisi agent se baat karao",
+    "support executive se baat karni hai",
+    "manager se baat karao",
+    "i want to talk to a human",
+    "kisi insaan se baat karao",
+    "supervisor se connect karo",
+    "किसी एजेंट से बात कराओ",
+    "किसी इंसान से बात कराओ",
+    "सुपरवाइज़र से बात करानी है"
+   ],
+   "route": "handoff",
+   "workflow_id": null,
+   "confidence_threshold": 0.7,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_af5b2f6734f8",
+   "name": "onboarding_concern",
+   "code": "onboarding_concern",
+   "samples": [
+    "onboarding fee",
+    "joining fee",
+    "onboarding ka paisa",
+    "onboarding deduction",
+    "onboarding fee kat gayi",
+    "joining fee deduction hua hai",
+    "joining ke time ka paisa kata",
+    "they deducted an onboarding fee",
+    "onboarding fee ka deduction",
+    "ऑनबोर्डिंग फीस",
+    "जॉइनिंग फीस",
+    "ऑनबोर्डिंग फीस कटी है",
+    "जॉइनिंग फीस का डिडक्शन",
+    "जॉइनिंग के टाइम का पैसा कटा"
+   ],
+   "route": "workflow:wf_469fbdafb2b9",
+   "workflow_id": null,
+   "confidence_threshold": 0.5,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_2a1825707b20",
+   "name": "policy_question",
+   "code": "policy_question",
+   "samples": [
+    "onboarding fee kya hoti hai",
+    "what is the onboarding fee",
+    "callback kab aayega",
+    "kitne din mein callback aata hai",
+    "ऑनबोर्डिंग फीस क्या होती है",
+    "कॉलबैक कब आएगा",
+    "यह डिडक्शन क्या होता है"
+   ],
+   "route": "knowledge",
+   "workflow_id": null,
+   "confidence_threshold": 0.55,
+   "status": "active",
+   "priority": 100
+  },
+  {
+   "id": "in_ecce86bfa1ca",
+   "name": "start_enquiries",
+   "code": "start_enquiries",
+   "samples": [
+    "haan",
+    "haan ji",
+    "haan boliye",
+    "haan puchiye",
+    "ji puchiye",
+    "yes",
+    "yes please",
+    "ok",
+    "theek hai",
+    "shuru karo",
+    "shuru kijiye",
+    "go ahead",
+    "बिल्कुल पूछिए",
+    "हाँ पूछिए",
+    "शुरू कीजिए",
+    "जी पूछिए",
+    "हाँ जी"
+   ],
+   "route": "workflow:wf_469fbdafb2b9",
+   "workflow_id": null,
+   "confidence_threshold": 0.4,
+   "status": "active",
+   "priority": 100
+  }
+ ],
+ "connections": [
+  {
+   "id": "api_02b35184cc7d",
+   "name": "Zepto Register MDND Concern",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "status": "registered",
+     "concern": "Mark Delivered but Not Delivered",
+     "sms_sent": true,
+     "ticket_id": "ZPT-MDND-73412",
+     "callback_eta": "within 24 to 48 hours"
+    },
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "concern": {
+      "type": "string"
+     },
+     "sms_sent": {
+      "type": "boolean"
+     },
+     "ticket_id": {
+      "type": "string"
+     },
+     "callback_eta": {
+      "type": "string"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "ticket_id"
+    },
+    {
+     "source": "concern",
+     "target": "ticket_concern"
+    },
+    {
+     "source": "status",
+     "target": "ticket_status"
+    },
+    {
+     "source": "callback_eta",
+     "target": "callback_eta"
+    },
+    {
+     "source": "sms_sent",
+     "target": "sms_sent"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_03ed705167a3",
+   "name": "Zepto Register RTO Concern",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "status": "registered",
+     "concern": "RTO issue",
+     "sms_sent": true,
+     "ticket_id": "ZPT-RTO-48057",
+     "callback_eta": "within 24 to 48 hours"
+    },
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "concern": {
+      "type": "string"
+     },
+     "sms_sent": {
+      "type": "boolean"
+     },
+     "ticket_id": {
+      "type": "string"
+     },
+     "callback_eta": {
+      "type": "string"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "ticket_id"
+    },
+    {
+     "source": "concern",
+     "target": "ticket_concern"
+    },
+    {
+     "source": "status",
+     "target": "ticket_status"
+    },
+    {
+     "source": "callback_eta",
+     "target": "callback_eta"
+    },
+    {
+     "source": "sms_sent",
+     "target": "sms_sent"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_485496c6be7f",
+   "name": "Zepto Register OB Fee Verification",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "status": "updated",
+     "ticket_id": "ZPT-OBF-70412",
+     "verification_recorded": true
+    },
+    "required": [
+     "status",
+     "ticket_id",
+     "verification_recorded"
+    ],
+    "properties": {
+     "status": {
+      "enum": [
+       "updated"
+      ],
+      "type": "string"
+     },
+     "ticket_id": {
+      "type": "string"
+     },
+     "verification_recorded": {
+      "enum": [
+       true
+      ],
+      "type": "boolean"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "ticket_reference"
+    },
+    {
+     "source": "status",
+     "target": "ticket_update_status"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_7c375c164e12",
+   "name": "Zepto Register Uniform Deduction Concern",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "status": "registered",
+     "concern": "Raincoat, T-shirt and Bag related deduction",
+     "sms_sent": true,
+     "ticket_id": "ZPT-UNIF-51208",
+     "callback_eta": "within 24 to 48 hours"
+    },
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "concern": {
+      "type": "string"
+     },
+     "sms_sent": {
+      "type": "boolean"
+     },
+     "ticket_id": {
+      "type": "string"
+     },
+     "callback_eta": {
+      "type": "string"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "ticket_id"
+    },
+    {
+     "source": "concern",
+     "target": "ticket_concern"
+    },
+    {
+     "source": "status",
+     "target": "ticket_status"
+    },
+    {
+     "source": "callback_eta",
+     "target": "callback_eta"
+    },
+    {
+     "source": "sms_sent",
+     "target": "sms_sent"
+    }
+   ],
+   "success_condition": null
+  },
+  {
+   "id": "api_bb345b722b0d",
+   "name": "Zepto Register Onboarding Fee Concern",
+   "response_schema": {
+    "type": "object",
+    "example": {
+     "status": "registered",
+     "concern": "Onboarding Fee related deduction",
+     "sms_sent": true,
+     "ticket_id": "ZPT-ONBF-66931",
+     "callback_eta": "within 24 to 48 hours"
+    },
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "concern": {
+      "type": "string"
+     },
+     "sms_sent": {
+      "type": "boolean"
+     },
+     "ticket_id": {
+      "type": "string"
+     },
+     "callback_eta": {
+      "type": "string"
+     }
+    }
+   },
+   "response_mapping": [
+    {
+     "source": "ticket_id",
+     "target": "ticket_id"
+    },
+    {
+     "source": "concern",
+     "target": "ticket_concern"
+    },
+    {
+     "source": "status",
+     "target": "ticket_status"
+    },
+    {
+     "source": "callback_eta",
+     "target": "callback_eta"
+    },
+    {
+     "source": "sms_sent",
+     "target": "sms_sent"
+    }
+   ],
+   "success_condition": null
+  }
+ ],
+ "context_schemas": [
+  {
+   "id": "rcs_f7c4deb00b0a",
+   "name": "Partner & support facts",
+   "test_payload": {
+    "partner_id": "ZP-88231",
+    "line_concern": "Onboarding Fee related deduction",
+    "partner_city": "Mumbai",
+    "partner_name": "Ravi Kumar",
+    "support_action": "Zepto Support records the concern details and the concern team reviews the deduction and connects with the partner",
+    "callback_window": "within 24 to 48 hours",
+    "concern_meaning": "a deduction from the partner's payout related to the onboarding or joining fee"
+   },
+   "fields": []
+  }
+ ]
+}

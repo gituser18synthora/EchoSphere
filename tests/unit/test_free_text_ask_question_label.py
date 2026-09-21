@@ -18,7 +18,7 @@ from shared.orchestration.router import looks_like_question
 DEFINITION = {
     "id": "wf_mdnd", "name": "mdnd", "version": 1,
     "nodes": [
-        {"id": "n_start", "kind": "start", "config": {}},
+        {"id": "n_start", "kind": "start", "config": {"behavior": {"version": 2}}},
         {"id": "n_ask_issue", "kind": "ask", "label": "what happened",
          "config": {"question": "बताइए — क्या हुआ था?", "variable": "m_issue_description",
                     "entityType": "text", "responseMode": "llm_grounded",
@@ -38,6 +38,31 @@ DEFINITION = {
 }
 
 NARRATIVE = "Are maine product deliver kar diya phir bhi mera MDND mark do hai"
+
+
+import copy
+
+V1_DEFINITION = copy.deepcopy(DEFINITION)
+V1_DEFINITION["id"] = "wf_mdnd_v1"
+V1_DEFINITION["nodes"][0]["config"] = {}
+
+
+def _engine_for(monkeypatch, definition):
+    monkeypatch.setattr(we, "load_workflow_definition", lambda t, b, n: definition)
+    wf = we.WorkflowEngine()
+
+    async def _memory():
+        if wf._checkpointer is None:
+            wf._checkpointer = MemorySaver()
+        return wf._checkpointer
+
+    monkeypatch.setattr(wf, "_get_checkpointer", _memory)
+    return wf
+
+
+@pytest.fixture()
+def v1_engine(monkeypatch):
+    return _engine_for(monkeypatch, V1_DEFINITION)
 
 
 @pytest.fixture()
@@ -144,3 +169,19 @@ class TestLooksLikeQuestionHinglishAuxiliaries:
     ])
     def test_shape(self, text, expected):
         assert looks_like_question(text) is expected
+
+
+class TestBehaviorVersionOne:
+    """Undeclared definitions keep the pre-fix semantics: the labelled
+    narrative parks off-script, exactly as live did on 2026-09-17."""
+
+    async def test_v1_definition_still_parks_the_narrative(self, v1_engine):
+        await _at_issue_ask(v1_engine, "s-v1")
+        result = await _turn(v1_engine, "s-v1", NARRATIVE, "question")
+        assert result.get("offScript") is True
+        assert "m_issue_description" not in result["slots"]
+        assert result["behaviorVersion"] == 1
+
+    async def test_v2_definition_reports_its_version(self, engine):
+        result = await _at_issue_ask(engine, "s-v2")
+        assert result["behaviorVersion"] == 2

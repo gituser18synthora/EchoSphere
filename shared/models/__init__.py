@@ -35,6 +35,7 @@ from shared.models.content_models import (
     Release,
     TestScenario,
     Workflow,
+    WorkflowRevision,
 )
 from shared.models.master_models import (
     AiConfigProfile,
@@ -80,7 +81,7 @@ __all__ = [
     "SupportedLanguage", "BotLanguage",
     "VoiceBotSetting", "ChannelConfig", "PhoneNumber", "SipTrunk",
     "KnowledgeSource", "KnowledgeGap", "Prompt", "PromptVersion", "Intent", "EntityDef",
-    "ApiConnection", "Workflow", "TestScenario", "Release", "PlatformTemplate",
+    "ApiConnection", "Workflow", "WorkflowRevision", "TestScenario", "Release", "PlatformTemplate",
     "ConversationSession", "PlatformAlert", "AuditLog", "Integration", "TenantIntegration",
     "ApprovedModel", "Guardrail", "UsageRecord", "HealthMetric",
     "GuardrailProfile", "GuardrailProfileRule", "GuardrailTrigger",

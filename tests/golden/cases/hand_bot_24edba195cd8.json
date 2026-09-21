@@ -1,0 +1,347 @@
+{
+ "bot": "bot_24edba195cd8",
+ "cases": [
+  {
+   "bot": "bot_24edba195cd8",
+   "name": "demo: tally statement under no signal",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan bol raha hoon"
+    },
+    {
+     "text": "main Tally use karta hoon"
+    },
+    {
+     "text": "haan"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan bol raha hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "Identity confirm",
+      "action": "wf_94a697661141"
+     },
+     "trace": [
+      "n_start",
+      "n_confirm_thanks",
+      "n_qualify"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "main Tally use karta hoon",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_qualify",
+      "n_tally_demo_offer",
+      "n_demo_connect"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Actually, hum aapko ek quick demo dikha sakte hain jisme aap dekh paayenge ki kaise payment follow-ups automate hote hain, collection improve ho jaata hai, aur invoicing process fast ho jata hai. Kya mai apko demo ke liye apne sahayak se connect krun? बताइए, मैं आपकी क्या मदद कर सकता हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_demo_connect",
+      "n_human_agent"
+     ],
+     "reply": "Main aapko abhi humari team se connect kar raha hoon.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_24edba195cd8",
+   "name": "demo: busy",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Busy"
+    },
+    {
+     "text": "theek hai"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "Identity confirm",
+      "action": "wf_94a697661141"
+     },
+     "trace": [
+      "n_start",
+      "n_confirm_thanks",
+      "n_qualify"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Busy",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_qualify",
+      "n_tally_demo_offer",
+      "n_demo_connect"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Actually, hum aapko ek quick demo dikha sakte hain jisme aap dekh paayenge ki kaise payment follow-ups automate hote hain, collection improve ho jaata hai, aur invoicing process fast ho jata hai. Kya mai apko demo ke liye apne sahayak se connect krun? बताइए, मैं आपकी क्या मदद कर सकता हूँ?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "theek hai",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_demo_connect",
+      "n_human_agent"
+     ],
+     "reply": "Main aapko abhi humari team se connect kar raha hoon.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_24edba195cd8",
+   "name": "demo: question about tally",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "Tally mein kya hota hai?"
+    },
+    {
+     "text": "nahi"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "Identity confirm",
+      "action": "wf_94a697661141"
+     },
+     "trace": [
+      "n_start",
+      "n_confirm_thanks",
+      "n_qualify"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "Tally mein kya hota hai?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_qualify"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    },
+    {
+     "text": "nahi",
+     "signal": "refusal",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_qualify"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "bot": "bot_24edba195cd8",
+   "name": "demo: abhi busy hoon (callback wins)",
+   "language": "hi-IN",
+   "turns": [
+    {
+     "text": "haan"
+    },
+    {
+     "text": "abhi busy hoon"
+    },
+    {
+     "text": "ok"
+    }
+   ],
+   "expected": [
+    {
+     "text": "haan",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "Identity confirm",
+      "action": "wf_94a697661141"
+     },
+     "trace": [
+      "n_start",
+      "n_confirm_thanks",
+      "n_qualify"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "abhi busy hoon",
+     "signal": "callback",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:CredFlow outbound qualification + demo routing v6",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_qualify",
+      "n_callback_close",
+      "n_end_callback"
+     ],
+     "reply": "Koi baat nahi, main aapko baad mein call kar lunga. Aapka time dene ke liye dhanyawaad.",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "ok",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "affirm_entry_workflow",
+      "intent": "Identity confirm",
+      "action": "wf_94a697661141"
+     },
+     "trace": [
+      "n_start",
+      "n_confirm_thanks",
+      "n_qualify"
+     ],
+     "reply": "confirm karne ke liye dhanyawaad. Humari company ek software provide karti hai jo aapki payment collection ko streamline karta hai, aur saath hi E-invoice aur E-way bill generation mein bhi help karta hai. Yeh software aapke existing accounting software ke saath easily integrate ho jata hai. Toh kya main jaan sakta hoon ki aap apne business mein kaunsa accounting software use karte hain?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

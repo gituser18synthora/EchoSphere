@@ -554,6 +554,39 @@ async def _knowledge_context(bot: VoiceBot, message: str, *, min_score: float | 
     )
 
 
+def _chat_context_values(db: Session, bot: VoiceBot, language: str) -> dict:
+    """Runtime-context values a chat-test workflow turn may read.
+
+    Mirrors the live call and the simulator: the bot's SAVED runtime-context
+    schema plus its test payload, validated, source-tagged and masked by
+    ``build_runtime_context``. Workflow ``prefillFromContext`` asks and api
+    ``contextArgs`` read these; a bot without a schema simply gets ``{}``.
+    """
+    from shared.runtime_context import build_runtime_context, validate_payload
+
+    schema = db.scalar(select(RuntimeContextSchema).where(
+        RuntimeContextSchema.bot_id == bot.id,
+        RuntimeContextSchema.is_deleted.is_(False),
+    ))
+    fields = (schema.fields if schema else []) or []
+    payload = None
+    if schema is not None and isinstance(schema.test_payload, dict):
+        _errors, payload = validate_payload(
+            fields, schema.test_payload,
+            allow_additional=bool(schema.allow_additional),
+        )
+    return build_runtime_context(
+        tenant_id=bot.tenant_id, bot_id=bot.id,
+        field_definitions=fields, payload=payload, payload_source="test",
+        system_values={"call_channel": "chat_test", "bot_language": language or None},
+        allow_additional=bool(schema.allow_additional) if schema else True,
+        missing_value_policy=schema.missing_value_policy if schema else None,
+        domain_policy=(schema.domain_policy if schema else "generic") or "generic",
+        source_mode="saved",
+        schema_id=schema.id if schema else None,
+    ).prompt_values()
+
+
 @router.post("/bots/{bot_id}/testing/chat")
 async def chat_test(
     bot_id: str,
@@ -696,7 +729,8 @@ async def chat_test(
                     user_text=body.message,
                     language=conversation_language,
                     initial_slots=verified_context,
-                    context_values=runtime_ctx.prompt_values(),
+                    context_values=_chat_context_values(
+                        db, bot, conversation_language),
                     reset_state=reset_subject,
                     llm=configured[1] if configured else None,
                     history=[message.model_dump() for message in body.messages],

@@ -16,7 +16,7 @@ import re
 import threading
 import time
 import unicodedata
-from typing import Any, TypedDict
+from typing import Any
 from urllib.parse import quote
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -34,424 +34,59 @@ from shared.orchestration.response_modes import (
     resolve_response_must_include,
 )
 from shared.orchestration.router import classify_user_signal, looks_like_question
+from shared.orchestration.behavior import WorkflowBehavior, resolve_behavior
+from shared.orchestration import lang as _lang
+from shared.orchestration import signals as _signals
+from shared.orchestration import extensions as _extensions
+from shared.orchestration.workflow_state import WorkflowState
+from shared.orchestration import ask_resolution as _ask
+from shared.orchestration.ask_resolution import (  # noqa: F401 — shared ask helpers
+    _BARE_NO,
+    _BARE_YES,
+    _CORRECTION_ACTIONS,
+    _HUB_CAPTURE_ACTIONS,
+    _MAX_PENDING_DIGITS,
+    _YES_NO_SIGNALS,
+    _apply_also_capture,
+    _ask_entity,
+    _ask_expects_digits,
+    _ask_is_free_text,
+    _bare_yes_no,
+    _captures_other_field,
+    _digits_readback_reply,
+    _extract_ask_value,
+    _joint_entity,
+    _joint_yes_no_variables,
+    _node_config,
+    _strip_bare_words,
+    _without_bare_surfaces,
+    _yes_no_canonicals,
+    _yes_no_from_signal,
+)
 logger = logging.getLogger(__name__)
 
 
-class WorkflowState(TypedDict, total=False):
-    """Typed workflow state — every workflow carries the full call identity."""
-
-    tenant_id: str
-    bot_id: str
-    session_id: str
-    workflow: str
-    user_text: str
-    language: str  # caller's current conversation locale ("hi-IN"); "" = en
-    slots: dict[str, str]
-    pending_slot: str | None
-    just_filled: bool
-    reply: str
-    status: str  # collecting | confirming | executing | done | error | handoff
-    retries: int
-    audit: list[dict]
-    # Definition-interpreter fields (DB-authored graphs):
-    current_node: str | None
-    awaiting: str | None
-    node_retries: dict[str, int]
-    trace: list[str]  # node ids visited THIS turn (reset every turn)
-    handoff_queue: str | None  # handover node's configured queue, if any
-    # Per-turn (recomputed every step, never carried over):
-    off_script: bool  # the turn was NOT consumed — node unchanged, no reply
-    context_response: bool  # authored node delegates this reply to the LLM
-    awaiting_prompt: str | None  # question of the node the flow is paused at
-    signal: str | None  # semantic signal of the caller's utterance
-    # Response-delivery contract for THIS turn's reply (see response_modes):
-    response_mode: str  # fixed | exact | llm_grounded (aggregated per turn)
-    response_directives: list[str]  # grounded nodes' response goals
-    response_must_include: list[str]  # literals that must survive generation
-    # Delivery feedback. ``spoken_nodes`` accumulates every node whose
-    # authored text was spoken on this session; ``spoken_this_turn`` is the
-    # per-turn subset (reported to the caller as ``spokenNodes``).
-    # ``heard_nodes`` is INPUT from the delivery channel: node ids whose reply
-    # audio the caller heard to completion (the voice brain tracks barge-ins
-    # and TTS completion). Absent/None = the channel cannot observe delivery
-    # (text chat, simulate) → every spoken node counts as heard. Grounded
-    # nodes select ``responseDirectiveVariants`` on it.
-    spoken_nodes: list[str]
-    spoken_this_turn: list[str]
-    heard_nodes: list[str] | None
-    # Input-only: the caller-supplied semantic signal for THIS turn (from the
-    # Goal Engine's validated decision). Consumed by _step and cleared in the
-    # returned state so a checkpointed value can never leak into a later turn;
-    # when absent the legacy regex classification is the fallback.
-    signal_override: str | None
-    # Testing Studio: {tool_name: payload} replaces live HTTP in api nodes.
-    mock_tool_results: dict | None
-    # Digits heard so far at an ask node whose entity expects a numeric
-    # identifier, keyed by node id — a caller dictating "six zero … <pause>
-    # one zero double one" accumulates across turns instead of failing.
-    pending_digits: dict[str, str]
-    # Per-turn: set when the flow is paused at an ask node collecting a
-    # numeric identifier — {node, variable, entity, held_digits}. The brain
-    # uses it to run identifier-collection mode (tolerant inter-digit pause
-    # window, fragment buffering, batch-audio recovery) generically from the
-    # workflow's own awaited field schema.
-    awaiting_identifier: dict | None
-    # Runtime facts resolved once during call/session initialization.  An ask
-    # node must opt into a value with ``prefillFromContext``; the interpreter
-    # never performs a database or remote lookup while advancing the flow.
-    context_values: dict[str, object]
-    # Input-only semantic extraction for opted-in MDND definitions. Replaced
-    # on every invocation; never reuse a preceding utterance's extraction.
-    mdnd_extraction: dict | None
-
-
-# ── appointment booking: the reference slot-filling workflow ───────────────
-
-_SLOTS: list[tuple[str, str, str]] = [
-    # (slot key, question, validation regex)
-    ("name", "May I have your full name, please?", r"[A-Za-z][A-Za-z .'-]{1,60}$"),
-    ("phone", "What is the best phone number to reach you?", r"(\+?\d[\d ()-]{8,14}\d)"),
-    ("date", "What date works best for your appointment?",
-     r"\b(\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(st|nd|rd|th)?\s+\w+)\b"),
-    ("time", "And what time would you prefer?",
-     r"\b(\d{1,2}([:.]\d{2})?\s*(am|pm|a\.m\.|p\.m\.)?|morning|afternoon|evening|noon)\b"),
-]
-_MAX_SLOT_RETRIES = 2
-
-_CONFIRM_YES = re.compile(r"\b(yes|yeah|correct|confirm|right|sure|ok(ay)?|haan)\b", re.I)
-_CONFIRM_NO = re.compile(r"\b(no|nope|wrong|change|cancel|nahi)\b", re.I)
-
-
-def _extract_slot(state: WorkflowState) -> WorkflowState:
-    slots = dict(state.get("slots") or {})
-    text = state.get("user_text", "").strip()
-    pending = state.get("pending_slot")
-    retries = state.get("retries", 0)
-
-    if pending and text:
-        pattern = next((p for key, _, p in _SLOTS if key == pending), None)
-        match = re.search(pattern, text, re.I) if pattern else None
-        if match:
-            slots[pending] = match.group(0).strip()
-            retries = 0
-        else:
-            retries += 1
-
-    next_slot = next((key for key, _, _ in _SLOTS if key not in slots), None)
-    status = "collecting" if next_slot else "confirming"
-    if retries > _MAX_SLOT_RETRIES:
-        status = "handoff"
-    return {
-        **state,
-        "slots": slots,
-        "pending_slot": next_slot,
-        "retries": retries,
-        "status": status,
-    }
-
-
-def _ask_or_confirm(state: WorkflowState) -> WorkflowState:
-    status = state.get("status")
-    if status == "handoff":
-        return {
-            **state,
-            "reply": "I'm having trouble capturing that. Let me connect you with a "
-                     "colleague who can book this for you.",
-        }
-    if status == "collecting":
-        pending = state.get("pending_slot")
-        question = next((q for key, q, _ in _SLOTS if key == pending), "Could you repeat that?")
-        retry_prefix = "Sorry, I didn't catch that. " if state.get("retries", 0) > 0 else ""
-        return {**state, "reply": f"{retry_prefix}{question}"}
-    slots = state.get("slots", {})
-    summary = (
-        f"Let me confirm: an appointment for {slots.get('name')} on {slots.get('date')} "
-        f"at {slots.get('time')}, contact number {slots.get('phone')}. Shall I book it?"
-    )
-    return {**state, "reply": summary}
-
-
-def _handle_confirmation(state: WorkflowState) -> WorkflowState:
-    text = state.get("user_text", "")
-    if _CONFIRM_NO.search(text):
-        # Restart collection but keep identity fields (idempotent, auditable).
-        return {
-            **state,
-            "slots": {},
-            "pending_slot": _SLOTS[0][0],
-            "retries": 0,
-            "status": "collecting",
-            "reply": f"No problem, let's start over. {_SLOTS[0][1]}",
-        }
-    if _CONFIRM_YES.search(text):
-        return {**state, "status": "executing"}
-    return {**state, "reply": "Please say yes to confirm the booking, or no to change it."}
-
-
-def _execute_booking(state: WorkflowState) -> WorkflowState:
-    """The external action. Idempotent: keyed by session, executed once."""
-    audit = list(state.get("audit") or [])
-    audit.append(
-        {
-            "action": "appointment_booked",
-            "tenant_id": state.get("tenant_id"),
-            "bot_id": state.get("bot_id"),
-            "session_id": state.get("session_id"),
-            "slots": state.get("slots"),
-        }
-    )
-    slots = state.get("slots", {})
-    return {
-        **state,
-        "status": "done",
-        "audit": audit,
-        "reply": (
-            f"Your appointment is booked for {slots.get('date')} at {slots.get('time')}. "
-            "You'll receive a confirmation shortly. Anything else I can help with?"
-        ),
-    }
-
-
-def _route_after_extract(state: WorkflowState) -> str:
-    status = state.get("status")
-    if status == "handoff":
-        return "respond"
-    if status == "confirming" and state.get("user_text") and not state.get("pending_slot"):
-        # Already collected everything → this turn answers the confirmation.
-        return "confirm"
-    return "respond"
-
-
-def _route_after_confirm(state: WorkflowState) -> str:
-    return "execute" if state.get("status") == "executing" else "end"
-
-
-def build_appointment_graph(checkpointer) -> Any:
-    graph = StateGraph(WorkflowState)
-    graph.add_node("extract", _extract_slot)
-    graph.add_node("respond", _ask_or_confirm)
-    graph.add_node("confirm", _handle_confirmation)
-    graph.add_node("execute", _execute_booking)
-
-    graph.set_entry_point("extract")
-    graph.add_conditional_edges("extract", _route_after_extract,
-                                {"respond": "respond", "confirm": "confirm"})
-    graph.add_edge("respond", END)
-    graph.add_conditional_edges("confirm", _route_after_confirm,
-                                {"execute": "execute", "end": END})
-    graph.add_edge("execute", END)
-    return graph.compile(checkpointer=checkpointer)
-
-
-# ── payment collection: MOP (mode-of-payment) slot-filling workflow ─────────
-#
-# Built for inbound loan-repayment support (mPokket POC). The flow mirrors the
-# approved call script: payment type (full/partial) → MOP confirmation
-# ("Debit Card ya UPI?") → summary confirmation → next-step guidance and the
-# script's closing line. No payment integration exists, so the execute step
-# records a payment COMMITMENT and instructs the caller — it never claims a
-# payment was completed. Replies are Hinglish, matching the source script.
-
-_PAY_SLOTS: list[tuple[str, str, str, dict[str, str]]] = [
-    # (slot key, question, simpler retry question, {canonical: pattern})
-    # Patterns cover Roman Hinglish AND Devanagari — Sarvam Saaras transcribes
-    # Hindi speech in Devanagari script, Hinglish/English in Latin script.
-    # NOTE: Devanagari alternatives sit OUTSIDE the \b group — Python's \b is
-    # \w-based and Devanagari matras are not word characters, so a trailing \b
-    # after a matra-final word (e.g. "पूरा") can never match.
-    (
-        "payment_type",
-        "Kya aap apna overdue amount poora pay karna chahenge, ya partial payment karenge?",
-        "Kripya boliye – poora payment ya partial?",
-        {
-            "full": r"\b(full|poora|pura|puri|complete|whole|saara|sara)\b"
-                    r"|पूरा|पूरी|सारा|पूर्ण",
-            "partial": r"\b(partial|part|aadha|adha|half|thoda|kuch|installment|instalment)\b"
-                       r"|आधा|आधी|थोड़ा|थोड़ी|किस्त",
-        },
-    ),
-    (
-        "payment_method",
-        "Kaunse madhyam se aapka payment hoga – Debit Card ya UPI?",
-        "Kripya boliye – Debit Card ya UPI?",
-        {
-            "Debit Card": r"\b(debit|card|atm)\b|डेबिट|कार्ड|एटीएम",
-            "UPI": r"\b(upi|bhim|paytm|g ?pay|google ?pay|phone ?pe|qr)\b"
-                   r"|यूपीआई|यू ?पी ?आई|भीम|पेटीएम|फोन ?पे|गूगल ?पे",
-        },
-    ),
-]
-
-_PAY_YES = re.compile(
-    r"\b(yes|yeah|correct|confirm|right|sure|ok(ay)?|haan|han ?ji|ji haan|ji|"
-    r"bilkul|theek|sahi|zaroor|kar do|karo)\b"
-    r"|हाँ|हां|जी|सही|ठीक|बिल्कुल|ज़रूर|जरूर", re.I,
-)
-_PAY_NO = re.compile(
-    r"\b(no|nope|wrong|change|cancel|nahi|nahin|galat|badal)\b|नहीं|नही|गलत|बदल", re.I
-)
-
-
-def _pay_extract_slot(state: WorkflowState) -> WorkflowState:
-    slots = dict(state.get("slots") or {})
-    text = (state.get("user_text") or "").strip()
-    pending = state.get("pending_slot")
-    retries = state.get("retries", 0)
-
-    just_filled = False
-    if text:
-        # Callers often volunteer several details in one utterance ("main UPI
-        # se poora pay karunga") — fill every open slot the turn mentions.
-        for key, _q, _rq, patterns in _PAY_SLOTS:
-            if key in slots:
-                continue
-            for canonical, pattern in patterns.items():
-                if re.search(pattern, text, re.I):
-                    slots[key] = canonical
-                    just_filled = True
-                    break
-        if pending:
-            retries = 0 if pending in slots else retries + 1
-
-    next_slot = next((key for key, _, _, _ in _PAY_SLOTS if key not in slots), None)
-    status = "collecting" if next_slot else "confirming"
-    if retries > _MAX_SLOT_RETRIES:
-        status = "handoff"
-    return {
-        **state,
-        "slots": slots,
-        "pending_slot": next_slot,
-        "just_filled": just_filled,
-        "retries": retries,
-        "status": status,
-    }
-
-
-def _pay_ask_or_confirm(state: WorkflowState) -> WorkflowState:
-    status = state.get("status")
-    if status == "handoff":
-        return {
-            **state,
-            "reply": "Mujhe aapki baat samajhne mein dikkat ho rahi hai. Aapko "
-                     "hamare ek agent se connect kiya ja raha hai, kripya line par bane rahiye.",
-        }
-    if status == "collecting":
-        pending = state.get("pending_slot")
-        slot = next((s for s in _PAY_SLOTS if s[0] == pending), None)
-        if slot is None:
-            return {**state, "reply": "Kripya dobara boliye?"}
-        # Retries use the simpler wording, never the same sentence again.
-        question = slot[2] if state.get("retries", 0) > 0 else slot[1]
-        prefix = "Maaf kijiye, baat samajh nahi aayi. " if state.get("retries", 0) > 0 else ""
-        return {**state, "reply": f"{prefix}{question}"}
-    slots = state.get("slots", {})
-    type_txt = "poora amount" if slots.get("payment_type") == "full" else "partial payment"
-    return {
-        **state,
-        "reply": f"Main confirm kar leti hoon – aap {type_txt} "
-                 f"{slots.get('payment_method')} ke through pay karenge. Kya yeh sahi hai?",
-    }
-
-
-def _pay_handle_confirmation(state: WorkflowState) -> WorkflowState:
-    text = state.get("user_text", "")
-    if _PAY_NO.search(text):
-        return {
-            **state,
-            "slots": {},
-            "pending_slot": _PAY_SLOTS[0][0],
-            "retries": 0,
-            "status": "collecting",
-            "reply": f"Koi baat nahi, dobara shuru karte hain. {_PAY_SLOTS[0][1]}",
-        }
-    if _PAY_YES.search(text):
-        return {**state, "status": "executing"}
-    return {
-        **state,
-        "reply": "Kripya haan boliye confirm karne ke liye, ya nahi boliye badalne ke liye.",
-    }
-
-
-def _pay_execute(state: WorkflowState) -> WorkflowState:
-    """Record the payment commitment (no payment API exists — never claim
-    completion) and give the script's next-step guidance and closing line."""
-    audit = list(state.get("audit") or [])
-    audit.append(
-        {
-            "action": "payment_commitment_recorded",
-            "tenant_id": state.get("tenant_id"),
-            "bot_id": state.get("bot_id"),
-            "session_id": state.get("session_id"),
-            "slots": state.get("slots"),
-        }
-    )
-    slots = state.get("slots", {})
-    method = slots.get("payment_method", "UPI")
-    benefit = (
-        " BHIM UPI ya Paytm UPI se payment karne par aapko discount ya cashback "
-        "milne ke chances hain."
-        if method == "UPI"
-        else ""
-    )
-    return {
-        **state,
-        "status": "done",
-        "audit": audit,
-        "reply": (
-            "Dhanyavaad! Kripya mPokket app kholkar "
-            f"{method} ke through apna payment abhi complete kar dijiye.{benefit} "
-            "Payment complete hote hi aapka profile update ho jayega aur extra "
-            "penalty charges nahi lagenge. Main call par kabhi card number, PIN "
-            "ya OTP nahi maangti — yeh details kisi ke saath share na karein. "
-            "mPokket mein samay dene ke liye dhanyavaad, aapka din shubh ho!"
-        ),
-    }
-
-
-def _pay_route_after_extract(state: WorkflowState) -> str:
-    """Unlike the reference flow, the turn that completes the slots always
-    gets the spoken summary first — only a turn that filled nothing while in
-    'confirming' is treated as the caller's answer to that summary."""
-    status = state.get("status")
-    if status == "handoff":
-        return "respond"
-    if status == "confirming" and state.get("user_text") and not state.get("just_filled"):
-        return "confirm"
-    return "respond"
-
-
-def build_payment_collection_graph(checkpointer) -> Any:
-    graph = StateGraph(WorkflowState)
-    graph.add_node("extract", _pay_extract_slot)
-    graph.add_node("respond", _pay_ask_or_confirm)
-    graph.add_node("confirm", _pay_handle_confirmation)
-    graph.add_node("execute", _pay_execute)
-
-    graph.set_entry_point("extract")
-    graph.add_conditional_edges("extract", _pay_route_after_extract,
-                                {"respond": "respond", "confirm": "confirm"})
-    graph.add_edge("respond", END)
-    graph.add_conditional_edges("confirm", _route_after_confirm,
-                                {"execute": "execute", "end": END})
-    graph.add_edge("execute", END)
-    return graph.compile(checkpointer=checkpointer)
-
-
-_GRAPH_BUILDERS = {
-    "appointment_booking": build_appointment_graph,
-    # Alias used by demo intents ("book appointment" → workflow:appointment).
-    "appointment": build_appointment_graph,
-    # Inbound loan-repayment MOP flow (mPokket POC).
-    "payment_collection": build_payment_collection_graph,
-}
+def __getattr__(name: str):
+    """Backwards-compatible access to names that moved into extensions
+    (``_GRAPH_BUILDERS``, ``build_appointment_graph``,
+    ``build_payment_collection_graph``). Prefer the extensions registry."""
+    if name == "_GRAPH_BUILDERS":
+        return dict(_extensions.graph_builders())
+    if name in ("build_appointment_graph", "build_payment_collection_graph"):
+        _extensions.load_builtin_extensions()
+        for builder in _extensions.graph_builders().values():
+            if builder.__name__ == name:
+                return builder
+    raise AttributeError(name)
 
 
 # ── generic definition interpreter: DB-authored node/edge graphs ─────────────
 #
 # Workflows designed in the Studio builder (Workflow.nodes/edges JSON) execute
 # here. An intent route "workflow:<name>" is resolved against the bot's saved
-# workflows first (by id, slugified name, or exact name); the hardcoded
-# builders above remain as fallbacks so the reference flows keep working.
+# workflows first (by id, slugified name, or exact name); graph builders
+# registered by extensions (reference flows, tenant-specific graphs) remain
+# as fallbacks so those flows keep working.
 #
 # Node kinds: start, message (speak & continue), ask (collect a variable via
 # entity extraction), intent (branch on the caller's next utterance using edge
@@ -479,13 +114,56 @@ _definition_cache: dict[tuple[str, str, str], tuple[float, dict | None]] = {}
 _definition_cache_lock = threading.Lock()
 
 
-def load_workflow_definition(
-    tenant_id: str, bot_id: str, workflow_name: str
-) -> dict | None:
-    """Latest saved workflow for the bot whose id/name matches the route name.
+def pinned_version_for(
+    workflow_id: str, current_version: int, pinned_versions: dict | None,
+) -> int | None:
+    """The revision a release pins for ``workflow_id`` when it differs from
+    the latest save; None when the latest save IS the pinned one (or nothing
+    is pinned). Invalid pins are ignored — a bad value must never fail a call."""
+    if not pinned_versions:
+        return None
+    try:
+        pinned = int(pinned_versions.get(workflow_id))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if pinned <= 0 or pinned == int(current_version or 0):
+        return None
+    return pinned
 
-    Sync (called via to_thread). Returns None when no stored workflow matches —
-    the caller then falls back to the hardcoded reference builders.
+
+def _pinned_snapshot(session, workflow_id: str, version: int) -> dict | None:
+    """The stored revision snapshot, when the revisions table exists."""
+    from sqlalchemy import select
+
+    from shared.db.schema_features import table_exists
+    from shared.models import WorkflowRevision
+
+    if not table_exists("workflow_revisions"):
+        return None
+    row = session.execute(
+        select(WorkflowRevision).where(
+            WorkflowRevision.workflow_id == workflow_id,
+            WorkflowRevision.version == version,
+        )
+    ).scalars().first()
+    if row is None or not row.nodes:
+        return None
+    return {"id": row.workflow_id, "version": row.version, "name": row.name,
+            "nodes": row.nodes or [], "edges": row.edges or [], "pinned": True}
+
+
+def load_workflow_definition(
+    tenant_id: str, bot_id: str, workflow_name: str,
+    pinned_versions: dict | None = None,
+) -> dict | None:
+    """Saved workflow for the bot whose id/name matches the route name.
+
+    ``pinned_versions`` ({workflow_id: version}) comes from the bot's
+    published release: the pinned revision is executed when it differs from
+    the latest save and its snapshot exists; otherwise the latest save runs
+    (with ``pinMissing`` set so the event trail shows the drift). Sync
+    (called via to_thread). Returns None when no stored workflow matches —
+    the caller then falls back to the registered graph builders.
     """
     from sqlalchemy import select
 
@@ -496,7 +174,8 @@ def load_workflow_definition(
     if not target:
         return None
 
-    cache_key = (tenant_id, bot_id, workflow_name)
+    pins_key = tuple(sorted((str(k), str(v)) for k, v in (pinned_versions or {}).items()))
+    cache_key = (tenant_id, bot_id, workflow_name, pins_key)
     now = time.monotonic()
     with _definition_cache_lock:
         cached = _definition_cache.get(cache_key)
@@ -539,6 +218,17 @@ def load_workflow_definition(
                 "nodes": w.nodes or [],
                 "edges": w.edges or [],
             }
+            pinned = pinned_version_for(w.id, w.version, pinned_versions)
+            if pinned is not None:
+                snapshot = _pinned_snapshot(session, w.id, pinned)
+                if snapshot is not None:
+                    definition = snapshot
+                else:
+                    logger.warning(
+                        "workflow %s: release pins v%s but no revision snapshot exists — "
+                        "running latest v%s", w.id, pinned, w.version,
+                    )
+                    definition["pinMissing"] = pinned
             break
         with _definition_cache_lock:
             _definition_cache[cache_key] = (time.monotonic(), definition)
@@ -547,9 +237,6 @@ def load_workflow_definition(
         session.close()
 
 
-def _node_config(node: dict) -> dict:
-    config = node.get("config")
-    return config if isinstance(config, dict) else {}
 
 
 def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
@@ -565,7 +252,7 @@ def _edge_tokens(label: str) -> list[str]:
     return [t.strip().lower() for t in re.split(r"[/,|]", label or "") if t.strip()]
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[।?!.])\s+")
+_SENTENCE_SPLIT = re.compile(r"(?<=[" + re.escape(_lang.sentence_terminators()) + r"])\s+")
 _MAX_REASK_CHARS = 160
 
 
@@ -597,23 +284,14 @@ def _short_question(base: str, lang: str = "") -> str:
 # hold ("ek minute ruko") is off-script everywhere: a free-text ask must not
 # store it as the answer, a hub must not advance on it, and it is never an
 # entry signal — the node simply waits for the caller to come back.
-_OFF_SCRIPT_SIGNALS = ("complaint", "clarify", "question", "hold")
-# A free-text ask treats an LLM ``question`` label as a real question only
-# when the words have question shape; a narrative this long with no
-# interrogative is the caller's answer (cv_7786bc42deca: "maine product
-# deliver kar diya phir bhi mera MDND mark hua hai" was labelled a question
-# twice and met "didn't understand" twice, while a bare "Haan" was accepted).
-_LITERAL_ANSWER_MIN_WORDS = 3
 # Flow-answer signals that may still advance via literal tokens when no edge
 # declares the signal explicitly (the author spelled the words out instead).
-_LITERAL_FALLBACK_SIGNALS = ("refusal", "callback", "payment_intent", "affirm")
+_LITERAL_FALLBACK_SIGNALS = _signals.names_where("literal_fallback")
 # Signals meaningful enough that the utterance which TRIGGERED the workflow
 # should be consumed by its first intent node instead of being ignored (a
 # bare confirmation is not — it answered the greeting, not the first rung).
-_ENTRY_SIGNALS = ("hardship", "refusal", "callback", "already_paid",
-                  "wrong_person", "agent_request", "payment_intent")
-_COMPATIBLE_SIGNALS = {"affirm": ("payment_intent",),
-                       "payment_intent": ("affirm",)}
+_ENTRY_SIGNALS = _signals.names_where("entry")
+_COMPATIBLE_SIGNALS = _signals.compatible_map()
 
 
 def _edge_meta(edges: list[dict]) -> list[tuple[dict, list[str], set[str]]]:
@@ -678,7 +356,8 @@ def _token_score(tokens: list[str], lowered: str) -> int:
 
 
 def _choose_intent_edge_detailed(
-    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None
+    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None,
+    behavior: WorkflowBehavior | None = None,
 ) -> tuple[dict | None, str, str]:
     """Pick the outgoing edge the utterance actually supports.
 
@@ -724,7 +403,9 @@ def _choose_intent_edge_detailed(
             and _specific_answer_token(best_token)
             and (
                 signal == "clarify"
-                or (signal == "question" and not looks_like_question(text))
+                or (signal == "question"
+                    and (behavior or WorkflowBehavior()).question_label_yields_hub
+                    and not looks_like_question(text))
             )
         ):
             return best, "token", best_token
@@ -735,10 +416,11 @@ def _choose_intent_edge_detailed(
 
 
 def _choose_intent_edge(
-    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None
+    meta: list[tuple[dict, list[str], set[str]]], text: str, signal: str | None,
+    behavior: WorkflowBehavior | None = None,
 ) -> tuple[dict | None, str]:
     """(edge, reason) form of :func:`_choose_intent_edge_detailed`."""
-    edge, why, _token = _choose_intent_edge_detailed(meta, text, signal)
+    edge, why, _token = _choose_intent_edge_detailed(meta, text, signal, behavior)
     return edge, why
 
 
@@ -754,12 +436,8 @@ def _choose_intent_edge(
 # there. Generic yes/no answers never qualify — "haan" only answers the
 # question that was actually asked.
 _MAX_LOOKAHEAD_HUBS = 3
-_GENERIC_ANSWER_SIGNALS = ("affirm", "refusal")
-_GENERIC_ANSWER_TOKENS = frozenset((
-    "yep", "yup", "hmm", "han", "fine", "right", "correct", "sahi", "acha",
-    "achha", "accha", "theek", "thik", "ok ji", "okay ji", "अच्छा", "ओके",
-    "ठीक", "सही", "हम्म",
-))
+_GENERIC_ANSWER_SIGNALS = _signals.names_where("generic_answer")
+_GENERIC_ANSWER_TOKENS = _lang.union("generic_answer_tokens")
 
 
 def _specific_answer_token(token: str) -> bool:
@@ -845,363 +523,6 @@ async def _knowledge_answer(state: WorkflowState, node: dict, slots: dict) -> st
     except Exception:  # noqa: BLE001 — a KB hiccup must not kill the flow
         logger.exception("workflow knowledge node retrieval failed")
     return None
-
-
-def _ask_entity(node: dict, variable: str) -> dict:
-    """Entity descriptor for an ask node, feeding the shared entity extractor."""
-    config = _node_config(node)
-    entity = config.get("entity")
-    if isinstance(entity, dict) and entity:
-        return {"name": variable, **entity}
-    return {
-        "name": variable,
-        "dataType": str(config.get("entityType") or config.get("dataType") or "text"),
-        "regexPattern": config.get("pattern"),
-        "allowedValues": config.get("allowedValues"),
-        "synonyms": config.get("synonyms"),
-    }
-
-
-def _ask_is_free_text(node: dict, variable: str) -> bool:
-    """A free-text ask accepts ANY utterance as its answer — it needs the
-    off-script guard so a complaint or question is not swallowed as a slot."""
-    entity = _ask_entity(node, variable)
-    has_matcher = bool(
-        entity.get("regexPattern") or entity.get("regexPatterns")
-        or entity.get("allowedValues") or entity.get("synonyms")
-        or entity.get("synonymPatterns")
-    )
-    return str(entity.get("dataType") or "text") == "text" and not has_matcher
-
-
-def _ask_expects_digits(node: dict, variable: str) -> bool:
-    """Whether this ask collects a numeric identifier (booking ID, OTP, …)."""
-    from shared.orchestration.entity_extractor import _expects_digits
-
-    return _expects_digits(_ask_entity(node, variable))
-
-
-# A dictated identifier can be held across turns while the caller pauses;
-# anything longer than this is no longer an identifier being dictated.
-_MAX_PENDING_DIGITS = 32
-
-# Explicit identifier restart — the buffered partial is discarded and the
-# caller re-dictates ("start again", "dobara", "phir se", "that was wrong",
-# "clear the number"). Only consulted at ask nodes that expect digits.
-_DIGITS_RESTART_RE = re.compile(
-    r"\b(start (again|over|afresh)|restart|from the (top|beginning)"
-    r"|that('s| was| is)? wrong|i said it wrong|wrong number"
-    r"|galat|galti|dobara|dubara|phir se|firse|fir se"
-    r"|clear (the )?(number|digits?|id|it)|scratch that)\b"
-    r"|फिर से|दोबारा|दुबारा|ग़लत|गलत|शुरू से",
-    re.I,
-)
-
-# "What did you note so far?" — answered from the actual pending buffer,
-# never with a claim that nothing was heard when digits are held.
-_DIGITS_READBACK_RE = re.compile(
-    r"\b(what ((did|have) you|do you have) "
-    r"(note|noted|got|written|captured|taken)( down| so far)?"
-    r"|read (it|that|the number) back|how many (digits?|numbers?)"
-    r"|kya note (kiya|kia)|kitne (ank|digits?|number))\b"
-    r"|क्या नोट किया|क्या लिखा|अब तक क्या|कितने अंक",
-    re.I,
-)
-
-
-def _digits_readback_reply(node: dict, variable: str, digits: str, lang: str) -> str:
-    """Speakable summary of the pending identifier buffer.
-
-    Sensitive identifiers (phone numbers, masked/PII entities) are never read
-    back in full — only the digit count and the last two digits.
-    """
-    if not digits:
-        return canned("wf_digits_none", lang)
-    entity = _ask_entity(node, variable)
-    sensitive = (
-        bool(entity.get("pii"))
-        or bool(entity.get("maskingEnabled") or entity.get("masking_enabled"))
-        or str(entity.get("dataType") or entity.get("data_type") or "") == "phone"
-    )
-    if sensitive:
-        key, spoken = "wf_digits_readback_masked", " ".join(digits[-2:])
-    else:
-        key, spoken = "wf_digits_readback", " ".join(digits)
-    return (
-        canned(key, lang)
-        .replace("{count}", str(len(digits)))
-        .replace("{digits}", spoken)
-    )
-
-
-def _apply_also_capture(node: dict, text: str, slots: dict,
-                        audit: list, node_id: str) -> None:
-    """Opt-in multi-answer capture for ask nodes (config ``alsoCapture``).
-
-    One caller utterance often answers several upcoming questions at once
-    ("haan call kiya tha aur guard ko de diya"). An ask node may declare
-    ``alsoCapture: [{"variable": ..., "entity": {...}}, ...]`` — after the
-    node's OWN slot is filled from an utterance, each listed entity matcher
-    runs against the same utterance and fills its slot when it matches, so
-    the later ask for that slot is skipped (slot_reused) instead of
-    mechanically re-asking what the caller already said. Matcher-based and
-    empty-slot-only by default: a free-text guess can never overwrite or
-    invent an answer. A correction node may explicitly set ``overwrite:
-    true`` for a capture, implementing "latest clear answer wins" without
-    weakening ordinary multi-answer collection.
-
-    A spec may instead set ``clear: true``: when its matcher fires the slot is
-    REMOVED ("the call part is wrong" — a field named without its new value),
-    so the flow's next walk re-asks exactly that question and nothing else.
-    Clears run before captures, so "call wala galat hai, maine call nahi kiya
-    tha" clears and then re-fills the same slot in one utterance.
-    """
-    from shared.orchestration.entity_extractor import extract_entity
-
-    specs = [
-        spec for spec in (_node_config(node).get("alsoCapture") or [])
-        if isinstance(spec, dict)
-    ]
-    ordered = ([s for s in specs if s.get("clear") is True]
-               + [s for s in specs if s.get("clear") is not True])
-    for spec in ordered:
-        variable = str(spec.get("variable") or "").strip()
-        entity = spec.get("entity")
-        if not variable or not isinstance(entity, dict) or not entity:
-            continue
-        previous = str(slots.get(variable) or "").strip()
-        if spec.get("clear") is True:
-            if not previous:
-                continue  # nothing to clear
-            extracted = extract_entity(text, {"name": variable, **entity})
-            if extracted.get("matched"):
-                slots.pop(variable, None)
-                for dependent in spec.get("invalidateSlots") or []:
-                    slots.pop(dependent, None)
-                audit.append({"action": "also_cleared", "node": node_id,
-                              "variable": variable})
-            continue
-        overwrite = spec.get("overwrite") is True
-        if previous and not overwrite:
-            continue  # never overwrite an answer the caller already gave
-        extracted = extract_entity(text, {"name": variable, **entity})
-        if not extracted.get("matched"):
-            continue
-        value = str(extracted.get("value")
-                    or extracted.get("maskedValue") or "").strip()
-        if value:
-            if value != previous:
-                for dependent in spec.get("invalidateSlots") or []:
-                    if dependent in slots:
-                        audit.append({"action": "also_invalidated", "node": node_id,
-                                      "variable": dependent})
-                    slots.pop(dependent, None)
-            slots[variable] = value
-            audit.append({"action": ("also_updated" if previous else
-                                      "also_captured"), "node": node_id,
-                          "variable": variable})
-
-
-def _captures_other_field(node: dict, text: str, slots: dict, audit: list,
-                          node_id: str, *, already: bool) -> bool:
-    """Run the ask's alsoCapture set (once per turn) and report whether any
-    downstream slot changed — the utterance was an answer, just not to THIS ask."""
-    if already:
-        return False
-    before = len(audit)
-    _apply_also_capture(node, text, slots, audit, node_id)
-    return any(entry.get("action") in _HUB_CAPTURE_ACTIONS for entry in audit[before:])
-
-
-# Audit actions that mean "this turn's utterance already changed an earlier
-# answer" — a correction ask marked ``skipIfCorrectedThisTurn`` steps aside
-# when one of these was recorded before the walk reached it.
-_CORRECTION_ACTIONS = frozenset({"also_updated", "also_cleared"})
-# At an intent hub, ANY capture from the utterance (a new downstream fact,
-# an overwrite or a clear) shows the caller answered this hub — "haan, uska
-# naam Raju hai" answered "did you ask the name?" whatever the LLM labelled it.
-_HUB_CAPTURE_ACTIONS = frozenset({"also_captured", "also_updated", "also_cleared"})
-
-
-_YES_NO_SIGNALS = ("affirm", "refusal")
-# Bare surfaces that identify a canonical as the YES / NO answer of a yes-no
-# ask. Whole strings (never substrings): a lexicon surface such as "हा" or
-# "ji" would also match inside "रहा" / "jiska", which is exactly why STT
-# variants of "हाँ" are resolved from the SIGNAL instead of the lexicon.
-_BARE_YES = frozenset({"haan", "yes", "हाँ", "ji haan", "जी हाँ"})
-_BARE_NO = frozenset({"nahi", "no", "नहीं"})
-
-
-def _yes_no_canonicals(entity: dict) -> tuple[str, str] | None:
-    """(yes_canonical, no_canonical) of a yes-no shaped ask entity, else None.
-
-    Shape = exactly one canonical whose surfaces include a bare yes word and
-    exactly one whose surfaces include a bare no word. A recipient choice, a
-    free-text ask or a numeric identifier never qualifies.
-    """
-    synonyms = entity.get("synonyms")
-    if not isinstance(synonyms, dict):
-        return None
-
-    def _polarity(canonical, surfaces) -> str | None:
-        # Platform canonicals read "yes (called the customer)" / "no (did not
-        # call)": the leading word decides. A lookahead entity that carries
-        # only explicit phrases (no bare "haan") is still yes-no shaped.
-        first = re.split(r"[\s(]+", str(canonical).strip().lower(), maxsplit=1)[0]
-        if first in _BARE_YES or first in ("yes", "haan", "हाँ"):
-            return "yes"
-        if first in _BARE_NO or first in ("no", "nahi", "नहीं"):
-            return "no"
-        if isinstance(surfaces, (list, tuple)):
-            lowered = {str(x).strip().lower() for x in surfaces}
-            if lowered & _BARE_YES:
-                return "yes"
-            if lowered & _BARE_NO:
-                return "no"
-        return None
-
-    yes = [c for c, surfaces in synonyms.items() if _polarity(c, surfaces) == "yes"]
-    no = [c for c, surfaces in synonyms.items() if _polarity(c, surfaces) == "no"]
-    if len(yes) == 1 and len(no) == 1 and yes[0] != no[0]:
-        return str(yes[0]), str(no[0])
-    return None
-
-
-# A "bare" answer is only affirmation/negation (plus fillers): no field-level
-# evidence at all. Used for asks that put TWO yes-no questions in one breath
-# ("location par pahunche the aur call kiya tha?"): a bare "हाँ" answers both,
-# while any explicit content is attributed field by field.
-_BARE_YES_WORDS = frozenset({
-    "haan", "haa", "ha", "han", "hanji", "haanji", "ji", "jee", "yes", "yeah",
-    "yep", "ok", "okay", "bilkul", "sahi", "theek", "thik", "pakka", "zaroor",
-    "jarur", "jaroor", "correct", "right", "sure",
-    "हाँ", "हां", "हा", "हाँजी", "हांजी", "जी", "बिल्कुल", "बिलकुल", "सही",
-    "ठीक", "पक्का", "ज़रूर", "जरूर",
-})
-_BARE_NO_WORDS = frozenset({
-    "nahi", "nahin", "nhi", "na", "no", "nope", "नहीं", "नही", "ना", "नो",
-})
-_BARE_FILLERS = frozenset({
-    "to", "toh", "tho", "hai", "tha", "bhai", "sir", "hmm", "hm", "umm", "arre",
-    "are", "ye", "yeh", "wo", "woh", "ab", "bas", "hi", "bhi",
-    "है", "था", "तो", "भाई", "अरे", "ये", "वो", "अब", "बस", "ही", "भी", "जी",
-})
-_BARE_TOKEN_SPLIT = re.compile(r"[\s,.;:!?।\-\"'()\[\]]+")
-
-
-def _bare_yes_no(text: str) -> str | None:
-    """"yes" / "no" when the utterance is ONLY affirmation/negation words."""
-    tokens = [t.lower() for t in _BARE_TOKEN_SPLIT.split(text or "") if t]
-    if not tokens:
-        return None
-    yes = no = False
-    for token in tokens:
-        if token in _BARE_NO_WORDS:
-            no = True
-        elif token in _BARE_YES_WORDS:
-            yes = True
-        elif token in _BARE_FILLERS:
-            continue
-        else:
-            return None
-    if no:
-        return "no"      # "ji nahi" / "haan nahi" — the negation is the answer
-    return "yes" if yes else None
-
-
-def _strip_bare_words(text: str) -> str:
-    """The utterance without its leading/trailing yes-no and filler words, so
-    "हाँ, customer को call किया था" leaves only the field-level evidence."""
-    # Whitespace tokens, compared with their punctuation stripped, so
-    # "didn't" / "customer's" keep their apostrophes for the field matchers.
-    tokens = (text or "").split()
-    # Tense/auxiliary fillers (tha/था/hai) stay: the field matchers may rely
-    # on them ("गया था"); only the yes-no words and discourse fillers go.
-    skip = _BARE_YES_WORDS | _BARE_NO_WORDS | {
-        "to", "toh", "tho", "bhai", "sir", "hmm", "hm", "umm", "arre", "are",
-        "तो", "भाई", "अरे", "जी",
-    }
-    punct = ",.;:!?।-\"'()[]"
-
-    def _bare(token: str) -> bool:
-        return token.strip(punct).lower() in skip
-
-    while tokens and _bare(tokens[0]):
-        tokens.pop(0)
-    while tokens and _bare(tokens[-1]):
-        tokens.pop()
-    return " ".join(tokens).strip(" ,.;:!?।")
-
-
-def _without_bare_surfaces(entity: dict) -> dict:
-    """The entity minus its bare yes/no surfaces ("haan", "nahi", "नहीं"…).
-
-    At a joint yes-no ask a non-bare utterance is judged on field evidence
-    only: an inner "नहीं" in "मैंने customer को call नहीं किया था" belongs to the
-    call, never to the location slot."""
-    synonyms = entity.get("synonyms")
-    if not isinstance(synonyms, dict):
-        return entity
-    bare = _BARE_YES_WORDS | _BARE_NO_WORDS
-    cleaned = {
-        canonical: [x for x in (surfaces or []) if str(x).strip().lower() not in bare]
-        for canonical, surfaces in synonyms.items()
-        if isinstance(surfaces, (list, tuple))
-    }
-    return {**entity, "synonyms": cleaned}
-
-
-def _joint_yes_no_variables(config: dict) -> list[str]:
-    joint = config.get("jointYesNo")
-    if not isinstance(joint, list):
-        return []
-    return [str(item).strip() for item in joint if str(item or "").strip()]
-
-
-def _joint_entity(config: dict, variable: str) -> dict | None:
-    """The alsoCapture entity that describes a joint yes-no variable."""
-    for spec in config.get("alsoCapture") or []:
-        if isinstance(spec, dict) and str(spec.get("variable") or "") == variable:
-            entity = spec.get("entity")
-            if isinstance(entity, dict):
-                return entity
-    return None
-
-
-def _yes_no_from_signal(node: dict, variable: str, signal: str | None) -> str | None:
-    """A bare affirmation/refusal IS the answer to a yes-no ask.
-
-    cv_5729e30fad60: the partner answered the reached+called question with
-    "हा." (Gujarati STT transliteration of हाँ). The lexicon knew "हाँ" only,
-    the turn went off-script (signal=affirm), the LLM improvised a guard
-    question, and the partner's next "नहीं" landed in the still-pending ask as
-    reached = no. The semantic signal already says yes/no — use it.
-    """
-    if signal not in _YES_NO_SIGNALS:
-        return None
-    pair = _yes_no_canonicals(_ask_entity(node, variable))
-    if pair is None:
-        return None
-    return pair[0] if signal == "affirm" else pair[1]
-
-
-def _extract_ask_value(node: dict, variable: str, text: str) -> str | None:
-    from shared.orchestration.entity_extractor import extract_entity
-
-    entity = _ask_entity(node, variable)
-    data_type = str(entity.get("dataType") or "text")
-    has_matcher = bool(
-        entity.get("regexPattern") or entity.get("regexPatterns")
-        or entity.get("allowedValues") or entity.get("synonyms")
-        or entity.get("synonymPatterns")
-    )
-    if data_type == "text" and not has_matcher:
-        # Free-text answer: take the utterance as-is.
-        return text.strip() or None
-    extracted = extract_entity(text, entity)
-    if not extracted.get("matched"):
-        return None
-    return str(extracted.get("value") or extracted.get("maskedValue") or "").strip() or None
 
 
 # ── deterministic readbacks ─────────────────────────────────────────────────
@@ -1382,12 +703,25 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
     start_node = next(
         (n for n in (definition.get("nodes") or []) if n.get("kind") == "start"), None
     ) or next(iter((definition.get("nodes") or [])), None)
-    from shared.orchestration import mdnd_state
-    mdnd_enabled = mdnd_state.enabled(definition)
+    # Definition-level slot semantics (an extension the definition opts into
+    # with ``semanticSlots``); None for ordinary definitions.
+    provider = _extensions.semantic_provider_for(definition)
+    semantic_enabled = provider is not None
+    # Frozen semantics this definition was authored against (see behavior.py).
+    behavior = resolve_behavior(definition)
 
     def _next_of(node_id: str) -> str | None:
         out = edges_from.get(node_id) or []
         return str(out[0].get("to")) if out else None
+
+    def _fallback_target_of(node_id: str) -> str | None:
+        """Target of the node's authored fallback/handoff edge, if any."""
+        fallback = next(
+            (e for e in edges_from.get(node_id, [])
+             if any(t in ("fallback", "handoff") for t in _edge_tokens(e.get("label", "")))),
+            None,
+        )
+        return str(fallback.get("to")) if fallback is not None else None
 
     def _else_edge_of(node_id: str) -> dict | None:
         """The node's authored else/fallback edge, if any."""
@@ -1413,7 +747,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         walked: list[dict] = []
         seen = {node_id}
         cursor = node_id
-        for _ in range(_MAX_LOOKAHEAD_HUBS):
+        for _ in range(behavior.max_lookahead_hubs):
             else_edge = _else_edge_of(cursor)
             if else_edge is None:
                 return None
@@ -1424,7 +758,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             seen.add(hub_id)
             walked.append(else_edge)
             chosen, why, token = _choose_intent_edge_detailed(
-                edge_meta_from.get(hub_id, []), text, signal
+                edge_meta_from.get(hub_id, []), text, signal, behavior
             )
             if chosen is not None and why == "token" and _specific_answer_token(token):
                 return walked, chosen, hub_id
@@ -1591,7 +925,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             current = str(start_node.get("id")) if start_node else None
             awaiting = None
 
-        semantic = state.get("mdnd_extraction") if mdnd_enabled else None
+        semantic = state.get("semantic_extraction") if semantic_enabled else None
         semantic_active = isinstance(semantic, dict)
         semantic_answers = bool(semantic_active and semantic.get("patch"))
         # Slots the semantic extractor DECIDED this turn: only those are shielded
@@ -1599,19 +933,20 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         # deterministic matchers (the extractor may miss, fail or time out).
         semantic_decided: set[str] = set()
         if semantic_active:
-            semantic_decided = mdnd_state.merge_extraction(
+            semantic_decided = provider.merge_extraction(
                 slots, semantic, audit, awaiting or current)
-            audit.append({"action": "mdnd_extraction", "node": awaiting or current,
+            audit.append({"action": "semantic_extraction", "provider": provider.key,
+                          "node": awaiting or current,
                           "failed": bool(semantic.get("failed")),
                           "fields": list((semantic.get("patch") or {}).keys()),
                           "input_tokens": semantic.get("input_tokens", 0),
                           "output_tokens": semantic.get("output_tokens", 0)})
 
         def turn_node(node):
-            effective = (mdnd_state.semantic_node(node, semantic_decided)
+            effective = (provider.semantic_node(node, semantic_decided)
                          if semantic_active else node)
-            if mdnd_enabled and node.get("id") == "n_hub_verify":
-                summary = mdnd_state.summary_fallback(slots, lang)
+            if semantic_enabled and provider.is_summary_hub(node):
+                summary = provider.summary_fallback(slots, lang)
                 if summary:
                     effective = {**effective, "config": {**_node_config(effective), "prompt": summary}}
             return effective
@@ -1640,286 +975,29 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                 replies.append(_question(node, retrying=False, lang=lang))
                 current = None  # stay awaiting
             elif kind == "ask":
-                config = _node_config(node)
-                variable = str(config.get("variable") or node.get("id"))
-                semantic_ask = semantic_active and variable in mdnd_state.FIELDS.values()
-                guarded = signal in _OFF_SCRIPT_SIGNALS or signal == "agent_request"
-                if (
-                    guarded and signal == "question"
-                    and not looks_like_question(text)
-                    and len(text.split()) >= _LITERAL_ANSWER_MIN_WORDS
-                    and _ask_is_free_text(node, variable)
-                ):
-                    # The label says "question", the words do not: a
-                    # statement at a free-text ask IS the answer. Store the
-                    # narrative instead of parking the flow off-script, where
-                    # the LLM only re-asks the same question (cv_7786bc42deca).
-                    audit.append({"action": "question_label_yielded",
-                                  "node": awaiting, "words": len(text.split())})
-                    guarded = False
-                # Numeric-identifier dictation: digits held from earlier turns
-                # of THIS ask continue the same identifier, so "six zero …
-                # <pause> one zero double one" resolves as one value. The
-                # buffer is tried FIRST — a short continuation chunk ("1011")
-                # can look like a complete answer on its own.
-                from shared.orchestration.entity_extractor import (
-                    identifier_length_bounds,
-                )
-                from shared.orchestration.spoken_numbers import (
-                    digits_dominant,
-                    spoken_digit_sequence,
-                )
-
-                expects_digits = _ask_expects_digits(node, variable)
-                buffered = pending_digits.get(awaiting, "") if expects_digits else ""
-                handled = False
-                if expects_digits and buffered and _DIGITS_RESTART_RE.search(text):
-                    # Explicit restart: the partial is wrong — drop it. When
-                    # the same utterance re-dictates digits ("wrong — seven
-                    # zero…"), they seed the fresh buffer below.
-                    pending_digits.pop(awaiting, None)
-                    buffered = ""
-                    audit.append({"action": "identifier_reset",
-                                  "node": awaiting, "reason": "caller_restart"})
-                    if not spoken_digit_sequence(text):
-                        replies.append(canned("wf_digits_restart", lang))
-                        current = None  # stay awaiting, no retry burned
-                        handled = True
-                if (
-                    not handled
-                    and expects_digits
-                    and _DIGITS_READBACK_RE.search(text)
-                ):
-                    # "What did you note?" — answer from the ACTUAL pending
-                    # buffer (masked for sensitive fields), never a claim
-                    # that nothing was heard.
-                    replies.append(
-                        _digits_readback_reply(node, variable, buffered, lang)
-                    )
-                    audit.append({"action": "digits_readback", "node": awaiting,
-                                  "held_digits": len(buffered)})
-                    current = None  # stay awaiting, no retry burned
-                    handled = True
-                dictated = (
-                    not handled and expects_digits and digits_dominant(text)
-                )
-                fresh = spoken_digit_sequence(text) if dictated else ""
-                combined = (buffered + fresh)[:_MAX_PENDING_DIGITS]
-                max_digits = (
-                    identifier_length_bounds(_ask_entity(node, variable))[1]
-                    if expects_digits else _MAX_PENDING_DIGITS
-                )
-                value = None
-                accumulated = False
-                captured_first = False
-                joint_partial = False
-                joint_vars = _joint_yes_no_variables(config) if not expects_digits and not semantic_ask else []
-                if not handled and joint_vars:
-                    # ONE question, TWO yes-no fields (cv_f07c65c4cdb5: "location
-                    # par pahunche the aur call kiya tha?" → "हाँ" must answer
-                    # both). Priority: explicit field evidence (patterns /
-                    # lexicon, via alsoCapture and the own matcher on the text
-                    # WITHOUT its bare yes-no words) → a bare yes/no fills every
-                    # still-open joint field → a partial explicit answer fills
-                    # only its field and the node advances so the flow's single
-                    # ask collects the other half. Never guess the other half.
-                    bare = _bare_yes_no(text)
-                    stripped = _strip_bare_words(text)
-                    before = len(audit)
-                    if bare is None and stripped:
-                        # Field evidence is read from the text WITHOUT its bare
-                        # yes-no words: a leading "haan" belongs to the question
-                        # as a whole, never to one joint field.
-                        _apply_also_capture(node, stripped, slots, audit, awaiting)
-                    captured_first = True
-                    joint_hit = any(
-                        entry.get("action") in _HUB_CAPTURE_ACTIONS
-                        and entry.get("variable") in joint_vars
-                        for entry in audit[before:]
-                    )
-                    if bare is not None:
-                        own_pair = _yes_no_canonicals(_ask_entity(node, variable))
-                        if own_pair is not None:
-                            value = own_pair[0] if bare == "yes" else own_pair[1]
-                        for joint_var in joint_vars:
-                            if slots.get(joint_var) not in (None, ""):
-                                continue
-                            entity = _joint_entity(config, joint_var)
-                            pair = _yes_no_canonicals(entity or {})
-                            if pair is not None:
-                                slots[joint_var] = pair[0] if bare == "yes" else pair[1]
-                                audit.append({"action": "joint_yes_no", "node": awaiting,
-                                              "variable": joint_var, "answer": bare})
-                    else:
-                        if stripped:
-                            evidence_node = {**node, "config": {
-                                **config,
-                                "entity": _without_bare_surfaces(_ask_entity(node, variable)),
-                            }}
-                            value = _extract_ask_value(evidence_node, variable, stripped)
-                        if value is None and joint_hit:
-                            joint_partial = True
-                if not handled and semantic_ask:
-                    # The semantic pass has already resolved EVERY fact. A
-                    # regex or generic refusal signal must not attribute a
-                    # different field's answer to the pending question.
-                    value = slots.get(variable)
-                    captured_first = True
-                    if value is None and config.get("jointYesNo"):
-                        joint_partial = any(slots.get(key) for key in config["jointYesNo"])
-                elif (not handled and semantic_active and variable == "m_issue_description"
-                      and not (semantic_answers or semantic.get("understood"))):
-                    # A garbled first response is not an incident narrative.
-                    captured_first = True
-                elif not handled:
-                    if buffered and fresh:
-                        value = _extract_ask_value(node, variable, combined)
-                        accumulated = value is not None
-                    guarded_free_text = guarded and _ask_is_free_text(node, variable)
-                    if value is None and not guarded_free_text and not joint_vars:
-                        value = _extract_ask_value(node, variable, text)
-                    if value is None and not guarded_free_text and not joint_partial:
-                        value = _yes_no_from_signal(node, variable, signal)
-                        if value is not None:
-                            audit.append({"action": "signal_answer", "node": awaiting,
-                                          "signal": signal})
-                    if value is None and signal is not None:
-                        # The label says "not an answer", yet the words may
-                        # still carry answers to UPCOMING asks ("guard ko
-                        # diya tha, refund kab milega?"): harvest them now so
-                        # an off-script turn never throws them away. At a
-                        # FREE-TEXT ask such a capture is also the proof that
-                        # the caller was answering this very question — the
-                        # LLM called a partner's deduction story 'complaint'
-                        # (cv_3fc5b4c31fe0) and the flow parked off-script,
-                        # lost the next answer too and let the model invent a
-                        # recipient. Store the narrative and move on.
-                        before = len(audit)
-                        _apply_also_capture(node, text, slots, audit, awaiting)
-                        captured_first = True
-                        if guarded_free_text and (semantic_answers or any(
-                            entry.get("action") in _HUB_CAPTURE_ACTIONS
-                            for entry in audit[before:]
-                        )):
-                            audit.append({"action": "capture_evidence",
-                                          "node": awaiting, "signal": signal})
-                            value = text.strip() or None
-                if handled:
-                    pass  # replied above; the ask stays open
-                elif value is not None:
-                    slots[variable] = value
-                    pending_digits.pop(awaiting, None)
-                    node_retries.pop(awaiting, None)
-                    entry = {"action": "slot_filled", "node": awaiting,
-                             "variable": variable}
-                    if accumulated:
-                        entry["accumulated_digits"] = len(combined)
-                    audit.append(entry)
-                    if not captured_first:
-                        _apply_also_capture(node, text, slots, audit, awaiting)
-                    current, awaiting = _next_of(awaiting), None
-                elif joint_partial:
-                    # The partner answered the OTHER half explicitly and said
-                    # nothing about this one: leave it Unknown and move on —
-                    # the flow's single ask for this variable follows.
-                    audit.append({"action": "joint_partial_answer", "node": awaiting,
-                                  "variable": variable})
-                    pending_digits.pop(awaiting, None)
-                    node_retries.pop(awaiting, None)
-                    current, awaiting = _next_of(awaiting), None
-                elif dictated and fresh and len(combined) > max_digits:
-                    # Impossible buffer: longer than every length this
-                    # identifier can take, and no matcher accepted it. Keep a
-                    # separately-plausible fresh chunk as the new candidate,
-                    # drop the rest, explain once — and burn a retry so a
-                    # caller stuck in overflow escalates through the normal
-                    # ladder instead of looping forever.
-                    pending_digits.pop(awaiting, None)
-                    kept = fresh if len(fresh) <= max_digits else ""
-                    if kept:
-                        pending_digits[awaiting] = kept
-                    node_retries[awaiting] = node_retries.get(awaiting, 0) + 1
-                    audit.append({"action": "identifier_overflow",
-                                  "node": awaiting,
-                                  "dropped_digits": len(combined) - len(kept),
-                                  "held_digits": len(kept)})
-                    replies.append(canned("wf_digits_overflow", lang))
-                    current = None  # stay awaiting
-                elif dictated and fresh and combined != buffered:
-                    # A partial identifier: hold what was heard, keep the ask
-                    # open, and do not burn a retry — the caller is making
-                    # progress, not failing to answer. The acknowledgement
-                    # reports how many digits are held; the brain paces how
-                    # often a partial turn reaches here at all.
-                    pending_digits[awaiting] = combined
-                    audit.append({"action": "digits_partial", "node": awaiting,
-                                  "held_digits": len(combined)})
-                    replies.append(
-                        canned("wf_digits_partial_count", lang)
-                        .replace("{count}", str(len(combined)))
-                    )
-                    current = None  # stay awaiting
-                elif ((semantic_ask and (semantic.get("failed") or
-                       signal not in {"question", "hold", "callback", "agent_request"}))
-                      or (semantic_active and variable == "m_issue_description"
-                          and not semantic_answers)):
-                    # Unknown/unintelligible MDND answers stay on the exact
-                    # missing question, including provider failures.
-                    replies.append(_question(node, retrying=not semantic_answers, lang=lang))
-                    current = None
-                elif signal is not None:
-                    # The caller said something meaningful that the ask's
-                    # matcher did not extract (hardship, complaint, a
-                    # question — or a bare "ठीक है" at a choice question).
-                    # Do not burn a retry, advance, or speak a canned
-                    # "didn't catch that"; the brain answers in context and
-                    # the ask still accepts the next answer.
-                    fixed_reply = ("" if semantic_ask and signal in {
-                        "question", "hold", "callback", "agent_request"
-                    } else _unmatched_reply(node, signal, lang))
-                    if fixed_reply:
-                        audit.append({"action": "unmatched_fixed",
-                                      "node": awaiting, "signal": signal})
-                        replies.append(fixed_reply)
-                    else:
-                        audit.append({"action": "off_script", "node": awaiting,
-                                      "signal": signal})
-                        off_script = True
-                    current = None  # stay awaiting
-                elif _captures_other_field(node, text, slots, audit, awaiting,
-                                           already=captured_first):
-                    # No signal and no own value, but the words answered a
-                    # LATER question ("nahi, kuch nahi bataya tha" while the
-                    # deducted amount is pending): keep the capture, do not burn
-                    # a retry or speak "didn't catch that" — the brain re-asks
-                    # the pending question in context (cv_e31d7ca6470b).
-                    audit.append({"action": "off_script", "node": awaiting,
-                                  "signal": None, "reason": "captured_other_field"})
+                # Answer resolution is a configurable pipeline (see
+                # ask_resolution.py): pre-handlers → value resolvers →
+                # outcome rules. The engine only supplies the definition
+                # closures and applies the decision.
+                ask = _ask.resolve_ask(_ask.AskContext(
+                    node=node, node_id=awaiting, text=text, signal=signal, lang=lang,
+                    slots=slots, audit=audit, pending_digits=pending_digits,
+                    node_retries=node_retries, replies=replies, behavior=behavior,
+                    ask_question=lambda n, retrying, language: _question(n, retrying=retrying, lang=language),
+                    unmatched_reply=lambda n, sig, language: _unmatched_reply(n, sig, language),
+                    next_of=_next_of,
+                    fallback_target=_fallback_target_of,
+                    provider=provider, semantic=semantic,
+                ))
+                current, awaiting = ask.current, ask.awaiting
+                if ask.off_script:
                     off_script = True
-                    current = None  # stay awaiting
-                else:
-                    retries = node_retries.get(awaiting, 0) + 1
-                    node_retries[awaiting] = retries
-                    if retries > _MAX_ASK_RETRIES:
-                        fallback = next(
-                            (e for e in edges_from.get(awaiting, [])
-                             if any(t in ("fallback", "handoff")
-                                    for t in _edge_tokens(e.get("label", "")))),
-                            None,
-                        )
-                        if fallback is not None:
-                            current, awaiting = str(fallback.get("to")), None
-                        else:
-                            status = "handoff"
-                            replies.append(canned("wf_handover", lang))
-                            current, awaiting = None, None
-                    else:
-                        replies.append(_question(node, retrying=True, lang=lang))
-                        current = None  # stay awaiting
+                if ask.status is not None:
+                    status = ask.status
             elif kind == "intent":
                 out_edges = edges_from.get(awaiting, [])
                 chosen, why = _choose_intent_edge(
-                    edge_meta_from.get(awaiting, []), text, signal
+                    edge_meta_from.get(awaiting, []), text, signal, behavior
                 )
                 # The hub's captures run FIRST so every decision below (the
                 # declared correction edge, the acknowledgement, the else
@@ -1971,7 +1049,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                             chosen, why = declared, "correction_edge"
                         else:
                             literal, literal_why, _tok = _choose_intent_edge_detailed(
-                                edge_meta_from.get(awaiting, []), text, None
+                                edge_meta_from.get(awaiting, []), text, None, behavior
                             )
                             if literal is not None and literal_why == "token":
                                 chosen, why = literal, "correction_literal"
@@ -2126,10 +1204,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
 
         # 2. Walk the graph until we need input or the flow terminates.
         steps = 0
-        while current and current in nodes_by_id and steps < _MAX_NODE_STEPS:
+        while current and current in nodes_by_id and steps < behavior.max_node_steps:
             steps += 1
-            if mdnd_enabled and current == "n_hub_verify" and any(
-                value == "unknown" for value in mdnd_state.canonical_slots(slots).values()
+            if semantic_enabled and provider.is_summary_hub(nodes_by_id[current]) and any(
+                value == "unknown" for value in provider.canonical_slots(slots).values()
             ):
                 # A correction may retract an EARLIER fact while a later
                 # question is pending. Never summarize incomplete slots.
@@ -2327,7 +1405,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     reuse_verified_subject = slots.get("customer_verified") is True
                     if entry_signal in _ENTRY_SIGNALS or reuse_verified_subject:
                         chosen, why = _choose_intent_edge(
-                            edge_meta_from.get(current, []), text, entry_signal
+                            edge_meta_from.get(current, []), text, entry_signal, behavior
                         )
                         if chosen is not None and (
                             why == "signal"
@@ -2485,13 +1563,13 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             if current is None and awaiting is None and status == "collecting":
                 status = "done"
 
-        if steps >= _MAX_NODE_STEPS:
+        if steps >= behavior.max_node_steps:
             logger.warning("workflow definition %s exceeded step budget", definition.get("id"))
             status = "error"
             replies.append(canned("wf_error", lang))
 
-        if mdnd_enabled:
-            slots.update(mdnd_state.canonical_slots(slots))
+        if semantic_enabled:
+            slots.update(provider.canonical_slots(slots))
         reply_text = " ".join(r for r in replies if r).strip()
         if not reply_text and not off_script:
             reply_text = canned("wf_anything_else", lang)
@@ -2518,7 +1596,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         return {
             **state,
             "slots": slots,
-            "mdnd_extraction": None,
+            "semantic_extraction": None,
             "node_retries": node_retries,
             "pending_digits": pending_digits,
             "audit": audit,
@@ -2591,7 +1669,7 @@ class WorkflowEngine:
         return self._checkpointer
 
     async def _get_builder_graph(self, workflow_name: str):
-        builder = _GRAPH_BUILDERS[workflow_name]
+        builder = _extensions.graph_builders()[workflow_name]
         key = builder.__name__
         if key not in self._graphs:
             self._graphs[key] = builder(await self._get_checkpointer())
@@ -2646,6 +1724,7 @@ class WorkflowEngine:
         llm=None,
         history: list[dict] | None = None,
         pause_for_context: bool = False,
+        pinned_versions: dict | None = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -2665,7 +1744,10 @@ class WorkflowEngine:
         definition: dict | None = None
         try:
             definition = await to_thread_abandonable(
-                load_workflow_definition, tenant_id, bot_id, workflow_name
+                load_workflow_definition, tenant_id, bot_id, workflow_name,
+                # Pins are passed only when present: the three-argument form
+                # stays valid for every existing loader override.
+                *((pinned_versions,) if pinned_versions else ()),
             )
         except Exception:  # noqa: BLE001 — control-plane DB down ≠ dead call
             logger.exception("workflow definition lookup failed for %s", workflow_name)
@@ -2673,7 +1755,7 @@ class WorkflowEngine:
         if definition is not None:
             graph = await self._get_definition_graph(definition)
             source = "definition"
-        elif workflow_name in _GRAPH_BUILDERS:
+        elif workflow_name in _extensions.graph_builders():
             graph = await self._get_builder_graph(workflow_name)
             source = "builtin"
         else:
@@ -2725,29 +1807,21 @@ class WorkflowEngine:
             "language": language or "",
             "mock_tool_results": mock_tool_results,
             "signal_override": signal,
-            "mdnd_extraction": None,
+            "semantic_extraction": None,
         }
-        from shared.orchestration import mdnd_state
-        if llm is not None and mdnd_state.llm_extraction_enabled(definition):
-            from dataclasses import asdict
-            from shared.orchestration.mdnd_slots import extract_mdnd_slots
-
+        provider = _extensions.semantic_provider_for(definition)
+        if llm is not None and provider is not None and provider.llm_extraction_enabled(definition):
             prior = {} if reset_state else previous
             pending = next((n for n in definition.get("nodes") or []
                             if n.get("id") == prior.get("awaiting")), {})
-            extraction = await extract_mdnd_slots(
+            invocation["semantic_extraction"] = await provider.extract(
                 llm, text=user_text,
-                slots=mdnd_state.canonical_slots(dict(initial_slots or prior.get("slots") or {})),
+                slots=provider.canonical_slots(dict(initial_slots or prior.get("slots") or {})),
                 pending_question=_node_text(pending, "question", "prompt", "text", fallback_label=False),
                 pending_variable=str(_node_config(pending).get("variable") or ""),
+                joint_variables=[str(v) for v in (_node_config(pending).get("jointYesNo") or [])],
                 history=history,
-                pending_fields=tuple(key for key, legacy in mdnd_state.FIELDS.items()
-                                     if key != "delivery_handoff" and legacy in [
-                                         _node_config(pending).get("variable"),
-                                         *(_node_config(pending).get("jointYesNo") or []),
-                                     ]),
             )
-            invocation["mdnd_extraction"] = asdict(extraction)
         if context_values is not None:
             invocation["context_values"] = dict(context_values)
         if initial_slots is not None:
@@ -2788,13 +1862,17 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
-            "extractionUsage": ({key: invocation["mdnd_extraction"].get(key, 0)
+            "extractionUsage": ({key: invocation["semantic_extraction"].get(key, 0)
                                  for key in ("input_tokens", "output_tokens", "requests")}
-                                if invocation.get("mdnd_extraction") is not None else None),
+                                if invocation.get("semantic_extraction") is not None else None),
             "handoffQueue": state.get("handoff_queue"),
             # Off-script: the turn was NOT consumed — the workflow stays at
             # the same node and the caller (brain) must answer contextually.
             "offScript": off_script,
+            "behaviorVersion": resolve_behavior(definition).version,
+            "definitionVersion": (definition or {}).get("version"),
+            "pinned": bool((definition or {}).get("pinned")),
+            "pinMissing": (definition or {}).get("pinMissing"),
             "contextResponse": bool(state.get("context_response")),
             "nodePrompt": state.get("awaiting_prompt"),
             # Set while the flow is paused at an ask collecting a numeric

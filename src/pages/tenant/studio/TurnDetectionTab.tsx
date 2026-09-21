@@ -43,6 +43,7 @@ const SECTION_ICONS: Record<string, IconName> = {
   noise_suppression: "volume",
   speech_buffering: "layers",
   echo_protection: "shield",
+  background_speech: "mic-off",
 };
 
 const cloneOverrides = (value: TurnDetectionOverrides): TurnDetectionOverrides =>

@@ -19,7 +19,7 @@ from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from backend.core.responses import ok
 from shared.db.mysql import get_db
-from shared.models import Release, TestScenario, User, VoiceBot
+from shared.models import Release, TestScenario, User, VoiceBot, Workflow
 from backend.serializers import serialize_release
 from shared.readiness import refresh_readiness
 
@@ -89,6 +89,22 @@ def _build_checklist(db: Session, bot: VoiceBot) -> list[dict]:
         {"id": "c6", "label": "Voice selected & tuned", "ok": readiness.get("r2", False)},
     ]
 
+
+
+def _pin_workflows(db: Session, release: Release, bot: VoiceBot) -> None:
+    """Freeze {workflow_id: version} on the release being published so the
+    runtime keeps executing these revisions even after later saves. No-op
+    until migration a1b2c3d4e5f6 adds the column."""
+    from shared.db.schema_features import column_exists
+
+    if not column_exists("releases", "pinned_workflows"):
+        return
+    rows = db.execute(
+        select(Workflow.id, Workflow.version).where(
+            Workflow.bot_id == bot.id, Workflow.is_deleted.is_(False),
+        )
+    ).all()
+    release.pinned_workflows = {str(wf_id): int(version) for wf_id, version in rows}
 
 @router.get("/bots/{bot_id}/releases")
 def list_releases(
@@ -206,6 +222,7 @@ def update_release_stage(
                     "Publish blocked — checklist incomplete: " + "; ".join(blocked), 422
                 )
         row.published_at = datetime.now(timezone.utc)
+        _pin_workflows(db, row, bot)
         bot.status = "published"
         bot.live_version = row.version
         bot.version = row.version

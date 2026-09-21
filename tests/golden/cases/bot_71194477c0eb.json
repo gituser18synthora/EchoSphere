@@ -1,0 +1,3726 @@
+{
+ "bot": "bot_71194477c0eb",
+ "cases": [
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "01 order status with ETA (7001002)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "7001002"
+    },
+    {
+     "text": "when will it arrive?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001002",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    },
+    {
+     "text": "when will it arrive?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "02 broad where-is-my-order (7001003)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I want to check my order status"
+    },
+    {
+     "text": "7001003"
+    },
+    {
+     "text": "where is my order right now?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to check my order status",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001003",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001003"
+     }
+    },
+    {
+     "text": "where is my order right now?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001003"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "03 order amount + discount (7001001)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "what is my order amount?"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "what was the order amount?"
+    },
+    {
+     "text": "and did I get any discount?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "what is my order amount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "what was the order amount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "and did I get any discount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "04 refund status in process (7001006)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my refund?"
+    },
+    {
+     "text": "7001006"
+    },
+    {
+     "text": "where is my refund?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my refund?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001006",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001006"
+     }
+    },
+    {
+     "text": "where is my refund?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001006"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "05 no refund on order (7001007)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "refund status of my order"
+    },
+    {
+     "text": "7001007"
+    },
+    {
+     "text": "where is my refund?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "refund status of my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001007",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "where is my refund?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "06 tracking link over WhatsApp (7001002)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "can you share the tracking link?"
+    },
+    {
+     "text": "7001002"
+    },
+    {
+     "text": "send me the tracking link"
+    },
+    {
+     "text": "that's all, thanks"
+    }
+   ],
+   "expected": [
+    {
+     "text": "can you share the tracking link?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001002",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    },
+    {
+     "text": "send me the tracking link",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_api_tracklink",
+      "n_msg_tracklink_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've sent the tracking link on WhatsApp to your registered number. You can tap it anytime to see the live status. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    },
+    {
+     "text": "that's all, thanks",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_end_thanks"
+     ],
+     "reply": "Thank you for calling Honasa customer care. Have a lovely day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "07 tracking not live yet (7001004)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "track my order"
+    },
+    {
+     "text": "7001004"
+    },
+    {
+     "text": "send me the tracking link"
+    }
+   ],
+   "expected": [
+    {
+     "text": "track my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001004",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001004"
+     }
+    },
+    {
+     "text": "send me the tracking link",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_api_tracklink",
+      "n_msg_tracklink_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've sent the tracking link on WhatsApp to your registered number. You can tap it anytime to see the live status. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001004"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "08 ETA unavailable — honest answer (7001004)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "when will my order arrive?"
+    },
+    {
+     "text": "7001004"
+    },
+    {
+     "text": "when will it be delivered?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "when will my order arrive?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001004",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001004"
+     }
+    },
+    {
+     "text": "when will it be delivered?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001004"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "09 lookup by registered phone (9876501003)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "my registered number is 9876501003"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "my registered number is 9876501003",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "9876501003"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "10 phone with multiple orders (9876509999)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "order status please"
+    },
+    {
+     "text": "9876509999"
+    },
+    {
+     "text": "what is the status?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "order status please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "9876509999",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "9876509999"
+     }
+    },
+    {
+     "text": "what is the status?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "9876509999"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "11 change-of-mind return raised (7001001)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I want to return my product"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "I just don't need it anymore"
+    },
+    {
+     "text": "yes please"
+    },
+    {
+     "text": "no, that's all"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to return my product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_replacement_request",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "I just don't need it anymore",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "yes please",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_api_escalate",
+      "n_handover"
+     ],
+     "reply": "Please stay on the line while I connect you to our support team.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "no, that's all",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "12 return window closed (7001005)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I want to return my order"
+    },
+    {
+     "text": "7001005"
+    },
+    {
+     "text": "I don't need it anymore"
+    },
+    {
+     "text": "yes, connect me"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to return my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_replacement_request",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001005",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "I don't need it anymore",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "yes, connect me",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_api_escalate",
+      "n_handover"
+     ],
+     "reply": "Please stay on the line while I connect you to our support team.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001005"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "13 non-returnable category (7001008)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "can I return my product?"
+    },
+    {
+     "text": "7001008"
+    },
+    {
+     "text": "can I return this product?"
+    },
+    {
+     "text": "no, it's okay"
+    }
+   ],
+   "expected": [
+    {
+     "text": "can I return my product?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_eligibility",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001008",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001008"
+     }
+    },
+    {
+     "text": "can I return this product?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001008"
+     }
+    },
+    {
+     "text": "no, it's okay",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_msg_okay_more",
+      "n_hub_more"
+     ],
+     "reply": "Alright. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001008"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "14 eligibility question answered (7001007)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "can I return my product?"
+    },
+    {
+     "text": "7001007"
+    },
+    {
+     "text": "can I return this?"
+    },
+    {
+     "text": "no, I was just asking"
+    }
+   ],
+   "expected": [
+    {
+     "text": "can I return my product?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_eligibility",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001007",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "can I return this?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "no, I was just asking",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_msg_okay_more",
+      "n_hub_more"
+     ],
+     "reply": "Alright. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "15 damaged -> replacement (7001011)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I received a damaged product"
+    },
+    {
+     "text": "7001011"
+    },
+    {
+     "text": "the face wash arrived damaged"
+    },
+    {
+     "text": "the tube is torn and it leaked everywhere"
+    },
+    {
+     "text": "replacement please"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I received a damaged product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "damaged_or_quality_issue",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001011",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "the face wash arrived damaged",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_dmg"
+     ],
+     "reply": "I'm really sorry about that. Could you tell me which product was damaged and what the damage looks like?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "the tube is torn and it leaked everywhere",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_dmg",
+      "n_intent_dmg_choice"
+     ],
+     "reply": "Thank you for the details. Would you prefer a replacement, or would you like to return it for a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the tube is torn and it leaked everywhere",
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "replacement please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_dmg_choice",
+      "n_api_dmg_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the tube is torn and it leaked everywhere",
+      "order_ref": "7001011"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "16 damaged -> refund (7001001)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "my product came broken"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "the hair oil bottle is broken"
+    },
+    {
+     "text": "the cap cracked and half the oil spilled"
+    },
+    {
+     "text": "I'd like a refund, return it"
+    }
+   ],
+   "expected": [
+    {
+     "text": "my product came broken",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "damaged_or_quality_issue",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "the hair oil bottle is broken",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_dmg"
+     ],
+     "reply": "I'm really sorry about that. Could you tell me which product was damaged and what the damage looks like?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "the cap cracked and half the oil spilled",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_dmg",
+      "n_intent_dmg_choice"
+     ],
+     "reply": "Thank you for the details. Would you prefer a replacement, or would you like to return it for a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the cap cracked and half the oil spilled",
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "I'd like a refund, return it",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_dmg_choice",
+      "n_api_dmg_ret",
+      "n_msg_return_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised your return request. The return link will be shared over WhatsApp on your registered number; please complete the return by following that link. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the cap cracked and half the oil spilled",
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "17 wrong item -> correct product (7001011)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I received the wrong product"
+    },
+    {
+     "text": "7001011"
+    },
+    {
+     "text": "you sent me the wrong item"
+    },
+    {
+     "text": "I got a face serum but I had ordered the radiance face wash"
+    },
+    {
+     "text": "send the correct product"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I received the wrong product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "wrong_or_missing_item",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001011",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "you sent me the wrong item",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_wrong"
+     ],
+     "reply": "I apologize for the inconvenience. Could you tell me what you received, and what you had actually ordered?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "I got a face serum but I had ordered the radiance face wash",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_wrong",
+      "n_intent_wrong_choice"
+     ],
+     "reply": "Thanks for confirming. Would you like the correct product as a replacement, or would you prefer to return it for a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011",
+      "wrong_details": "I got a face serum but I had ordered the radiance face wash"
+     }
+    },
+    {
+     "text": "send the correct product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_wrong_choice",
+      "n_api_wrong_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011",
+      "wrong_details": "I got a face serum but I had ordered the radiance face wash"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "18 missing item -> send item (7001012)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "an item is missing from my order"
+    },
+    {
+     "text": "7001012"
+    },
+    {
+     "text": "one item is missing from the box"
+    },
+    {
+     "text": "the aloe vera gel is missing"
+    },
+    {
+     "text": "please send the missing item"
+    }
+   ],
+   "expected": [
+    {
+     "text": "an item is missing from my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "wrong_or_missing_item",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001012",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001012"
+     }
+    },
+    {
+     "text": "one item is missing from the box",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_missing"
+     ],
+     "reply": "Sorry about that! Could you tell me which item is missing or incomplete in your order?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001012"
+     }
+    },
+    {
+     "text": "the aloe vera gel is missing",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_missing",
+      "n_intent_missing_choice"
+     ],
+     "reply": "Thank you. Would you like us to send the missing item, or would you prefer a refund for it?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "missing_details": "the aloe vera gel is missing",
+      "order_ref": "7001012"
+     }
+    },
+    {
+     "text": "please send the missing item",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_missing_choice",
+      "n_api_missing_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "missing_details": "the aloe vera gel is missing",
+      "order_ref": "7001012"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "19 defective/expired -> replacement (7001007)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I received an expired product"
+    },
+    {
+     "text": "7001007"
+    },
+    {
+     "text": "the product is past its expiry date"
+    },
+    {
+     "text": "the moisturizer expired last month"
+    },
+    {
+     "text": "replacement"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I received an expired product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "damaged_or_quality_issue",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001007",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "the product is past its expiry date",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_defect"
+     ],
+     "reply": "I'm sorry about this. Could you tell me which product it is, and whether it's not working properly or past its expiry?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "the moisturizer expired last month",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_defect",
+      "n_intent_defect_choice"
+     ],
+     "reply": "Thank you for sharing that. Would you prefer a replacement, or a return with a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "defect_details": "the moisturizer expired last month",
+      "order_ref": "7001007"
+     }
+    },
+    {
+     "text": "replacement",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_defect_choice",
+      "n_api_defect_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "defect_details": "the moisturizer expired last month",
+      "order_ref": "7001007"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "20 quality window closed -> agent (7001005)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I received a damaged product"
+    },
+    {
+     "text": "7001005"
+    },
+    {
+     "text": "it arrived damaged"
+    },
+    {
+     "text": "the colour tube was crushed"
+    },
+    {
+     "text": "replacement please"
+    },
+    {
+     "text": "yes please connect me"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I received a damaged product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "damaged_or_quality_issue",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001005",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "it arrived damaged",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_dmg"
+     ],
+     "reply": "I'm really sorry about that. Could you tell me which product was damaged and what the damage looks like?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "the colour tube was crushed",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_dmg",
+      "n_intent_dmg_choice"
+     ],
+     "reply": "Thank you for the details. Would you prefer a replacement, or would you like to return it for a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the colour tube was crushed",
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "replacement please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_dmg_choice",
+      "n_api_dmg_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the colour tube was crushed",
+      "order_ref": "7001005"
+     }
+    },
+    {
+     "text": "yes please connect me",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "damage_details": "the colour tube was crushed",
+      "order_ref": "7001005"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "21 vague reason defaults to return (7001001)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I want to return my product"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "I want to return it"
+    },
+    {
+     "text": "nothing wrong, I just don't want it"
+    },
+    {
+     "text": "haan, kar do"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to return my product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_replacement_request",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "I want to return it",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_intent_reason"
+     ],
+     "reply": "Sure, I can help with that. Could you tell me what the issue is — is the product damaged, wrong or missing, is it defective or expired, or do you simply no longer need it?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "nothing wrong, I just don't want it",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_reason",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "haan, kar do",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_api_escalate",
+      "n_handover"
+     ],
+     "reply": "Please stay on the line while I connect you to our support team.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "22 return declined at confirm (7001001)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "return my order"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "I don't need it anymore"
+    },
+    {
+     "text": "no, not now"
+    },
+    {
+     "text": "nothing else, thanks"
+    }
+   ],
+   "expected": [
+    {
+     "text": "return my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "return_replacement_request",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "I don't need it anymore",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "no, not now",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_msg_okay_more",
+      "n_hub_more"
+     ],
+     "reply": "Alright. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "nothing else, thanks",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_end_thanks"
+     ],
+     "reply": "Thank you for calling Honasa customer care. Have a lovely day!",
+     "done": true,
+     "status": "done",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "23 wrong then correct order id (retry lookup)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "1234567"
+    },
+    {
+     "text": "sorry, it is 7001003"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "1234567",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "1234567"
+     }
+    },
+    {
+     "text": "sorry, it is 7001003",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "order_ref": "1234567"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "24 unknown order id twice -> escalation (handoff)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "order status please"
+    },
+    {
+     "text": "1234567"
+    },
+    {
+     "text": "9999999"
+    },
+    {
+     "text": "yes please"
+    }
+   ],
+   "expected": [
+    {
+     "text": "order status please",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "1234567",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "1234567"
+     }
+    },
+    {
+     "text": "9999999",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "order_ref": "1234567"
+     }
+    },
+    {
+     "text": "yes please",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "order_ref": "1234567"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "25 request changes mid-call (status -> return)",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "when was it delivered?"
+    },
+    {
+     "text": "actually, I want to return it"
+    },
+    {
+     "text": "I just don't need it anymore"
+    },
+    {
+     "text": "yes"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "when was it delivered?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "actually, I want to return it",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_intent_reason"
+     ],
+     "reply": "Sure, I can help with that. Could you tell me what the issue is — is the product damaged, wrong or missing, is it defective or expired, or do you simply no longer need it?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "I just don't need it anymore",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_reason",
+      "n_cond_eligible",
+      "n_msg_ret_ineligible",
+      "n_intent_agent_offer"
+     ],
+     "reply": "I'm sorry — this order isn't eligible for a return under the return policy, which allows returns within seven days of delivery for eligible products. Would you like me to connect you to a support executive about this?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_agent_offer",
+      "n_api_escalate",
+      "n_handover"
+     ],
+     "reply": "Please stay on the line while I connect you to our support team.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "26 off-script question mid-flow, then continues",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I received a damaged product"
+    },
+    {
+     "text": "7001011"
+    },
+    {
+     "text": "the face wash is damaged"
+    },
+    {
+     "text": "the pump is broken"
+    },
+    {
+     "text": "which one is faster?"
+    },
+    {
+     "text": "okay, replacement then"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I received a damaged product",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "damaged_or_quality_issue",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001011",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "the face wash is damaged",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_ask_dmg"
+     ],
+     "reply": "I'm really sorry about that. Could you tell me which product was damaged and what the damage looks like?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "the pump is broken",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_dmg",
+      "n_intent_dmg_choice"
+     ],
+     "reply": "Thank you for the details. Would you prefer a replacement, or would you like to return it for a refund?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the pump is broken",
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "which one is faster?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_dmg_choice"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {
+      "damage_details": "the pump is broken",
+      "order_ref": "7001011"
+     }
+    },
+    {
+     "text": "okay, replacement then",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_intent_dmg_choice",
+      "n_api_dmg_rep",
+      "n_msg_replace_ok",
+      "n_hub_more"
+     ],
+     "reply": "Done — I've raised the replacement request. You'll also receive a link on WhatsApp on your registered number with the next steps. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "damage_details": "the pump is broken",
+      "order_ref": "7001011"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "27 repeated question re-answered",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "what is my order amount?"
+    },
+    {
+     "text": "7001001"
+    },
+    {
+     "text": "what is my order amount?"
+    },
+    {
+     "text": "sorry, what was the amount again?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "what is my order amount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001001",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "what is my order amount?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    },
+    {
+     "text": "sorry, what was the amount again?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub_more",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001001"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "34 spoken digit dictation",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "seven zero zero one zero zero two"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "seven zero zero one zero zero two",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "35 id and question in one utterance",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "where is my order?"
+    },
+    {
+     "text": "7001002, when will it arrive?"
+    },
+    {
+     "text": "when will it arrive?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "where is my order?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001002, when will it arrive?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    },
+    {
+     "text": "when will it arrive?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_hub",
+      "n_msg_order_answer",
+      "n_hub_more"
+     ],
+     "reply": "I have your order details here — please tell me which detail you need: the status, delivery, amount, or refund. Is there anything else I can help you with — your order, or a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001002"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "36 hindi entry stays in flow",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "मेरा ऑर्डर कहाँ है"
+    },
+    {
+     "text": "7001003"
+    }
+   ],
+   "expected": [
+    {
+     "text": "मेरा ऑर्डर कहाँ है",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "7001003",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Honasa order support journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_ask_order",
+      "n_api_lookup",
+      "n_hub"
+     ],
+     "reply": "Thank you! Give me a moment while I pull up your order. I've found your order. Would you like the order status and delivery details, or help with a return or replacement?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {
+      "order_ref": "7001003"
+     }
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "28 cancellation out of scope -> handoff",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I want to cancel my order"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I want to cancel my order",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "cancellation_out_of_scope",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "29 complaint escalation -> handoff",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "my issue is not resolved, I want to complain"
+    }
+   ],
+   "expected": [
+    {
+     "text": "my issue is not resolved, I want to complain",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "intent_handoff",
+      "intent": "complaint_escalation",
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "30 explicit agent request -> handoff",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "please connect me to an agent"
+    }
+   ],
+   "expected": [
+    {
+     "text": "please connect me to an agent",
+     "signal": "agent_request",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "handoff",
+      "reason": "explicit_transfer_request",
+      "intent": null,
+      "action": "transfer"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "31 stray refund word stays in the order flow",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "I don't need a refund, just tell me where my order is"
+    }
+   ],
+   "expected": [
+    {
+     "text": "I don't need a refund, just tell me where my order is",
+     "signal": null,
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "intent_workflow",
+      "intent": "order_information",
+      "action": "wf_c449f1421055"
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "32 unsupported request -> polite decline",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "can you recommend a good sunscreen for oily skin?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "can you recommend a good sunscreen for oily skin?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  },
+  {
+   "runner": "honasa/tests/run_chat_scenarios.py",
+   "name": "33 return policy from knowledge base",
+   "bot": "bot_71194477c0eb",
+   "turns": [
+    {
+     "text": "what is your return policy?"
+    }
+   ],
+   "expected": [
+    {
+     "text": "what is your return policy?",
+     "signal": "question",
+     "question_shape": true,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "chat",
+      "reason": "default_chat",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n_start",
+      "n_ask_order"
+     ],
+     "reply": "Sure — please share the exact seven-digit order ID slowly, one digit at a time, or the ten-digit mobile number registered with the order.",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

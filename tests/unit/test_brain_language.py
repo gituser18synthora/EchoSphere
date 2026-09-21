@@ -320,6 +320,10 @@ class TestShortAnswersInsideAWorkflow:
         assert brain._conversation_language == "en-IN"
 
     async def test_outside_a_workflow_the_old_threshold_applies(self):
+        # "Yes please" is a recognizable reply: two content words plus the
+        # platform's own reply lexicon switch at once (unlike a hum such as
+        # "Hmm hmm try ya", which never switches by itself — see
+        # test_language_switch_guard).
         brain = make_brain()
         await brain._maybe_switch_language("Yes please", "en-IN")
         assert brain._conversation_language == "en-IN"

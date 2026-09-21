@@ -1,0 +1,117 @@
+{
+ "bot": "bot-101",
+ "cases": [
+  {
+   "bot": "bot-101",
+   "name": "appointment concierge: book",
+   "language": "en-US",
+   "turns": [
+    {
+     "text": "yes"
+    },
+    {
+     "text": "I want to book an appointment tomorrow"
+    },
+    {
+     "text": "10 am"
+    },
+    {
+     "text": "yes"
+    }
+   ],
+   "expected": [
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "chat",
+      "reason": "smalltalk",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n1",
+      "n2",
+      "n3"
+     ],
+     "reply": "Welcome greeting How can I help you today?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "I want to book an appointment tomorrow",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n3",
+      "n4",
+      "n5",
+      "n9"
+     ],
+     "reply": "I'm having trouble capturing that. Let me connect you with an agent.",
+     "done": true,
+     "status": "handoff",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "10 am",
+     "signal": null,
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": false,
+     "route": {
+      "kind": "clarify",
+      "reason": "too_short",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n1",
+      "n2",
+      "n3"
+     ],
+     "reply": "Welcome greeting How can I help you today?",
+     "done": false,
+     "status": "collecting",
+     "offScript": false,
+     "slots": {}
+    },
+    {
+     "text": "yes",
+     "signal": "affirm",
+     "question_shape": false,
+     "hangup": false,
+     "leading_affirm": true,
+     "route": {
+      "kind": "workflow",
+      "reason": "active_workflow:Booking journey",
+      "intent": null,
+      "action": null
+     },
+     "trace": [
+      "n3"
+     ],
+     "reply": "",
+     "done": false,
+     "status": "collecting",
+     "offScript": true,
+     "slots": {}
+    }
+   ]
+  }
+ ]
+}

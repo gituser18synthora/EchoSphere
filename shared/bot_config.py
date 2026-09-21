@@ -415,6 +415,9 @@ class ResolvedBotConfig:
     # voice-configuration problems found at resolution time ({locale: message}).
     languages: list[str] = field(default_factory=list)
     language_warnings: dict = field(default_factory=dict)
+    # {workflow_id: version} pinned by the published release; {} = run the
+    # latest saved version (pre-pinning releases and cached snapshots).
+    workflow_pins: dict = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -517,6 +520,29 @@ def select_greeting_variant(variants, language: str | None) -> str | None:
             if str(variant.get("language") or "").split("-", 1)[0].lower() == base:
                 return variant["content"]
     return usable[0]["content"]
+
+
+def _published_workflow_pins(session, bot) -> dict:
+    """{workflow_id: version} frozen by the bot's published release, when the
+    schema carries release pins (migration a1b2c3d4e5f6) and the release
+    recorded any; {} otherwise (= latest saved version, the historical rule)."""
+    from shared.db.schema_features import column_exists
+    from shared.models import Release
+
+    if bot.status != "published" or not column_exists("releases", "pinned_workflows"):
+        return {}
+    try:
+        release = session.execute(
+            select(Release).where(
+                Release.bot_id == bot.id, Release.stage == "published",
+                Release.is_deleted.is_(False),
+            ).order_by(Release.published_at.desc()).limit(1)
+        ).scalars().first()
+        pins = release.pinned_workflows if release is not None else None
+    except Exception:  # noqa: BLE001 — pins are an optimisation of safety, never a call blocker
+        logger.exception("could not read release workflow pins for bot %s", bot.id)
+        return {}
+    return {str(k): int(v) for k, v in (pins or {}).items() if str(v).isdigit()}
 
 
 def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig:
@@ -861,6 +887,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             bot_name=bot.name,
             use_case=bot.use_case or "",
             version=bot.live_version or bot.version or "draft",
+            workflow_pins=_published_workflow_pins(session, bot),
             published=bot.status == "published",
             language=default_language,
             greeting=greeting or f"Hello! You've reached {bot.name}. How can I help you today?",
