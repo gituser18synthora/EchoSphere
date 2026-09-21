@@ -16,8 +16,8 @@ class MDNDSemanticSlots:
     key = "mdnd_v1"
     fields = state.FIELDS
 
-    def llm_extraction_enabled(self, definition: dict) -> bool:
-        return state.llm_extraction_enabled(definition)
+    def llm_extraction_enabled(self, definition: dict, language: str = "") -> bool:
+        return state.llm_extraction_enabled(definition, language)
 
     def canonical_slots(self, slots: dict) -> dict:
         return state.canonical_slots(slots)
@@ -45,7 +45,8 @@ class MDNDSemanticSlots:
         return state.is_narrative_ask(node, variable)
 
     async def extract(self, llm: Any, *, text: str, slots: dict, pending_question: str,
-                      pending_variable: str, joint_variables: list[str], history: Any) -> dict:
+                      pending_variable: str, joint_variables: list[str], history: Any,
+                      language: str = "") -> dict:
         """Run the LLM four-fact extractor for this turn (as a plain dict for
         the checkpointed state). Only the facts the pending ask collects are
         'pending' — the handover recipient is never guessed from a yes/no ask."""
@@ -57,6 +58,7 @@ class MDNDSemanticSlots:
         extraction = await extract_mdnd_slots(
             llm, text=text, slots=slots, pending_question=pending_question,
             pending_variable=pending_variable, history=history, pending_fields=pending_fields,
+            language=language,
         )
         return asdict(extraction)
 

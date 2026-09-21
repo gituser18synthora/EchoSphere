@@ -30,6 +30,7 @@ def collector(monkeypatch):
     for node in nodes:
         if node["id"] == "n_start":
             node["config"]["semanticExtraction"] = "llm"
+            node["config"].pop("semanticExtractionLanguages", None)
     definition = {"id": "wf_semantic_mdnd", "name": "MDND", "version": 1,
                   "nodes": nodes, "edges": edges}
     monkeypatch.setattr(wfe, "load_workflow_definition", lambda *args: definition)

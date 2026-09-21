@@ -1310,7 +1310,7 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     # ``consumedDirective``) is spoken and the flow moves on.
                     before = len(audit)
                     _apply_also_capture(node, offered, slots, audit, current)
-                    if semantic_answers or any(
+                    if semantic_answers or _ask._understood_narrative(node, semantic, signal) or any(
                         entry.get("action") in _HUB_CAPTURE_ACTIONS
                         for entry in audit[before:]
                     ):
@@ -1810,7 +1810,8 @@ class WorkflowEngine:
             "semantic_extraction": None,
         }
         provider = _extensions.semantic_provider_for(definition)
-        if llm is not None and provider is not None and provider.llm_extraction_enabled(definition):
+        if (llm is not None and provider is not None
+                and provider.llm_extraction_enabled(definition, language or "")):
             prior = {} if reset_state else previous
             pending = next((n for n in definition.get("nodes") or []
                             if n.get("id") == prior.get("awaiting")), {})
@@ -1821,6 +1822,7 @@ class WorkflowEngine:
                 pending_variable=str(_node_config(pending).get("variable") or ""),
                 joint_variables=[str(v) for v in (_node_config(pending).get("jointYesNo") or [])],
                 history=history,
+                language=language or "",
             )
         if context_values is not None:
             invocation["context_values"] = dict(context_values)

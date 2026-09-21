@@ -32,7 +32,7 @@ def enabled(definition):
                for node in (definition or {}).get("nodes") or [])
 
 
-def llm_extraction_enabled(definition):
+def llm_extraction_enabled(definition, language=""):
     """Whether the per-turn LLM slot extractor runs for this definition.
 
     ``semanticSlots: mdnd_v1`` alone enables the deterministic state guards
@@ -41,10 +41,19 @@ def llm_extraction_enabled(definition):
     node — because it adds a model round-trip to every workflow turn and its
     patches are only as reliable as the model; the authored matchers stay the
     baseline either way.
+
+    ``semanticExtractionLanguages`` optionally limits that opt-in to base
+    language codes (e.g. ["en"]). Unlisted/unknown languages keep the exact
+    deterministic path; an omitted allowlist preserves older definitions.
     """
     return any(
         (node.get("config") or {}).get("semanticSlots") == "mdnd_v1"
         and str((node.get("config") or {}).get("semanticExtraction") or "").lower() == "llm"
+        and (
+            (node.get("config") or {}).get("semanticExtractionLanguages") is None
+            or (language or "").split("-")[0].lower()
+            in (node.get("config") or {}).get("semanticExtractionLanguages", [])
+        )
         for node in (definition or {}).get("nodes") or []
     )
 

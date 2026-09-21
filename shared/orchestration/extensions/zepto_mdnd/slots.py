@@ -107,6 +107,33 @@ alongside a clear support-call statement do not invalidate that statement.
 """,
 }
 
+_ENGLISH_RULES = """
+English call examples (output ONLY your target_field, omit every other field):
+- 'Yes, I am a delivery partner' is identity only: {"patch":{}, "understood":false}.
+- 'I have delivered the order to correct customer but still the amount has
+  been deducted under MDND' proves delivery_handoff=customer ONLY. It does
+  NOT say whether the partner reached the address or either call happened.
+- 'I have given the correct product to the customer' likewise proves only
+  delivery_handoff=customer. Given/gave/delivered/handed are completed actions.
+- 'I delivered the order to correct customer but still the amount work has
+  been deducted. Under NBND.' proves delivery_handoff=customer despite speech
+  recognition errors in the deduction acronym. Do not discard the clear fact.
+- 'My amount has been deducted under MDND' is an intelligible complaint:
+  {"patch":{}, "understood":true}. Unknown facts must be OMITTED, never set to no.
+- 'The customer told me to give it to the guard' is an instruction only;
+  it proves no completed handover or location. An actual later action wins.
+- 'I still have the order' proves no handover, NOT failure to reach a location.
+Return valid JSON with double-quoted keys, colons and boolean true/false.
+Example for target_field delivery_handoff:
+{"patch":{"delivery_handoff":"customer"},"evidence":{"delivery_handoff":"I have given the correct product to the customer"},"explicit_retractions":[],"drop_location":null,"recipient_detail":null,"handoff_type":"person","understood":true}
+Use an exact quote from the actual latest utterance, not from this example.
+For evidence, copy the ENTIRE latest_partner_utterance string verbatim. Do
+not rewrite a clause into a sentence or insert 'I'. For example, from
+"Yes, I reached the customer's location and called the customer before delivery."
+both reached_location=yes and customer_called=yes use that exact full string
+as their own evidence, not "I called the customer before delivery."
+"""
+
 
 
 @dataclass(frozen=True)
@@ -196,6 +223,53 @@ def _validate_response(raw: str, text: str, *, input_tokens: int = 0,
     )
 
 
+def _ground_english_evidence(result: MDNDExtraction,
+                             pending_fields: tuple[str, ...]) -> MDNDExtraction:
+    """Missing evidence must stay unknown, never become a negative answer.
+
+    Small models sometimes label an unmentioned location as ``no`` even
+    while quoting only a handover. Require an actual denial in English
+    evidence. Contextual short answers remain scoped to the pending fields.
+    This guard is used only by the English extraction path.
+    """
+    from dataclasses import replace
+
+    patch, evidence = dict(result.patch), dict(result.evidence)
+    negative = re.compile(r"\b(?:no|not|never|unable|cannot)\b|n['’]t\b", re.I)
+    topics = {
+        "customer_called": re.compile(r"\b(?:call\w*|phon\w*|rang|ring\w*|dial\w*)\b", re.I),
+        "cx_support_called": re.compile(r"\b(?:call\w*|phon\w*|contact\w*|rang|ring\w*)\b", re.I),
+        "reached_location": re.compile(
+            r"\b(?:reach\w*|arriv\w*|go|went|gone|visit\w*|get|got|been|leave|left)\b", re.I),
+    }
+    support = re.compile(r"\b(?:cx|c\s*x|support|company|team|zepto)\b", re.I)
+    customer = re.compile(r"\b(?:customer|client)\b", re.I)
+    arrival = re.compile(
+        r"\b(?:reach\w*|arriv\w*|went|gone|visit\w*|got|at|there|door\w*|home|house|address|location|flat|gate|building|place)\b", re.I)
+    for name, topic in topics.items():
+        value = patch.get(name)
+        if value not in {"yes", "no"}:
+            continue
+        quote = evidence.get(name, "")
+        contextual = name in pending_fields and _BARE_YES_NO.fullmatch(quote)
+        if contextual:
+            continue
+        unsupported = value == "no" and not (negative.search(quote) and topic.search(quote))
+        if name == "cx_support_called":
+            # Calling the customer never proves that CX called the partner.
+            unsupported |= not support.search(quote) and (
+                name not in pending_fields or bool(customer.search(quote)))
+        elif name == "customer_called":
+            unsupported |= not customer.search(quote) and (
+                name not in pending_fields or bool(support.search(quote)))
+        elif name == "reached_location" and value == "yes":
+            unsupported |= not bool(arrival.search(quote))
+        if unsupported:
+            patch.pop(name, None)
+            evidence.pop(name, None)
+    return replace(result, patch=patch, evidence=evidence)
+
+
 async def extract_mdnd_slots(
     llm: LLMProvider,
     *,
@@ -206,6 +280,7 @@ async def extract_mdnd_slots(
     history: list[dict] | None = None,
     timeout_seconds: float = 6.0,
     pending_fields: tuple[str, ...] | None = None,
+    language: str = "",
 ) -> MDNDExtraction:
     """Return a grounded patch, or no patch on uncertainty/provider failure.
 
@@ -239,12 +314,19 @@ async def extract_mdnd_slots(
     async def extract_field(name: str) -> MDNDExtraction:
         field_payload = {**payload, "stored_slots": {name: known[name]} if name in known else {},
                          "target_field": name}
+        json_options = (
+            {"response_format": {"type": "json_object"}}
+            if language.lower().startswith("en")
+            and getattr(type(llm), "supports_json_output", False) is True else {}
+        )
         try:
             result = await asyncio.wait_for(
                 llm.generate(
                     [{"role": "user", "content": json.dumps(field_payload, ensure_ascii=False)}],
-                    system=_COMMON + "\n" + _FIELD_PROMPTS[name],
+                    system=(_COMMON + "\n" + _FIELD_PROMPTS[name]
+                            + (_ENGLISH_RULES if language.lower().startswith("en") else "")),
                     temperature=0.0, max_tokens=400,
+                    **json_options,
                 ),
                 timeout=max(0.001, min(float(timeout_seconds), 15.0)),
             )
@@ -258,6 +340,8 @@ async def extract_mdnd_slots(
             output_tokens=int(getattr(result, "output_tokens", 0) or 0),
             pending_fields=pending_fields,
         )
+        if language.lower().startswith("en"):
+            validated = _ground_english_evidence(validated, pending_fields)
         # Each independent reader may supply ONLY its field. This prevents a
         # negative about a different call from becoming the pending answer.
         from dataclasses import replace
