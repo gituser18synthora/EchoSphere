@@ -34,10 +34,13 @@ MODEL = "eleven_v3_conversational"
 
 
 def v3_config(ref="env:TEST_EL_V3_KEY", *, language_map=None, fallback=None,
-              model=MODEL):
+              model=MODEL, native_breathing=None):
+    settings = {"stability": 0.5}
+    if native_breathing is not None:
+        settings["native_breathing"] = native_breathing
     return {
         "provider": "elevenlabs", "model": model, "voice": "monika-wire-id",
-        "settings": {"stability": 0.5},
+        "settings": settings,
         "api_key_reference": ref,
         "language_map": language_map or {},
         "fallback": fallback,
@@ -241,3 +244,175 @@ class TestV3DialogueInRouter:
         assert any(f"model_id={MODEL}" in p for p in server.paths)
         # The override's own stability reached the context init.
         assert server.inits[-1]["voice_settings"] == {"stability": 1.0}
+
+
+class TestNativeBreathingRouting:
+    """The Breathing toggle must pick the RIGHT breathing mechanism per
+    effective engine: native tags on v3 Conversational, our clips elsewhere,
+    and never a v3-only audio tag on a model that would speak it aloud."""
+
+    def _naturalness(self, breathing=True):
+        from shared.orchestration.naturalness import SpeechNaturalnessPlanner
+        return SpeechNaturalnessPlanner({
+            "enabled": True, "breathing": breathing, "sentence_breaths": True,
+            "latency_fillers": True, "filler_words": True,
+            "acknowledgements": False, "backchannels": False,
+            "thinking_fillers": False, "latency_filler_ladder": False,
+            "sentence_breath_probability": 1.0,
+        })
+
+    async def test_v3_conversational_breathes_natively(self, monkeypatch):
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=2, tail_chunks=1) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(native_breathing=True),
+                language="hi-IN", sample_rate=8000,
+                recorder=make_recorder("vs_native_on"),
+                naturalness=self._naturalness(True),
+            )
+            # Deterministic: always breathe.
+            monkeypatch.setattr(v3_ws, "_DEFAULT_BREATH_PROBABILITY", 1.0)
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["नमस्ते जी। ", "आपका ऑर्डर कल आएगा।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        texts = server.texts()
+        assert texts, "no text reached the provider"
+        assert texts[0].startswith("[exhales] "), texts
+        # Exactly one breath for the reply, never one per sentence.
+        assert sum(t.count("[exhales]") for t in texts) == 1, texts
+        # The spoken words are unchanged.
+        assert "नमस्ते जी।" in texts[0]
+
+    async def test_breathing_off_sends_no_tag(self, monkeypatch):
+        """Default OFF: with the setting absent, no tag is ever sent — even
+        with the Natural Conversation Breathing control fully ON. The two
+        controls are independent."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=2, tail_chunks=1) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            monkeypatch.setattr(v3_ws, "_DEFAULT_BREATH_PROBABILITY", 1.0)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN", sample_rate=8000,
+                recorder=make_recorder("vs_native_off"),
+                naturalness=self._naturalness(True),   # their Breathing is ON
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["नमस्ते जी।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert all("[exhales]" not in t for t in server.texts()), server.texts()
+
+    async def test_flash_never_receives_an_audio_tag(self, monkeypatch):
+        """Flash v2.5 would SPEAK "[exhales]" aloud. The tag must be
+        structurally unreachable for it, even with Breathing ON."""
+        import shared.providers.tts.elevenlabs_ws as flash_ws
+        from tests.mock_tts_servers import MockElevenLabsServer
+
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsServer(chunks=2) as server:
+            monkeypatch.setattr(flash_ws, "_WS_BASE", server.url)
+            monkeypatch.setattr(v3_ws, "_DEFAULT_BREATH_PROBABILITY", 1.0)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(model="eleven_flash_v2_5"),
+                language="hi-IN", sample_rate=8000,
+                recorder=make_recorder("vs_native_flash"),
+                naturalness=self._naturalness(True),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["नमस्ते जी।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        joined = " ".join(server.texts())
+        assert "[exhales]" not in joined, joined
+        assert "exhales" not in joined, joined
+
+    async def test_per_language_override_decides_on_its_own_model(self, monkeypatch):
+        """Default engine is Flash; the ml-IN override is v3 Conversational.
+        Only the override's engine may breathe natively."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        import shared.providers.tts.elevenlabs_ws as flash_ws
+        from tests.mock_tts_servers import MockElevenLabsServer
+        from voice_runtime.frames import SwitchVoiceLanguageFrame
+
+        async with MockElevenLabsServer(chunks=2) as flash_server, \
+                MockElevenLabsDialogueServer(chunks=2, tail_chunks=1) as v3_server:
+            monkeypatch.setattr(flash_ws, "_WS_BASE", flash_server.url)
+            monkeypatch.setattr(v3_ws, "_WS_BASE", v3_server.url)
+            monkeypatch.setattr(v3_ws, "_DEFAULT_BREATH_PROBABILITY", 1.0)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(model="eleven_flash_v2_5",
+                                     native_breathing=True, language_map={
+                    "ml-IN": {"provider": "elevenlabs", "model": MODEL,
+                              "voice": "monika-wire-id",
+                              "params": {"stability": 0.5, "native_breathing": True},
+                              "api_key_reference": "env:TEST_EL_V3_KEY"},
+                }),
+                language="hi-IN", sample_rate=8000,
+                recorder=make_recorder("vs_native_lang"),
+                naturalness=self._naturalness(True),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["नमस्ते जी।"])              # Flash
+                await worker.queue_frame(SwitchVoiceLanguageFrame(language="ml-IN"))
+                await asyncio.sleep(0.1)
+                await speak_turn(worker, ["നമസ്കാരം."])               # v3conv
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert all("exhales" not in t for t in flash_server.texts()), flash_server.texts()
+        assert any(t.startswith("[exhales] ") for t in v3_server.texts()), v3_server.texts()
+
+    async def test_pause_mode_still_breathes_once_per_reply(self, monkeypatch):
+        """Pause mode dispatches every sentence as its OWN provider context.
+        A per-context guard would therefore tag each sentence — three breaths
+        in one reply, and roughly three times the added latency."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=1, tail_chunks=1) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            monkeypatch.setattr(v3_ws, "_DEFAULT_BREATH_PROBABILITY", 1.0)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(native_breathing=True),
+                language="hi-IN", sample_rate=8000,
+                pause_ms=350,                      # <- pause mode
+                recorder=make_recorder("vs_native_pause"),
+                naturalness=self._naturalness(True),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, [
+                    "पहला वाक्य यहाँ है। ",
+                    "दूसरा वाक्य अब आता है। ",
+                    "और यह आखिरी वाक्य है।",
+                ], settle=2.5)
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        texts = server.texts()
+        assert len(texts) >= 3, texts
+        breaths = sum(t.count("[exhales]") for t in texts)
+        assert breaths == 1, f"expected one breath per reply, got {breaths}: {texts}"
+        assert texts[0].startswith("[exhales] "), texts[0]

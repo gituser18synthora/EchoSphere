@@ -180,6 +180,53 @@ function withCurrent(options: SearchableSelectOption[], value: string): Searchab
   ];
 }
 
+/** Render the currently selected VOICE correctly in three distinct states,
+    which the generic `withCurrent` cannot tell apart:
+
+    1. still loading — the option list is empty only because the fetch has not
+       returned. Showing "<id> (unavailable)" here is wrong twice over: it
+       leaks a raw id as the label and tells the operator a valid voice is
+       broken. The selection is kept, enabled, and labelled as loading.
+    2. stored as the PROVIDER WIRE id (e.g. "f1abxvIEijusskcPWE5x") while the
+       options are keyed by catalog id ("vp-el-monika"). Both forms are
+       persisted by different paths, and `findVoice` accepts either, so the
+       voice is real — it just is not `===` any option value. It is rendered
+       under its readable name and stays selectable.
+    3. genuinely absent from the catalog for this provider/model/language —
+       the original explicit "(unavailable)" entry.
+
+    `voices === undefined` means "not fetched yet"; `[]` means "fetched, none". */
+function withCurrentVoice(
+  options: SearchableSelectOption[],
+  value: string,
+  voices: VoiceOption[] | undefined,
+): SearchableSelectOption[] {
+  if (!value || options.some((o) => o.value === value)) return options;
+  if (voices === undefined) {
+    // No name is knowable yet — show the id plainly, but never claim it is
+    // unavailable and never disable it.
+    return [{ value, label: value, sub: "loading voices…" }, ...options];
+  }
+  const match = findVoice(voices, value);
+  if (match) {
+    // Same voice under its other id form — keep it selected and readable.
+    return [
+      {
+        value,
+        label: `${match.name}${match.source === "cloned" ? " · cloned" : ""}`,
+        sub: [match.gender, match.locale].filter(Boolean).join(" · "),
+        disabled: match.status === "unavailable",
+      },
+      ...options,
+    ];
+  }
+  return [
+    { value, label: `${value} (unavailable)`, sub: "not in the catalog for this selection — pick a replacement", disabled: true },
+    ...options,
+  ];
+}
+
+
 /* ---------- engine state ---------- */
 
 interface SttState { provider: string; model: string; language: string; settings: ProviderSettings }
@@ -521,8 +568,15 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
     setLangMap((m) => {
       const cur = m[locale];
       if (!cur || typeof cur === "string") return m;
-      const v = cur.voice ? findVoice(voicesRef.current[cur.provider], cur.voice) : undefined;
-      const keepVoice = Boolean(v && voiceSupportsModel(v, model) && voiceSupportsLanguage(v, locale));
+      const loaded = voicesRef.current[cur.provider];
+      const v = cur.voice ? findVoice(loaded, cur.voice) : undefined;
+      // A voice is dropped ONLY on evidence that it is incompatible. While the
+      // catalog is still loading there is no evidence, so the operator's
+      // selection is kept and re-validated once the list arrives (the row
+      // status and save-time validation both still flag a real mismatch).
+      const keepVoice = loaded === undefined
+        ? Boolean(cur.voice)
+        : Boolean(v && voiceSupportsModel(v, model) && voiceSupportsLanguage(v, locale));
       return { ...m, [locale]: { ...cur, model, voice: keepVoice ? cur.voice : "" } };
     });
 
@@ -839,7 +893,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
             {tts.provider && (
               <Field label="Voice" plain>
                 <SearchableSelect
-                  options={withCurrent(voiceSelectOptions(tts.provider, tts.model), tts.voice)}
+                  options={withCurrentVoice(voiceSelectOptions(tts.provider, tts.model), tts.voice, voicesRef.current[tts.provider])}
                   value={tts.voice}
                   onChange={(v) => setTts((s) => ({ ...s, voice: v }))}
                   placeholder={voicesRef.current[tts.provider] ? "Select voice…" : "Loading voices…"}
@@ -1061,7 +1115,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                         </Field>
                         <Field label="Voice" plain>
                           <SearchableSelect
-                            options={override ? withCurrent(voiceSelectOptions(override.provider, override.model, locale), override.voice) : []}
+                            options={override ? withCurrentVoice(voiceSelectOptions(override.provider, override.model, locale), override.voice, voicesRef.current[override.provider]) : []}
                             value={override?.voice ?? ""}
                             onChange={(v) => setRowField(locale, { voice: v })}
                             placeholder={override ? (voicesRef.current[override.provider] ? "Select voice…" : "Loading voices…") : "Inherited"}
@@ -1163,7 +1217,7 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                 />
                 <Field label="Fallback voice" plain>
                   <SearchableSelect
-                    options={withCurrent(voiceSelectOptions(fallback.provider, fallback.model), fallback.voice)}
+                    options={withCurrentVoice(voiceSelectOptions(fallback.provider, fallback.model), fallback.voice, voicesRef.current[fallback.provider])}
                     value={fallback.voice}
                     onChange={(v) => setFallback((f) => ({ ...f, voice: v }))}
                     placeholder={voicesRef.current[fallback.provider] ? "Select voice…" : "Loading voices…"}
@@ -1667,7 +1721,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   const speedRange = effectiveSpeedRange(selectedModel);
   const settingsCount = Object.keys(settingsSchema).length;
   const voices = voicesFor(form.provider);
-  const voiceOptions = withCurrent(
+  const voiceOptions = withCurrentVoice(
     (voices ?? [])
       .filter((v) => voiceSupportsModel(v, form.model))
       .map((v) => ({
@@ -1677,6 +1731,7 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
         disabled: v.status === "unavailable",
       })),
     form.voice,
+    voices,
   );
   const textLen = form.text.trim().length;
   const canGenerate = Boolean(form.provider && form.model && form.voice && textLen > 0 && textLen <= 500);

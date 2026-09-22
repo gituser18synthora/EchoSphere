@@ -38,6 +38,11 @@ _ELEVEN_SPEED_RANGE = (0.7, 1.2)
 _DEEPGRAM_SPEED_RANGE = (0.7, 1.5)
 # ElevenLabs models whose voice_settings reject ``speed`` (Eleven v3 alpha).
 _ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
+# ElevenLabs models whose voice_settings accept ONLY ``stability``. The
+# Text-to-Dialogue endpoint documents no other setting and the adapter drops
+# anything else, so Energy must not synthesize a ``style`` for them: the
+# operator would see an Energy control that provably changes nothing.
+_ELEVEN_STABILITY_ONLY_MODELS = {"eleven_v3_conversational"}
 # Sarvam models that accept the v2-only pitch/loudness controls.
 _SARVAM_PITCH_LOUDNESS_MODELS = {"bulbul:v2"}
 
@@ -87,13 +92,17 @@ def delivery_capabilities(
     model = (model or "").strip()
     if provider == "elevenlabs":
         has_rate = speed_param_name(provider, model) is not None
+        # Eleven v3 dialogue models accept only ``stability``: there is no
+        # native Energy target, so the capability must report False rather
+        # than advertise a control the wire silently ignores.
+        has_energy = model not in _ELEVEN_STABILITY_ONLY_MODELS
         # Every REST sentence is an independent request. ElevenLabs WS may
         # vary settings safely only because pause mode creates independent
         # multi-context sub-generations on the existing socket.
         return DeliveryCapabilities(
             speaking_rate=has_rate,
             per_segment_rate=has_rate,
-            energy=True,
+            energy=has_energy,
             emotional_style=True,
             phrase_boundaries=True,
         )
@@ -213,6 +222,10 @@ def energy_params(provider: str, model: str, energy: int | None) -> dict[str, An
         return {}
     level = clamp_level(energy)
     if provider == "elevenlabs":
+        if model in _ELEVEN_STABILITY_ONLY_MODELS:
+            # No native expressiveness knob to map onto — the cross-provider
+            # LLM delivery instruction remains the behavior for these models.
+            return {}
         style = _band_value(_ELEVEN_ENERGY_STYLE, level)
         return {} if style is None else {"style": style}
     if provider == "sarvam" and model in _SARVAM_PITCH_LOUDNESS_MODELS:
