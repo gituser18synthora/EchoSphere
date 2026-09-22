@@ -241,27 +241,48 @@ def sarvam_stt_language_code(language: str | None) -> str:
     return to_provider_language("sarvam", locale) or "unknown"
 
 
+#: ElevenLabs models the realtime WebSocket accepts. Eleven v3 is REST-only:
+#: it can be a bot's DEFAULT engine (every reply then synthesizes over the
+#: segmented REST path) or drive a preview, but it cannot serve a per-language
+#: override or a fallback inside the streaming router — those are rejected by
+#: voice-settings validation ("does not support realtime streaming").
+ELEVENLABS_STREAMING_MODELS = frozenset({
+    "eleven_flash_v2_5", "eleven_turbo_v2_5",
+})
+
+
 def _elevenlabs_unsupported_message(
     model: str | None, platform_code: str | None
 ) -> str:
     """Why this ElevenLabs model cannot speak the language, and what instead.
 
-    Wording is the one the preview API has always returned; it lives here so
-    the provider-neutral dispatcher below can reach it without the callers
-    re-deriving it from :func:`elevenlabs_models_speaking`.
+    The alternative has to say WHERE it can be selected, not just name it:
+    Eleven v3 speaks every EchoSphere language but has no realtime streaming,
+    so "choose eleven_v3" alone walks the operator into the per-language
+    override being rejected by the next validation step.
+
+    It lives here so the provider-neutral dispatcher below can reach it
+    without the callers re-deriving it from :func:`elevenlabs_models_speaking`.
     """
     alternatives = [
         m for m in elevenlabs_models_speaking(platform_code) if m != model
     ]
-    hint = (
-        f" Choose {' or '.join(alternatives)} for this language."
-        if alternatives else
-        " No configured ElevenLabs model speaks it."
-    )
-    return (
+    streaming = [m for m in alternatives if m in ELEVENLABS_STREAMING_MODELS]
+    rest_only = [m for m in alternatives if m not in ELEVENLABS_STREAMING_MODELS]
+    base = (
         f"ElevenLabs model '{model}' does not support language "
-        f"'{platform_code}'.{hint}"
+        f"'{platform_code}'."
     )
+    if streaming:
+        return f"{base} Use {' or '.join(streaming)} for this language."
+    if rest_only:
+        return (
+            f"{base} Only {' or '.join(rest_only)} speaks it, and that model has "
+            "no realtime streaming — select it as the bot's DEFAULT TTS model "
+            "(every reply then synthesizes over REST), or map this language to "
+            "a streaming provider in the per-language voice settings."
+        )
+    return f"{base} No configured ElevenLabs model speaks it."
 
 
 # ── Deepgram TTS (Aura / Aura-2) ─────────────────────────────────────────────

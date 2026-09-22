@@ -29,7 +29,7 @@ from shared.providers.languages import (
     elevenlabs_language_code,
     elevenlabs_models_speaking,
     elevenlabs_supports_language,
-    elevenlabs_unsupported_language_message,
+    tts_unsupported_language_message,
     sarvam_stt_language_code,
 )
 from shared.providers.tts.elevenlabs import ElevenLabsTTS
@@ -94,15 +94,17 @@ class TestModelCapability:
         # per-language override to it is rejected by voice-settings
         # validation. The message must say where it CAN be selected rather
         # than just naming the model.
-        message = elevenlabs_unsupported_language_message(
-            "eleven_flash_v2_5", "ml-IN"
+        message = tts_unsupported_language_message(
+            "elevenlabs", "eleven_flash_v2_5", "ml-IN"
         )
         assert "eleven_v3" in message
         assert "DEFAULT TTS model" in message
         assert "no realtime streaming" in message
 
     def test_guidance_names_a_streaming_model_when_one_exists(self):
-        message = elevenlabs_unsupported_language_message("eleven_v3", "hi-IN")
+        message = tts_unsupported_language_message(
+            "elevenlabs", "eleven_v3", "hi-IN"
+        )
         assert "Use eleven_flash_v2_5 or eleven_turbo_v2_5" in message
 
     def test_short_form_and_casing(self):

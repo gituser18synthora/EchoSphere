@@ -28,7 +28,7 @@ from shared.providers.languages import (
     ELEVENLABS_LANGUAGE_ENFORCING_MODELS,
     elevenlabs_language_code,
     elevenlabs_supports_language,
-    elevenlabs_unsupported_language_message,
+    tts_unsupported_language_message,
 )
 from shared.providers.tts.delivery import provider_speed
 
@@ -69,7 +69,7 @@ def _unsupported_language_error(provider: str, model: str, language: str) -> Pro
     """
     return ProviderError(
         provider, "invalid_input",
-        elevenlabs_unsupported_language_message(model, language),
+        tts_unsupported_language_message("elevenlabs", model, language),
     )
 
 
