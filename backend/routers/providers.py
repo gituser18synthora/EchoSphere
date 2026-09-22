@@ -64,6 +64,7 @@ from shared.errors import ApiError, NotFoundError
 from shared.models import User, VoiceBot, VoiceProfile
 from shared.providers.base import ProviderError
 from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
+from shared.providers.tts.elevenlabs_v3_ws import ElevenLabsV3DialogueTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import TTSStreamSettings
@@ -83,6 +84,14 @@ _STREAMING_PREVIEW_CLIENTS = {
     "sarvam": SarvamWebSocketTTSProvider,
     "elevenlabs": ElevenLabsWebSocketTTSProvider,
     "deepgram": DeepgramWebSocketTTSProvider,
+}
+
+# Models served by a different realtime endpoint than their provider default
+# (ElevenLabs Eleven v3 on the Text-to-Dialogue socket). Mirrors
+# voice_runtime.tts_router._STREAMING_MODEL_PROVIDERS so a preview drives the
+# same adapter a live call would.
+_STREAMING_PREVIEW_MODEL_CLIENTS = {
+    ("elevenlabs", "eleven_v3_conversational"): ElevenLabsV3DialogueTTSProvider,
 }
 
 # Providers with a REST adapter the preview can use for a NON-streaming model
@@ -718,7 +727,9 @@ async def tts_preview(
             api_key=key,
             timeout_seconds=_TEST_TIMEOUT_S,
         )
-        client_cls = _STREAMING_PREVIEW_CLIENTS.get(body.provider)
+        client_cls = _STREAMING_PREVIEW_MODEL_CLIENTS.get(
+            (body.provider, body.model)
+        ) or _STREAMING_PREVIEW_CLIENTS.get(body.provider)
         if client_cls is None:
             raise ApiError(f"Preview is not supported for provider '{body.provider}'.", 422)
         client = client_cls(stream_settings)

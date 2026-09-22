@@ -23,6 +23,9 @@ message it receives for assertions. `behavior` selects failure injection:
                     advisory and must not fail the generation
   bad_config        (Deepgram) reject the WS handshake with HTTP 400, the
                     way a bad model/encoding/sample_rate is reported
+  error_frame       (ElevenLabs dialogue) emit a protocol error on flush and
+                    close the socket, which is what that endpoint does for
+                    every error
 """
 
 from __future__ import annotations
@@ -258,6 +261,151 @@ class MockElevenLabsServer(_BaseMockServer):
                 if message.get("flush") and context_id:
                     pending_flush.add(context_id)
                     await self._emit_audio_burst(websocket, context_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class MockElevenLabsDialogueServer(_BaseMockServer):
+    """Speaks the ElevenLabs Text-to-Dialogue MULTI-context protocol.
+
+    Mirrors the behaviours verified against the live endpoint on 2026-09-22,
+    because they are exactly the ones the adapter has to survive:
+
+    - ``close_context`` FLUSHES: the remaining audio is emitted and only then
+      ``is_final``. It is not a cancellation (``tail_chunks`` controls how
+      much still comes).
+    - Messaging a context that is closing answers ``context_closing`` and
+      closes the WHOLE socket with 1008.
+    - A 6th simultaneous context answers ``too_many_contexts`` (1008); a
+      context stops counting only once its ``is_final`` has been sent.
+    - ``is_final_audio_for_turn`` is emitted per flush/turn; ``is_final``
+      only when the context closes.
+
+    Extra behaviors: ``error_frame`` (protocol error on flush, then the
+    socket closes, as the real endpoint does).
+    """
+
+    auth_header = "xi-api-key"
+
+    def __init__(self, *, tail_chunks: int = 2, max_contexts: int = 5, **kwargs):
+        super().__init__(**kwargs)
+        self.tail_chunks = tail_chunks
+        self.max_contexts = max_contexts
+        self.paths: list[str] = []
+        self.inits: list[dict] = []
+        self.closed_contexts: list[str] = []
+        self.keep_alives: list[str] = []
+        self.violations: list[str] = []
+        self.too_many: list[str] = []
+        # context_id -> "open" | "closing"
+        self.contexts: dict[str, str] = {}
+
+    def texts(self) -> list[str]:
+        out: list[str] = []
+        for message in self.received:
+            for item in message.get("inputs") or []:
+                out.append(item.get("text", ""))
+        return out
+
+    def turns(self) -> list[bool]:
+        return [
+            bool(item.get("new_turn"))
+            for m in self.received for item in (m.get("inputs") or [])
+        ]
+
+    async def _emit_audio(self, websocket, context_id: str, chunks: int):
+        if self.behavior == "invalid_json":
+            await websocket.send("not-json[[")
+        if self.behavior == "invalid_b64":
+            await websocket.send(json.dumps(
+                {"audio": "%%%bad%%%", "context_id": context_id}))
+        if self.behavior == "silent":
+            return
+        for index in range(chunks):
+            if index == 0 and self.first_chunk_delay:
+                await asyncio.sleep(self.first_chunk_delay)
+            await websocket.send(json.dumps({
+                "audio": base64.b64encode(PCM_CHUNK).decode(),
+                "context_id": context_id,
+            }))
+
+    async def _fail_socket(self, websocket, error: str, message: str,
+                           context_id: str | None = None):
+        payload = {"message": message, "error": error, "code": 1008}
+        if context_id:
+            payload["param"] = "context_id"
+        await websocket.send(json.dumps(payload))
+        await websocket.close(code=1008, reason=message)
+
+    async def _handler(self, websocket):
+        self.connections += 1
+        self.paths.append(websocket.request.path)
+        try:
+            async for raw in websocket:
+                self.raw_frames.append(raw if isinstance(raw, str) else "<binary>")
+                try:
+                    message = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                self.received.append(message)
+                context_id = message.get("context_id")
+
+                if message.get("close_socket"):
+                    await websocket.close()
+                    return
+
+                # Any message aimed at a closing context kills the socket.
+                if context_id and self.contexts.get(context_id) == "closing":
+                    self.violations.append(context_id)
+                    await self._fail_socket(
+                        websocket, "context_closing",
+                        f"Context '{context_id}' is closing and cannot accept "
+                        "more messages.", context_id)
+                    return
+
+                if message.get("close_context"):
+                    self.closed_contexts.append(context_id)
+                    self.contexts[context_id] = "closing"
+                    # close_context FLUSHES before finalizing.
+                    await self._emit_audio(websocket, context_id, self.tail_chunks)
+                    await websocket.send(json.dumps(
+                        {"is_final": True, "context_id": context_id}))
+                    self.contexts.pop(context_id, None)
+                    continue
+
+                if message.get("keep_alive"):
+                    self.keep_alives.append(context_id)
+                    continue
+
+                if message.get("voices") is not None:
+                    open_count = len(self.contexts)
+                    if open_count >= self.max_contexts:
+                        self.too_many.append(context_id)
+                        await self._fail_socket(
+                            websocket, "too_many_contexts",
+                            "Maximum simultaneous contexts per connection "
+                            f"exceeded ({self.max_contexts}). Close an "
+                            "existing context first.")
+                        return
+                    self.inits.append(message)
+                    self.contexts[context_id] = "open"
+                    continue
+
+                if message.get("inputs"):
+                    if self.behavior == "drop_conn":
+                        await websocket.close(code=1011, reason="gone")
+                        return
+                    continue
+
+                if message.get("flush"):
+                    if self.behavior == "error_frame":
+                        await self._fail_socket(
+                            websocket, "internal_error", "synthesis failed")
+                        return
+                    await self._emit_audio(websocket, context_id, self.chunks)
+                    await websocket.send(json.dumps(
+                        {"is_final_audio_for_turn": True,
+                         "context_id": context_id}))
         except Exception:  # noqa: BLE001
             pass
 

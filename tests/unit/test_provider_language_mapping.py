@@ -86,20 +86,24 @@ class TestModelCapability:
         assert elevenlabs_supports_language("some_future_model", "hi-IN") is None
 
     def test_alternatives_are_named_for_the_error_message(self):
-        assert elevenlabs_models_speaking("ml-IN") == ["eleven_v3"]
+        # Both v3 models speak Malayalam; only the conversational one streams.
+        assert elevenlabs_models_speaking("ml-IN") == [
+            "eleven_v3", "eleven_v3_conversational",
+        ]
         assert "eleven_flash_v2_5" in elevenlabs_models_speaking("hi-IN")
 
     def test_guidance_does_not_send_the_operator_into_a_dead_end(self):
-        # eleven_v3 speaks Malayalam but has no realtime streaming, so a
-        # per-language override to it is rejected by voice-settings
-        # validation. The message must say where it CAN be selected rather
-        # than just naming the model.
+        # eleven_v3 speaks Malayalam but has no realtime streaming, so
+        # recommending it for a per-language override would be a dead end
+        # (voice-settings validation rejects a non-streaming model there).
+        # eleven_v3_conversational speaks it AND streams, so that is the one
+        # the message must name — no "select it as the DEFAULT model" detour.
         message = tts_unsupported_language_message(
             "elevenlabs", "eleven_flash_v2_5", "ml-IN"
         )
-        assert "eleven_v3" in message
-        assert "DEFAULT TTS model" in message
-        assert "no realtime streaming" in message
+        assert "Use eleven_v3_conversational for this language." in message
+        assert "DEFAULT TTS model" not in message
+        assert "no realtime streaming" not in message
 
     def test_guidance_names_a_streaming_model_when_one_exists(self):
         message = tts_unsupported_language_message(
@@ -191,8 +195,9 @@ class TestElevenLabsRestPayload:
         await adapter.aclose()
         assert captured == []
         assert excinfo.value.category == "invalid_input"
-        assert "eleven_v3" in str(excinfo.value)
-        assert "DEFAULT TTS model" in str(excinfo.value)
+        # The alternative named must be one the operator can actually select
+        # wherever they hit this — eleven_v3_conversational streams.
+        assert "eleven_v3_conversational" in str(excinfo.value)
 
     async def test_eleven_v3_accepts_malayalam(self):
         adapter, captured = _rest_adapter("eleven_v3")

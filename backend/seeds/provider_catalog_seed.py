@@ -268,6 +268,15 @@ _ELEVENLABS_V3_TTS_SCHEMA = {
     },
 }
 
+# Eleven v3 CONVERSATIONAL over the Text-to-Dialogue WebSocket accepts
+# ``stability`` and nothing else (ttd-multi-websocket docs; probed 2026-09-22:
+# all three presets accepted, no other voice setting is read). Advertising
+# similarity_boost/style here would let an operator configure fields the
+# adapter must then silently drop.
+_ELEVENLABS_V3_DIALOGUE_SCHEMA = {
+    "stability": dict(_ELEVENLABS_V3_TTS_SCHEMA["stability"]),
+}
+
 # Defaults follow the ElevenLabs API defaults (stability 0.5, similarity 0.75,
 # style 0, speaker boost on, speed 1.0). Stability 0 with similarity 1.0 — the
 # platform's earlier seed — produces erratic, wobbly delivery and carries source
@@ -468,6 +477,13 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
         "streaming — synthesized per reply over REST; previews and non-realtime "
         "use recommended."
     ),
+    ("elevenlabs", "tts", "eleven_v3_conversational"): (
+        "Expressive Eleven v3 tuned for realtime conversation (~280 ms "
+        "claimed; 250-625 ms measured to first audio). Streams over the "
+        "Text-to-Dialogue WebSocket, so it works for live calls, per-language "
+        "overrides and fallback. Speaks all nine platform languages, unlike "
+        "Flash v2.5. Stability is the only voice setting; no speed control."
+    ),
     ("elevenlabs", "tts", "eleven_flash_v2_5"): (
         "Ultra-low-latency model (~75 ms) for realtime conversation over the "
         "streaming WebSocket. 32 languages, 40,000-character limit. "
@@ -569,9 +585,19 @@ PROVIDER_MODELS = [
     ("elevenlabs", "tts", "eleven_v3", "Eleven v3 (expressive)",
      _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], False,
      _ELEVENLABS_V3_TTS_SCHEMA, False, "active", 1),
+    # Eleven v3 Conversational streams in realtime, but over the
+    # Text-to-Dialogue WebSocket rather than the text-to-speech one
+    # (shared/providers/tts/elevenlabs_v3_ws.py). streaming=True, so it is
+    # selectable as a default engine, a per-language override AND a fallback.
+    # Formats are the ones actually probed on that endpoint (2026-09-22):
+    # ulaw_8000, pcm_8000, pcm_16000, pcm_24000 all returned audio; 22050 was
+    # NOT tested and is therefore not advertised.
+    ("elevenlabs", "tts", "eleven_v3_conversational", "Eleven v3 Conversational",
+     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 24000], True,
+     _ELEVENLABS_V3_DIALOGUE_SCHEMA, False, "active", 2),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "Eleven Turbo v2.5 (deprecated)",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
-     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 2),
+     _ELEVENLABS_TTS_SCHEMA, False, "inactive", 3),
     # Deepgram Aura / Aura-2 \u2014 the model code is the Aura GENERATION; the
     # individual voice (aura-2-thalia-en) is the wire ``model`` parameter and
     # lives on the voice row. ``languages`` is Deepgram's own wire form: bare
@@ -669,6 +695,12 @@ _ELEVEN_DEFAULT_VOICE_SETTINGS = {
 }
 
 # (id, name, gender, provider_voice_id)
+# Voices that have actually been synthesized on the Text-to-Dialogue endpoint.
+# Only these advertise eleven_v3_conversational; the rest stay Flash/v3-only
+# until each one is probed, so the model dropdown never offers an untested
+# voice/model pair.
+ELEVEN_V3_DIALOGUE_VERIFIED_VOICES = ("vp-el-monika",)
+
 ELEVENLABS_VOICES = [
     ("vp-el-monika", "Monika", "female", "f1abxvIEijusskcPWE5x"),
     ("vp-el-raju", "Raju", "male", "WQAp2s6GVJHv6IkTFqO0"),
@@ -745,7 +777,12 @@ def seed_provider_catalog(db: Session) -> dict:
     for (provider, capability, code, display, langs, codecs, rates, streaming,
          schema, is_default, status, sort) in PROVIDER_MODELS:
         description = MODEL_DESCRIPTIONS.get((provider, capability, code))
-        is_eleven_v3 = (provider, capability, code) == ("elevenlabs", "tts", "eleven_v3")
+        # Both v3 rows carry the same 74-language coverage, so both derive
+        # their offered locales from the languages table.
+        is_eleven_v3 = (
+            (provider, capability) == ("elevenlabs", "tts")
+            and code in ("eleven_v3", "eleven_v3_conversational")
+        )
         if is_eleven_v3:
             # The languages table is the source of truth: derive the offered
             # locales from it (fresh installs fall back to the seed-derived
@@ -789,7 +826,11 @@ def seed_provider_catalog(db: Session) -> dict:
                 accent="Indian", styles=["Natural"], latency_ms=180, premium=True,
                 sample_text=_SAMPLE_TEXT, provider="elevenlabs",
                 provider_voice_id=provider_voice_id,
-                model_codes=["eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3"],
+                model_codes=[
+                    "eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3",
+                    *(["eleven_v3_conversational"]
+                      if vid in ELEVEN_V3_DIALOGUE_VERIFIED_VOICES else []),
+                ],
                 provider_settings=dict(_ELEVEN_DEFAULT_VOICE_SETTINGS),
             ))
             created["provider_voices"] += 1

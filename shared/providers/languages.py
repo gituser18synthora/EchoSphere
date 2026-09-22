@@ -149,6 +149,11 @@ _ELEVENLABS_MODEL_LOCALES: dict[str, frozenset[str]] = {
     "eleven_flash_v2_5": frozenset(_ELEVENLABS_V2_5_CODES),
     "eleven_turbo_v2_5": frozenset(_ELEVENLABS_V2_5_CODES),
     "eleven_v3": ECHOSPHERE_LOCALES,
+    # Same 74-language model as eleven_v3, tuned for realtime dialogue
+    # (GET /v1/models, 2026-09-22: both list all nine of our languages).
+    # SYNTHESIS is verified for hi/mr/ur/te/ml over the Text-to-Dialogue
+    # socket; per-language PRONUNCIATION is not yet signed off.
+    "eleven_v3_conversational": ECHOSPHERE_LOCALES,
 }
 
 #: ElevenLabs models that accept the ``language_code`` enforcement parameter.
@@ -241,13 +246,25 @@ def sarvam_stt_language_code(language: str | None) -> str:
     return to_provider_language("sarvam", locale) or "unknown"
 
 
-#: ElevenLabs models the realtime WebSocket accepts. Eleven v3 is REST-only:
-#: it can be a bot's DEFAULT engine (every reply then synthesizes over the
-#: segmented REST path) or drive a preview, but it cannot serve a per-language
-#: override or a fallback inside the streaming router — those are rejected by
-#: voice-settings validation ("does not support realtime streaming").
+#: ElevenLabs models that stream in realtime (either WebSocket endpoint).
+#: ``eleven_v3`` is NOT one of them: it is REST-only, so it can be a bot's
+#: DEFAULT engine (every reply then synthesizes over the segmented REST path)
+#: or drive a preview, but it cannot serve a per-language override or a
+#: fallback inside the streaming router — those are rejected by voice-settings
+#: validation ("does not support realtime streaming").
+#: ``eleven_v3_conversational`` CAN: it streams over the Text-to-Dialogue
+#: socket and is valid everywhere a streaming model is required.
 ELEVENLABS_STREAMING_MODELS = frozenset({
-    "eleven_flash_v2_5", "eleven_turbo_v2_5",
+    "eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3_conversational",
+})
+
+#: ElevenLabs models served by the Text-to-Dialogue WebSocket rather than the
+#: text-to-speech one. They stream in realtime, but over a different endpoint
+#: and wire protocol — see shared/providers/tts/elevenlabs_v3_ws.py. The
+#: text-to-speech socket answers these model ids with an HTTP 400 handshake
+#: rejection, so routing is per MODEL, not per provider.
+ELEVENLABS_DIALOGUE_MODELS = frozenset({
+    "eleven_v3_conversational",
 })
 
 

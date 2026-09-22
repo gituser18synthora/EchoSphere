@@ -37,7 +37,7 @@ _ELEVEN_SPEED_RANGE = (0.7, 1.2)
 # Deepgram /v1/speak ``speed`` query parameter (docs, verified 2026-09-21).
 _DEEPGRAM_SPEED_RANGE = (0.7, 1.5)
 # ElevenLabs models whose voice_settings reject ``speed`` (Eleven v3 alpha).
-_ELEVEN_NO_SPEED_MODELS = {"eleven_v3"}
+_ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 # Sarvam models that accept the v2-only pitch/loudness controls.
 _SARVAM_PITCH_LOUDNESS_MODELS = {"bulbul:v2"}
 
