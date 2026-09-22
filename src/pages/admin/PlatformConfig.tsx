@@ -22,7 +22,8 @@ import type { ApiRequestError } from "@/services/http";
 import type { ModelLanguagesInfo, ProviderSettings, VoiceCapability } from "@/types/domain";
 import {
   Button, Callout, ConfirmModal, Drawer, EmptyState, ErrorState, Field, Modal,
-  NumberInput, StatusChip, Tabs, Toggle,
+  MultiSelect, NumberInput, StatusChip, Tabs, Toggle,
+  type MultiSelectOption,
 } from "@/components/ui";
 import { ModelSelect, ProviderSelect, useModelInfos } from "@/components/ProviderModelSelect";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
@@ -566,6 +567,27 @@ function buildFormFromRow(spec: TypeSpec, row: Row): Record<string, unknown> {
   return form;
 }
 
+/** Every language a voice may be used for. Rows created before the languages
+    multi-select carry only `locale` — seed the selection from it so an edit
+    keeps the language the voice was actually created for. */
+function voiceLanguages(row: Row | null): string[] {
+  const stored = (row?.languages as string[] | undefined) ?? [];
+  if (stored.length > 0) return [...stored];
+  const locale = String(row?.locale ?? "");
+  return locale ? [locale] : [];
+}
+
+/** Comma-separated locale codes typed by hand (providers with no catalog
+    languages), de-duplicated in typing order. */
+function parseLanguageCodes(text: string): string[] {
+  const codes: string[] = [];
+  for (const raw of text.split(",")) {
+    const code = raw.trim();
+    if (code && !codes.includes(code)) codes.push(code);
+  }
+  return codes;
+}
+
 /** Voice form state — the provider decides which settings exist; the single
     selected model is stored as `modelCodes: [model]` on the API. */
 function buildVoiceForm(row: Row | null): Record<string, unknown> {
@@ -577,6 +599,7 @@ function buildVoiceForm(row: Row | null): Record<string, unknown> {
     providerVoiceId: String(row?.providerVoiceId ?? ""),
     model: (row?.modelCodes as string[] | undefined)?.[0] ?? "",
     locale: String(row?.locale ?? ""),
+    languages: voiceLanguages(row),
     sampleText: String(row?.sample ?? ""),
     premium: Boolean(row?.premium),
     isDefault: Boolean(row?.isDefault),
@@ -913,6 +936,9 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  /* Raw text of the hand-typed language list, so a half-typed code ("hi-IN,")
+     is not rewritten under the cursor by the parsed round-trip. */
+  const [languagesText, setLanguagesText] = useState<string | null>(null);
   const [switchNote, setSwitchNote] = useState<string | null>(null);
 
   const provider = String(form.provider ?? "");
@@ -957,7 +983,8 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
   };
 
   const applyProvider = (next: string) => {
-    set({ provider: next, model: "", providerVoiceId: "", locale: "", providerSettings: {} });
+    set({ provider: next, model: "", providerVoiceId: "", locale: "", languages: [], providerSettings: {} });
+    setLanguagesText(null);
     setSwitchNote(next
       ? `Provider changed — model, voice ID, language and provider settings were reset for ${next}. Name, gender and description were kept.`
       : null);
@@ -998,6 +1025,7 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
         name: String(form.name).trim(),
         provider,
         modelCodes: model ? [model] : [],
+        languages,
         providerSettings: settings,
         premium: Boolean(form.premium),
         isDefault: Boolean(form.isDefault),
@@ -1035,7 +1063,17 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
     hint: "Identifier of this voice on the provider's side, if any.",
   };
   const localeOptions = langInfo?.languages ?? [];
-  const localeKnown = localeOptions.some((l) => l.code === String(form.locale ?? ""));
+  const languages = (form.languages as string[] | undefined) ?? [];
+  /* Codes saved earlier that the selected model does not support stay listed
+     (and removable) instead of vanishing from the dialog. */
+  const languageOptions: MultiSelectOption[] = [
+    ...localeOptions.map((l) => ({ value: l.code, label: l.name, sub: l.code })),
+    ...languages.filter((code) => !localeOptions.some((l) => l.code === code))
+      .map((code) => ({ value: code, label: `${code} (not supported by this model)`, sub: code })),
+  ];
+  /* `locale` stays the primary language of the voice — list columns, the
+     tenant locale filter and older readers still read it. */
+  const setLanguages = (next: string[]) => set({ languages: next, locale: next[0] ?? "" });
 
   return (
     <Modal open onClose={onClose} wide
@@ -1043,7 +1081,8 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
       sub={row ? undefined : "Closing this dialog keeps your draft — it clears on Create or Reset."}
       footer={
         <>
-          <Button onClick={onReset} icon="undo" title="Restore the initial values">Reset</Button>
+          <Button onClick={() => { setLanguagesText(null); onReset(); }} icon="undo"
+            title="Restore the initial values">Reset</Button>
           <div className="grow" />
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" busy={busy} disabled={busy} onClick={() => void save()}>
@@ -1076,19 +1115,20 @@ function VoiceEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: {
                 disabled={!provider}
                 onChange={(e) => set({ providerVoiceId: e.target.value })} />
             </Field>
-            <Field label="Language" error={fieldErrors.locale}
-              hint={model ? "Languages supported by the selected model." : "Select a model to list its supported languages."}>
+            <Field label="Languages" plain error={fieldErrors.languages ?? fieldErrors.locale}
+              hint={localeOptions.length > 0
+                ? "Every language this voice may be offered for — pick as many as it speaks. Leaving it empty offers it for all of them."
+                : model
+                  ? "Comma-separated locale codes, e.g. hi-IN, en-IN."
+                  : "Select a model to list its supported languages."}>
               {localeOptions.length > 0 ? (
-                <select className="select" aria-label="Language" value={String(form.locale ?? "")}
-                  onChange={(e) => set({ locale: e.target.value })}>
-                  <option value="">—</option>
-                  {!localeKnown && form.locale ? <option value={String(form.locale)}>{String(form.locale)} (not supported)</option> : null}
-                  {localeOptions.map((l) => <option key={l.code} value={l.code}>{l.name} ({l.code})</option>)}
-                </select>
+                <MultiSelect options={languageOptions} selected={languages} onChange={setLanguages}
+                  ariaLabel="Languages" placeholder="All languages" searchPlaceholder="Search languages…"
+                  invalid={Boolean(fieldErrors.languages || fieldErrors.locale)} />
               ) : (
-                <input className="input" aria-label="Language" placeholder="e.g. hi-IN"
-                  value={String(form.locale ?? "")} disabled={!provider}
-                  onChange={(e) => set({ locale: e.target.value })} />
+                <input className="input" aria-label="Languages" placeholder="e.g. hi-IN, en-IN"
+                  value={languagesText ?? languages.join(", ")} disabled={!provider}
+                  onChange={(e) => { setLanguagesText(e.target.value); setLanguages(parseLanguageCodes(e.target.value)); }} />
               )}
             </Field>
           </div>

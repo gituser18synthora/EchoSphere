@@ -659,12 +659,14 @@ export interface MultiSelectOption {
 
 export function MultiSelect({
   options, selected, onChange, placeholder = "Select…",
-  searchPlaceholder = "Search…", maxChips = 4, invalid, disabled,
+  searchPlaceholder = "Search…", maxChips = 4, invalid, disabled, ariaLabel,
 }: {
   options: MultiSelectOption[];
   selected: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;
+  /** Accessible name — a Field holding chips is `plain`, so no label is wired. */
+  ariaLabel?: string;
   searchPlaceholder?: string;
   /** Chips shown before collapsing the rest into “+N more”. */
   maxChips?: number;
@@ -711,6 +713,7 @@ export function MultiSelect({
       <div
         className={`mselect-control${open ? " open" : ""}`}
         role="combobox"
+        aria-label={ariaLabel}
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-invalid={invalid || undefined}

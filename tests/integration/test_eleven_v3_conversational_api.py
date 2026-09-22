@@ -88,10 +88,13 @@ class TestCatalog:
         assert entry["streaming"] is True
         assert entry["isDefault"] is False
         assert entry["displayName"] == "Eleven v3 Conversational"
-        # Only the verified formats are advertised (22050 was never probed).
-        assert entry["sampleRates"] == [8000, 16000, 24000]
-        # stability alone — the only setting the dialogue endpoint accepts.
-        assert list(entry["paramsSchema"]) == ["stability"]
+        # Every rate the streaming router may request, all probed on the
+        # Text-to-Dialogue endpoint.
+        assert entry["sampleRates"] == [8000, 16000, 22050, 24000]
+        # stability is the only setting sent to ElevenLabs; native_breathing
+        # is an EchoSphere-side control consumed by the adapter.
+        assert sorted(entry["paramsSchema"]) == ["native_breathing", "stability"]
+        assert entry["paramsSchema"]["native_breathing"]["default"] is False
         # No speed control, so the UI hides the model's own speed slider.
         assert entry["speedRange"] is None
 
@@ -145,14 +148,22 @@ class TestSeedAndMigrationAgree:
 
         assert mig._MODEL_CODE == MODEL
         assert mig._DISPLAY_NAME == display
-        assert json.loads(json.dumps(mig._SCHEMA)) == json.loads(json.dumps(schema))
-        assert [8000, 16000, 24000] == rates
+        # The seed carries the current schema; the ORIGINAL model migration
+        # carries the shape it shipped with. Later revisions add keys, so the
+        # seed must be a SUPERSET that still agrees on every shared key.
+        assert set(mig._SCHEMA) <= set(schema)
+        for key in mig._SCHEMA:
+            assert json.loads(json.dumps(mig._SCHEMA[key])) == \
+                   json.loads(json.dumps(schema[key])), key
+        assert [8000, 16000, 22050, 24000] == rates
         assert codecs == ["pcm", "ulaw", "alaw"]
         assert streaming is True and is_default is False and status == "active"
         assert sort == 2
-        # Both restrict the new model to the same probed voice.
-        assert mig._VERIFIED_VOICE_IDS == ELEVEN_V3_DIALOGUE_VERIFIED_VOICES
-        assert VOICE in mig._VERIFIED_VOICE_IDS
+        # The model row's own migration pinned the single first-probed voice;
+        # the follow-up revision widened it to every synthesis-verified voice,
+        # which is what the seed now carries.
+        assert set(mig._VERIFIED_VOICE_IDS) <= set(ELEVEN_V3_DIALOGUE_VERIFIED_VOICES)
+        assert VOICE in ELEVEN_V3_DIALOGUE_VERIFIED_VOICES
 
     def test_neither_seed_nor_migration_invents_a_price(self):
         import importlib.util

@@ -275,6 +275,18 @@ _ELEVENLABS_V3_TTS_SCHEMA = {
 # adapter must then silently drop.
 _ELEVENLABS_V3_DIALOGUE_SCHEMA = {
     "stability": dict(_ELEVENLABS_V3_TTS_SCHEMA["stability"]),
+    # ElevenLabs' OWN breathing, produced inside the generated speech via an
+    # audio tag. Independent of the Natural Conversation "Breathing" control,
+    # which owns our pre-rendered breath clips and is unaffected by this.
+    # Default OFF: it changes how every reply on this model begins.
+    "native_breathing": {
+        "type": "boolean", "default": False, "advanced": True,
+        "label": "ElevenLabs native breathing",
+        "help": "Let ElevenLabs generate an occasional soft breath inside its "
+                "own speech (Eleven v3 audio tag). Independent of the "
+                "Breathing setting, which controls EchoSphere's own breath "
+                "clips. Off by default.",
+    },
 }
 
 # Defaults follow the ElevenLabs API defaults (stability 0.5, similarity 0.75,
@@ -589,11 +601,11 @@ PROVIDER_MODELS = [
     # Text-to-Dialogue WebSocket rather than the text-to-speech one
     # (shared/providers/tts/elevenlabs_v3_ws.py). streaming=True, so it is
     # selectable as a default engine, a per-language override AND a fallback.
-    # Formats are the ones actually probed on that endpoint (2026-09-22):
-    # ulaw_8000, pcm_8000, pcm_16000, pcm_24000 all returned audio; 22050 was
-    # NOT tested and is therefore not advertised.
+    # Formats all probed on that endpoint (2026-09-22): ulaw_8000, pcm_8000,
+    # pcm_16000, pcm_22050 and pcm_24000 every one returned audio, so the row
+    # matches the rates the streaming router is willing to request.
     ("elevenlabs", "tts", "eleven_v3_conversational", "Eleven v3 Conversational",
-     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 24000], True,
+     _ELEVEN_V3_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _ELEVENLABS_V3_DIALOGUE_SCHEMA, False, "active", 2),
     ("elevenlabs", "tts", "eleven_turbo_v2_5", "Eleven Turbo v2.5 (deprecated)",
      _ELEVEN_V2_5_LANGS, ["pcm", "ulaw", "alaw"], [8000, 16000, 22050, 24000], True,
@@ -695,21 +707,37 @@ _ELEVEN_DEFAULT_VOICE_SETTINGS = {
 }
 
 # (id, name, gender, provider_voice_id)
-# Voices that have actually been synthesized on the Text-to-Dialogue endpoint.
-# Only these advertise eleven_v3_conversational; the rest stay Flash/v3-only
-# until each one is probed, so the model dropdown never offers an untested
-# voice/model pair.
-ELEVEN_V3_DIALOGUE_VERIFIED_VOICES = ("vp-el-monika",)
+# Voices synthesized successfully on the Text-to-Dialogue endpoint (probed
+# 2026-09-22, Hindi and Malayalam, every one returned audio). Only these
+# advertise eleven_v3_conversational, so the dropdown never offers an
+# untested voice/model pair.
+ELEVEN_V3_DIALOGUE_VERIFIED_VOICES = (
+    "vp-el-monika", "vp-el-raju", "vp-el-niraj", "vp-el-leo", "vp-el-viraj",
+    "vp-el-shardul", "vp-el-anvi", "vp-el-shivank",
+)
 
+# (id, name, gender, provider_voice_id, accent)
+#
+# gender and accent are taken from ElevenLabs' own voice labels
+# (GET /v1/voices, verified 2026-09-22) — never inferred from the name. Two
+# corrections came out of that check:
+#   * Shivank is MALE (was seeded female). Gender is not cosmetic: it selects
+#     the synthesized breath/filler clips, so a wrong value makes the bot
+#     breathe in the wrong voice.
+#   * Leo is an AMERICAN English narrator, not an Indian voice. The seed used
+#     to hardcode accent="Indian" for every ElevenLabs voice.
+#
+# Accent describes how the voice SOUNDS; it is not a claim about which
+# languages the selected model can speak (that lives on the model row).
 ELEVENLABS_VOICES = [
-    ("vp-el-monika", "Monika", "female", "f1abxvIEijusskcPWE5x"),
-    ("vp-el-raju", "Raju", "male", "WQAp2s6GVJHv6IkTFqO0"),
-    ("vp-el-niraj", "Niraj", "male", "yD3f554gXhA5NxImkyqU"),
-    ("vp-el-leo", "Leo", "male", "TLC61WvtioR7PrhxZ1RH"),
-    ("vp-el-viraj", "Viraj", "male", "3AMU7jXQuQa3oRvRqUmb"),
-    ("vp-el-shardul", "Shardul", "male", "6EphsklDopDQ6eRkwNHT"),
-    ("vp-el-anvi", "Anvi", "female", "VG7gYikNQ71LJ52W9fAD"),
-    ("vp-el-shivank", "Shivank", "female", "Vf2PzaME4dMzjUBlO0w0"),
+    ("vp-el-monika", "Monika", "female", "f1abxvIEijusskcPWE5x", "Indian"),
+    ("vp-el-raju", "Raju", "male", "WQAp2s6GVJHv6IkTFqO0", "Indian"),
+    ("vp-el-niraj", "Niraj", "male", "yD3f554gXhA5NxImkyqU", "Indian"),
+    ("vp-el-leo", "Leo", "male", "TLC61WvtioR7PrhxZ1RH", "American"),
+    ("vp-el-viraj", "Viraj", "male", "3AMU7jXQuQa3oRvRqUmb", "Indian"),
+    ("vp-el-shardul", "Shardul", "male", "6EphsklDopDQ6eRkwNHT", "Indian"),
+    ("vp-el-anvi", "Anvi", "female", "VG7gYikNQ71LJ52W9fAD", "Indian"),
+    ("vp-el-shivank", "Shivank", "male", "Vf2PzaME4dMzjUBlO0w0", "Indian"),
 ]
 
 # Deepgram Aura voices. The wire ``model`` parameter IS the voice id, and its
@@ -816,14 +844,14 @@ def seed_provider_catalog(db: Session) -> dict:
                 # operator-managed (master data) and is left untouched.
                 exists.languages = langs
 
-    for vid, name, gender, provider_voice_id in ELEVENLABS_VOICES:
+    for vid, name, gender, provider_voice_id, accent in ELEVENLABS_VOICES:
         if db.get(VoiceProfile, vid) is None:
             db.add(VoiceProfile(
                 id=vid, name=name, gender=gender,
                 # Empty languages list = usable for any language the selected
                 # ElevenLabs model supports (the model does the language work).
                 languages=[],
-                accent="Indian", styles=["Natural"], latency_ms=180, premium=True,
+                accent=accent, styles=["Natural"], latency_ms=180, premium=True,
                 sample_text=_SAMPLE_TEXT, provider="elevenlabs",
                 provider_voice_id=provider_voice_id,
                 model_codes=[

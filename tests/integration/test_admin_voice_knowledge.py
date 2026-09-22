@@ -213,6 +213,45 @@ class TestVoiceProviderValidation:
         assert response.status_code == 422
         assert "not supported" in _field_errors(response)["locale"]
 
+    def test_multiple_languages_saved_and_deduplicated(self, client, super_admin):
+        created = _data(self._create(
+            client, super_admin,
+            provider="sarvam", providerVoiceId="shubh", modelCodes=["bulbul:v3"],
+            languages=["hi-IN", "en-IN", "hi-IN"], locale="hi-IN",
+        ))
+        _created.append(("voice_profiles", created["id"]))
+        assert created["languages"] == ["hi-IN", "en-IN"]
+        assert created["locale"] == "hi-IN"
+
+    def test_unsupported_language_in_list_rejected(self, client, super_admin):
+        response = self._create(
+            client, super_admin,
+            provider="sarvam", providerVoiceId="shubh", modelCodes=["bulbul:v3"],
+            languages=["hi-IN", "fr-FR"],
+        )
+        assert response.status_code == 422
+        assert "not supported" in _field_errors(response)["languages"]
+
+    def test_languages_must_be_a_list_of_codes(self, client, super_admin):
+        response = self._create(
+            client, super_admin,
+            provider="sarvam", providerVoiceId="shubh", modelCodes=["bulbul:v3"],
+            languages="hi-IN",
+        )
+        assert response.status_code == 422
+        assert "list of locale codes" in _field_errors(response)["languages"]
+
+    def test_languages_can_be_cleared_to_offer_every_language(self, client, super_admin):
+        created = _data(self._create(
+            client, super_admin,
+            provider="sarvam", providerVoiceId="shubh", modelCodes=["bulbul:v3"],
+            languages=["hi-IN"],
+        ))
+        _created.append(("voice_profiles", created["id"]))
+        updated = _data(client.patch(f"{API}/master/voices/{created['id']}",
+                                     headers=super_admin, json={"languages": []}))
+        assert updated["languages"] == []
+
     def test_edit_revalidates_against_stored_model(self, client, super_admin):
         name = f"Edit Voice {_SUFFIX}"
         created = _data(self._create(

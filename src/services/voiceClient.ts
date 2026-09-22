@@ -161,7 +161,18 @@ export class PcmPlaybackQueue {
     // A response following a filler clear starts at the available playhead.
     // The ordinary network-gap lead must not reintroduce a filler handoff gap.
     const lead = !fillerOwner && this.responsePriority ? 0 : this.leadSeconds;
-    const startAt = Math.max(this.playhead, this.ctx.currentTime + lead);
+    // While the queue is still buffered ahead of the clock, continue EXACTLY
+    // where it ends. Re-anchoring at `currentTime + lead` on every chunk
+    // inserts a fresh silent gap whenever chunks arrive a little slower than
+    // they play. Latency fillers are paced at real time with no pre-fill, so
+    // their ~21 ms arrivals against 20 ms chunks hit that on every single
+    // chunk: a 0.92 s cue came out as 46 gaps totalling ~118 ms of silence —
+    // roughly 2.5 ms of silence between every 20 ms of audio, which is what
+    // made cues sound chopped and unclear. Only a playhead that has actually
+    // fallen behind re-anchors with the lead.
+    const startAt = this.playhead > this.ctx.currentTime
+      ? this.playhead
+      : this.ctx.currentTime + lead;
     src.start(startAt);
     this.playhead = startAt + samples / this.sampleRate;
     this.active.set(src, { owner: fillerOwner, startsAt: startAt, endsAt: this.playhead, gain });

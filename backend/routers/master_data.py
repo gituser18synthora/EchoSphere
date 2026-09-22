@@ -1033,15 +1033,38 @@ def _validate_voice_payload(db: Session, payload: dict, effective, errors: list[
         for message in validate_params(schema_row.params_schema, settings, prefix="Settings"):
             errors.append({"field": "providerSettings", "message": message})
 
+    if "languages" in payload and payload["languages"] is not None:
+        if not isinstance(payload["languages"], list) or not all(
+            isinstance(code, str) and code.strip() for code in payload["languages"]
+        ):
+            errors.append({"field": "languages", "message": "Must be a list of locale codes."})
+            return
+        # De-duplicated in the order the admin picked them — languages[0] is
+        # the voice's primary locale.
+        deduped: list[str] = []
+        for code in payload["languages"]:
+            code = code.strip()
+            if code not in deduped:
+                deduped.append(code)
+        payload["languages"] = deduped
+
     locale = effective("locale")
-    if locale and model_row is not None and model_row.languages:
+    languages = effective("languages") or []
+    # An empty list means "offer this voice for every language" — only the
+    # codes actually chosen are checked against the model's catalog.
+    checked = [(c, "languages") for c in languages]
+    if locale and locale not in languages:
+        checked.append((locale, "locale"))
+    if checked and model_row is not None and model_row.languages:
         supported = {lang.code for lang in model_platform_languages(db, model_row)}
-        if supported and locale not in supported:
-            errors.append({
-                "field": "locale",
-                "message": f"'{locale}' is not supported by {provider}/{model_row.code}. "
-                           f"Supported: {', '.join(sorted(supported))}.",
-            })
+        if supported:
+            for code, field in checked:
+                if code not in supported:
+                    errors.append({
+                        "field": field,
+                        "message": f"'{code}' is not supported by {provider}/{model_row.code}. "
+                                   f"Supported: {', '.join(sorted(supported))}.",
+                    })
 
 
 def _spec(mtype: str) -> dict:

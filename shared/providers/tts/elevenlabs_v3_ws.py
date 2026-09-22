@@ -65,6 +65,7 @@ import binascii
 import json
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 
 from websockets.asyncio.client import connect as websocket_connect
@@ -113,6 +114,30 @@ _CONTEXT_SLOT_TIMEOUT_S = 2.0
 #: sent — the catalog schema is what stops it being configured at all.
 _VOICE_SETTING_KEYS = ("stability",)
 
+#: Audio tag used for NATIVE breathing — a breath produced by ElevenLabs
+#: inside the speech itself, instead of one of our own pre-rendered clips.
+#:
+#: Chosen from generated samples, not the documentation. Probed 2026-09-22
+#: against this endpoint with Monika, Hindi and English, each tag transcribed
+#: back with STT:
+#:
+#:   tag           hi delta   en delta   leading segment        verdict
+#:   [exhales]      +0.96 s    +1.12 s   broadband noise, both  CHOSEN
+#:   [sighs]        +0.48 s    +0.16 s   weak/inconsistent
+#:   [breathes]     -0.08 s    +0.32 s   no breath at all in hi
+#:   [inhales]      +0.08 s    +0.56 s   near-silent in en (a pause)
+#:
+#: ``[exhales]`` is the only candidate that produced a real breath in BOTH
+#: languages. It is quiet — roughly 17 dB below the speech that follows — so
+#: it reads as a breath rather than a dramatic sigh. No tag was ever spoken
+#: literally: every transcript came back as the plain sentence.
+_BREATH_TAG = "[exhales]"
+
+#: Fraction of replies that get the tag when Breathing is ON. Deliberately
+#: occasional: a breath before every single reply is a mannerism, not
+#: naturalness.
+_DEFAULT_BREATH_PROBABILITY = 0.3
+
 
 def _output_format(codec: str, sample_rate: int) -> str:
     if codec in ("mulaw", "ulaw"):
@@ -139,6 +164,10 @@ class _Context:
     discarded: int = 0            # bytes dropped after a cancel
     turn_finals: int = 0
     init_sent: bool = False
+    # A reply is streamed as several sentences into ONE context; the breath
+    # tag belongs to the reply, so it is decided once on the first chunk and
+    # never repeated on the continuations.
+    text_sent: bool = False
 
     @property
     def accepting(self) -> bool:
@@ -180,6 +209,13 @@ class ElevenLabsV3DialogueTTSProvider(StreamingTTSProvider):
         # An error frame closes the connection server-side; the close handler
         # must not then report the same failure a second time.
         self._error_reported = False
+        # Native-breathing RNG. Instance-local so one call's breath rhythm is
+        # independent of every other call, and seedable in tests.
+        self._breath_random = random.Random()
+        # Set by the consumer when something else already breathed for this
+        # reply (the pre-reply latency filler), so the caller never hears two
+        # breaths in a row. Cleared once consumed.
+        self._breath_suppressed = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> None:
@@ -270,6 +306,7 @@ class ElevenLabsV3DialogueTTSProvider(StreamingTTSProvider):
         await self.connect()
         if generation_id not in self._contexts:
             await self._open_context(generation_id)
+        text = self._with_native_breath(generation_id, text)
         sent = await self._send_to_context(generation_id, {
             # new_turn stays False for every sentence of a reply: the context
             # IS the turn. Setting it per sentence emits one
@@ -331,6 +368,52 @@ class ElevenLabsV3DialogueTTSProvider(StreamingTTSProvider):
             except (TimeoutError, ConnectionClosed, OSError):
                 pass
         await self._teardown_socket()
+
+    # ── native breathing ─────────────────────────────────────────────────
+    def suppress_next_breath(self) -> None:
+        """Skip the native breath on the next reply.
+
+        Called when something else has already breathed for this reply — the
+        pre-reply latency filler plays one of our clips into the thinking gap,
+        and a tag on the first sentence would land a second breath a moment
+        later.
+        """
+        self._breath_suppressed = True
+
+    def _native_breath_enabled(self) -> bool:
+        return bool((self._settings.params or {}).get("native_breathing"))
+
+    def _with_native_breath(self, generation_id: str, text: str) -> str:
+        """Prefix the reply's FIRST chunk with the breath tag, sometimes.
+
+        The tag is added here, at the very last moment before the wire, for
+        three reasons:
+        - every sanitizer has already run. ``sanitize_spoken_text`` strips
+          bracketed placeholders (``[aapka naam]``) and would eat the tag;
+        - the consumer's transcript and conversation history are built from
+          the text it dispatched, which never contains the tag;
+        - no other provider's adapter can ever see it, so a Flash or Sarvam
+          engine cannot be handed a v3-only audio tag.
+        """
+        ctx = self._contexts.get(generation_id)
+        if ctx is None or ctx.text_sent:
+            return text
+        ctx.text_sent = True
+        suppressed, self._breath_suppressed = self._breath_suppressed, False
+        if suppressed or not self._native_breath_enabled():
+            return text
+        params = self._settings.params or {}
+        try:
+            probability = float(params.get("native_breath_probability",
+                                           _DEFAULT_BREATH_PROBABILITY))
+        except (TypeError, ValueError):
+            probability = _DEFAULT_BREATH_PROBABILITY
+        probability = min(1.0, max(0.0, probability))
+        if self._breath_random.random() >= probability:
+            return text
+        logger.debug("elevenlabs-v3: native breath on generation %s",
+                     str(generation_id)[:12])
+        return f"{_BREATH_TAG} {text}"
 
     # ── internals ────────────────────────────────────────────────────────
     def _voice(self) -> str:
@@ -466,6 +549,7 @@ class ElevenLabsV3DialogueTTSProvider(StreamingTTSProvider):
         self._slot_released.set()
 
     def _reset_contexts(self) -> None:
+        self._breath_suppressed = False
         self._contexts.clear()
         self._by_server.clear()
         self._live_generations.clear()

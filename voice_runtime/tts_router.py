@@ -55,6 +55,7 @@ from shared.providers.tts.delivery import (
     resolve_engine_params,
 )
 from shared.orchestration.voice_identity import resolve_language_engine
+from shared.providers.languages import ELEVENLABS_DIALOGUE_MODELS
 from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
 from shared.providers.tts.elevenlabs_v3_ws import ElevenLabsV3DialogueTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
@@ -366,6 +367,34 @@ class StreamingTTSRouter(TTSService):
         return sanitize_for_tts(text)
 
     # ── engine / provider management ────────────────────────────────────
+    def _native_breathing(self, engine: dict) -> bool:
+        """Whether THIS engine has ElevenLabs' own native breathing enabled.
+
+        This is an independent, operator-controlled model setting
+        (``native_breathing`` in the model's catalog params schema, default
+        OFF). It is deliberately NOT derived from the Breathing toggle: that
+        toggle owns our own pre-rendered breath clips and keeps working
+        exactly as configured whether or not this is on.
+
+        Keyed on the effective engine, so a per-language override or the
+        fallback engine is judged on the model it actually runs.
+        """
+        if (engine.get("provider") or "") != "elevenlabs":
+            return False
+        if (engine.get("model") or "") not in ELEVENLABS_DIALOGUE_MODELS:
+            return False
+        params = self._stream_params_for(engine)
+        return bool(params.get("native_breathing"))
+
+    def _stream_params_for(self, engine: dict) -> dict:
+        """The validated provider params this engine would be given."""
+        return resolve_engine_params(
+            {**self._tts_config, "provider": self._default_engine.get("provider"),
+             "model": self._default_engine.get("model") or "",
+             "settings": self._base_params},
+            engine, speed=self._speed, energy=self._energy,
+        )
+
     def _recent_latency_filler(self) -> bool:
         """True when the latency filler started a breath/cue for this reply's
         gap within the last few seconds (clip library bookkeeping)."""
@@ -613,6 +642,20 @@ class StreamingTTSRouter(TTSService):
                 state = _Generation(engine=engine, provider=provider)
                 state.marker, self._pending_marker = self._pending_marker, None
                 self._generations[context_id] = state
+                if (self._native_breathing(engine)
+                        and self._recent_latency_filler()):
+                    # The latency filler already breathed into this reply's
+                    # thinking gap; a native breath on the first sentence
+                    # would be the second one in a row.
+                    suppress = getattr(provider, "suppress_next_breath", None)
+                    if suppress is not None:
+                        suppress()
+                        if self._recorder is not None:
+                            self._recorder.add_event(
+                                "native_breath_suppressed",
+                                context=str(context_id)[:8],
+                                reason="recent_latency_filler",
+                            )
             state.texts.append(text)
             delivery = None
             planning_ms = 0.0
@@ -638,6 +681,22 @@ class StreamingTTSRouter(TTSService):
                             "sentence_breath_suppressed",
                             context=str(context_id)[:8], reason="recent_latency_filler",
                         )
+                if (delivery.breath_before
+                        and len(state.texts) == 1
+                        and self._native_breathing(state.engine)):
+                    # Both breathing mechanisms are enabled and both want to
+                    # breathe into the START of this reply. The operator's own
+                    # clip is kept (their setting, their control); the native
+                    # tag stands down for this reply only.
+                    suppress = getattr(state.provider, "suppress_next_breath", None)
+                    if suppress is not None:
+                        suppress()
+                        if self._recorder is not None:
+                            self._recorder.add_event(
+                                "native_breath_suppressed",
+                                context=str(context_id)[:8],
+                                reason="clip_breath_on_first_sentence",
+                            )
                 if delivery.breath_before and self._filler_library is not None:
                     state.breaths += 1
                 planning_ms = (time.perf_counter() - planned_at) * 1000.0
@@ -986,6 +1045,14 @@ class StreamingTTSRouter(TTSService):
         state.active_pause_after_ms = sentence.pause_after_ms
         state.active_got_audio = False
         await self._apply_sentence_speed(state, sentence)
+        if state.seq > 1:
+            # Pause mode gives every sentence its OWN provider context, so a
+            # provider-side "first chunk of this context" guard would breathe
+            # once per SENTENCE. The breath belongs to the reply: suppress it
+            # on every sentence after the first.
+            suppress = getattr(state.provider, "suppress_next_breath", None)
+            if suppress is not None:
+                suppress()
         await state.provider.synthesize_stream(sentence.text, generation_id=sub_id)
         state.dispatched_chars += len(sentence.text)
         await state.provider.flush(sub_id)
