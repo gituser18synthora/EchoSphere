@@ -1,0 +1,243 @@
+"""Eleven v3 Conversational inside the real StreamingTTSRouter pipeline.
+
+These run the actual router against the mock Text-to-Dialogue server, so they
+exercise the integration the protocol probes could not: sentence aggregation,
+one completion per reply, Pipecat barge-in clearing queued audio, the next
+reply on the same socket, idle reconnect — and that the model the operator
+selected is the model that reaches ElevenLabs.
+"""
+
+import asyncio
+
+import pytest
+from pipecat.frames.frames import (
+    EndWorkerFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    TextFrame,
+)
+
+import shared.providers.tts.elevenlabs_v3_ws as v3_ws
+from voice_runtime.tts_router import StreamingTTSRouter
+from tests.integration.test_tts_router import (
+    AudioCollector,
+    make_recorder,
+    run_router,
+    speak_turn,
+)
+from tests.mock_tts_servers import API_KEY, MockElevenLabsDialogueServer
+
+pytestmark = pytest.mark.integration
+
+MODEL = "eleven_v3_conversational"
+
+
+def v3_config(ref="env:TEST_EL_V3_KEY", *, language_map=None, fallback=None,
+              model=MODEL):
+    return {
+        "provider": "elevenlabs", "model": model, "voice": "monika-wire-id",
+        "settings": {"stability": 0.5},
+        "api_key_reference": ref,
+        "language_map": language_map or {},
+        "fallback": fallback,
+    }
+
+
+class TestV3DialogueInRouter:
+    async def test_multi_sentence_reply_streams_and_completes_once(self, monkeypatch):
+        """A three-sentence reply: every sentence reaches the provider in
+        order, all of it as ONE turn, and the reply completes exactly once."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=2, tail_chunks=2) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            recorder = make_recorder("vs_v3_multi")
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN",
+                sample_rate=8000, recorder=recorder,
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, [
+                    "पहला वाक्य यहाँ है। ",
+                    "दूसरा वाक्य अब आता है। ",
+                    "और यह आखिरी वाक्य है।",
+                ])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        texts = server.texts()
+        assert len(texts) == 3, texts
+        assert texts[0].startswith("पहला")
+        assert texts[1].startswith("दूसरा")
+        # The reply's FINAL words were sent, not lost to the close.
+        assert "आखिरी" in texts[2]
+        # One turn for the whole reply — never one per sentence.
+        assert server.turns() == [False, False, False]
+        assert server.connections == 1
+        assert server.violations == []
+        assert server.too_many == []
+        assert collector.audio_count() > 0
+        # Exactly one reply completion reached the transport.
+        assert sum(1 for kind, _ in collector.events if kind == "stopped") == 1
+
+    async def test_selected_model_reaches_elevenlabs_unchanged(self, monkeypatch):
+        """No silent revert to Flash: the wire URL carries what was picked,
+        and the v3 adapter — not the text-to-speech one — is what ran."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=1) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN",
+                sample_rate=8000, recorder=make_recorder("vs_v3_model"),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["नमस्ते जी।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        path = server.paths[0]
+        assert f"model_id={MODEL}" in path
+        assert "eleven_flash" not in path
+        assert "/v1/text-to-dialogue/multi-stream-input" in path
+        assert "output_format=pcm_8000" in path
+
+    async def test_barge_in_clears_queued_audio_and_next_reply_works(self, monkeypatch):
+        """The flushed tail after close_context must not reach the transport,
+        and the following reply must run on the SAME socket."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(
+                chunks=3, tail_chunks=4, first_chunk_delay=0.4) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN",
+                sample_rate=8000, recorder=make_recorder("vs_v3_barge"),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await worker.queue_frame(LLMFullResponseStartFrame())
+                await worker.queue_frame(
+                    TextFrame("यह एक लंबा जवाब है जिसे बीच में रोका जाएगा। "))
+                await worker.queue_frame(LLMFullResponseEndFrame())
+                await asyncio.sleep(0.15)          # before the delayed chunk
+                await worker.queue_frame(InterruptionFrame())
+                await asyncio.sleep(0.8)           # server flushes the tail
+                interrupted = collector.audio_count()
+                assert interrupted == 0, "cancelled audio reached the transport"
+                # Next reply on the same connection.
+                await speak_turn(worker, ["ठीक है, बताइए।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert server.closed_contexts, "close_context was not sent on barge-in"
+        assert server.violations == [], "messaged a closing context"
+        assert server.connections == 1, "barge-in forced a reconnect"
+        assert collector.audio_count() > 0, "the reply after barge-in was silent"
+        assert "ठीक है, बताइए।" in "".join(server.texts())
+
+    async def test_repeated_barge_ins_do_not_exhaust_contexts(self, monkeypatch):
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(
+                chunks=2, tail_chunks=2, first_chunk_delay=0.25) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN",
+                sample_rate=8000, recorder=make_recorder("vs_v3_rapid"),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                for index in range(6):
+                    await worker.queue_frame(LLMFullResponseStartFrame())
+                    await worker.queue_frame(TextFrame(f"जवाब नंबर {index} यहाँ है। "))
+                    await worker.queue_frame(LLMFullResponseEndFrame())
+                    await asyncio.sleep(0.12)
+                    await worker.queue_frame(InterruptionFrame())
+                    await asyncio.sleep(0.25)
+                await speak_turn(worker, ["आखिरी जवाब पूरा सुनाई देगा।"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert server.too_many == [], "hit the 5-context limit"
+        assert server.violations == []
+        assert server.connections == 1
+        assert collector.audio_count() > 0
+        assert "आखिरी जवाब" in "".join(server.texts())
+
+    async def test_idle_disconnect_recovers_on_the_next_reply(self, monkeypatch):
+        """The server drops an idle socket after 20 s; the next reply must
+        reconnect rather than write into a dead connection."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=2, tail_chunks=1) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(), language="hi-IN",
+                sample_rate=8000, recorder=make_recorder("vs_v3_idle"),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["पहला जवाब।"])
+                first = collector.audio_count()
+                assert first > 0
+                # Drop every provider socket the router holds, the way an
+                # idle-timeout close would.
+                for provider in list(router._providers.values()):
+                    await provider._teardown_socket()
+                await asyncio.sleep(0.2)
+                await speak_turn(worker, ["दूसरा जवाब भी सुनाई देगा।"])
+                assert collector.audio_count() > first, "no audio after reconnect"
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert server.connections == 2, "did not reconnect"
+        assert server.violations == []
+        assert "दूसरा जवाब" in "".join(server.texts())
+
+    async def test_per_language_override_routes_to_the_v3_adapter(self, monkeypatch):
+        """A per-language mapping onto the model must reach the dialogue
+        endpoint — this is what a non-streaming model could never do."""
+        monkeypatch.setenv("TEST_EL_V3_KEY", API_KEY)
+        async with MockElevenLabsDialogueServer(chunks=2) as server:
+            monkeypatch.setattr(v3_ws, "_WS_BASE", server.url)
+            router = StreamingTTSRouter(
+                tts_config=v3_config(language_map={
+                    "ml-IN": {
+                        "provider": "elevenlabs", "model": MODEL,
+                        "voice": "monika-wire-id", "params": {"stability": 1.0},
+                        "api_key_reference": "env:TEST_EL_V3_KEY",
+                    },
+                }),
+                language="hi-IN", sample_rate=8000,
+                recorder=make_recorder("vs_v3_lang"),
+            )
+            collector = AudioCollector()
+
+            async def feeder(worker):
+                from voice_runtime.frames import SwitchVoiceLanguageFrame
+                await asyncio.sleep(0.2)
+                await worker.queue_frame(SwitchVoiceLanguageFrame(language="ml-IN"))
+                await asyncio.sleep(0.1)
+                await speak_turn(worker, ["നമസ്കാരം, എന്ത് സഹായം വേണം?"])
+                await worker.queue_frame(EndWorkerFrame(reason="done"))
+
+            await run_router(router, collector, feeder)
+
+        assert collector.audio_count() > 0
+        assert any(f"model_id={MODEL}" in p for p in server.paths)
+        # The override's own stability reached the context init.
+        assert server.inits[-1]["voice_settings"] == {"stability": 1.0}

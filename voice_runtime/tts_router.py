@@ -56,6 +56,7 @@ from shared.providers.tts.delivery import (
 )
 from shared.orchestration.voice_identity import resolve_language_engine
 from shared.providers.tts.deepgram_ws import DeepgramWebSocketTTSProvider
+from shared.providers.tts.elevenlabs_v3_ws import ElevenLabsV3DialogueTTSProvider
 from shared.providers.tts.elevenlabs_ws import ElevenLabsWebSocketTTSProvider
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import (
@@ -79,6 +80,15 @@ _STREAMING_PROVIDERS: dict[str, type[StreamingTTSProvider]] = {
     "sarvam": SarvamWebSocketTTSProvider,
     "elevenlabs": ElevenLabsWebSocketTTSProvider,
     "deepgram": DeepgramWebSocketTTSProvider,
+}
+
+# Models whose realtime endpoint differs from their provider's default one.
+# ElevenLabs serves Eleven v3 on the Text-to-Dialogue socket, which the
+# text-to-speech adapter's endpoint rejects outright (HTTP 400), so the
+# adapter is chosen per (provider, model) with the provider default as the
+# fallback — Flash/Turbo v2.5 keep resolving exactly as before.
+_STREAMING_MODEL_PROVIDERS: dict[tuple[str, str], type[StreamingTTSProvider]] = {
+    ("elevenlabs", "eleven_v3_conversational"): ElevenLabsV3DialogueTTSProvider,
 }
 
 # Sample rates each provider can emit natively; anything else is resampled.
@@ -422,7 +432,9 @@ class StreamingTTSRouter(TTSService):
         )
 
     def _default_provider_factory(self, settings: TTSStreamSettings) -> StreamingTTSProvider:
-        cls = _STREAMING_PROVIDERS.get(settings.provider)
+        cls = _STREAMING_MODEL_PROVIDERS.get(
+            (settings.provider, settings.model)
+        ) or _STREAMING_PROVIDERS.get(settings.provider)
         if cls is None:
             raise ProviderError(
                 settings.provider, "invalid_input",

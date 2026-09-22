@@ -70,7 +70,11 @@ _LANGUAGE_ENFORCING_MODELS = ELEVENLABS_LANGUAGE_ENFORCING_MODELS
 # these models must run the REST adapter (shared/providers/tts/elevenlabs.py);
 # rejecting here turns a misrouted config into a clear error instead of a
 # cryptic server-side close.
-_WS_UNSUPPORTED_MODELS = {"eleven_v3"}
+# eleven_v3_conversational streams, but on the Text-to-Dialogue endpoint
+# (shared/providers/tts/elevenlabs_v3_ws.py). Probed 2026-09-22: BOTH v3 model
+# ids are rejected here with an HTTP 400 at the handshake, so a misroute is
+# named rather than surfacing as an opaque connection failure.
+_WS_UNSUPPORTED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 
 _VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style",
                        "use_speaker_boost", "speed")
@@ -128,9 +132,10 @@ class ElevenLabsWebSocketTTSProvider(StreamingTTSProvider):
             raise error
         if model in _WS_UNSUPPORTED_MODELS:
             message = (
-                f"ElevenLabs model '{model}' is not supported on the realtime "
-                "WebSocket — use a streaming model (e.g. eleven_flash_v2_5) "
-                "for live synthesis"
+                f"ElevenLabs model '{model}' is not supported on the "
+                "text-to-speech realtime WebSocket — eleven_v3_conversational "
+                "streams over the Text-to-Dialogue adapter, and eleven_v3 is "
+                "REST-only"
             )
             await self._emit_error("invalid_input", message)
             raise ProviderError(self.name, "invalid_input", message)
