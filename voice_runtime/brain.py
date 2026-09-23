@@ -1273,6 +1273,9 @@ class ConversationBrain(FrameProcessor):
                 and self._open_turn_text is not None
                 and not self._reply_audio_started
             )
+            # Claim the turn's markers NOW, before any await: the generation
+            # may finish (and clear them) while the cancel below is pending.
+            claimed = self._claim_open_turn() if resumed_before_reply else None
             if not resumed_before_reply and (
                 self._bot_speaking or self._reply_audio_started
             ) and not self._backchannel_active:
@@ -1290,7 +1293,7 @@ class ConversationBrain(FrameProcessor):
                 "late_transcript_merge" if resumed_before_reply else "barge_in"
             )
             if resumed_before_reply:
-                await self._rollback_open_turn()
+                await self._rollback_open_turn(claimed)
             await self.push_frame(frame, direction)
             # A barge-in during a transfer/stop announcement must not lose the
             # control event — the caller already asked for it.
@@ -2760,21 +2763,47 @@ class ConversationBrain(FrameProcessor):
         ):
             # The early endpoint already dispatched, but no audio has reached
             # the caller: rewind so the completed utterance runs once.
+            claimed = self._claim_open_turn()
             await self._cancel_generation("late_transcript_merge")
-            await self._rollback_open_turn()
+            await self._rollback_open_turn(claimed)
 
-    async def _rollback_open_turn(self) -> None:
+    def _claim_open_turn(self) -> tuple[str | None, TurnRecord | None, tuple | None]:
+        """Take the dispatched-but-unheard turn's markers for a late-final merge.
+
+        Synchronous on purpose. The merge decision reads the markers, then
+        awaits the cancel; the generation task may COMPLETE inside that await
+        (its reply already queued, no audio out yet) and its normal-completion
+        cleanup blanks the text marker while the workflow marker survives.
+        Reading the markers after the await then rewound the workflow but
+        found no text to re-queue: the partner's three captured answers were
+        lost and only the trailing fragment ran, at the re-opened ask
+        (cv_3dbf25aa5a8f / cv_7912421c502a, 2026-09-23). Claiming before the
+        await makes the rewind all-or-nothing.
+        """
+        text, record = self._open_turn_text, self._open_turn_record
+        workflow_turn = self._open_turn_workflow
+        self._open_turn_text = self._open_turn_record = None
+        self._open_turn_workflow = None
+        return text, record, workflow_turn
+
+    async def _rollback_open_turn(
+        self, claimed: tuple[str | None, TurnRecord | None, tuple | None] | None = None,
+    ) -> None:
         """Rewind the user turn whose generation was just cancelled.
 
         Its text returns to the FRONT of the pending buffer and its history/
-        transcript entries are removed, so the merged turn records exactly one
-        complete user message. The client is told about the retraction: its
-        live transcript already rendered this fragment, and without the event
-        the merged turn re-displays the same words as a second bubble.
+        transcript entries are removed — together with a reply that was
+        generated for it but never played — so the merged turn records exactly
+        one complete user message. The client is told about the retraction:
+        its live transcript already rendered this fragment, and without the
+        event the merged turn re-displays the same words as a second bubble.
+
+        ``claimed`` is the marker snapshot taken by :meth:`_claim_open_turn`
+        BEFORE the awaited cancel; without it the markers are read now.
         """
-        text, record = self._open_turn_text, self._open_turn_record
-        self._open_turn_text = self._open_turn_record = None
-        workflow_turn, self._open_turn_workflow = self._open_turn_workflow, None
+        text, record, workflow_turn = (
+            claimed if claimed is not None else self._claim_open_turn()
+        )
         if workflow_turn is not None and self._workflows is not None:
             # The cancelled turn already advanced the checkpointed workflow
             # (an ask consumed the fragment): rewind it too, or the merged
@@ -2794,11 +2823,27 @@ class ConversationBrain(FrameProcessor):
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
-        if self._history and self._history[-1] == {"role": "user", "content": text}:
-            self._history.pop()
+        user_entry = {"role": "user", "content": text}
+        for index in range(len(self._history) - 1, -1, -1):
+            if self._history[index] == user_entry:
+                # The user message and any assistant reply generated after it
+                # (queued, never heard) leave the LLM context together.
+                del self._history[index:]
+                break
         turns = self._recorder.turns
-        if record is not None and turns and turns[-1] is record:
-            turns.pop()
+        if record is not None:
+            for index in range(len(turns) - 1, -1, -1):
+                if turns[index] is record:
+                    dropped = turns[index:]
+                    del turns[index:]
+                    if any(getattr(t, "role", None) == "bot" for t in dropped):
+                        # The caller never heard the reply recorded after this
+                        # turn: the last thing they heard is the bot turn before.
+                        self._last_bot_reply = next(
+                            (t.text for t in reversed(turns)
+                             if getattr(t, "role", None) == "bot"), "",
+                        )
+                    break
         self._pending_segments.insert(0, text)
         self._recorder.add_event("turn_merged_late_final", text=text)
         await self._notify_client({"type": "turn_rewound", "user_text": text})
@@ -2913,8 +2958,9 @@ class ConversationBrain(FrameProcessor):
             # barge-in happened — the caller is silent and the reply is still
             # generating): cancel it, rewind the partial user turn and run the
             # combined utterance as one turn.
+            claimed = self._claim_open_turn()
             await self._cancel_generation("late_transcript_merge")
-            await self._rollback_open_turn()
+            await self._rollback_open_turn(claimed)
         text = " ".join(self._pending_segments).strip()
         self._pending_segments.clear()
         self._last_buffered_final = None
