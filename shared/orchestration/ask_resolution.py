@@ -455,17 +455,30 @@ Stage = Callable[[AskContext], Any]
 
 # ── 1. pre-handlers ──────────────────────────────────────────────────────────
 
+# LLM labels that describe the CONTENT of a statement rather than a request
+# to change course, and the behaviour knob that lets each yield to the words
+# at a free-text ask. clarify / hold / agent_request are never here: they
+# mean "re-ask", "wait" and "transfer", not "here is my answer".
+_LABEL_YIELD_KNOBS = {
+    "question": "question_label_yields_free_text",    # v2+
+    "complaint": "complaint_label_yields_free_text",  # v3+
+}
+
+
 def reconcile_question_label(ctx: AskContext) -> None:
-    """Behaviour v2: an LLM 'question' label yields to a statement of enough
-    words at a free-text ask — the words ARE the answer (cv_7786bc42deca)."""
+    """Behaviour v2/v3: an LLM 'question' (v2) or 'complaint' (v3) label
+    yields to a statement of enough words at a free-text ask — the words ARE
+    the answer (cv_7786bc42deca; cv_7c792739697e). A statement shaped like a
+    question keeps the guard so the brain answers it."""
+    knob = _LABEL_YIELD_KNOBS.get(ctx.signal or "")
     if (
-        ctx.guarded and ctx.signal == "question"
-        and ctx.behavior.question_label_yields_free_text
+        ctx.guarded and knob
+        and getattr(ctx.behavior, knob)
         and not looks_like_question(ctx.text)
         and len(ctx.text.split()) >= ctx.behavior.literal_answer_min_words
         and _ask_is_free_text(ctx.node, ctx.variable)
     ):
-        ctx.audit.append({"action": "question_label_yielded",
+        ctx.audit.append({"action": f"{ctx.signal}_label_yielded",
                           "node": ctx.node_id, "words": len(ctx.text.split())})
         ctx.guarded = False
 

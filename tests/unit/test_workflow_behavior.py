@@ -62,6 +62,20 @@ class TestResolution:
         assert behavior_declaration(_definition()) == {}
         assert behavior_declaration(_definition({"behavior": {"version": 2}})) == {"version": 2}
 
+    def test_version_three_adds_complaint_yield_on_top_of_two(self):
+        b = resolve_behavior(_definition({"behavior": {"version": 3}}))
+        assert b.version == 3
+        assert b.question_label_yields_free_text is True
+        assert b.complaint_label_yields_free_text is True
+
+    def test_version_two_does_not_get_the_complaint_yield(self):
+        b = resolve_behavior(_definition({"behavior": {"version": 2}}))
+        assert b.complaint_label_yields_free_text is False
+        assert resolve_behavior(_definition()).complaint_label_yields_free_text is False
+
+    def test_latest_is_three(self):
+        assert LATEST_BEHAVIOR_VERSION == 3
+
 
 class TestStamping:
     def test_new_definition_is_stamped_latest(self):
