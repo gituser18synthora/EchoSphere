@@ -55,16 +55,46 @@ _SIMPLE_SPLIT_RE = re.compile(r"(?<=[.?!])\s+")
 # error event AND closes the socket, so they must never reach a provider.
 _SPEAKABLE_RE = re.compile(r"[^\W_]")
 
-# Booking identifiers are references, not quantities.  TTS providers commonly
-# read a compact value such as ``601001`` as "six hundred one thousand and
-# one", which makes the identifier impossible to verify over a call.  Keep the
-# rewrite deliberately label-scoped so dates, amounts, room counts, and other
-# ordinary numbers retain their natural pronunciation.
+# Identifiers are references, not quantities.  TTS providers commonly read a
+# compact value such as ``601001`` as "six hundred one thousand and one", and
+# ElevenLabs v3 garbled an order's last four digits ``9203`` outright
+# (cv_3324204e8584, 2026-09-23), which makes the identifier impossible to
+# verify over a call.  Keep the rewrite deliberately label-scoped so dates,
+# amounts, room counts and other ordinary numbers retain their natural
+# pronunciation: a digit run is spaced only when an identifier label sits
+# right in front of it, and never when a currency/percent word follows it or
+# it continues into a date/decimal.
+_ID_NOUNS = (
+    r"booking|reservation|बुकिंग|आरक्षण"
+    r"|order|ऑर्डर|ऑर्डर|आर्डर|ओर्डर"
+    r"|ticket|टिकट|टिकेट"
+    r"|reference|ref|रेफरेंस|रेफ़रेंस|रिफरेंस"
+    r"|transaction|txn|ट्रांज़ैक्शन|ट्रांजैक्शन|ट्रांजेक्शन"
+    r"|complaint|शिकायत|case|केस|pnr|पीएनआर|utr|otp|ओटीपी"
+    r"|tracking|ट्रैकिंग|awb|consignment|shipment|शिपमेंट|parcel|पार्सल"
+)
+# Labels that mark a reference on their own ("customer ID 700102",
+# "phone number 9876543210", "OTP 4821", "pin code 400001").
+_ID_WORDS = (
+    r"id|आईडी|आई\.?\s?डी\.?|number|नंबर|नम्बर|संख्या|no\.?|num|code|कोड"
+)
+# "…ऑर्डर का आखिरी चार अंक 9203 हैं" / "last four digits are 9203" — the
+# digit-count noun right before the run is the label.
+_DIGITS_WORDS = r"digits?|अंक|अंकों|ank|ankon"
+_ID_CONNECTORS = r"is|are|was|hai|hain|tha|है|हैं|था"
+# A labelled run that is really a quantity ("order 1200 rupees ka tha").
+_QUANTITY_SUFFIX = (
+    r"रुपये|रुपए|रुपया|रु\.?|rupees?|rupaye|rupay|rs\.?|inr|₹"
+    r"|%|percent|प्रतिशत|paise|पैसे"
+)
 _BOOKING_ID_RE = re.compile(
-    r"(?P<prefix>(?<!\w)(?:booking|reservation|बुकिंग|आरक्षण)"
-    r"(?:\s+(?:id|आईडी|number|नंबर|संख्या|no\.?))?"
-    r"(?:\s+(?:is|hai|है))?\s*[:#-]?\s*)"
-    r"(?P<identifier>\d{4,10})(?!\d)",
+    r"(?P<prefix>(?<!\w)"
+    r"(?:(?:" + _ID_NOUNS + r")(?:\s+(?:" + _ID_WORDS + r"))?"
+    r"|(?:" + _ID_WORDS + r")"
+    r"|(?:" + _DIGITS_WORDS + r"))"
+    r"(?:\s+(?:" + _ID_CONNECTORS + r"))?\s*[:#-]?\s*)"
+    r"(?P<identifier>\d{4,18})"
+    r"(?!\d|[-/.:]\d|\s*(?:" + _QUANTITY_SUFFIX + r")(?!\w))",
     re.IGNORECASE,
 )
 
@@ -133,7 +163,13 @@ def has_speakable_text(text: str) -> bool:
 
 
 def verbalize_booking_ids(text: str) -> str:
-    """Space booking/reservation IDs so TTS reads them digit by digit.
+    """Space labelled identifiers so TTS reads them digit by digit.
+
+    Covers booking/order/ticket/reference/transaction IDs, OTPs, "customer
+    ID …", "phone number …" and "last four digits …" readouts in English,
+    Hinglish and Devanagari.  Only a digit run directly after such a label is
+    touched: amounts ("400 रुपये", "1200 rupees"), dates ("4 अगस्त",
+    "2026-09-23") and unlabelled numbers keep their natural pronunciation.
 
     The visible assistant response and persisted transcript remain unchanged;
     this helper is part of TTS-only text preparation.  Applying it more than

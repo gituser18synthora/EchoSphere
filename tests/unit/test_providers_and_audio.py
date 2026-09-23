@@ -178,6 +178,64 @@ class TestTTSText:
         text = "The pending amount is 601001 rupees and check-in is on 20 August."
         assert sanitize_for_tts(text) == text
 
+    def test_order_last_four_digits_readout_is_spaced_but_amount_and_date_stay(self):
+        # cv_3324204e8584 (2026-09-23): ElevenLabs v3 garbled the compact
+        # "9203" while "400 रुपये" and "4 अगस्त" were spoken correctly.
+        from shared.audio.text import sanitize_for_tts
+
+        text = (
+            "आपके ticket पर MDND का deduction 400 रुपये का है, जो 4 अगस्त को "
+            "हुआ था, और ऑर्डर का आखिरी चार अंक 9203 हैं। बताइए — क्या हुआ था?"
+        )
+        out = sanitize_for_tts(text)
+        assert "अंक 9 2 0 3 हैं" in out
+        assert "400 रुपये" in out and "4 अगस्त" in out
+
+    def test_labelled_identifiers_are_spoken_digit_by_digit(self):
+        from shared.audio.text import sanitize_for_tts
+
+        cases = {
+            "Your order ID 9203 was marked delivered.":
+                "Your order ID 9 2 0 3 was marked delivered.",
+            "ऑर्डर नंबर 9203 है": "ऑर्डर नंबर 9 2 0 3 है",
+            "ऑर्डर आईडी 9203 है": "ऑर्डर आईडी 9 2 0 3 है",
+            "order ke last four digits are 9203.":
+                "order ke last four digits are 9 2 0 3.",
+            "ticket number 12345 par note kar diya":
+                "ticket number 1 2 3 4 5 par note kar diya",
+            "reference number is 98765432":
+                "reference number is 9 8 7 6 5 4 3 2",
+            "OTP 4821 hai": "OTP 4 8 2 1 hai",
+            "customer ID 700102 verify ho gaya":
+                "customer ID 7 0 0 1 0 2 verify ho gaya",
+            "aapka phone number 9876543210 hai":
+                "aapka phone number 9 8 7 6 5 4 3 2 1 0 hai",
+            "transaction ID: 987654321012": "transaction ID: 9 8 7 6 5 4 3 2 1 0 1 2",
+        }
+        for text, expected in cases.items():
+            assert sanitize_for_tts(text) == expected, text
+
+    def test_labelled_quantities_and_dates_keep_their_natural_pronunciation(self):
+        from shared.audio.text import sanitize_for_tts
+
+        for text in (
+            "order 1200 rupees ka tha",
+            "आपका order total 1200 रुपये है",
+            "order 400 रुपये का है, जो 4 अगस्त को हुआ था",
+            "ticket 2026-09-23 ko bana tha",
+            "order 1200 INR",
+            "number 2500 Rs. deduct hua",
+            "paid 5000 rupees",
+        ):
+            assert sanitize_for_tts(text) == text, text
+
+    def test_identifier_spacing_is_idempotent(self):
+        from shared.audio.text import sanitize_for_tts
+
+        once = sanitize_for_tts("ऑर्डर का आखिरी चार अंक 9203 हैं।")
+        assert once == "ऑर्डर का आखिरी चार अंक 9 2 0 3 हैं।"
+        assert sanitize_for_tts(once) == once
+
 
 class TestVaaniTelephony:
     def test_supported_provider_catalog_and_connect_payload(self):
