@@ -21,13 +21,18 @@ Version history
   2  a 'question'-labelled STATEMENT of >= 3 words at a free-text ask is the
      answer (cv_7786bc42deca: the partner's incident narrative was re-asked
      twice).
+  3  the same for a 'complaint'-labelled statement (cv_7c792739697e and three
+     sibling live calls, 2026-09-23: the classifier labelled the partner's
+     "maine deliver kar diya, phir bhi MDND marked hua" story question on
+     some calls and complaint on others; v2 covered only the former, so the
+     complaint calls got the authored "samajh nahi paya" retry instead).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
-LATEST_BEHAVIOR_VERSION = 2
+LATEST_BEHAVIOR_VERSION = 3
 DEFAULT_BEHAVIOR_VERSION = 1  # undeclared definitions
 
 
@@ -48,12 +53,17 @@ class WorkflowBehavior:
     # (stored as the answer) when the words have no question shape and are
     # at least ``literal_answer_min_words`` long. v2+.
     question_label_yields_free_text: bool = False
+    # Free-text ask: an LLM 'complaint' label yields the same way — a
+    # complaint of enough words at "what happened?" IS the story. Other
+    # off-script labels (clarify, hold, agent_request) keep the guard. v3+.
+    complaint_label_yields_free_text: bool = False
     literal_answer_min_words: int = 3
 
 
 _VERSION_DEFAULTS: dict[int, dict[str, Any]] = {
     1: {},
     2: {"question_label_yields_free_text": True},
+    3: {"complaint_label_yields_free_text": True},
 }
 
 _KNOB_TYPES = {f.name: f.type for f in fields(WorkflowBehavior)}
