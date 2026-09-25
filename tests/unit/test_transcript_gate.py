@@ -761,12 +761,28 @@ class TestRecordingAnnouncement:
         "Your call will be recorded and monitored.",
         "यह कॉल रिकॉर्ड की जा रही है।",
         "yeh call record ho rahi hai",
+        # Malayalam-script transliteration from an ml-IN-pinned Sarvam stream
+        # (observed 2026-09-23): the notice must not become a caller turn there.
+        "കോൾ ഈസ് നൗ ബി. recorded",
+        "കോൾ ഈസ് നൗ ബീയിങ് റെക്കോർഡ്.",
     )
 
     def test_announcement_alone_is_rejected(self):
         for text in self.ANNOUNCEMENTS:
             verdict = assess_transcript(text, q(language="en-IN"))
             assert not verdict.accepted and verdict.reason == "recording_announcement", text
+
+    def test_trailing_clause_alone_is_announcement_debris(self):
+        # The barge-in flush split "This call may be recorded | for quality and
+        # training purposes."; the first half is rejected above, the second
+        # half must not become a caller turn (2026-09-24 telephony run).
+        for text in ("for quality and training purposes.", "and training purposes", "for training"):
+            verdict = assess_transcript(text, q(language="en-IN"))
+            assert not verdict.accepted and verdict.reason == "recording_announcement", text
+        # A bare "recorded" is left to the brain's reassembly at dispatch, and
+        # ordinary speech containing these words is untouched.
+        for text in ("recorded", "for my training I need leave", "security guard ko de diya"):
+            assert assess_transcript(text, q(language="en-IN")).reason != "recording_announcement", text
 
     def test_announcement_fused_with_speech_keeps_the_speech(self):
         verdict = assess_transcript("Call is now being recorded. बताइए।", q(language="hi-IN"))

@@ -297,3 +297,85 @@ class TestTurnCloseLatency:
             f"expected the net to be skipped; saved only "
             f"{(before - after) * 1000:.0f}ms"
         )
+
+
+class TestMeasuredFinalLatencyWiring:
+    """2026-09-24: the telephony pause window (0.4 s after VAD stop) closed the
+    turn before 19 % of Sarvam finals existed; a merge's re-queued text was then
+    dispatched alone and the final ran as a second turn. The adapter now
+    advertises its measured final latency and the turn end waits for the final
+    up to that bound (minus stop_secs) — finals still short-circuit the wait."""
+
+    def test_sarvam_service_advertises_the_measured_p99(self, monkeypatch):
+        from voice_runtime.pipeline import SARVAM_TTFS_P99_S
+
+        monkeypatch.setenv("TEST_SARVAM_API_KEY", "test-key")
+        service = build_stt_service(TestRawPcmTransport._config(), use_provider_vad=False)
+        assert isinstance(service, EndpointedSarvamSTTService)
+        assert service._ttfs_p99_latency == SARVAM_TTFS_P99_S == 0.8
+        assert service.service_metadata_frame().ttfs_p99_latency == 0.8
+
+    async def test_wait_bounded_by_the_advertised_p99_when_no_final_arrives(self):
+        # stop_secs 0.3 (tenant telephony) → stt wait 0.5 s; policy window 0.4 s:
+        # a lost final closes the turn at ~0.5 s, not at the 5 s processor fallback.
+        from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+        stopped = []
+        strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
+        strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
+        tm = TaskManager()
+        tm.setup(asyncio.get_running_loop())
+        await strategy.setup(tm)
+        await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
+        await strategy.process_frame(VADUserStartedSpeakingFrame())
+        t0 = time.monotonic()
+        await strategy.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.3))
+        await asyncio.sleep(0.9)
+        await strategy.cleanup()
+        assert len(stopped) == 1
+        assert 0.45 <= stopped[0] - t0 <= 0.7, stopped[0] - t0
+
+    async def test_finalized_final_inside_the_window_keeps_the_policy_latency(self):
+        from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+        stopped = []
+        strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
+        strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
+        tm = TaskManager()
+        tm.setup(asyncio.get_running_loop())
+        await strategy.setup(tm)
+        await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
+        await strategy.process_frame(VADUserStartedSpeakingFrame())
+        t0 = time.monotonic()
+        await strategy.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.3))
+        await asyncio.sleep(0.26)
+        frame = TranscriptionFrame("haan bol raha hoon", "caller", "t")
+        frame.finalized = True
+        await strategy.process_frame(frame)
+        await asyncio.sleep(0.4)
+        await strategy.cleanup()
+        assert len(stopped) == 1
+        assert 0.38 <= stopped[0] - t0 <= 0.5, stopped[0] - t0
+
+    async def test_late_final_closes_the_turn_when_it_arrives(self):
+        from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+        stopped = []
+        strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
+        strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
+        tm = TaskManager()
+        tm.setup(asyncio.get_running_loop())
+        await strategy.setup(tm)
+        await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
+        await strategy.process_frame(VADUserStartedSpeakingFrame())
+        t0 = time.monotonic()
+        await strategy.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.3))
+        await asyncio.sleep(0.45)            # final later than the 0.4 s window, inside the 0.5 s net
+        assert stopped == []                 # the turn waited for it
+        frame = TranscriptionFrame("haan bol raha hoon", "caller", "t")
+        frame.finalized = True
+        await strategy.process_frame(frame)
+        await asyncio.sleep(0.05)
+        await strategy.cleanup()
+        assert len(stopped) == 1
+        assert 0.44 <= stopped[0] - t0 <= 0.55, stopped[0] - t0

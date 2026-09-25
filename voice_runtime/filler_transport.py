@@ -7,8 +7,10 @@ boundary without resetting a call's valid audio or interruption state.
 
 import asyncio
 
+import logging
+
 from pipecat.frames.frames import (
-    InterruptionFrame,
+    EndFrame, InterruptionFrame, OutputAudioRawFrame,
     OutputTransportMessageFrame, OutputTransportMessageUrgentFrame,
     OutputTransportReadyFrame, StartFrame,
 )
@@ -30,12 +32,60 @@ class FillerOutputTransportMixin:
         self._filler_owners = {}
 
     class MediaSender(BaseOutputTransport.MediaSender):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Provisional barge-in pause (voice_runtime.playback_duck). The
+            # duck holds frames UPSTREAM of the transport, but a reply that
+            # synthesizes faster than real time already sits in this sender's
+            # audio queue when the pause is requested, so the caller kept
+            # hearing the bot for the whole pause window (2026-09-23 runtime
+            # test: 0 ms held by the duck, audio flowing through every pause).
+            # While paused the audio task parks at the head of the queue:
+            # nothing reaches the wire, nothing already queued is lost, and a
+            # resume continues exactly where playback stopped.
+            self._playback_paused = False
+            self._playback_gate = asyncio.Event()
+            self._playback_gate.set()
+
+        @property
+        def playback_paused(self) -> bool:
+            return self._playback_paused
+
+        def pause_playback(self) -> None:
+            if self._playback_paused:
+                return
+            self._playback_paused = True
+            self._playback_gate.clear()
+
+        def resume_playback(self) -> None:
+            if not self._playback_paused:
+                return
+            self._playback_paused = False
+            self._playback_gate.set()
+
+        async def stop(self, frame):
+            # Teardown drains the queue up to the EndFrame; a pause must
+            # never stand between it and the audio task that waits for it.
+            self.resume_playback()
+            await super().stop(frame)
+
         async def handle_interruptions(self, frame):
             # Base cleanup clears partial PCM only if bot-speaking began.
             # A sub-chunk packet can exist before that event (plain audio,
             # or synthesis interrupted before its first full output chunk).
             self._audio_buffer.clear()
+            if self._playback_paused:
+                # A committed barge-in ends the pause: the frame parked on the
+                # gate belongs to the interrupted reply, so the audio task is
+                # cancelled BEFORE the gate opens (opening it first would let
+                # the parked frame reach the wire ahead of the cancel). The
+                # base restarts the task over an empty queue below.
+                await self._cancel_audio_task()
+                self._playback_paused = False
+                self._playback_gate.set()
             await super().handle_interruptions(frame)
+            if not self._audio_task:
+                self._create_audio_task()
 
         async def handle_audio_frame(self, frame):
             if not isinstance(frame, FillerAudioRawFrame):
@@ -84,6 +134,12 @@ class FillerOutputTransportMixin:
                     frame.owner is None or frame.owner.cancelled
                 ):
                     continue
+                if self._playback_paused and not isinstance(frame, EndFrame):
+                    # Park at the head of the queue until the pause ends. An
+                    # interruption cancels this task (see handle_interruptions),
+                    # so a parked frame never plays after a commit; teardown
+                    # (EndFrame) is never held back.
+                    await self._playback_gate.wait()
                 yield frame
 
     async def set_transport_ready(self, frame: StartFrame):
@@ -105,6 +161,21 @@ class FillerOutputTransportMixin:
             self._media_senders[destination] = sender
             await sender.start(frame)
         await self.push_frame(OutputTransportReadyFrame(), FrameDirection.UPSTREAM)
+
+    # ── provisional playback pause (voice_runtime.playback_duck) ─────────
+    def pause_playback(self) -> None:
+        """Stop dequeuing bot audio to the wire; queued audio is preserved."""
+        for sender in self._media_senders.values():
+            sender.pause_playback()
+
+    def resume_playback(self) -> None:
+        """Continue playback where the pause stopped it."""
+        for sender in self._media_senders.values():
+            sender.resume_playback()
+
+    @property
+    def playback_paused(self) -> bool:
+        return any(sender.playback_paused for sender in self._media_senders.values())
 
     async def clear_filler(self, owner):
         # No global queue reset, bot-speaking frame or InterruptionFrame.
@@ -156,6 +227,9 @@ class FillerOutputTransportMixin:
         await super().process_frame(frame, direction)
 
 
+logger = logging.getLogger(__name__)
+
+
 class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocketOutputTransport):
     """Retire filler pacing and send its targeted clear before response PCM."""
 
@@ -163,6 +237,25 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         super().__init__(*args, **kwargs)
         self._filler_send_lock = asyncio.Lock()
         self._cleared_fillers = set()
+        self._echo_reference = None
+
+    def attach_echo_reference(self, reference) -> None:
+        """Feed every audio frame to ``reference`` (voice_runtime.echo_reference)
+        at the moment it goes on the wire — inside ``_write_frame``, BEFORE the
+        socket send. A tap after the transport only sees the frame once the
+        pacing wait has passed (20–40 ms later), and on a fast echo path the
+        caller leg returns the frame before that: the gate then has nothing
+        to compare it against (2026-09-25: an 850 ms acknowledgement cue
+        echoed at −15 dB opened the gate that way)."""
+        self._echo_reference = reference
+
+    def _note_wire_audio(self, frame) -> None:
+        if self._echo_reference is None or not isinstance(frame, OutputAudioRawFrame) or not frame.audio:
+            return
+        try:
+            self._echo_reference.add_output(frame.audio, frame.sample_rate)
+        except Exception:  # noqa: BLE001 — evidence must never break audio
+            logger.debug("echo reference feed failed", exc_info=True)
 
     async def _clear_filler_playback(self, owner):
         async with self._filler_send_lock:
@@ -182,6 +275,7 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                 # it must never be concatenated with a real response packet.
                 payload = await self._params.serializer.serialize(frame)
                 if payload and not frame.owner.cancelled:
+                    self._note_wire_audio(frame)
                     await self._client.send(payload)
                     return True
                 return False
@@ -191,6 +285,7 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                 if owner.cancelled and owner.token not in self._cleared_fillers:
                     await super()._write_frame(FillerClearFrame(owner))
                     self._cleared_fillers.add(owner.token)
+            self._note_wire_audio(frame)
             await super()._write_frame(frame)
 
     async def write_audio_frame(self, frame):

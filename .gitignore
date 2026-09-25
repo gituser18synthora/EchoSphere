@@ -103,3 +103,6 @@ storage/filler_audio/synthesized/
 oyo/data/runtime_state.json
 # Rendered per-voice latency cues (voice_runtime/voiced_cues.py)
 storage/filler_audio/cache/
+
+# Local model assets (speaker-consistency prototype); never commit binaries
+storage/models/

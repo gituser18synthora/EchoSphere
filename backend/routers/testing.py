@@ -42,6 +42,7 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_scenario
+from shared.orchestration.speech_style import spoken_reply_instruction
 from shared.orchestration.time_context import (
     TIME_CONTEXT_SETTING,
     asks_current_datetime,
@@ -440,19 +441,6 @@ def _testing_system_prompt(
             "This test session was verified by the configured workflow. Only "
             "the workflow-returned facts above may be disclosed."
         )
-    if language.split("-")[0].lower() == "hi":
-        rendered += (
-            "\n\n# Runtime-enforced response language\n"
-            "The customer's latest message is Hindi. Reply only in natural "
-            "Hindi/Hinglish written in Devanagari. Do not switch to English, "
-            "and do not output a language tag such as <|HINDI|>."
-        )
-    else:
-        rendered += (
-            "\n\n# Runtime-enforced response language\n"
-            "The customer's latest message is English. Reply only in natural "
-            "Indian English. Do not output a language tag such as <|ENGLISH|>."
-        )
     provider_code = vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider
     model = vbs.llm_model if vbs and vbs.llm_model else settings.llm_model
     llm = get_llm_provider(ProviderConfig(
@@ -482,6 +470,8 @@ async def _testing_llm_reply(
         return None
     system, llm = configured
     system += extra_system
+    # Final suffix wins over language/register examples in workflow directives.
+    system += spoken_reply_instruction(language)
     history = [message.model_dump() for message in body.messages[-20:]]
     history.append({"role": "user", "content": body.message})
     result = await llm.generate(history, system=system, max_tokens=120, temperature=0.2)
@@ -1214,7 +1204,7 @@ async def simulate_turn(
             "name": voice_identity.name,
             "gender": voice_identity.gender,
         },
-        "renderedPrompt": rendered_prompt,
+        "renderedPrompt": rendered_prompt + spoken_reply_instruction(simulation_language),
     })
 
     # 3. Platform deterministic commands first — never the LLM's call.
@@ -1502,6 +1492,8 @@ async def simulate_turn(
                     llm, rendered_prompt + plan_instruction + tool_instruction
                     + collected_facts_block(result.get("slots") or {}) + kb_block + hub_note,
                     body.messages, body.message,
+                    language=simulation_language,
+                    trace=trace,
                 )
                 trace.setdefault("route", "workflow_off_script_llm")
                 if trace["route"] == "workflow":
@@ -1531,6 +1523,8 @@ async def simulate_turn(
                         + (f" Respond in natural spoken {label}." if label else "")
                         + f"\nContext:\n{kb_passage}",
                         [], kb_intent,
+                        language=simulation_language,
+                        trace=trace,
                     )
                 else:
                     from shared.orchestration.phrases import canned
@@ -1576,11 +1570,15 @@ async def simulate_turn(
                     )
                     grounded_text = await _simulate_llm_reply(
                         llm, constrained_system, [], result["reply"],
+                        language=simulation_language,
+                        trace=trace,
                     )
                 else:
                     grounded_text = await _simulate_llm_reply(
                         llm, rendered_prompt + grounded_instruction,
                         body.messages, body.message,
+                        language=simulation_language,
+                        trace=trace,
                     )
                 if validate_grounded_reply(
                     result["reply"], grounded_text, body.language or None,
@@ -1634,10 +1632,11 @@ async def simulate_turn(
             response_text = canned("clarify", body.language or "en")
             trace["route"] = "clarify"
         else:
-            # Trace fidelity: show the system prompt the LLM ACTUALLY got.
-            trace["renderedPrompt"] = rendered_prompt + extra
+            # The reply helper records the final system prompt in the trace.
             response_text = await _simulate_llm_reply(
                 llm, rendered_prompt + extra, body.messages, body.message,
+                language=simulation_language,
+                trace=trace,
             )
     trace["workflow"] = workflow_detail
     trace["response"] = response_text
@@ -1720,7 +1719,8 @@ def _upgrade_route_with_intent(decision, classification, intent_dicts: list[dict
 
 
 async def _simulate_llm_reply(
-    llm, system: str, messages: list[dict], message: str
+    llm, system: str, messages: list[dict], message: str,
+    *, language: str | None = None, trace: dict | None = None,
 ) -> str:
     history = [
         {"role": ("assistant" if m.get("role") == "assistant" else "user"),
@@ -1728,6 +1728,9 @@ async def _simulate_llm_reply(
         for m in messages if m.get("content")
     ]
     history.append({"role": "user", "content": message})
+    system += spoken_reply_instruction(language)
+    if trace is not None:
+        trace["renderedPrompt"] = system
     try:
         result = await llm.generate(history, system=system, max_tokens=400)
         return result.text

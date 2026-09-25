@@ -59,7 +59,8 @@ def make_gate(**overrides) -> CallerAudioGate:
     params = {
         key: value
         for key, value in NOISE_GATE_DEFAULTS["telephony"].items()
-        if key != "enabled"
+        # Pipeline-level switches, not gate constructor arguments.
+        if key not in ("enabled", "echo_reference_mode", "echo_reference_max_lag_ms")
     }
     params.update(overrides)
     gate = CallerAudioGate(**params)
@@ -267,7 +268,7 @@ class TestSpeechEvidence:
         stats = gate.stats()
         assert set(stats) == {
             "opens", "suppressed_ms", "passed_ms", "echo_guard_ms",
-            "noise_floor_dbfs",
+            "echo_ref_rejected_ms", "echo_ref_would_reject_ms", "noise_floor_dbfs",
         }
         assert all(isinstance(v, (int, float, type(None))) for v in stats.values())
 

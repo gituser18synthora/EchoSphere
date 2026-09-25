@@ -27,9 +27,38 @@ RECORDING_ANNOUNCEMENT_RE = re.compile(
     # Hindi: "यह कॉल रिकॉर्ड की जा रही है", "कॉल रिकॉर्ड हो रही है"
     r"|(?:(?:यह|ये|आपकी)\s+)?कॉल\s+(?:अब\s+)?रिकॉर्ड\s+(?:की\s+जा\s+रही\s+है|हो\s+रही\s+है)"
     # Hinglish: "call record ho rahi hai", "yeh call record ki ja rahi hai"
-    r"|(?:(?:yeh|ye|yah|aapki)\s+)?\bcall\s+record\s+(?:ho\s+rahi\s+hai|ki\s+ja\s+rahi\s+hai)",
+    r"|(?:(?:yeh|ye|yah|aapki)\s+)?\bcall\s+record\s+(?:ho\s+rahi\s+hai|ki\s+ja\s+rahi\s+hai)"
+    # Malayalam-script transliteration of the English notice, as a Sarvam
+    # stream pinned to ml-IN writes it (observed 2026-09-23 on the mPokket
+    # bot: "കോൾ ഈസ് നൗ ബി. recorded", "കോൾ ഈസ് നൗ ബീയിങ് റെക്കോർഡ്."):
+    # "കോൾ ഈസ്/മേ ബി/വിൽ ബി (നൗ) (ബീയിങ്) recorded|റെക്കോർഡ്…"
+    r"|(?:(?:ഈ|ദിസ്|യുവർ|ദ)\s+)?ക[ോാ]ൾ\s+"
+    r"(?:ഈസ്|ഇസ്|മേ\s+ബ[ിീ]|വിൽ\s+ബ[ിീ]|വില്\s+ബ[ിീ])\s*"
+    r"(?:ന[ൗവ][ഀ-ൿ]*\s*)?"
+    r"(?:ബ[ിീ][ഀ-ൿ]*\.?\s*)?"
+    r"(?:recorded|റെക്കോ[ഀ-ൿ]*|റിക്കോ[ഀ-ൿ]*|റെകോ[ഀ-ൿ]*)",
     re.IGNORECASE,
 )
+
+# The notice's trailing clause on its own. The barge-in flush (0.7 s while
+# the bot speaks) can split the notice into two finals; the first half
+# matches above and is dropped, but "for quality and training purposes"
+# then arrives alone and used to become a caller turn (2026-09-24 telephony
+# run). A segment that is NOTHING BUT this clause is announcement debris.
+_TAIL_TOPICS = r"(?:quality|training|security|compliance|monitoring)"
+RECORDING_ANNOUNCEMENT_TAIL_RE = re.compile(
+    r"^\s*(?:(?:and|or)\s+)?(?:"
+    # "for quality and training purposes" / "for training"
+    r"for\s+" + _TAIL_TOPICS + r"(?:\s*(?:and|or|,)\s*" + _TAIL_TOPICS + r")*(?:\s+(?:assurance\s+)?purposes?)?"
+    # "quality and training purposes" (the word "purposes" is required here)
+    r"|" + _TAIL_TOPICS + r"(?:\s*(?:and|or|,)\s*" + _TAIL_TOPICS + r")*\s+(?:assurance\s+)?purposes?"
+    r")[\s.,;:!?।]*$",
+    re.IGNORECASE,
+)
+# A bare "recorded" / "monitored" is deliberately NOT a tail on its own: the
+# brain reassembles "Call is now being" + "recorded" at dispatch and judges the
+# whole utterance; rejecting the second half here would let the first half run
+# as a caller turn.
 
 _EDGE_PUNCT = re.compile(r"^[\s.,;:!?।\-–—]+|[\s.,;:!?।\-–—]+$")
 _HAS_CONTENT = re.compile(r"[\wऀ-ॿ]")
@@ -47,6 +76,9 @@ def strip_recording_announcement(text: str) -> tuple[str, bool]:
         return "", False
     remainder, count = RECORDING_ANNOUNCEMENT_RE.subn(" ", stripped)
     if not count:
+        if _HAS_CONTENT.search(stripped) and RECORDING_ANNOUNCEMENT_TAIL_RE.match(stripped):
+            # Only the notice's trailing clause survived a split final.
+            return "", True
         return stripped, False
     remainder = _EDGE_PUNCT.sub("", " ".join(remainder.split()))
     if not _HAS_CONTENT.search(remainder):

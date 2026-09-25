@@ -253,6 +253,9 @@ class Settings(BaseSettings):
     # process/port, or a different public hostname). Empty = derive from the
     # webhook request's own base URL (single-host proxy deployments).
     telephony_public_ws_base: str = ""
+    # Caller speaker-consistency prototype (voice_runtime.speaker_consistency):
+    # ONNX GE2E encoder + mel filterbank; missing file → evidence disabled.
+    speaker_model_path: str = "storage/models/speaker/ge2e_lstm.onnx"
     # The telephony gateway (`python -m voice_runtime.gateway`) is a second
     # voice-worker instance bound to the public dialer port so external
     # dialers reach ONE host:port for both the signed webhook and the media

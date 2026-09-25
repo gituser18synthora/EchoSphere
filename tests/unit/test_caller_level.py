@@ -10,46 +10,69 @@ from voice_runtime.caller_level import (
 
 
 class TestBaseline:
-    def test_unknown_until_min_segments_agree(self):
+    def test_unvouched_candidates_never_establish_trust(self):
+        # Three agreeing accepted segments are still only candidates: nothing
+        # about them says whose speech they were. Verdicts stay unknown.
         b = CallerLevelBaseline(margin_db=10, min_segments=3, consistency_db=6.0)
         assert not b.established and b.baseline_dbfs is None
         assert b.classify(-60.0).label == LABEL_UNKNOWN
-        b.observe(-30.0)
-        b.observe(-31.0)
-        assert b.classify(-60.0).label == LABEL_UNKNOWN  # two agreeing segments are not enough
-        b.observe(-29.0)
-        assert b.established and b.baseline_dbfs == -30.0
+        for level in (-30.0, -31.0, -29.0):
+            b.observe(level)
+        assert not b.established and not b.vouched
+        assert b.baseline_dbfs is None and b.candidate_dbfs == -30.0
+        assert b.classify(-60.0).label == LABEL_UNKNOWN
+        # One sample the call vouched for makes the baseline trusted at once.
+        seeded, after = b.observe_trusted(-30.0)
+        assert seeded and after == -30.0
+        assert b.established and b.vouched and b.baseline_dbfs == -30.0
+        assert b.classify(-60.0).suspect
 
-    def test_disagreeing_candidates_do_not_establish_trust(self):
-        # Caller, background, caller: the background sentence is excluded
-        # from the consistent set and cannot pull the baseline down.
+    def test_disagreeing_candidates_do_not_pull_a_trusted_baseline(self):
+        # Trusted caller at −25, then background at −42 accepted as a
+        # candidate: excluded from the consistent set, baseline unchanged.
         b = CallerLevelBaseline(margin_db=12, min_segments=3, consistency_db=6.0)
-        b.observe(-25.0)
+        b.observe_trusted(-25.0)
         b.observe(-42.0)
         b.observe(-26.0)
-        assert not b.established  # only two agree
-        b.observe(-24.0)
         assert b.established and b.baseline_dbfs == -25.0
-        assert b.consistent_segments == 3 and b.segments == 4
+        assert b.consistent_segments == 4 and b.segments == 5
         assert b.classify(-42.0).suspect
 
-    def test_background_first_contaminates_only_if_it_dominates(self):
-        # Three agreeing background sentences before the caller speaks DO
-        # establish a (wrong) baseline — the documented residual risk.
+    def test_background_first_cannot_own_the_baseline(self):
+        # Three agreeing background sentences before the caller speaks used to
+        # establish a (wrong) baseline that then held the real, quieter
+        # caller. They now establish nothing; the caller's first vouched turn
+        # seeds the baseline at the caller's level and the background becomes
+        # the suspect.
         b = CallerLevelBaseline(margin_db=12, min_segments=3, consistency_db=6.0)
         for level in (-42.0, -41.0, -43.0):
             b.observe(level)
-        assert b.established and b.baseline_dbfs == -42.0
-        # The louder caller is never suspect, and their turns take over the
-        # median once they outnumber the background candidates.
-        for level in (-25.0, -26.0, -25.0, -24.0):
-            assert not b.classify(level).suspect
-            b.observe(level)
-        assert b.baseline_dbfs == -25.0
+        assert not b.established and b.candidate_dbfs == -42.0
+        assert b.classify(-55.0).label == LABEL_UNKNOWN  # a quieter caller is not held
+        seeded, after = b.observe_trusted(-25.0)
+        assert seeded and after == -25.0 and b.baseline_dbfs == -25.0
+        assert b.classify(-42.0).suspect
+        assert not b.classify(-25.0).suspect
+
+    def test_trusted_sample_refreshes_within_consistency_and_rebases_beyond(self):
+        b = CallerLevelBaseline(margin_db=10, min_segments=3, consistency_db=6.0)
+        assert b.observe_trusted(-30.0) == (True, -30.0)
+        assert b.rebased == 1
+        # Within 6 dB of the baseline: refreshes like any candidate.
+        seeded, after = b.observe_trusted(-33.0)
+        assert not seeded and -31.0 <= after <= -30.0 and b.rebased == 1
+        # The caller moved to speakerphone: a vouched turn 12 dB quieter
+        # would otherwise be held as background until the history caught up.
+        assert b.classify(-42.0).suspect
+        seeded, after = b.observe_trusted(-42.0)
+        assert seeded and after == -42.0 and b.rebased == 2
+        assert b.classify(-42.0).label == LABEL_CALLER
+        assert b.trusted_segments == 3
 
     def test_median_resists_one_outlier(self):
         b = CallerLevelBaseline(margin_db=10, min_segments=3)
-        for level in (-30, -31, -29, -30):
+        b.observe_trusted(-30.0)
+        for level in (-31, -29, -30):
             b.observe(level)
         b.observe(-10.0)  # one shouted turn
         assert b.baseline_dbfs == -30.0
@@ -58,8 +81,8 @@ class TestBaseline:
 
     def test_history_is_bounded_so_baseline_follows_a_real_change(self):
         b = CallerLevelBaseline(margin_db=10, min_segments=3, history=4)
-        for _ in range(4):
-            b.observe(-20.0)
+        b.observe_trusted(-20.0)
+        b.observe(-20.0)
         for _ in range(4):
             b.observe(-40.0)
         assert b.baseline_dbfs == -40.0
@@ -92,8 +115,7 @@ class TestClassification:
         b = CallerLevelBaseline(
             margin_db=margin, min_segments=3, bot_audio_allowance_db=allowance
         )
-        for _ in range(3):
-            b.observe(-30.0)
+        b.observe_trusted(-30.0)
         return b
 
     def test_caller_within_margin(self):
@@ -146,7 +168,7 @@ class TestLiveClassification:
 
     def test_live_verdict_uses_the_bot_audio_allowance(self):
         b = CallerLevelBaseline(margin_db=10, min_segments=1, bot_audio_allowance_db=12)
-        b.observe(-30.0)
+        b.observe_trusted(-30.0)
         assert not b.classify_live(_Gate(500.0, -45.0)).suspect
         assert b.classify_live(_Gate(500.0, -55.0)).suspect
 

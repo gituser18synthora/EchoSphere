@@ -378,13 +378,17 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
       }
     >
       <div className="col gap-16">
-        <RecordingRow
-          conversationId={conv.id}
-          costUsd={showCosts ? conv.costUsd : null}
-          money={money}
-          recording={recording}
-          loading={detailQ.loading}
-        />
+        {/* Pinned under the header so play/pause stays reachable while a long
+            transcript scrolls beneath it. */}
+        <div className="conversation-recording-dock">
+          <RecordingRow
+            conversationId={conv.id}
+            costUsd={showCosts ? conv.costUsd : null}
+            money={money}
+            recording={recording}
+            loading={detailQ.loading}
+          />
+        </div>
 
         <CharacterUsageRow
           usage={detailQ.data?.characterUsage ?? null}

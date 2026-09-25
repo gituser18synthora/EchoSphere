@@ -21,6 +21,7 @@ Pinned here:
 import asyncio
 
 from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.speech_style import EVERYDAY_SPEECH_INSTRUCTION
 from voice_runtime.brain import ConversationBrain, validate_scripted_adaptation
 
 ASK_EN = "I can help you with that. Could you please share your booking ID?"
@@ -201,6 +202,7 @@ class TestAwaitingAskAdaptation:
         call = llm.generate_calls[0]
         assert call["messages"] == [{"role": "user", "content": ASK_EN}]
         assert "Hindi" in call["system"]
+        assert call["system"].count(EVERYDAY_SPEECH_INSTRUCTION) == 1
         assert "please wait" in call["system"]  # the named failure mode
         # The adapted ask was spoken and recorded.
         assert brain._history[-1]["content"] == ASK_HI

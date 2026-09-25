@@ -16,6 +16,7 @@ only how the reply is worded. Pinned here:
 import asyncio
 
 from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.speech_style import EVERYDAY_SPEECH_INSTRUCTION
 from shared.providers.base import ProviderError
 from voice_runtime.brain import ConversationBrain
 
@@ -190,6 +191,7 @@ class TestGroundedInformational:
         assert llm.generate_calls == []          # constrained path unused
         assert len(llm.stream_systems) == 1      # exactly ONE generation call
         system = llm.stream_systems[0]
+        assert system.count(EVERYDAY_SPEECH_INSTRUCTION) == 1
         assert "Deliver the call flow's outcome" in system
         assert GOAL in system
         assert AUTHORED in system

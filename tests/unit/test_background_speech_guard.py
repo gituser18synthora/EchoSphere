@@ -117,9 +117,13 @@ def level_events(brain):
 
 
 async def establish(brain, gate, handled, level=-30.0):
-    """Three agreeing accepted multi-word caller turns establish the baseline."""
+    """A caller turn the call vouches for (the workflow advanced on it) seeds
+    the trusted baseline; two more agreeing accepted turns refine it."""
     await say(brain, gate, "हाँ मैं बोल रहा हूँ", level)
     await settle_turn()
+    assert not brain._caller_level.established
+    brain._note_trusted_turn("workflow_advanced", min_words=2)
+    assert brain._caller_level.established
     await say(brain, gate, "मुझे पेमेंट के बारे में बताइए", level + 1.0)
     await settle_turn()
     await say(brain, gate, "कल तक कर दूँगा पक्का", level - 1.0)
@@ -249,21 +253,61 @@ class TestBotQuiet:
         assert brain._suspect_segments[-1]["text"] == "खाना बन गया क्या"
         assert brain._silence_task is not None  # ladder armed, not disarmed by junk
 
-    async def test_repeated_quiet_speech_stays_held_and_never_trains_the_baseline(self):
-        # Repetition is not evidence of who spoke: no reconfirmation, no
-        # re-basing. The no-response ladder is the only recovery path until
-        # independent speaker evidence exists.
+    async def test_repeated_quiet_speech_is_held_twice_then_fails_open(self):
+        # Repetition is not evidence of who spoke: the first two quiet
+        # suspects are held (no reconfirmation, no re-basing) and the
+        # no-response ladder runs. The level verdict must not lock the
+        # caller out for good, though: the third is dispatched anyway.
         brain, gate, baseline = make_brain()
         handled, _ = stub_turn_handler(brain)
         await establish(brain, gate, handled)
-        for text in ("हाँ जी मैं ही हूँ", "हाँ हाँ मैं ही बोल रहा हूँ", "सुन रहे हैं आप मुझे"):
+        for text in ("हाँ जी मैं ही हूँ", "हाँ हाँ मैं ही बोल रहा हूँ"):
             await say(brain, gate, text, -44.0)
             await settle_turn()
         assert len(handled) == 3
-        assert all(e["action"] == "held" for e in level_events(brain)[-3:])
-        assert baseline.baseline_dbfs == -30.0 and baseline.rebased == 0
-        assert "caller_baseline_rebased" not in brain._recorder.event_kinds()
+        assert all(e["action"] == "held" for e in level_events(brain)[-2:])
         assert brain._silence_task is not None
+        await say(brain, gate, "सुन रहे हैं आप मुझे", -44.0)
+        await settle_turn()
+        assert handled[-1] == "सुन रहे हैं आप मुझे"
+        event = level_events(brain)[-1]
+        assert event["action"] == "accepted" and event["reason"] == "background_quiet_failopen"
+        assert event["trained"] is False
+        # Still no level-based re-basing: the baseline is the trusted one.
+        assert baseline.baseline_dbfs == -30.0 and baseline.rebased == 1
+        assert brain._suspect_segments == []
+
+    async def test_fail_open_turn_the_call_vouches_for_rebases_the_baseline(self):
+        # The caller moved away from the handset: held twice, dispatched on
+        # the third turn, and once the workflow advances on that turn the
+        # baseline follows the caller's new level.
+        brain, gate, baseline = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        for text in ("सुनिए मैं यहाँ हूँ", "हेलो सुन रहे हैं आप", "मैं स्पीकर पर बोल रहा हूँ"):
+            await say(brain, gate, text, -44.0)
+            await settle_turn()
+        assert len(handled) == 4, handled
+        brain._note_trusted_turn("workflow_advanced", min_words=2)
+        assert baseline.rebased == 2 and baseline.baseline_dbfs == -44.0
+        await say(brain, gate, "हाँ जी ठीक है समझ गया", -44.0)
+        await settle_turn()
+        assert len(handled) == 5
+        assert level_events(brain)[-1]["label"] == "caller"
+
+    async def test_bot_audio_holds_do_not_count_toward_fail_open(self):
+        brain, gate, baseline = make_brain()
+        handled, _ = stub_turn_handler(brain)
+        await establish(brain, gate, handled)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for text in ("यहां पर लाइट बंद कर दो", "खाना बन गया क्या", "टीवी की आवाज़ कम करो", "बच्चों को बुला लो"):
+            await say(brain, gate, text, -44.0, during_bot=True)
+            await settle_turn()
+        await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        assert len(handled) == 3
+        reasons = [e["reason"] for e in level_events(brain)[-4:]]
+        assert reasons == ["background_during_bot_audio"] * 4, reasons
 
     async def test_caller_speech_discards_held_background(self):
         brain, gate, _ = make_brain()
@@ -341,3 +385,101 @@ class TestNoGate:
         await settle_turn()
         assert handled == ["हाँ बोल रहा हूँ"]
         assert level_events(brain) == []
+
+
+class _FakeSpeaker:
+    """Records calls; attribution alternates so both branches are exercised."""
+
+    def __init__(self):
+        self.scored = []
+        self.references = []
+        self.reference_available = False
+        self.reference_seconds = 0.0
+        self.mode = "shadow"
+
+    def score(self, pcm, rate, *, seconds, context=None):
+        from voice_runtime.speaker_consistency import SpeakerEvidence
+
+        self.scored.append((len(pcm), rate, seconds, dict(context or {})))
+        attribution = "caller" if self.reference_available else "unknown"
+        return SpeakerEvidence(attribution, self.reference_available, self.reference_seconds, 1 if self.reference_available else 0,
+                               seconds, 0.2 if self.reference_available else None, None, 0.35, 0.45, 1.0, "fake", "shadow", False,
+                               "scored" if self.reference_available else "no_reference", dict(context or {}))
+
+    def add_reference(self, pcm, rate, *, seconds, reason, during_bot_audio=False):
+        from voice_runtime.speaker_consistency import ReferenceUpdate
+
+        self.references.append((len(pcm), seconds, reason, during_bot_audio))
+        self.reference_available = True
+        self.reference_seconds += seconds
+        return ReferenceUpdate(True, "added", self.reference_seconds, len(self.references), None, 1.0)
+
+
+class _FakeTap:
+    def __init__(self, seconds=1.5):
+        self.seconds = seconds
+
+    def take_recent(self, max_seconds):
+        s = min(self.seconds, max_seconds)
+        return bytes(int(s * 8000) * 2), 8000, s
+
+
+async def _drain(brain):
+    for _ in range(6):
+        await asyncio.sleep(0)
+    for t in list(brain._speaker_tasks):
+        await t
+
+
+class TestSpeakerConsistencyShadow:
+    async def test_segments_are_scored_and_vouched_turns_seed_the_reference_without_changing_behaviour(self):
+        brain, gate, _ = make_brain(enforce=False)
+        spk = _FakeSpeaker()
+        brain._speaker = spk
+        brain._speaker_tap = _FakeTap(1.5)
+        handled, _ = stub_turn_handler(brain)
+        await say(brain, gate, "हाँ मैं बोल रहा हूँ", -30.0)
+        await settle_turn()
+        await _drain(brain)
+        # Scored off-path with conversational context, before any reference: unknown.
+        assert len(spk.scored) == 1 and spk.scored[0][2] == 1.5
+        assert spk.scored[0][3]["question_open"] is False and spk.scored[0][3]["during_bot_audio"] is False
+        assert brain._last_speaker_attribution == "unknown"   # no reference yet
+        assert handled == ["हाँ मैं बोल रहा हूँ"]        # the turn was handled exactly as before
+        # The call vouches for that turn: its audio becomes the reference.
+        brain._note_trusted_turn("workflow_advanced", min_words=2)
+        await _drain(brain)
+        assert spk.references and spk.references[0][2] == "workflow_advanced" and spk.references[0][3] is False
+        assert brain._open_turn_audio == []
+        # The next turn is attributed against it; still no behavioural effect.
+        await say(brain, gate, "मुझे पेमेंट के बारे में बताइए", -31.0)
+        await settle_turn()
+        await _drain(brain)
+        assert handled[-1] == "मुझे पेमेंट के बारे में बताइए"
+        assert brain._last_speaker_attribution == "caller"
+        ctx = [d for k, d in brain._recorder.events if k == "speaker_turn_context"]
+        assert not ctx or ctx[-1]["reference_available"] is True   # emitted at decision time when routing runs
+
+    async def test_bot_audio_segments_never_seed_the_reference(self):
+        brain, gate, _ = make_brain(enforce=False)
+        spk = _FakeSpeaker()
+        brain._speaker = spk
+        brain._speaker_tap = _FakeTap(2.0)
+        handled, _ = stub_turn_handler(brain)
+        await brain.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await say(brain, gate, "हाँ जी सुन रहा हूँ", -30.0, during_bot=True)
+        await brain.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await settle_turn()
+        await _drain(brain)
+        brain._note_trusted_turn("workflow_advanced", min_words=2)
+        await _drain(brain)
+        assert spk.references == []
+        assert spk.scored and spk.scored[0][3]["during_bot_audio"] is True
+
+    async def test_without_a_component_nothing_changes(self):
+        brain, gate, _ = make_brain(enforce=False)
+        handled, _ = stub_turn_handler(brain)
+        await say(brain, gate, "हाँ मैं बोल रहा हूँ", -30.0)
+        await settle_turn()
+        assert handled == ["हाँ मैं बोल रहा हूँ"]
+        assert "speaker_consistency" not in brain._recorder.event_kinds()

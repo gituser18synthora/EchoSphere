@@ -19,12 +19,16 @@ later segments relative to it. It is deliberately conservative:
   final, not captured during bot audio, long/contentful enough — see
   :func:`qualifies_for_baseline`), so a rejected hallucination, a backchannel
   or a segment already judged background never trains it;
-- it is not trusted until several qualifying segments AGREE with each other
-  (``min_segments`` candidates within ``consistency_db`` of the candidate
-  median): one background sentence accepted early cannot become the baseline
-  on its own, and until trust exists every verdict is :data:`LABEL_UNKNOWN`,
-  which callers must treat as "behave exactly as before" rather than as a
-  guess;
+- it is not trusted until the CALL ITSELF has vouched for at least one
+  sample (:meth:`CallerLevelBaseline.observe_trusted`: identity confirmed,
+  identifier validated, workflow advanced on that turn) AND several
+  candidates AGREE with each other (``min_segments`` within
+  ``consistency_db`` of the candidate median). Unvouched candidates refine
+  the level but can never establish trust on their own (2026-09-24
+  evaluation: three same-level background sentences accepted early
+  established the baseline and then held the real, quieter caller), and
+  until trust exists every verdict is :data:`LABEL_UNKNOWN`, which callers
+  must treat as "behave exactly as before" rather than as a guess;
 - once trusted it is the MEDIAN of the consistent candidates among the last
   few, so one loud or quiet segment cannot move it far, and a segment judged
   background never trains it — repeated quiet speech is not evidence that
@@ -160,6 +164,7 @@ class CallerLevelBaseline:
         self._levels: deque[float] = deque(maxlen=max(1, int(history)))
         self._rebased = 0
         self._trusted = 0
+        self._vouched = False
 
     # ── baseline ─────────────────────────────────────────────────────────
     def _consistent(self) -> list[float]:
@@ -171,8 +176,25 @@ class CallerLevelBaseline:
 
     @property
     def established(self) -> bool:
-        """Trusted: enough candidates agree with each other."""
-        return len(self._consistent()) >= self.min_segments
+        """Trusted: the call vouched for the caller's level at least once AND
+        enough candidates agree with each other. Candidates alone — however
+        many and however consistent — never establish trust: nothing about
+        them says whose speech they were."""
+        return self._vouched and len(self._consistent()) >= self.min_segments
+
+    @property
+    def vouched(self) -> bool:
+        """Whether any sample came with independent caller evidence."""
+        return self._vouched
+
+    @property
+    def candidate_dbfs(self) -> float | None:
+        """Median of the agreeing candidates regardless of trust (evidence
+        only — never used for a verdict)."""
+        consistent = self._consistent()
+        if len(consistent) < self.min_segments:
+            return None
+        return round(statistics.median(consistent), 1)
 
     @property
     def segments(self) -> int:
@@ -185,10 +207,10 @@ class CallerLevelBaseline:
 
     @property
     def baseline_dbfs(self) -> float | None:
-        consistent = self._consistent()
-        if len(consistent) < self.min_segments:
+        """The trusted baseline, or None while not established."""
+        if not self._vouched:
             return None
-        return round(statistics.median(consistent), 1)
+        return self.candidate_dbfs
 
     def observe(self, level_dbfs: float) -> float | None:
         """Fold one qualifying caller segment's level into the candidates.
@@ -216,6 +238,7 @@ class CallerLevelBaseline:
         """
         self._levels.clear()
         self._rebased += 1
+        self._vouched = True
         result = None
         for _ in range(self.min_segments):
             result = self.observe(level_dbfs)
@@ -238,7 +261,12 @@ class CallerLevelBaseline:
         identifier validated, or the workflow advanced on-script — is what
         the candidate bootstrap lacks. Before trust exists such a sample
         seeds the baseline at once (``rebase``), so background that spoke
-        first cannot own it; afterwards it refreshes like any candidate.
+        first cannot own it. Afterwards it refreshes like any candidate —
+        unless it disagrees MATERIALLY (more than ``consistency_db``) with
+        the trusted baseline: the caller's level has then genuinely moved
+        (handset to speaker, moved away from the phone), and the baseline
+        follows at once rather than holding the caller's next turns as
+        background until the candidate history catches up.
         Returns ``(seeded, baseline_after)``.
         """
         try:
@@ -248,7 +276,8 @@ class CallerLevelBaseline:
         if value != value:  # NaN
             return False, self.baseline_dbfs
         self._trusted += 1
-        if not self.established:
+        baseline = self.baseline_dbfs
+        if baseline is None or abs(value - baseline) > self.consistency_db:
             return True, self.rebase(value)
         return False, self.observe(value)
 

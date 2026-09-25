@@ -118,6 +118,7 @@ class CallerAudioGate(FrameProcessor):
         echo_margin_db: float = 6.0,
         echo_tail_ms: float = 250.0,
         min_threshold_dbfs: float = -45.0,
+        echo_reference=None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -134,6 +135,15 @@ class CallerAudioGate(FrameProcessor):
         self._echo_margin_db = echo_margin_db
         self._echo_tail_ms = echo_tail_ms
         self._min_threshold_dbfs = min_threshold_dbfs
+        # Telephony self-echo evidence (voice_runtime.echo_reference): the
+        # recent OUTGOING bot audio, so a speechlike inbound frame can be
+        # tested for being the bot's own reply leaking back on the caller
+        # leg. None (browser, mode off, or gating without a reference)
+        # leaves the gate's behaviour exactly as before; in shadow mode the
+        # decision is computed and recorded but never applied.
+        self._echo_ref = echo_reference
+        self._echo_window: list = []
+        self._echo_window_samples = 0
 
         self._floor_dbfs: float | None = None
         self._open = False
@@ -176,6 +186,8 @@ class CallerAudioGate(FrameProcessor):
             "suppressed_ms": 0.0,
             "passed_ms": 0.0,
             "echo_guard_ms": 0.0,
+            "echo_ref_rejected_ms": 0.0,      # actually treated as echo (enforce)
+            "echo_ref_would_reject_ms": 0.0,  # complete decision passed (shadow evidence too)
         }
 
     # ── utterance retention (identifier batch recovery) ─────────────────
@@ -338,6 +350,8 @@ class CallerAudioGate(FrameProcessor):
                for k, v in self._stats.items()},
             "noise_floor_dbfs": (round(self._floor_dbfs, 1)
                                  if self._floor_dbfs is not None else None),
+            **({"echo_reference": dict(self._echo_ref.stats)}
+               if self._echo_ref is not None else {}),
         }
 
     # ── frame handling ───────────────────────────────────────────────────
@@ -366,6 +380,53 @@ class CallerAudioGate(FrameProcessor):
 
         await self._process_audio(frame, direction)
 
+    def _echo_track(self, audio: bytes, channels: int) -> None:
+        """Keep the last ``window_s`` of inbound audio (every frame, speechlike
+        or not, so the window is contiguous) while bot audio may be echoing."""
+        ref = self._echo_ref
+        if not ref.active():
+            if self._echo_window:
+                self._echo_window.clear()
+                self._echo_window_samples = 0
+            return
+        pcm = audio[: len(audio) - (len(audio) % 2)]
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+        if channels > 1:
+            samples = samples[::channels]
+        self._echo_window.append(samples)
+        self._echo_window_samples += len(samples)
+        need = int(ref.window_s * ref.sample_rate)
+        while (
+            len(self._echo_window) > 1
+            and self._echo_window_samples - len(self._echo_window[0]) >= need
+        ):
+            self._echo_window_samples -= len(self._echo_window.pop(0))
+
+    def _self_echo(self, level: float, duration_ms: float) -> bool:
+        """Whether this speechlike frame must be treated as the bot's own
+        output echoing back.
+
+        Only consulted while the reference says bot audio was sent recently
+        enough to still be arriving. The reference decides from the
+        normalized cross-correlation of the last ``window_s`` of inbound
+        audio against the recently sent bot audio, lag consistency and the
+        source-plausibility check; the gate applies the decision only when
+        the reference is in enforce mode, and always records what it would
+        have done.
+        """
+        ref = self._echo_ref
+        need = int(ref.window_s * ref.sample_rate)
+        if not self._echo_window or self._echo_window_samples < need:
+            return False
+        try:
+            decision = ref.decide(np.concatenate(self._echo_window), level)
+        except Exception:  # noqa: BLE001 — evidence must never break audio
+            logger.debug("echo reference decision failed", exc_info=True)
+            return False
+        if decision.would_reject:
+            self._stats["echo_ref_would_reject_ms"] += duration_ms
+        return decision.actually_rejected
+
     async def _process_audio(self, frame: InputAudioRawFrame, direction) -> None:
         sample_rate = frame.sample_rate or self._sample_rate or 8000
         channels = max(1, frame.num_channels or 1)
@@ -375,6 +436,16 @@ class CallerAudioGate(FrameProcessor):
         speechlike = level >= threshold
         if self._echo_guarded():
             self._stats["echo_guard_ms"] += duration_ms
+        self_echo = False
+        if self._echo_ref is not None:
+            self._echo_track(frame.audio, channels)
+            self_echo = speechlike and self._self_echo(level, duration_ms)
+            if self_echo:
+                # The bot's own reply, not speech on the line: it neither
+                # opens the gate nor extends an open segment, and it must not
+                # be folded into the noise floor either.
+                speechlike = False
+                self._stats["echo_ref_rejected_ms"] += duration_ms
 
         if speechlike:
             self._above_ms += duration_ms
@@ -385,7 +456,7 @@ class CallerAudioGate(FrameProcessor):
             # Only non-speech frames may move the floor, and only while the
             # gate is shut: adapting during speech would chase the caller's
             # own voice and shut the gate on them mid-sentence.
-            if not self._open:
+            if not self._open and not self_echo:
                 self._track_floor(level)
 
         if self._open:
