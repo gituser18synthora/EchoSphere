@@ -92,6 +92,13 @@ from voice_runtime.vad_confidence import (
 
 logger = logging.getLogger(__name__)
 
+# Sarvam saaras streaming: seconds from speech end to the final transcript
+# that the turn-stop strategy may wait for (its stt wait is this minus the
+# VAD stop_secs). Measured locally 2026-09-24 over 216 turns: p50 0.26 s,
+# p90 0.45 s, worst 1.47 s. 0.8 s covers ~93 % of finals and bounds a lost
+# final to +0.1 s over the telephony pause window.
+SARVAM_TTFS_P99_S = 0.8
+
 # ── turn detection ──────────────────────────────────────────────────────────
 # End-of-turn = VAD silence (stop_secs, also triggers the STT flush so the
 # final transcript overlaps the policy wait) + user_speech_timeout (the window
@@ -439,6 +446,12 @@ def build_stt_service(
             settings=service_settings,
             keepalive_timeout=8.0,
             recorder=recorder,
+            # Measured on this deployment (2026-09-24, 216 turns): the final
+            # lands 260 ms (p50) / 452 ms (p90) after speech end, tail to
+            # 1.5 s. The turn-stop strategy waits for it at most this long
+            # (minus VAD stop_secs) — see the stop strategy in
+            # build_voice_pipeline.
+            ttfs_p99_latency=SARVAM_TTFS_P99_S,
         )
 
     stt_provider = get_stt_provider(
@@ -768,6 +781,24 @@ def build_voice_pipeline(
     # The gate is the brain's source of caller audio energy for the transcript
     # quality gate; None when gating is disabled (the gate's signals then simply
     # do not contribute to a verdict).
+    # Telephony only: the bot's own reply leaks back on the PSTN/FreeSWITCH
+    # caller leg (line + handset echo) 15–35 dB above the noise floor, where a
+    # level margin cannot see it. The gate is handed the recently SENT bot
+    # audio and rejects inbound frames that correlate with it. Browser
+    # sessions keep their own echo canceller and are untouched.
+    # Mode (0 off, 1 shadow, 2 enforce) and lag span come from the generic
+    # telephony noise-gate configuration; the platform default is OFF, in
+    # which case nothing is built and no correlation work happens.
+    echo_reference = None
+    if transport_kind == "telephony" and gate_conf["enabled"] >= 0.5:
+        from voice_runtime.echo_reference import MODE_OFF, EchoReference, mode_from_setting
+
+        echo_mode = mode_from_setting(gate_conf.get("echo_reference_mode", 0))
+        if echo_mode != MODE_OFF:
+            echo_reference = EchoReference(
+                sample_rate=stt_sample_rate, mode=echo_mode, recorder=recorder,
+                max_lag_s=float(gate_conf.get("echo_reference_max_lag_ms", 700.0)) / 1000.0,
+            )
     audio_gate = (
         CallerAudioGate(
             noise_margin_db=gate_conf["noise_margin_db"],
@@ -778,6 +809,7 @@ def build_voice_pipeline(
             echo_margin_db=gate_conf["echo_margin_db"],
             echo_tail_ms=gate_conf["echo_tail_ms"],
             min_threshold_dbfs=gate_conf["min_threshold_dbfs"],
+            echo_reference=echo_reference,
         )
         # The gate substitutes silence for sub-floor audio (it never drops
         # frames), so it composes with a provider-side turn detector too:
@@ -814,14 +846,40 @@ def build_voice_pipeline(
     # arbiter decides. Tenant opt-in; only meaningful with the local VAD
     # strategies (Flux owns its own turn boundaries).
     playback_duck = (
-        PlaybackDuck(recorder=recorder)
+        # The transport's own audio queue pauses with the duck: without it a
+        # reply synthesized ahead of real time keeps playing through the
+        # "pause" (voice_runtime.filler_transport pause_playback/resume_playback).
+        PlaybackDuck(recorder=recorder, playback_control=transport.output())
         if turn["barge_in_duck_enabled"] >= 0.5 and use_vad and not provider_owns_turns
         else None
     )
+    # Caller speaker-consistency evidence (voice_runtime.speaker_consistency):
+    # generic mode from the turn-detection configuration, default OFF. In
+    # shadow mode the brain records attribution evidence per accepted
+    # segment and never acts on it. The tap keeps the audio that passed the
+    # gate so scoring never touches the gate itself.
+    speaker_consistency = None
+    speaker_tap = None
+    if audio_gate is not None:
+        from voice_runtime.speaker_consistency import (
+            MODE_OFF as SPK_OFF, CallerAudioTap, OnnxGE2EBackend, SpeakerConsistency, mode_from_setting as spk_mode,
+        )
+
+        speaker_mode = spk_mode(turn.get("speaker_consistency_mode", 0))
+        if speaker_mode != SPK_OFF:
+            backend = OnnxGE2EBackend.load(get_settings().speaker_model_path)
+            speaker_consistency = SpeakerConsistency(backend=backend, mode=speaker_mode, recorder=recorder)
+            speaker_tap = CallerAudioTap()
+            recorder.add_event(
+                "speaker_consistency_enabled", mode=speaker_mode,
+                backend=None if backend is None else backend.name,
+            )
     brain = ConversationBrain(
         config=config,
         llm=llm_provider,
         recorder=recorder,
+        speaker_consistency=speaker_consistency,
+        speaker_tap=speaker_tap,
         knowledge_service=knowledge_service,
         workflow_engine=workflow_engine,
         client_info=client_info,
@@ -852,12 +910,17 @@ def build_voice_pipeline(
         # Speech heard during a reply that never confirmed a barge-in is
         # held, not dispatched at reply end (tenant opt-in).
         held_segment_guard=turn["held_segment_guard_enabled"] >= 0.5,
+        # Continuation-vs-new-turn boundary while a reply is unheard derives
+        # from the tenant's own pause window (brain._CONTINUATION_GAP_*).
+        user_speech_timeout=turn["user_speech_timeout"],
     )
     processors = [transport.input()]
     if audio_gate is not None:
         # Ahead of the VAD on purpose: background noise the gate suppresses can
         # never start a user turn, interrupt the bot, or reach the STT.
         processors.append(audio_gate)
+        if speaker_tap is not None:
+            processors.append(speaker_tap)
     if use_vad and not provider_owns_turns:
         # Confidence-tracking Silero: same model and decision as pipecat's
         # analyzer, plus a per-window probability history the probe below
@@ -938,16 +1001,25 @@ def build_voice_pipeline(
             if barge_in_min_words > 0
             else VADUserTurnStartStrategy()
         )
+        # The Sarvam adapter marks every final ``finalized`` and advertises
+        # its measured final latency, so the turn end can wait for the final
+        # without the open-ended stall this flag used to mean: the wait is
+        # bounded by ``ttfs_p99_latency - stop_secs`` (0.5 s) and ends the
+        # moment the final arrives. Without it the telephony window (0.4 s
+        # after VAD stop) closed the turn before 19 % of finals existed, the
+        # re-queued text of a merge was dispatched alone, and the final that
+        # followed ran as a second turn (2026-09-24 runtime test). Providers
+        # that never set ``finalized`` keep the transcript-free close.
+        from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
+        from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+        wait_for_final = isinstance(stt, EndpointedSarvamSTTService)
         user_turn_strategies = UserTurnStrategies(
             start=[start_strategy],
-            # wait_for_transcript must be False: transcripts are consumed by
-            # the brain downstream and never reach the turn processor, so
-            # waiting for one only ever hits the 5s fallback — which also
-            # blocked barge-in (a new turn can't start while the previous
-            # one is stuck open). The brain gates the LLM on the resulting
-            # UserStoppedSpeakingFrame, so this timeout IS the pause window
-            # a caller gets before the bot takes the turn.
-            stop=[SpeechTimeoutUserTurnStopStrategy(
+            # The brain gates the LLM on the resulting UserStoppedSpeakingFrame,
+            # so this timeout IS the pause window a caller gets before the bot
+            # takes the turn.
+            stop=[FinalBoundedTurnStopStrategy(
                 # The strategy's timer starts AT the VAD stop, which itself
                 # required stop_secs of silence — charging both stacked the
                 # windows (0.9 s effective on telephony where 0.7 s was
@@ -956,7 +1028,9 @@ def build_voice_pipeline(
                 user_speech_timeout=max(
                     0.2, turn["user_speech_timeout"] - turn["stop_secs"]
                 ),
-                wait_for_transcript=False,
+                # Bounded by the STT's advertised final latency, never by
+                # the processor's 5 s fallback (voice_runtime.turn_stop).
+                wait_for_transcript=wait_for_final,
             )],
         )
     processors.append(UserTurnProcessor(user_turn_strategies=user_turn_strategies))
@@ -970,6 +1044,19 @@ def build_voice_pipeline(
         # barge-in and releases or discards it once the arbiter decides.
         processors.append(playback_duck)
     processors.append(transport.output())
+    if audio_gate is not None and echo_reference is not None:
+        output = transport.output()
+        if hasattr(output, "attach_echo_reference"):
+            # Fed inside the transport's write path: the reference holds each
+            # frame BEFORE it goes on the wire, so even the fastest echo path
+            # finds it (see FillerWebsocketOutputTransport.attach_echo_reference).
+            output.attach_echo_reference(echo_reference)
+        else:
+            from voice_runtime.echo_reference import EchoReferenceTap
+
+            # Fallback for transports without the hook: after
+            # transport.output(), on the transport's pacing clock.
+            processors.append(EchoReferenceTap(echo_reference))
 
     if get_settings().voice_call_recording_enabled:
         # Sits after transport.output() so it observes exactly the frames that

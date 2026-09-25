@@ -41,7 +41,7 @@ _HI_ROMAN_DIGITS = {
     "teen": 3, "tin": 3,
     "char": 4, "chaar": 4,
     "paanch": 5, "panch": 5, "panc": 5,
-    "chhe": 6, "che": 6, "chha": 6, "cheh": 6,
+    "chhe": 6, "che": 6, "chha": 6, "cheh": 6, "chhah": 6,
     "saat": 7, "sat": 7,
     "aath": 8, "ath": 8,
     "nau": 9,

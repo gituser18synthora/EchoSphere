@@ -32,6 +32,7 @@ from shared.models import (
     KnowledgeSource, Prompt, PromptVersion, SupportedLanguage, User, VoiceBot,
 )
 from shared.tenant_languages import tenant_allowed_language_codes
+from shared.orchestration.speech_style import spoken_reply_instruction
 from shared.orchestration.prompt_compiler import (
     compile_prompt,
     compile_source,
@@ -646,6 +647,7 @@ async def test_prompt(
     system = (
         resolve_placeholders(system, voice_context_values(voice_identity))
         + voice_identity_instruction(voice_identity, body.language)
+        + spoken_reply_instruction(body.language)
     )
     provider_code = (vbs.llm_provider if vbs and vbs.llm_provider else settings.llm_provider)
     model = (vbs.llm_model if vbs and vbs.llm_model else settings.llm_model)

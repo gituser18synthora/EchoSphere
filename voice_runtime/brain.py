@@ -144,6 +144,7 @@ from shared.orchestration.response_modes import (
     language_label,
     validate_grounded_reply,
 )
+from shared.orchestration.speech_style import spoken_reply_instruction
 from shared.orchestration.spoken_numbers import (
     digits_dominant,
     meaningful_language_words,
@@ -201,6 +202,7 @@ from voice_runtime.identifier_capture import (
     IdentifierCapture,
     resolve_pause_window,
 )
+from voice_runtime.announcements import strip_recording_announcement
 from voice_runtime.recording import SessionRecorder, TurnRecord
 from voice_runtime.stt_events import final_event_key, segment_audio_seconds
 from voice_runtime.silence_policy import (
@@ -373,6 +375,23 @@ _SHORT_ANSWER_WORDS = 4
 # UserStartedSpeakingFrame moments apart; inside this window (with no stop in
 # between) the second frame is bookkeeping-deduplicated.
 _SPEECH_START_DEDUP_WINDOW = 1.2
+# A turn whose generation finished with its reply queued but not yet audible
+# keeps its merge markers until the reply's first audio (BotStarted): a caller
+# who speaks in that window is finishing their thought, not interrupting, and
+# the unheard reply must be rewound instead of surviving as a "ghost" in the
+# transcript, LLM history and workflow state (2026-09-23 runtime test). The
+# window is bounded so a reply that never renders (provider failure) cannot
+# rewind a much later, unrelated turn.
+_UNHEARD_REPLY_MERGE_WINDOW_S = 8.0
+# Speech that starts within this long after the caller's previous speech ended
+# is a CONTINUATION of the utterance the pipeline answered too early and merges
+# into it; a later start is a new, separate turn even when the previous
+# reply has not become audible yet (2026-09-24 telephony runs: continuation
+# gaps 0.53–1.19 s, new utterances ≥ 3.1 s). The limit is the tenant's own
+# pause window plus dispatch slack, never below this floor.
+_CONTINUATION_GAP_MIN_S = 1.5
+_CONTINUATION_GAP_MAX_S = 2.5
+_CONTINUATION_GAP_SLACK_S = 0.5
 # One-shot identifier batch recovery must not stall the turn indefinitely.
 _IDENTIFIER_RECOVERY_TIMEOUT = 6.0
 # Unsupported-language rescue: the streaming STT's auto-detector sometimes
@@ -469,6 +488,14 @@ _HELD_CONTINUATION_WINDOW_S = 5.0
 # workflow advanced) accept shorter segments than the candidate bootstrap:
 # the turn is vouched for, only the level measurement must be stable enough.
 _TRUSTED_MIN_SEGMENT_MS = 400.0
+# Consecutive bot-quiet background-suspect holds after which the next suspect
+# segment is dispatched anyway (``background_quiet_failopen``). A level
+# verdict is a heuristic: a caller who moved away from the handset, switched
+# to speakerphone or simply speaks softly must not be locked out of the call
+# by it — two silent holds already cost them a repeat and a no-response
+# prompt. The dispatched turn can then vouch for its own level
+# (``_note_trusted_turn`` → ``observe_trusted`` re-bases on a material change).
+_QUIET_SUSPECT_HOLD_LIMIT = 2
 # Unsupported languages still require repetition before the client is warned:
 # a single mislabel must not surface a false "caller speaks Tamil" notice.
 _UNSUPPORTED_NOTIFY_CONFIRMATIONS = 2
@@ -564,10 +591,20 @@ class ConversationBrain(FrameProcessor):
         silence_policy: SilencePolicy | None = None,
         latency_filler=None,
         caller_level: CallerLevelBaseline | None = None,
+        speaker_consistency=None,
+        speaker_tap=None,
         held_segment_guard: bool = False,
+        user_speech_timeout: float = 1.2,
     ) -> None:
         super().__init__()
         self._config = config
+        # Continuation vs new turn while a reply is still unheard (see
+        # _CONTINUATION_GAP_MIN_S): derived from the tenant's pause window.
+        self._continuation_gap_s = min(
+            _CONTINUATION_GAP_MAX_S,
+            max(_CONTINUATION_GAP_MIN_S, float(user_speech_timeout) + _CONTINUATION_GAP_SLACK_S),
+        )
+        self._last_vad_stopped_at: float | None = None
         self._llm = llm
         self._recorder = recorder
         # Tenant-effective guardrail enforcement. A brain constructed without
@@ -948,9 +985,29 @@ class ConversationBrain(FrameProcessor):
         # the segments it judged background-suspect (held, never dispatched
         # on their own — see _apply_caller_level). None = no gate/no guard.
         self._caller_level = caller_level
+        # Caller speaker-consistency evidence (voice_runtime.speaker_consistency),
+        # SHADOW only in this build: every accepted segment's passed audio is
+        # scored against the voice of turns the call vouched for, the result is
+        # recorded, and nothing here reads it back to change behaviour.
+        self._speaker = speaker_consistency
+        self._speaker_tap = speaker_tap
+        self._pending_turn_audio: list[dict] = []
+        self._open_turn_audio: list[dict] = []
+        self._speaker_tasks: set = set()
+        self._last_speaker_attribution: str | None = None
         self._suspect_segments: list[dict] = []
         self._suspect_in_turn = False
         self._suspects_held_during_bot_audio = 0
+        self._quiet_suspect_holds = 0
+        # A recording notice rejected while the caller's turn was still open:
+        # the interrupted reply is resumed once the turn closes (see the
+        # UserStoppedSpeakingFrame branch) instead of being silently lost.
+        self._announcement_in_turn = False
+        # Whether the turn being handled has pushed a spoken reply, and when
+        # its generation finished with that reply still unheard (see
+        # _UNHEARD_REPLY_MERGE_WINDOW_S).
+        self._turn_reply_queued = False
+        self._open_turn_completed_at: float | None = None
         self._last_gate_snapshot: dict | None = None
         self._vad_started_at: float | None = None
         self._last_vad_speech_s: float | None = None
@@ -1203,6 +1260,7 @@ class ConversationBrain(FrameProcessor):
 
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._physical_speech_active = False
+            self._last_vad_stopped_at = time.monotonic()
             if self._vad_started_at is not None:
                 # Physical speech duration of the segment whose final is
                 # about to arrive — evidence for the caller-level record.
@@ -1268,14 +1326,25 @@ class ConversationBrain(FrameProcessor):
             # instead of leaving a fragment in history and treating the rest as
             # a second turn. Once the reply has actually been heard, this is a
             # genuine interruption and the turn stands.
-            resumed_before_reply = (
+            unheard_reply_pending = (
                 isinstance(frame, UserStartedSpeakingFrame)
                 and self._open_turn_text is not None
                 and not self._reply_audio_started
+                and (self._generation_in_flight() or self._unheard_reply_merge_window_open())
             )
+            # Continuation or a new turn? A caller who resumes within the
+            # pause window (plus slack) is finishing the thought we answered
+            # too early; after a longer silence the new speech is a separate
+            # turn, and the unheard reply is dropped instead of the turn
+            # being rewound — otherwise every utterance spoken before the
+            # bot's first audio kept merging into the previous one.
+            gap = self._gap_since_last_speech()
+            continuation = gap is None or gap <= self._continuation_gap_s
+            resumed_before_reply = unheard_reply_pending and continuation
+            superseded_unheard = unheard_reply_pending and not continuation
             # Claim the turn's markers NOW, before any await: the generation
             # may finish (and clear them) while the cancel below is pending.
-            claimed = self._claim_open_turn() if resumed_before_reply else None
+            claimed = self._claim_open_turn() if unheard_reply_pending else None
             if not resumed_before_reply and (
                 self._bot_speaking or self._reply_audio_started
             ) and not self._backchannel_active:
@@ -1289,8 +1358,12 @@ class ConversationBrain(FrameProcessor):
                 self._recorder.add_event("barge_in", during_bot_audio=True)
                 self._interrupted_reply = self._last_bot_reply or None
                 self._on_reply_interrupted()
+            if superseded_unheard:
+                self._supersede_unheard_reply(claimed, gap)
             await self._cancel_generation(
-                "late_transcript_merge" if resumed_before_reply else "barge_in"
+                "late_transcript_merge" if resumed_before_reply
+                else "superseded_by_new_turn" if superseded_unheard
+                else "barge_in"
             )
             if resumed_before_reply:
                 await self._rollback_open_turn(claimed)
@@ -1318,14 +1391,18 @@ class ConversationBrain(FrameProcessor):
                 # recording notice, a foreign hallucination): the caller has
                 # not shown up, so the ladder resumes where it was.
                 self._arm_silence_timer()
-                if self._suspect_in_turn:
-                    # The turn's only speech was judged background: if its
-                    # audio had cut the reply (a barge-in confirmed before the
-                    # level verdict), the reply resumes — same mechanism as a
-                    # recording notice that interrupted the bot.
+                if self._suspect_in_turn or self._announcement_in_turn:
+                    # The turn's only speech was judged background or was a
+                    # recording notice: if its audio had cut the reply (a
+                    # barge-in confirmed before the text was known), the
+                    # reply resumes now that the turn has closed. The notice's
+                    # final usually lands INSIDE the pause window, when the
+                    # turn is still open and the resume above had to wait.
                     self._suspect_in_turn = False
+                    self._announcement_in_turn = False
                     await self._maybe_resume_interrupted_reply()
             self._suspect_in_turn = False
+            self._announcement_in_turn = False
             if (
                 self._pending_segments
                 and not self._finalize_pending()
@@ -1358,6 +1435,14 @@ class ConversationBrain(FrameProcessor):
             # caller stops waiting, so it closes the turn's latency measurement.
             self._reply_audio_started = True
             self._bot_speaking = True
+            self._open_turn_completed_at = None
+            if not self._generation_in_flight():
+                # The turn's reply is audible now: speech from here is a
+                # barge-in of THIS reply, never a merge into the turn that
+                # produced it. (While the generation still streams, the
+                # markers stay for the straggler-final merge.)
+                self._open_turn_text = self._open_turn_record = None
+                self._open_turn_workflow = None
             if self._held_multiword:
                 # A new reply is starting (a silence prompt, a workflow step):
                 # speech held from the previous reply is stale now.
@@ -1381,6 +1466,15 @@ class ConversationBrain(FrameProcessor):
                     # Synthesis finished earlier and the audio has now played
                     # out: the caller heard the whole reply.
                     self._mark_reply_heard()
+                if not self._generation_in_flight():
+                    # The reply is no longer audible (played out, or cut by
+                    # the barge-in that set _interrupted_reply moments ago).
+                    # Speech that starts from here opens a NEW turn: it must
+                    # not be logged as a barge-in of this reply nor mark the
+                    # already-heard reply as interrupted, which made a later
+                    # recording-notice rejection re-speak it. A gap while the
+                    # generation still streams is not the end of the reply.
+                    self._reply_audio_started = False
             await self.push_frame(frame, direction)
             await self._flush_pending_controls()
             if self._suspects_held_during_bot_audio:
@@ -1805,6 +1899,104 @@ class ConversationBrain(FrameProcessor):
 
     # ── trusted caller-level bootstrap ───────────────────────────────────
 
+    # ── caller speaker-consistency evidence (shadow) ────────────────────
+    def _collect_speaker_segment(self, text: str, quality, verdict) -> None:
+        """Keep the passed audio of this accepted segment with the turn and
+        score it off the audio path. Evidence only: nothing reads the
+        attribution back into a decision in this build."""
+        if self._speaker is None or self._speaker_tap is None:
+            return
+        snapshot = self._last_gate_snapshot or {}
+        segment_ms = snapshot.get("segment_ms")
+        want = (float(segment_ms) / 1000.0 if segment_ms else 2.0) + 0.4
+        try:
+            taken = self._speaker_tap.take_recent(max(0.6, min(12.0, want)))
+        except Exception:  # noqa: BLE001 — evidence must never break a turn
+            taken = None
+        if not taken:
+            return
+        pcm, rate, seconds = taken
+        during_bot = (
+            bool(quality.during_bot_audio) or bool(snapshot.get("during_bot_audio")) or self._bot_speaking
+        )
+        entry = {
+            "pcm": pcm, "rate": rate, "seconds": seconds, "during_bot_audio": during_bot,
+            "reason": verdict.reason, "words": len(meaningful_language_words(text)),
+            "text": text[:80], "attribution": None,
+        }
+        self._pending_turn_audio.append(entry)
+        del self._pending_turn_audio[:-8]
+        context = {
+            "text": text[:60], "words": entry["words"], "during_bot_audio": during_bot,
+            "question_open": bool(self._pending_workflow_question),
+            "question": (self._pending_workflow_question or "")[:60],
+            "workflow_active": bool(self._active_workflow),
+            "turn_index": self._turn_counter + 1,
+        }
+        task = self.create_task(self._score_speaker_segment(entry, context))
+        self._speaker_tasks.add(task)
+        task.add_done_callback(self._speaker_tasks.discard)
+
+    async def _score_speaker_segment(self, entry: dict, context: dict) -> None:
+        try:
+            evidence = await asyncio.to_thread(
+                self._speaker.score, entry["pcm"], entry["rate"], seconds=entry["seconds"], context=context,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("speaker consistency scoring failed", exc_info=True)
+            return
+        entry["attribution"] = evidence.attribution
+        self._last_speaker_attribution = evidence.attribution
+
+    def _seed_speaker_reference(self, reason: str) -> None:
+        """The call vouched for the turn being handled: its bot-quiet,
+        plainly accepted segments become (or refine) the caller reference."""
+        if self._speaker is None or not self._open_turn_audio:
+            return
+        samples = [
+            e for e in self._open_turn_audio
+            if not e["during_bot_audio"] and e["reason"] == "ok" and e["seconds"] >= 0.8
+        ]
+        self._open_turn_audio = []
+        if not samples:
+            return
+        task = self.create_task(self._add_speaker_references(samples, reason))
+        self._speaker_tasks.add(task)
+        task.add_done_callback(self._speaker_tasks.discard)
+
+    async def _add_speaker_references(self, samples: list[dict], reason: str) -> None:
+        for e in samples:
+            try:
+                await asyncio.to_thread(
+                    self._speaker.add_reference, e["pcm"], e["rate"],
+                    seconds=e["seconds"], reason=reason, during_bot_audio=e["during_bot_audio"],
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("speaker reference update failed", exc_info=True)
+
+    def _record_speaker_turn_context(self, decision, signal, plan) -> None:
+        """Evidence join point for offline evaluation: what this turn is
+        about to do, next to the attribution its segments received."""
+        if self._speaker is None:
+            return
+        try:
+            attributions = [e["attribution"] for e in self._open_turn_audio] or None
+            self._recorder.add_event(
+                "speaker_turn_context",
+                turn_index=self._turn_counter,
+                attributions=attributions,
+                last_attribution=self._last_speaker_attribution,
+                route=str(getattr(decision, "kind", "") or ""),
+                action=str(getattr(decision, "action", "") or ""),
+                signal=signal,
+                plan_action=str(getattr(plan, "action", "") or ""),
+                question_open=bool(self._open_turn_pending_question),
+                reference_available=self._speaker.reference_available,
+                reference_seconds=round(self._speaker.reference_seconds, 2),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("speaker turn context event failed", exc_info=True)
+
     def _note_trusted_turn(self, reason: str, *, min_words: int = 1) -> None:
         """The call vouched for the turn being handled: seed or refresh the
         caller baseline from that turn's own level samples.
@@ -1813,6 +2005,7 @@ class ConversationBrain(FrameProcessor):
         by the transcript gate (no rescue), not judged background-suspect,
         and long/contentful enough are used. Each dispatched turn seeds once.
         """
+        self._seed_speaker_reference(reason)
         baseline = self._caller_level
         if baseline is None or not self._open_turn_level_samples:
             return
@@ -1900,13 +2093,24 @@ class ConversationBrain(FrameProcessor):
                 if baseline.enforce else "background_suspect_shadow"
             )
         if suspect and enforced:
-            self._suspect_in_turn = True
             if self._bot_speaking:
+                self._suspect_in_turn = True
                 action, reason = "held", "background_during_bot_audio"
                 self._suspects_held_during_bot_audio += 1
+            elif self._quiet_suspect_holds >= _QUIET_SUSPECT_HOLD_LIMIT:
+                # Fail open: the level verdict alone must never lock the
+                # caller out. The segment is dispatched as a normal turn
+                # (still never trains the baseline by level); if the call
+                # then vouches for the turn, the baseline re-bases to it.
+                action, reason = "accepted", "background_quiet_failopen"
+                self._quiet_suspect_holds = 0
+                self._discard_suspects("background_quiet_failopen")
             else:
+                self._suspect_in_turn = True
                 action, reason = "held", "background_quiet"
+                self._quiet_suspect_holds += 1
         elif level_verdict.label == LABEL_CALLER:
+            self._quiet_suspect_holds = 0
             self._discard_suspects("caller_spoke")
         if action == "accepted" and not trained and qualifies_for_baseline(
             accepted=True,
@@ -1932,7 +2136,10 @@ class ConversationBrain(FrameProcessor):
             trained=trained,
             baseline_after=baseline.baseline_dbfs,
             baseline_trusted=baseline.established,
+            baseline_vouched=baseline.vouched,
+            candidate_dbfs=baseline.candidate_dbfs,
             candidates=baseline.segments,
+            quiet_suspect_holds=self._quiet_suspect_holds,
             **level_verdict.as_event(),
         )
         if action != "held":
@@ -1943,7 +2150,10 @@ class ConversationBrain(FrameProcessor):
                 "segment_ms": segment_ms,
                 "words": words,
                 "during_bot_audio": during_bot,
-                "suspect": suspect,
+                # A fail-open dispatch carries its level as a candidate for
+                # the call to vouch for: the workflow advancing on it is the
+                # independent evidence the level verdict lacked.
+                "suspect": suspect and reason != "background_quiet_failopen",
                 "reason": verdict.reason,
             })
             del self._pending_level_samples[:-12]
@@ -2069,6 +2279,7 @@ class ConversationBrain(FrameProcessor):
         # end the call nor steer it (voice_runtime.caller_level).
         if await self._apply_caller_level(text, quality, verdict) == "held":
             return
+        self._collect_speaker_segment(text, quality, verdict)
         raw = getattr(frame, "language", None)
         if raw is not None and verdict.reason != "digit_payload":
             # A rescued digit payload carries a misdetected label by
@@ -2486,10 +2697,14 @@ class ConversationBrain(FrameProcessor):
         if verdict.reason == "recording_announcement":
             # A telephony recording notice heard as speech: never a turn, never
             # a workflow/LLM input, never caller presence. If its audio cut the
-            # bot off (VAD-confirmed barge-in), the interrupted reply resumes.
+            # bot off (VAD-confirmed barge-in), the interrupted reply resumes —
+            # now if the turn already closed, otherwise when it does (the
+            # notice's final lands inside the pause window on every transport
+            # whose window outlasts the STT's final latency).
             self._recorder.add_event(
                 "recording_announcement_ignored", text=text[:200], **detail
             )
+            self._announcement_in_turn = True
             await self._maybe_resume_interrupted_reply()
             return
         # Diagnostic only: an event, never a turn — so a rejected segment cannot
@@ -2660,6 +2875,14 @@ class ConversationBrain(FrameProcessor):
             try:
                 orchestrated = await prefetch[1]
             except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    # The GENERATION was cancelled (barge-in, late merge),
+                    # not the prefetch: swallowing it here let the cancelled
+                    # turn run on — record its user turn, speak its reply —
+                    # after the merge had already re-queued the same text
+                    # (2026-09-24 telephony run: the utterance appeared in
+                    # two consecutive turns).
+                    raise
                 orchestrated = None
             self._latency.mark_classified()
             return orchestrated
@@ -2964,13 +3187,38 @@ class ConversationBrain(FrameProcessor):
         text = " ".join(self._pending_segments).strip()
         self._pending_segments.clear()
         self._last_buffered_final = None
+        # The transcript gate judges SEGMENTS; a recording notice that the
+        # barge-in flush split in two ("Call is now being" + "recorded")
+        # passes it piecewise and reassembles here (2026-09-24 telephony
+        # run: the notice became a caller turn and an LLM reply). Judge the
+        # reassembled utterance once more before it becomes a turn.
+        remainder, announced = strip_recording_announcement(text)
+        if announced:
+            self._recorder.add_event(
+                "recording_announcement_ignored", text=text[:200], merged_segments=True,
+            )
+            if not remainder:
+                self._pending_level_samples.clear()
+                self._announcement_in_turn = False
+                await self._maybe_resume_interrupted_reply()
+                return
+            self._recorder.add_event(
+                "recording_announcement_stripped",
+                original=text[:160], remainder=remainder[:160],
+            )
+            text = remainder
         # Level samples of the segments in THIS turn travel with it, so a
         # trusted signal raised while handling the turn can seed the caller
         # baseline from the right audio.
         self._open_turn_level_samples = list(self._pending_level_samples)
         self._pending_level_samples.clear()
+        self._open_turn_audio = list(self._pending_turn_audio)
+        self._pending_turn_audio.clear()
         if not text:
             return
+        # A real caller turn supersedes whatever reply a barge-in cut: it is
+        # answered, not re-spoken.
+        self._interrupted_reply = None
         text = await self._merge_clarified_fragment(text)
         text = await self._maybe_recover_identifier(text)
         pending_language, self._pending_language = self._pending_language, None
@@ -2997,6 +3245,7 @@ class ConversationBrain(FrameProcessor):
         # text existed nowhere and the continuation ran without its first
         # half. The turn record fills in once _handle_turn builds it.
         self._open_turn_text, self._open_turn_record = text, None
+        self._open_turn_completed_at = None
         # The workflow marker belongs to ONE dispatched turn: it is set only
         # when THIS turn reaches the workflow. A marker left over from an
         # earlier turn made a late-final merge rewind the flow to a state
@@ -3270,9 +3519,15 @@ class ConversationBrain(FrameProcessor):
     # ── no-response (silence) ladder + hold ───────────────────────────────
 
     def _note_meaningful_input(self) -> None:
-        """An ACCEPTED caller segment arrived: the caller is present."""
+        """An ACCEPTED caller segment arrived: the caller is present.
+
+        The interrupted-reply marker is NOT cleared here: a recording notice
+        the barge-in flush split in two passes the gate as two accepted
+        segments and is only recognised once reassembled at dispatch, which
+        still needs the reply it cut. A real caller turn clears it when it
+        dispatches (``_consume_pending_turn``).
+        """
         self._silence_prompts = 0
-        self._interrupted_reply = None
         self._disarm_silence_timer()
 
     def _disarm_silence_timer(self) -> None:
@@ -3480,20 +3735,37 @@ class ConversationBrain(FrameProcessor):
             )
 
     async def _maybe_resume_interrupted_reply(self) -> None:
-        """Re-speak a reply that a recording notice's audio cut short."""
-        reply, self._interrupted_reply = self._interrupted_reply, None
+        """Re-speak a reply that a recording notice's audio cut short.
+
+        The reply is only consumed when it is actually re-spoken: a call that
+        arrives while the caller's turn is still open (the notice's final
+        inside the pause window) leaves it in place for the retry at
+        UserStoppedSpeakingFrame — consuming it there lost the greeting to
+        dead air on every live transport (2026-09-23 runtime test).
+        """
+        reply = self._interrupted_reply
+        if not reply:
+            return
         if (
-            not reply
-            or self._closing
+            self._closing
             or self._bot_speaking
             or self._turn_active
             or self._pending_segments
             or self._generation_in_flight()
         ):
             return
+        self._interrupted_reply = None
         self._recorder.add_event(
             "bot_reply_resumed_after_announcement", chars=len(reply)
         )
+        # The browser client drops all audio after an `interruption` event
+        # until the next reply announces itself (bot_text or
+        # bot_speaking_started, src/services/voiceClient.ts). A re-spoken
+        # reply is delivery-only (no bot_text: it is already in the
+        # transcript), so it must lift that gate itself or the caller hears
+        # nothing (2026-09-24 runtime test: the whole resumed greeting was
+        # discarded client-side).
+        await self._notify_client({"type": "event", "name": "bot_speaking_started"})
         # Delivery-only: the reply is already in history and the transcript.
         await self._speak_transient(reply)
 
@@ -4292,6 +4564,7 @@ class ConversationBrain(FrameProcessor):
         started = time.perf_counter()
         turn_timestamp = time.time()
         self._turn_counter += 1
+        self._turn_reply_queued = False
         self._turn_speech_plan = None
         self._naturalness.set_turn_criticality(False)
         self._latency.turn_id = self._turn_counter
@@ -4561,6 +4834,7 @@ class ConversationBrain(FrameProcessor):
         # policy action and tool intent are known. This prevents a streamed
         # preface from escaping before a high-risk response category is known.
         naturalness_started = time.perf_counter()
+        self._record_speaker_turn_context(decision, signal, plan)
         critical_reason = self._naturalness_critical_reason(
             decision, classification, plan, signal,
             will_run_tool or will_refresh_account,
@@ -4965,7 +5239,70 @@ class ConversationBrain(FrameProcessor):
         if self._open_turn_record is turn or (
             self._open_turn_record is None and self._open_turn_text == text
         ):
-            self._open_turn_text = self._open_turn_record = None
+            if self._turn_reply_queued and not self._reply_audio_started:
+                # The reply is queued for synthesis but nothing has reached
+                # the caller yet. Keep the markers until its first audio
+                # (BotStartedSpeakingFrame): speech in this window rewinds the
+                # unheard turn (transcript, history, workflow) and merges,
+                # instead of an interruption killing the queued audio while
+                # the state keeps a reply nobody heard.
+                self._open_turn_completed_at = time.monotonic()
+            else:
+                self._open_turn_text = self._open_turn_record = None
+
+    def _unheard_reply_merge_window_open(self) -> bool:
+        """Whether a finished turn's reply is queued but not yet audible."""
+        completed_at = self._open_turn_completed_at
+        return (
+            completed_at is not None
+            and time.monotonic() - completed_at <= _UNHEARD_REPLY_MERGE_WINDOW_S
+        )
+
+    def _gap_since_last_speech(self) -> float | None:
+        """Seconds between the caller's previous physical speech end and now."""
+        if self._last_vad_stopped_at is None:
+            return None
+        return time.monotonic() - self._last_vad_stopped_at
+
+    def _supersede_unheard_reply(
+        self, claimed: tuple[str | None, TurnRecord | None, tuple | None] | None, gap: float | None,
+    ) -> None:
+        """A new caller turn arrives while the previous turn's reply is still
+        unheard: the previous turn STANDS (its text was the caller's, the
+        workflow consumed it), but the reply nobody heard leaves the
+        transcript, the LLM history and the last-reply marker, and the
+        heard-node bookkeeping records the cut so an unheard ask is asked
+        again. Unlike a continuation, nothing is re-queued or rewound."""
+        text, record, workflow_turn = claimed if claimed is not None else (None, None, None)
+        dropped = False
+        turns = self._recorder.turns
+        if record is not None:
+            for index in range(len(turns) - 1, -1, -1):
+                if turns[index] is record:
+                    tail = turns[index + 1:]
+                    if tail and all(getattr(t, "role", None) == "bot" for t in tail):
+                        del turns[index + 1:]
+                        dropped = True
+                    break
+        if text:
+            user_entry = {"role": "user", "content": text}
+            for index in range(len(self._history) - 1, -1, -1):
+                if self._history[index] == user_entry:
+                    if any(h.get("role") == "assistant" for h in self._history[index + 1:]):
+                        del self._history[index + 1:]
+                    break
+        if dropped:
+            self._last_bot_reply = next(
+                (t.text for t in reversed(turns) if getattr(t, "role", None) == "bot"), "",
+            )
+        # The reply was never heard: its nodes must not count as heard.
+        self._on_reply_interrupted()
+        self._recorder.add_event(
+            "unheard_reply_superseded",
+            gap_s=None if gap is None else round(gap, 2),
+            reply_dropped=dropped,
+            workflow=workflow_turn[0] if workflow_turn else None,
+        )
 
     def _conversation_stage(self) -> str:
         """The current stage label for observability (policy or goal state)."""
@@ -6005,6 +6342,7 @@ class ConversationBrain(FrameProcessor):
                     [{"role": "user", "content": script}],
                     system=(
                         system
+                        + spoken_reply_instruction(self._conversation_language)
                         + voice_identity_instruction(
                             identity, self._conversation_language,
                         )
@@ -6161,26 +6499,7 @@ class ConversationBrain(FrameProcessor):
         cached = self._language_instruction_cache.get(self._conversation_language)
         if cached is not None:
             return cached
-        label = language_label(self._conversation_language)
-        if not label:
-            self._language_instruction_cache[self._conversation_language] = ""
-            return ""
-        instruction = (
-            f"\n\n# Reply language (ABSOLUTE — overrides any speaking-style "
-            "or language rule above)\n"
-            f"The caller is currently speaking {label}. Your ENTIRE reply "
-            f"must be in {label}"
-            + (
-                " (natural spoken Hindi; everyday English loan-words are fine)"
-                if label == "Hindi" else ""
-            )
-            + ". The persona, speaking style, script and earlier turns above "
-            "may use another language — they define WHAT to say; this "
-            f"section alone decides the language, and it is {label} right "
-            "now. If the caller switches language, follow them from the next "
-            "turn. This changes the reply language only — never the rules, "
-            "role, or facts above."
-        )
+        instruction = spoken_reply_instruction(self._conversation_language)
         instruction += voice_identity_instruction(
             active_voice_identity(self._config.tts, self._conversation_language),
             self._conversation_language,
@@ -6447,6 +6766,8 @@ class ConversationBrain(FrameProcessor):
                 try:
                     result = await prefetch[1]
                 except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise  # the generation itself was cancelled (see _take_decision)
                     prefetch = None
             if prefetch is None:
                 result = await self._knowledge.search(
@@ -6540,6 +6861,7 @@ class ConversationBrain(FrameProcessor):
         reply_parts: list[str] = []
         generation_failed = False
         guardrail_block: _GuardrailBlockedReply | None = None
+        self._turn_reply_queued = True
         await self._push_reply_marker()
         await self.push_frame(LLMFullResponseStartFrame())
         preface = self._consume_speech_preface()
@@ -6985,6 +7307,7 @@ class ConversationBrain(FrameProcessor):
                     text, language=self._conversation_language,
                     identity=self._active_identity(),
                 )
+        self._turn_reply_queued = True
         await self._push_reply_marker()
         await self.push_frame(LLMFullResponseStartFrame())
         if preface:

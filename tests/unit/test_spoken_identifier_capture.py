@@ -51,6 +51,17 @@ def test_spoken_forms_normalize_to_601011(utterance):
     assert spoken_digit_sequence(utterance) == "601011"
 
 
+@pytest.mark.parametrize("utterance, digits", [
+    # Sarvam saaras romanizes छह as "chhah" (live cv_550ebddced17): the six
+    # used to break the run, so a dictated OTP / mobile number never matched.
+    ("OTP hai ek do teen chaar paanch chhah", "123456"),
+    ("Mera mobile number yahi hai 1 Do teen chaar paanch chhah saat Aath nau zero",
+     "1234567890"),
+])
+def test_romanized_hindi_chhah_is_six(utterance, digits):
+    assert spoken_digit_sequence(utterance) == digits
+
+
 def test_repeat_constructs():
     assert spoken_digit_sequence("nine triple two") == "9222"
     assert spoken_digit_sequence("double nine double one") == "9911"

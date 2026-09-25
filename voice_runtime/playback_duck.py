@@ -33,6 +33,14 @@ Mechanics:
 - ``InterruptionFrame``, ``EndFrame`` and ``CancelFrame`` discard everything
   held: stale audio from an old turn can never replay into a new one. The
   held buffer is also capped (``max_hold_seconds`` of audio; oldest dropped).
+- Holding frames here is not enough on its own: a reply synthesized faster
+  than real time already sits in the output transport's own audio queue when
+  the pause is requested (2026-09-23 runtime test: every pause fired, the duck
+  held 0 ms, the caller heard the bot throughout). ``playback_control`` is
+  therefore the transport's pause/resume API (voice_runtime.filler_transport):
+  a pause also parks the transport's audio task at the head of its queue, a
+  resume releases it, and a committed interruption lets the transport's own
+  interruption handling drop everything it holds.
 
 Feature-controlled: the pipeline only inserts this processor when the
 tenant's ``barge_in_duck_enabled`` is on. Every transition is recorded on
@@ -69,11 +77,17 @@ class PlaybackDuck(FrameProcessor):
         recorder: Session recorder for evidence events (optional).
         max_hold_seconds: Cap on held reply audio; beyond it the oldest held
             audio is dropped (a pause that long has already lost its context).
+        playback_control: Object exposing ``pause_playback()`` /
+            ``resume_playback()`` (the output transport) so audio already
+            queued INSIDE the transport pauses with the frames held here.
     """
 
-    def __init__(self, *, recorder=None, max_hold_seconds: float = 30.0, **kwargs) -> None:
+    def __init__(
+        self, *, recorder=None, max_hold_seconds: float = 30.0, playback_control=None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self._recorder = recorder
+        self._playback_control = playback_control
         self._max_hold_seconds = max(1.0, float(max_hold_seconds))
         self._paused = False
         self._flushing = False
@@ -116,12 +130,26 @@ class PlaybackDuck(FrameProcessor):
         else:
             await self.resume()
 
+    def _control(self, action: str) -> None:
+        """Pause/resume the audio already inside the output transport."""
+        control = self._playback_control
+        if control is None:
+            return
+        method = getattr(control, f"{action}_playback", None)
+        if method is None:
+            return
+        try:
+            method()
+        except Exception:  # noqa: BLE001 — the pause must never break audio
+            logger.debug("playback duck transport %s failed", action, exc_info=True)
+
     async def pause(self) -> None:
         if self._paused:
             return
         self._paused = True
         self._paused_at = time.monotonic()
         self._stats["pauses"] += 1
+        self._control("pause")
         self._event("playback_paused")
 
     async def resume(self) -> None:
@@ -143,6 +171,10 @@ class PlaybackDuck(FrameProcessor):
         self._event(
             "playback_resumed", paused_ms=round(paused_ms), held_ms=round(held_ms),
         )
+        # Transport first: the audio it queued before the pause is older than
+        # anything held here, so order is preserved either way, and the wire
+        # resumes without waiting for the held frames to travel downstream.
+        self._control("resume")
         await self._flush_held()
 
     async def _flush_held(self) -> None:
@@ -166,6 +198,11 @@ class PlaybackDuck(FrameProcessor):
         if self._paused:
             self._stats["discards"] += 1
             self._event("playback_discarded", reason=reason, held_ms=round(held_ms))
+            if reason != "interruption":
+                # Teardown: let the transport drain to its EndFrame. On an
+                # interruption the transport's own handler ends the pause
+                # AFTER dropping its queue, so nothing paused can play.
+                self._control("resume")
         self._paused = False
         self._paused_at = None
 

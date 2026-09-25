@@ -1394,7 +1394,20 @@
 }
 .conversation-drawer { width: min(760px, 96vw); }
 .conversation-drawer .drawer-header { padding: 18px 24px 16px; }
-.conversation-drawer .drawer-body { padding: 18px 24px 24px; }
+/* The body's top padding lives on the recording dock instead, so the sticky
+   offset is measured from the scrollport edge in every engine. */
+.conversation-drawer .drawer-body { padding: 0 24px 24px; }
+/* Sticky recording player: the opaque band hides turns scrolling beneath it;
+   top leaves an 8px band above the player once it is pinned, and the negative
+   bottom margin keeps the normal gap to the next section. */
+.conversation-recording-dock {
+  position: sticky;
+  top: -10px;
+  z-index: 3;
+  margin-bottom: -8px;
+  padding: 18px 0 8px;
+  background: var(--surface);
+}
 .conversation-drawer-title {
   display: flex;
   align-items: center;
@@ -1488,7 +1501,8 @@
   .conversation-result-count { margin-left: 0; padding: 0 2px; }
   .conversation-drawer { width: 100vw; max-width: none; }
   .conversation-drawer .drawer-header { padding: 14px 16px; }
-  .conversation-drawer .drawer-body { padding: 14px 14px 20px; }
+  .conversation-drawer .drawer-body { padding: 0 14px 20px; }
+  .conversation-recording-dock { top: -6px; padding-top: 14px; }
   .conversation-drawer .drawer-footer {
     padding: 10px 14px;
     overflow-x: auto;
