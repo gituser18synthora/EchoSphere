@@ -122,7 +122,15 @@ export interface HumanSpeechSettings {
   filler_audio_selection?: FillerAudioSelection;
   /** Per language: which voiced "hmm" cue texts the long-wait rung may use. Empty = language default. */
   latency_filler_cue_selection?: CueSelection;
+  /** Quiet office / call-centre room sound under the whole call, pauses included (every TTS provider). Default off. */
+  background_ambience?: boolean;
+  /** Which room sound (stable preset id, never a file). Default "office". */
+  background_ambience_preset?: AmbiencePresetId;
+  /** Room sound volume 0–100 (0 mutes, 50 = standard level); the runtime maps it to dB below speech. */
+  background_ambience_volume?: number;
 }
+
+export type AmbiencePresetId = "office" | "call_center" | "light_office" | "busy_office" | "room_tone";
 
 export type FillerSoundKind = "breath" | "inhale" | "exhale" | "inhale_exhale";
 export type FillerGender = "male" | "female" | "neutral";

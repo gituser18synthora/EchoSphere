@@ -841,6 +841,9 @@
 .menu-item.danger { color: var(--status-critical); }
 .menu-item.danger:hover { background: var(--status-critical-bg); }
 .menu-sep { height: 1px; background: var(--hairline); margin: 5px 4px; }
+/* Text + chevron of a labelled MenuButton trigger; pages may hide it on narrow
+   screens to leave an icon-only button (the aria-label still names it). */
+.menu-button-label { display: inline-flex; align-items: center; gap: 5px; }
 
 /* ---------- Date-range picker ---------- */
 /* The trigger reads like the neighbouring .select controls; the popover is

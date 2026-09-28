@@ -41,6 +41,9 @@ const inherited: HumanSpeechEffectiveSettings = {
   latency_cue_probability: 0.7,
   latency_filler_hmm_ms: 3500,
   latency_filler_spoken_ms: 5000,
+  background_ambience: false,
+  background_ambience_preset: "office",
+  background_ambience_volume: 50,
 };
 
 const platformSources = Object.fromEntries(
@@ -232,6 +235,157 @@ describe("HumanSpeechSettingsEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith({ breathing: false });
     await userEvent.click(within(words).getByRole("switch", { name: "Filler words" }));
     expect(onChange).toHaveBeenLastCalledWith({ filler_words: false });
+  });
+
+  it("offers Background ambience under Call environment, off by default, with sound and volume disabled", async () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+
+    const environment = screen.getByTestId("human-speech-group-ambience");
+    expect(within(environment).getByText("Call environment")).toBeVisible();
+    const toggle = within(environment).getByRole("switch", { name: "Background ambience" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(within(environment).getByText("Effective: Off · source: platform")).toBeVisible();
+    // Sound and volume sit beneath the switch, inactive while it is off.
+    const sound = within(environment).getByRole("combobox", { name: "Background sound" });
+    const volume = within(environment).getByRole("slider", { name: "Background volume" });
+    expect(sound).toBeDisabled();
+    expect(volume).toBeDisabled();
+    expect(sound).toHaveValue("office");
+    expect(volume).toHaveValue("50");
+    expect(screen.getByTestId("human-speech-inactive-background_ambience_preset")).toHaveTextContent(
+      "Inactive while Background ambience is off.",
+    );
+    expect(screen.getByTestId("human-speech-inactive-background_ambience_volume")).toBeInTheDocument();
+    // No hidden advanced-tuning field for them either.
+    expect(within(environment).queryByRole("spinbutton")).toBeNull();
+
+    await userEvent.click(toggle);
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true });
+  });
+
+  it("enables sound and volume as soon as ambience is on and saves them as sparse overrides", async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ background_ambience: true }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+
+    const sound = screen.getByRole("combobox", { name: "Background sound" });
+    const volume = screen.getByRole("slider", { name: "Background volume" });
+    expect(sound).toBeEnabled();
+    expect(volume).toBeEnabled();
+    expect(within(sound).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Office", "Call Center", "Light Office", "Busy Office", "Room Tone",
+    ]);
+    expect(screen.queryByTestId("human-speech-inactive-background_ambience_preset")).toBeNull();
+
+    await userEvent.selectOptions(sound, "call_center");
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true, background_ambience_preset: "call_center" });
+    fireEvent.change(volume, { target: { value: "70" } });
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true, background_ambience_volume: 70 });
+
+    rerender(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ background_ambience: true, background_ambience_preset: "room_tone", background_ambience_volume: 0 }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toHaveValue("room_tone");
+    const controls = screen.getByTestId("human-speech-control-background_ambience_volume");
+    expect(within(controls).getByText("Effective: Muted · source: bot")).toBeInTheDocument();
+    // Inherit drops only the volume override.
+    await userEvent.click(within(controls).getByRole("button", { name: "Inherit" }));
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true, background_ambience_preset: "room_tone" });
+  });
+
+  it("shows inherited tenant sound and volume with their source", () => {
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={{ ...inherited, background_ambience: true, background_ambience_preset: "busy_office", background_ambience_volume: 30 }}
+        inheritedSources={{ ...platformSources, background_ambience: "tenant", background_ambience_preset: "tenant", background_ambience_volume: "tenant" }}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Background ambience" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toHaveValue("busy_office");
+    expect(screen.getByText("Effective: Busy Office · source: tenant")).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Background volume" })).toHaveValue("30");
+    expect(screen.getByText("Effective: 30 · source: tenant")).toBeInTheDocument();
+  });
+
+  it("shows Background ambience inactive while the Human speech layer is off", () => {
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ enabled: false, background_ambience: true }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Background ambience" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("human-speech-inactive-background_ambience")).toHaveTextContent(
+      "Inactive while the Human speech layer is off.",
+    );
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toBeDisabled();
+    expect(screen.getByTestId("human-speech-inactive-background_ambience_volume")).toHaveTextContent(
+      "Inactive while the Human speech layer is off.",
+    );
+  });
+
+  it("treats ambience settings missing from an older backend snapshot as off / Office / 50", () => {
+    const {
+      background_ambience: _a, background_ambience_preset: _p, background_ambience_volume: _v, ...older
+    } = inherited;
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{}}
+        inherited={older as HumanSpeechEffectiveSettings}
+        inheritedSources={platformSources}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("switch", { name: "Background ambience" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toHaveValue("office");
+    expect(screen.getByRole("slider", { name: "Background volume" })).toHaveValue("50");
+  });
+
+  it("rejects out-of-range volumes and unknown sounds before saving", () => {
+    expect(validateHumanSpeechOverrides({ background_ambience_volume: 0 })).toEqual([]);
+    expect(validateHumanSpeechOverrides({ background_ambience_volume: 100 })).toEqual([]);
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "call_center" })).toEqual([]);
+    for (const volume of [-1, 101, 12.5, Number.NaN]) {
+      expect(validateHumanSpeechOverrides({ background_ambience_volume: volume })).toEqual([
+        "Background volume must be a whole number between 0 and 100.",
+      ]);
+    }
+    expect(validateHumanSpeechOverrides({ background_ambience_volume: "70" as never })).toHaveLength(1);
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "jungle" as never })).toEqual([
+      "Background sound must be one of Office, Call Center, Light Office, Busy Office, Room Tone.",
+    ]);
   });
 
   it("marks a family's members inactive while its master is off, without touching the other family", () => {

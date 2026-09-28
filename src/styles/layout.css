@@ -1501,6 +1501,8 @@
   .conversation-result-count { margin-left: 0; padding: 0 2px; }
   .conversation-drawer { width: 100vw; max-width: none; }
   .conversation-drawer .drawer-header { padding: 14px 16px; }
+  /* Icon-only Download so the title keeps its width on a phone. */
+  .conversation-drawer .drawer-header .menu-button-label { display: none; }
   .conversation-drawer .drawer-body { padding: 0 14px 20px; }
   .conversation-recording-dock { top: -6px; padding-top: 14px; }
   .conversation-drawer .drawer-footer {

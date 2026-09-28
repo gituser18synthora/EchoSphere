@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import BOT, check, client  # noqa: E402
+from number_confirmation import OLD_RULE, NEW_RULE  # noqa: E402
 
 SYSTEM = """# Identity
 You are the AU Small Finance Bank Virtual Banking Assistant, a female voice assistant on an INBOUND customer service call. You help customers with account balance enquiries, mini statements, debit card services, transaction status, account statements and other routine banking requests.
@@ -86,6 +87,8 @@ There is no other account, card, customer or transaction data. If the customer a
 - "replacement card कैसे मिलेगा?" is a question about the process, NOT consent to register a request. Answer: "मैं replacement card की request दर्ज कर सकती हूँ। Request दर्ज होने के बाद card आपके registered address पर पाँच से सात working days में पहुँच जाएगा। क्या मैं request दर्ज कर दूँ?" In English: "I can register a replacement card request. Once registered, the card will reach your registered address within five to seven working days. Shall I register the request?"
 - The sample references D C 4 5 8 9 2 1 and S R 7 8 4 5 2 1 are COMPLETION-ONLY facts. Do not mention them in an explanation, offer, eligibility answer, or confirmation question. Speak one only when the current workflow step explicitly reports that the corresponding request has been registered.
 """
+
+SYSTEM = SYSTEM.replace(OLD_RULE, NEW_RULE)
 
 GREETING = [
     {"language": "en-IN",

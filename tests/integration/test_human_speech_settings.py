@@ -92,6 +92,39 @@ def tenant_override():
     session.close()
 
 
+@pytest.fixture()
+def tenant_ambience():
+    """Tenant-level Natural Conversation defaults for ambience; the previous
+    tenant value is restored (and a row this fixture created is removed)."""
+    session = get_sessionmaker()()
+    setting = session.scalar(
+        select(TenantSetting).where(TenantSetting.tenant_id == TENANT)
+    )
+    created = setting is None
+    if created:
+        setting = TenantSetting(id=new_id("tset"), tenant_id=TENANT)
+        session.add(setting)
+        session.flush()
+    previous = setting.human_speech
+    setting.human_speech = {
+        **(previous or {}),
+        "background_ambience": True,
+        "background_ambience_preset": "call_center",
+        "background_ambience_volume": 70,
+    }
+    session.commit()
+    yield
+    setting = session.scalar(
+        select(TenantSetting).where(TenantSetting.tenant_id == TENANT)
+    )
+    if created:
+        session.delete(setting)
+    else:
+        setting.human_speech = previous
+    session.commit()
+    session.close()
+
+
 def data(response):
     body = response.json()
     assert body.get("success") is True, body
@@ -141,6 +174,137 @@ class TestBotSettingsApi:
             json={"humanSpeech": {}},
         ))
         assert cleared["humanSpeech"] == {}
+
+
+class TestBackgroundAmbienceSetting:
+    """Natural Conversation → Background ambience: off by default, a sparse
+    per-bot override through the existing voice-settings API, and the switch
+    the voice runtime reads when it builds the call's output."""
+
+    def test_off_by_default_persisted_per_bot_and_read_by_the_runtime(
+        self, client, tenant_admin, bot,
+    ):
+        from voice_runtime.ambience import build_ambience
+
+        bot_id, _ = bot
+        url = f"{API}/bots/{bot_id}/voice-settings"
+        got = data(client.get(url, headers=tenant_admin))
+        assert got["humanSpeechEffective"]["background_ambience"] is False
+        assert got["humanSpeechSources"]["background_ambience"] == "platform"
+        config = _load_config_sync(bot_id, require_published=False)
+        assert build_ambience(config, transport_kind="telephony", sample_rate=8000) is None
+
+        saved = data(client.put(
+            url, headers=tenant_admin, json={"humanSpeech": {"background_ambience": True}},
+        ))
+        assert saved["humanSpeech"] == {"background_ambience": True}
+        assert saved["humanSpeechEffective"]["background_ambience"] is True
+        assert saved["humanSpeechSources"]["background_ambience"] == "bot"
+        config = _load_config_sync(bot_id, require_published=False)
+        assert config.human_speech["background_ambience"] is True
+        for kind, rate in (("telephony", 8000), ("browser", 16000), ("browser", 24000)):
+            mixer = build_ambience(config, transport_kind=kind, sample_rate=rate)
+            assert mixer is not None and mixer.sample_rate == rate
+
+        # The Human speech layer is the master of every Natural Conversation
+        # behaviour, ambience included.
+        data(client.put(url, headers=tenant_admin, json={
+            "humanSpeech": {"background_ambience": True, "enabled": False},
+        }))
+        config = _load_config_sync(bot_id, require_published=False)
+        assert build_ambience(config, transport_kind="telephony", sample_rate=8000) is None
+
+        bad = client.put(url, headers=tenant_admin, json={
+            "humanSpeech": {"background_ambience": "on"},
+        })
+        assert bad.status_code == 422
+        assert "background_ambience" in str(bad.json())
+
+        cleared = data(client.put(url, headers=tenant_admin, json={"humanSpeech": {}}))
+        assert cleared["humanSpeechEffective"]["background_ambience"] is False
+
+    def test_sound_and_volume_round_trip_and_validation(self, client, tenant_admin, bot):
+        from shared.audio.ambience_presets import ambience_volume_db
+        from voice_runtime.ambience import build_ambience
+
+        bot_id, _ = bot
+        url = f"{API}/bots/{bot_id}/voice-settings"
+        got = data(client.get(url, headers=tenant_admin))
+        assert got["humanSpeechEffective"]["background_ambience_preset"] == "office"
+        assert got["humanSpeechEffective"]["background_ambience_volume"] == 50
+
+        wanted = {
+            "background_ambience": True,
+            "background_ambience_preset": "light_office",
+            "background_ambience_volume": 80,
+        }
+        saved = data(client.put(url, headers=tenant_admin, json={"humanSpeech": wanted}))
+        assert saved["humanSpeech"] == wanted
+        assert saved["humanSpeechSources"]["background_ambience_preset"] == "bot"
+        assert saved["humanSpeechSources"]["background_ambience_volume"] == "bot"
+        config = _load_config_sync(bot_id, require_published=False)
+        mixer = build_ambience(config, transport_kind="telephony", sample_rate=8000)
+        assert mixer.bed.preset == "light_office" and mixer.volume == 80
+        assert mixer.level_db == pytest.approx(ambience_volume_db(80))
+
+        for bad in (
+            {"background_ambience_preset": "jungle"},
+            {"background_ambience_preset": "office_ambience_8000.wav"},
+            {"background_ambience_volume": 101},
+            {"background_ambience_volume": -1},
+            {"background_ambience_volume": 12.5},
+            {"background_ambience_volume": "70"},
+            {"background_ambience_volume": True},
+        ):
+            response = client.put(url, headers=tenant_admin, json={"humanSpeech": bad})
+            assert response.status_code == 422, bad
+            assert next(iter(bad)) in str(response.json())
+        # Rejected saves changed nothing.
+        assert data(client.get(url, headers=tenant_admin))["humanSpeech"] == wanted
+
+        # Volume 0 mutes: no room audio at all for the call.
+        data(client.put(url, headers=tenant_admin, json={
+            "humanSpeech": {**wanted, "background_ambience_volume": 0},
+        }))
+        config = _load_config_sync(bot_id, require_published=False)
+        assert build_ambience(config, transport_kind="telephony", sample_rate=8000) is None
+
+    def test_tenant_defaults_are_inherited_and_bot_overrides_win(
+        self, client, tenant_admin, bot, tenant_ambience,
+    ):
+        from voice_runtime.ambience import build_ambience
+
+        bot_id, _ = bot
+        url = f"{API}/bots/{bot_id}/voice-settings"
+        got = data(client.get(url, headers=tenant_admin))
+        effective, sources = got["humanSpeechEffective"], got["humanSpeechSources"]
+        assert (
+            effective["background_ambience"],
+            effective["background_ambience_preset"],
+            effective["background_ambience_volume"],
+        ) == (True, "call_center", 70)
+        assert sources["background_ambience_preset"] == "tenant"
+        assert sources["background_ambience_volume"] == "tenant"
+        assert got["humanSpeechInherited"]["background_ambience_preset"] == "call_center"
+
+        saved = data(client.put(url, headers=tenant_admin, json={
+            "humanSpeech": {"background_ambience_volume": 20},
+        }))
+        assert saved["humanSpeechEffective"]["background_ambience_volume"] == 20
+        assert saved["humanSpeechSources"]["background_ambience_volume"] == "bot"
+        assert saved["humanSpeechEffective"]["background_ambience_preset"] == "call_center"
+        assert saved["humanSpeechSources"]["background_ambience_preset"] == "tenant"
+        config = _load_config_sync(bot_id, require_published=False)
+        mixer = build_ambience(config, transport_kind="telephony", sample_rate=8000)
+        assert mixer.bed.preset == "call_center" and mixer.volume == 20
+
+    def test_tenant_defaults_api_rejects_bad_ambience_values(self, client, tenant_admin):
+        for bad in (
+            {"background_ambience_volume": 150},
+            {"background_ambience_preset": "forest"},
+        ):
+            response = client.put(f"{API}/tenant/settings", headers=tenant_admin, json={"humanSpeech": bad})
+            assert response.status_code == 422, bad
 
 
 class TestTenantSettingsApi:

@@ -1057,6 +1057,16 @@ def build_voice_pipeline(
             # Fallback for transports without the hook: after
             # transport.output(), on the transport's pacing clock.
             processors.append(EchoReferenceTap(echo_reference))
+    # Natural Conversation → Background ambience (off unless the bot/tenant
+    # turned it on): room sound mixed into the outbound audio at the wire,
+    # after the echo reference feed. None → the transport is unchanged.
+    from voice_runtime.ambience import build_ambience
+
+    ambience = build_ambience(
+        config, transport_kind=transport_kind, sample_rate=tts_sample_rate, recorder=recorder,
+    )
+    if ambience is not None and hasattr(transport.output(), "attach_ambience"):
+        transport.output().attach_ambience(ambience)
 
     if get_settings().voice_call_recording_enabled:
         # Sits after transport.output() so it observes exactly the frames that

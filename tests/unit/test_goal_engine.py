@@ -560,6 +560,79 @@ class TestGoalSession:
         assert session.injection_attempts == 1
 
 
+# ── End-call opt-in (goal_policy.endCall) ────────────────────────────────────
+
+
+_WRONG_PERSON_END = dict(signal="wrong_person", scope="out_of_scope",
+                         decision="unrelated", next_action="end_call",
+                         confidence=1.0)
+
+
+def _end_call_session(**rule) -> GoalSession:
+    return GoalSession(compile_goal_policy(
+        {"role": "survey", "endCall": {"enabled": True, **rule}},
+        bot_name="Survey", system_prompt="p", intents=[],
+    ))
+
+
+class TestEndCallPolicy:
+    def test_off_by_default(self):
+        session = GoalSession(compile_goal_policy(
+            {"role": "survey"}, bot_name="Survey", system_prompt="p", intents=[],
+        ))
+        assert not session.policy.end_call.enabled
+        assert session.end_call_reason(_decision(**_WRONG_PERSON_END)) == ""
+
+    def test_confident_wrong_person_end_call_closes(self):
+        session = _end_call_session()
+        assert session.end_call_reason(_decision(**_WRONG_PERSON_END)) == "end_call:wrong_person"
+        in_scope = {**_WRONG_PERSON_END, "scope": "in_scope", "decision": "confirmed"}
+        assert session.end_call_reason(_decision(**in_scope)) == "end_call:wrong_person"
+
+    @pytest.mark.parametrize("change", [
+        # Mid-survey end_call copied from the JSON template (live 2026-09-25).
+        {"signal": "refusal", "scope": "in_scope", "decision": None, "confidence": 0.0},
+        {"signal": None, "scope": "in_scope", "decision": None, "confidence": 0.0},
+        {"confidence": 0.8},
+        {"next_action": "redirect_to_goal"},
+        # The schema turns end_call on a denied gate answer into a re-ask.
+        {"scope": "in_scope", "decision": "denied"},
+    ])
+    def test_everything_else_keeps_the_call_open(self, change):
+        session = _end_call_session()
+        assert session.end_call_reason(_decision(**{**_WRONG_PERSON_END, **change})) == ""
+
+    def test_configured_signals_and_floor(self):
+        session = _end_call_session(signals=["wrong_person", "refusal"], minConfidence=0.7)
+        refusal = {**_WRONG_PERSON_END, "signal": "refusal", "confidence": 0.75}
+        assert session.end_call_reason(_decision(**refusal)) == "end_call:refusal"
+        with pytest.raises(ValueError):
+            BotGoalPolicy.model_validate({"endCall": {"minConfidence": 0.2}})
+
+    def test_opt_in_alone_keeps_the_derived_decision_policy(self):
+        derived = compile_goal_policy(
+            None, bot_name="Support Bot", system_prompt="You are Support Bot.",
+            intents=[{"name": "billing_query"}],
+        )
+        opted = compile_goal_policy(
+            {"endCall": {"enabled": True}}, bot_name="Support Bot",
+            system_prompt="You are Support Bot.", intents=[{"name": "billing_query"}],
+        )
+        assert opted.source == "derived"
+        assert opted.end_call.enabled
+        assert (GoalEngine(llm=None, policy=opted)._build_system()
+                == GoalEngine(llm=None, policy=derived)._build_system())
+
+    def test_opt_in_never_changes_a_configured_decision_prompt(self):
+        base = {"role": "survey", "goals": [{"id": "g", "description": "collect feedback"}]}
+        plain = compile_goal_policy(base, bot_name="S", system_prompt="p", intents=[])
+        opted = compile_goal_policy({**base, "endCall": {"enabled": True}},
+                                    bot_name="S", system_prompt="p", intents=[])
+        assert opted.source == "configured" and opted.end_call.enabled
+        assert (GoalEngine(llm=None, policy=opted)._build_system()
+                == GoalEngine(llm=None, policy=plain)._build_system())
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

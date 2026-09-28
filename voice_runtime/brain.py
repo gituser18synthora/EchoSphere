@@ -340,6 +340,16 @@ _DEFAULT_SHORT_REPLY_ENDPOINT = 0.12
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
 _CLARIFY_MERGE_WINDOW = 6.0
+# Response-stage instruction for the goodbye of an opted-in generic bot whose
+# validated decision ends the call (goal_policy.endCall): the call is closed
+# right after this reply, so it must not ask or continue anything.
+_END_CALL_INSTRUCTION = (
+    "\n\n# Ending the call\n"
+    "- This is your FINAL reply: the call ends right after it. Say one short, "
+    "polite goodbye that fits the caller's last message (e.g. apologise for "
+    "the disturbance when they are not the intended person). Do not ask any "
+    "question, do not continue the script and do not disclose any details."
+)
 # A caller utterance that ends in a question mark is a question whatever
 # the signal regexes make of it (dispatch-time acknowledgement context).
 _QUESTION_MARK_RE = re.compile(r"[?？]\s*$")
@@ -3906,6 +3916,20 @@ class ConversationBrain(FrameProcessor):
         )
         await self.push_frame(EndWorkerFrame(reason="workflow_completed"))
 
+    async def _close_call_by_decision(self, reason: str) -> None:
+        """End a generic bot's call after its opted-in end_call goodbye.
+
+        Same ordering as the policy and workflow closes: the goodbye is
+        already queued, so the EndWorkerFrame behind it lets the worker drain
+        the speech before teardown hangs up the leg.
+        """
+        if self._closing or self._transfer_requested:
+            return
+        self._closing = True
+        self._disarm_silence_timer()
+        self._recorder.flush_event_soon("call_completed_by_decision", reason=reason)
+        await self.push_frame(EndWorkerFrame(reason="decision_end_call"))
+
     def _queue_control(self, payload: dict) -> None:
         """Defer a telephony control event until bot speech completes."""
         self._pending_controls.append(payload)
@@ -4798,6 +4822,7 @@ class ConversationBrain(FrameProcessor):
         # guarantees a dispute / identity mismatch / payment claim /
         # complaint is addressed instead of the next ladder rung playing.
         plan = None
+        goal_close = ""
         previous_stage = self._conversation_stage()
         # A tenant-authored workflow that owns the flow (active, or routed
         # for this turn) keeps its turns: the policy's amount/commitment/
@@ -4822,6 +4847,17 @@ class ConversationBrain(FrameProcessor):
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
             self._goal_session.apply(orchestrated)
+            if not workflow_owns_turn and not self._transfer_requested:
+                # Opt-in close (goal_policy.endCall). A workflow that owns the
+                # turn keeps its own terminal nodes as the only close.
+                goal_close = self._goal_session.end_call_reason(orchestrated)
+            if goal_close:
+                # The goodbye turn runs no tool and no knowledge retrieval.
+                will_run_tool = False
+                self._discard_kb_prefetch()
+                decision = replace(
+                    decision, kind=RouteKind.CHAT, reason="goal_end_call",
+                )
         # An amount question with a configured account tool runs the REAL
         # lookup this turn (policy-planned; independent of the classifier).
         will_refresh_account = bool(
@@ -4863,7 +4899,7 @@ class ConversationBrain(FrameProcessor):
         # Tool-backed verification for THIS turn, before any reply: the answer
         # must reflect what the system verified, not what anyone asserted.
         tool_instruction = ""
-        if classification is not None and not self._closing:
+        if classification is not None and not self._closing and not goal_close:
             if will_run_tool:
                 # Speak the "ek minute, main check karta hoon…" ack BEFORE the
                 # lookup runs: the words a human says while reaching for the
@@ -4950,6 +4986,13 @@ class ConversationBrain(FrameProcessor):
                 ))
             elif decision.kind == RouteKind.SAFETY:
                 await self._say(canned("safety", self._conversation_language))
+            elif goal_close:
+                # Opted-in end_call (e.g. wrong person): the reply is the
+                # goodbye under the full bot prompt — never a redirect back
+                # to the script — and the call closes after it (below).
+                await self._generate_reply(
+                    text, decision, started, extra_system=_END_CALL_INSTRUCTION,
+                )
             elif scope != SCOPE_IN and not (plan is not None and plan.close_after_reply):
                 # Scope protection: the turn is off the bot's configured goal
                 # (or an attempt to override it). Never answered on its own
@@ -5227,6 +5270,8 @@ class ConversationBrain(FrameProcessor):
                         reason=reason,
                         state=self._policy.conversation_state(),
                     )
+            elif goal_close:
+                await self._close_call_by_decision(goal_close)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - one bad turn must not kill the call

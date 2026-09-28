@@ -34,6 +34,7 @@ from shared.orchestration.response_modes import (
     resolve_response_must_include,
 )
 from shared.orchestration.router import classify_user_signal, looks_like_question
+from shared.orchestration.value_readback import configured_readback, retain_readback_values
 from shared.orchestration.behavior import WorkflowBehavior, resolve_behavior
 from shared.orchestration import lang as _lang
 from shared.orchestration import signals as _signals
@@ -925,6 +926,25 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
             current = str(start_node.get("id")) if start_node else None
             awaiting = None
 
+        readback = configured_readback(
+            list(nodes_by_id.values()), text, slots, audit, lang,
+            state.get("readback_values"),
+        ) if awaiting else None
+        if readback is not None:
+            variable, reply = readback
+            audit.append({"action": "value_readback", "node": awaiting, "variable": variable})
+            # A clarification consumes neither an answer nor a retry. Preserve
+            # the pending node, digit buffer and caller's existing values.
+            return {
+                **state, "reply": reply, "audit": audit, "trace": [],
+                "off_script": False, "context_response": False,
+                "semantic_extraction": None, "signal_override": None,
+                "signal": "question", "status": "collecting",
+                "response_mode": RESPONSE_MODE_FIXED,
+                "response_directives": [], "response_must_include": [],
+                "spoken_this_turn": [],
+            }
+
         semantic = state.get("semantic_extraction") if semantic_enabled else None
         semantic_active = isinstance(semantic, dict)
         semantic_answers = bool(semantic_active and semantic.get("patch"))
@@ -1257,6 +1277,12 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                     and config.get("consumePrecedingUtterance") is True
                 )
                 offered = hub_text if offered_from_hub else entry_text
+                if offered and _ask.answer_is_rejected(node, offered):
+                    # Entry/hub consumption must obey the same exclusion as
+                    # answers to an already waiting ask (including partials).
+                    audit.append({"action": "answer_rejected", "node": current})
+                    offered = ""
+                    entry_text = hub_text = ""
                 if config.get("skipIfCorrectedThisTurn") is True and any(
                     entry.get("action") in _CORRECTION_ACTIONS
                     for entry in audit[turn_audit_start:]
@@ -1596,6 +1622,10 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
         return {
             **state,
             "slots": slots,
+            "readback_values": retain_readback_values(
+                list(nodes_by_id.values()), slots, audit[turn_audit_start:], text,
+                state.get("pending_digits") or {}, state.get("readback_values") or {},
+            ),
             "semantic_extraction": None,
             "node_retries": node_retries,
             "pending_digits": pending_digits,
@@ -1779,7 +1809,12 @@ class WorkflowEngine:
             )
         except Exception:  # noqa: BLE001 — rollback is best-effort bookkeeping
             self._pre_turn.pop(thread["configurable"]["thread_id"], None)
-        if pause_for_context and previous.get("awaiting") and not reset_state:
+        readback_pending = configured_readback(
+            (definition or {}).get("nodes") or [], user_text,
+            previous.get("slots") or {}, previous.get("audit") or [],
+            language or "en", previous.get("readback_values"),
+        ) if previous.get("awaiting") and not reset_state else None
+        if pause_for_context and previous.get("awaiting") and not reset_state and readback_pending is None:
             # A standalone question about this call must not fill a free-text
             # slot, match a yes/no edge, burn retries or execute an action.
             # Read the pending step without invoking or updating its graph.
@@ -1837,6 +1872,7 @@ class WorkflowEngine:
                 "awaiting": None,
                 "node_retries": {},
                 "pending_digits": {},
+                "readback_values": {},
                 "audit": [],
                 "spoken_nodes": [],
             })

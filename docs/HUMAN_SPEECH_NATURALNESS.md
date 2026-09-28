@@ -346,3 +346,128 @@ cancellation reason, `played_ms`), `latency_filler_completed`,
 `latency_filler_enabled`, `breathing_enabled`, `filler_words_enabled` and
 `latency_fillers_played` (all rungs); the processor's `rungs_played` counts
 per kind.
+
+## Background ambience
+
+A quiet room sound under the whole call — under the bot's speech and through
+the pauses between turns. Three Natural Conversation keys (platform → tenant →
+bot, sparse bot override through `PUT /bots/{id}/voice-settings`
+`humanSpeech`); nothing about them is provider-specific:
+
+| Key | Type | Default | Absent / invalid at runtime |
+|---|---|---|---|
+| `background_ambience` | bool | `false` | off |
+| `background_ambience_preset` | preset id | `office` | `office` |
+| `background_ambience_volume` | int 0–100 | `50` | default; out of range is clamped |
+
+The API rejects an unknown preset id or a volume that is not a whole number in
+0–100 (422); runtime resolution is lenient (the table's last column), so an
+older or hand-edited row never breaks a call. UI: **Call environment →
+Background ambience** (toggle), **Background sound** (select) and **Background
+volume** (slider, 0 shows "Muted"). The two controls are disabled until the
+toggle is on (they enable immediately, before saving) and while the Human
+speech layer (`enabled`) is off. Only the stable id and the integer are
+stored — never a file path or a gain.
+
+### Presets
+
+One registry, `shared/audio/ambience_presets.py` (`AMBIENCE_PRESETS`: id,
+label, description, asset stem, level trims), read by settings validation,
+the runtime loader and — kept in sync by a unit test — the UI list
+(`AMBIENCE_PRESET_OPTIONS` in `HumanSpeechSettings.tsx`). Each preset is a
+different room, not the same audio at another level:
+
+| id | Label | Character | Level vs `office` |
+|---|---|---|---|
+| `office` | Office | steady air, a few distant talkers, occasional typing | 0 dB (reference) |
+| `call_center` | Call Center | ~22 talkers almost continuously, darker/narrower band (treated room, short RT60), little typing | same loudness |
+| `light_office` | Light Office | soft air, 3 far talkers with long pauses, sparse typing, rare events | −3 dB (intentional) |
+| `busy_office` | Busy Office | 12 far + 2 nearer talkers, 6 desks typing, footsteps, chair rolls, paper; the most level movement | same loudness |
+| `room_tone` | Room Tone | air + ventilation only — no voices, no events; steady | −2 dB (intentional) |
+
+"Same loudness" is measured (K-weighted over the 300–3400 Hz phone band) and
+stored as `loudness_trim_db`; a sparse or perfectly steady bed at office
+loudness reads as hiss, so Light Office and Room Tone carry a deliberate
+`character_offset_db`.
+
+### Volume
+
+`ambience_volume_db(v)`, in dB relative to normal bot speech
+(`SPEECH_REFERENCE_DBFS` = −18 dBFS RMS), piecewise linear in dB:
+
+- `0` → muted: no mixer is built at all (identical to the setting off);
+- `1..50` → −45 + (v − 1) × 9/49 dB (0.18 dB per step);
+- `50..100` → −36 + (v − 50) × 12/50 dB (0.24 dB per step).
+
+So 1 = −45 dB, 25 ≈ −40.6 dB, **50 = −36 dB (default; the original fixed
+level, −54 dBFS RMS)**, 75 = −30 dB, 100 = −24 dB (−42 dBFS RMS). The preset's
+trim is added on top. Resolved once per call in `build_ambience`, never per
+chunk.
+
+### Where it happens
+
+`voice_runtime/ambience.py`, wired in `pipeline.py`, applied in
+`voice_runtime/filler_transport.py`:
+
+- **Bot audio** (reply TTS, latency fillers) is mixed with the next slice of
+  the loop inside `FillerWebsocketOutputTransport._write_frame`: after the
+  echo reference has been fed the clean frame, before the serializer encodes
+  it. The frame the media sender pushes downstream is the clean original.
+  If speech near full scale plus the room would exceed int16, that chunk's
+  room is scaled down to fit (`guarded_chunks`) instead of clipping.
+- **Between turns** the media sender emits ambience-only 20 ms frames
+  (`AmbienceAudioRawFrame`, a tagged filler frame) whenever the playout
+  horizon drains to the lead (browser 60 ms, telephony 20 ms). Queued bot
+  audio always wins; nothing is inserted while the bot is speaking. These
+  frames ride the filler wire path: their own packets on FreeSWITCH/Vaani
+  (outside a reply's packet buffer and first-packet ramp), a clearable
+  `filler_audio` stream on the browser client.
+- **Handoffs.** Before bot audio that follows room audio the transport sends a
+  `filler_clear` for the room owner, so the browser drops its queued room
+  audio and the reply starts at once. Telephony serializers ignore it; there
+  at most one queued chunk + lead (≈ 20–40 ms) plays before the reply. When
+  a reply ends, a packetizing serializer's last partial packet is flushed
+  ahead of the room audio.
+- **Barge-in**: the reply is cut exactly as before (queue reset, `killAudio`
+  / `clear` / `interruption`); the room continues under a new owner.
+  Provisional pause: queued reply audio is held, the room keeps playing.
+- **Call end**: the room stops with the last queued audio (EndFrame), on
+  cancel, or when the socket closes; end-of-call silence stays silent.
+- **Never** mixed into caller/STT input, never fed to the echo reference,
+  never recorded (recordings keep the clean bot channel).
+
+### Assets and cache
+
+`voice_runtime/assets/ambience/<preset>_ambience_<rate>.wav`, mono PCM16,
+procedurally generated (no recorded or intelligible speech: talkers are
+formant-synthesized vowel glides) and reproducible with
+`scripts/generate_ambience_asset.py [--preset ID]`. `office` keeps its
+8/16/24 kHz files (the accepted baseline, byte-identical); the other presets
+ship one 16 kHz file each and are resampled once to other rates (8 kHz
+telephony, 22.05/24 kHz browser). The loader decodes a (preset, rate) source
+once per process and closes the loop with a 150 ms equal-power crossfade, so
+any replacement recording loops without a click; a new volume only rescales
+that cached source. Beds are kept in a small LRU (12 entries). A call's
+preset and volume are resolved when the pipeline is built, not per chunk.
+
+Listening samples through the real mixer (solo room, and each preset under a
+bot reply at chosen volumes, 24 kHz browser and 8 kHz µ-law phone):
+`env/bin/python scripts/render_ambience_samples.py --out DIR --speech bot.wav
+--volumes 25,50,100`, then open `DIR/index.html`.
+
+STT note: caller input is never mixed, so the room can reach STT only as line
+echo. The caller gate's floor is −50 dBFS and it tracks the line's noise
+floor (+9 dB), so a steady echoed room largely gates itself (the room is
+−54 dBFS on the wire at the default, −42 dBFS at 100, before any echo loss).
+The residual risk is a line with very little echo loss at volumes near the
+top: louder murmur or typing can open the gate, and some STT engines (Sarvam
+en-IN in our probes) turn murmur into a word ("Okay", "Hello"). If phantom
+one-word caller turns appear on such a line, lower the volume first.
+
+Telemetry: `background_ambience` on the conversation event stream when the
+room stops (`preset`, `asset`, `volume`, `level_db_rel_speech`, `level_dbfs`,
+`mixed_chunks`, `idle_chunks`, `handoffs`, `remnant_flushes`,
+`interruptions`, `saturated_samples`, `guarded_chunks`, `late_chunks`,
+`late_ms`, `mix_us_p50/p95/p99/max`, `stop_reason`);
+`background_ambience_unavailable` if the asset cannot be loaded (the call
+then runs without it).

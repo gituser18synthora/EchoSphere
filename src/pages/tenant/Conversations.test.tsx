@@ -314,7 +314,7 @@ describe("Tenant conversation review", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
   });
 
-  it("exports current filters and offers CSV/Excel transcript actions", async () => {
+  it("exports current filters and offers the conversation download menu", async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><Conversations /></MemoryRouter>);
     expect((await screen.findAllByText("Billing Bot")).length).toBeGreaterThan(0);
@@ -333,13 +333,45 @@ describe("Tenant conversation review", () => {
 
     await user.click(screen.getByText("1m 15s"));
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: "More actions" }));
+    const download = within(dialog).getByRole("button", { name: "Download conversation" });
+    expect(download).toHaveTextContent("Download");
+    await user.click(download);
     // MenuButton portals its popup to document.body so it cannot be clipped by
     // the drawer's overflow boundary; query the popup at screen scope.
-    expect(screen.getByRole("menuitem", { name: "Export transcript as CSV" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Export transcript as Excel" })).toBeInTheDocument();
-    await user.click(screen.getByRole("menuitem", { name: "Export transcript as CSV" }));
-    expect(exportApi.downloadConversationTranscript).toHaveBeenCalledWith("cv-001", "csv");
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Conversation as PDF", "Conversation as text", "Transcript as CSV", "Transcript as Excel",
+    ]);
+    await user.click(screen.getByRole("menuitem", { name: "Conversation as PDF" }));
+    expect(exportApi.downloadConversationTranscript).toHaveBeenCalledWith("cv-001", "pdf");
+
+    await waitFor(() => expect(download).toBeEnabled());
+    await user.click(download);
+    await user.click(screen.getByRole("menuitem", { name: "Transcript as CSV" }));
+    expect(exportApi.downloadConversationTranscript).toHaveBeenLastCalledWith("cv-001", "csv");
+
+    // Downloads live in one place: the overflow menu keeps only QA actions.
+    await user.click(within(dialog).getByRole("button", { name: "More actions" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Remove flag", "Add comment",
+    ]);
+  });
+
+  it("locks the download menu while a conversation file is being prepared", async () => {
+    const user = userEvent.setup();
+    let finish: (filename: string) => void = () => {};
+    vi.mocked(exportApi.downloadConversationTranscript).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { finish = resolve; }),
+    );
+    const dialog = await openDrawer(user);
+    const download = within(dialog).getByRole("button", { name: "Download conversation" });
+
+    await user.click(download);
+    await user.click(screen.getByRole("menuitem", { name: "Conversation as text" }));
+    expect(exportApi.downloadConversationTranscript).toHaveBeenCalledWith("cv-001", "txt");
+    expect(download).toBeDisabled();
+
+    finish("echosphere-conversation-cv-001.txt");
+    await waitFor(() => expect(download).toBeEnabled());
   });
 
   it("loads the transcript from the detail endpoint with speakers, order and timestamps", async () => {

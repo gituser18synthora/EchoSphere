@@ -48,6 +48,7 @@ const inherited: HumanSpeechEffectiveSettings = {
   min_long_turn_for_backchannel_ms: 4000, min_gap_between_backchannels_ms: 8000,
   max_backchannels_per_call: 4, latency_filler_delay_ms: 1500,
   latency_filler_hmm_ms: 3500, latency_filler_spoken_ms: 5000,
+  background_ambience: false, background_ambience_preset: "office", background_ambience_volume: 50,
 };
 const inheritedSources = Object.fromEntries(Object.keys(inherited).map((key) => [key, "tenant"])) as HumanSpeechSources;
 const SETTINGS = {
@@ -225,6 +226,32 @@ describe("NaturalConversationTab", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("testing");
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     expect(onNavigate).toHaveBeenLastCalledWith("voice");
+  });
+
+  it("saves Background ambience as a per-bot override through voice settings", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByRole("switch", { name: "Thinking fillers" });
+    const ambience = screen.getByRole("switch", { name: "Background ambience" });
+    expect(ambience).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toBeDisabled();
+    await user.click(ambience);
+    // Active immediately in the editor, before any save.
+    const sound = screen.getByRole("combobox", { name: "Background sound" });
+    expect(sound).toBeEnabled();
+    await user.selectOptions(sound, "busy_office");
+    fireEvent.change(screen.getByRole("slider", { name: "Background volume" }), { target: { value: "65" } });
+    await user.click(saveButton());
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledWith(BOT.id, {
+      humanSpeech: {
+        thinking_fillers: false, background_ambience: true,
+        background_ambience_preset: "busy_office", background_ambience_volume: 65,
+      },
+    }));
+    expect(screen.getByRole("switch", { name: "Background ambience" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("combobox", { name: "Background sound" })).toHaveValue("busy_office");
+    expect(screen.getByRole("slider", { name: "Background volume" })).toHaveValue("65");
+    expect(saveButton()).toBeDisabled();
   });
 
   it("saves Breathing and Filler words as independent sparse overrides", async () => {
