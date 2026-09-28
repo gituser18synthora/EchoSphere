@@ -18,6 +18,7 @@ from enum import Enum
 
 from shared.orchestration import lang as _lang
 from shared.orchestration import signals as _signals
+from shared.orchestration.value_readback import caller_value_request
 
 
 class RouteKind(str, Enum):
@@ -438,6 +439,8 @@ class TurnRouter:
             # Explicit escape hatches still win inside a workflow.
             for pattern, action in _CALL_CONTROL:
                 if pattern.search(stripped):
+                    if action == "repeat" and caller_value_request(stripped):
+                        continue
                     if action == "transfer":
                         return RouteDecision(kind=RouteKind.HANDOFF, action="transfer",
                                              reason="transfer_in_workflow")
@@ -452,6 +455,8 @@ class TurnRouter:
         # 2. Call control.
         for pattern, action in _CALL_CONTROL:
             if pattern.search(stripped):
+                if action == "repeat" and caller_value_request(stripped):
+                    continue
                 if action == "transfer":
                     return RouteDecision(kind=RouteKind.HANDOFF, action="transfer",
                                          reason="explicit_transfer_request")

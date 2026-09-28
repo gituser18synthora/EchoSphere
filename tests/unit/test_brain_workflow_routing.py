@@ -147,6 +147,56 @@ async def settle():
         await asyncio.sleep(0)
 
 
+async def test_local_call_number_clarifications_use_readback_without_llm(monkeypatch):
+    """cv_04c3f59db317: compound OTP complaint + number read-back requests."""
+    from langgraph.checkpoint.memory import MemorySaver
+    import shared.orchestration.workflow_engine as module
+    from au_bank.setup.number_confirmation import READBACK
+
+    definition = {
+        "id": "wf_readback", "version": 1,
+        "nodes": [
+            {"id": "start", "kind": "start"},
+            {"id": "phone", "kind": "ask", "config": {
+                "variable": "phone", "question": "Your number?",
+                "entity": {"dataType": "phone", "pii": True,
+                           "regexPattern": r"(?<!\d)(\d{10})(?!\d)"},
+                "valueReadback": READBACK,
+            }},
+            {"id": "code", "kind": "ask", "config": {
+                "variable": "code", "question": "Your code?",
+                "entity": {"dataType": "text", "regexPattern": r"(?<!\d)(\d{6})(?!\d)"},
+            }},
+        ],
+        "edges": [{"from": "start", "to": "phone"}, {"from": "phone", "to": "code"}],
+    }
+    monkeypatch.setattr(module, "load_workflow_definition", lambda *args: definition)
+    engine = module.WorkflowEngine()
+
+    async def memory():
+        if engine._checkpointer is None:
+            engine._checkpointer = MemorySaver()
+        return engine._checkpointer
+
+    monkeypatch.setattr(engine, "_get_checkpointer", memory)
+    llm = _LLMStub()
+    brain = make_brain(workflow_engine=engine, llm=llm)
+    brain._active_workflow = "wf_readback"
+    await brain._handle_turn("Ek do teen chaar paanch chhah saat aath nau zero")
+    for text in [
+        "Mera number pehle phir se repeat karo mujhe OTP nahi aaya.",
+        "Nahi OTP mujhe nahi aaya aapne kya number note down kiya hai mujhe bata sakti ho",
+        "Are mujhe OTP nahi aaya hai. Mujhe lagta hai ki aapne number galat likha hai. Ek baar number mujhe repeat karke bata sakte ho?",
+    ]:
+        await brain._handle_turn(text)
+        assert brain._history[-1]["content"] == "आपने 1 2 3 4 5 6 7 8 9 0 बताया था।"
+        assert brain._active_workflow == "wf_readback"
+        assert brain._pending_workflow_question == "Your code?"
+    assert not llm.systems
+    routes = [data for kind, data in brain._recorder.events if kind == "route_decision"]
+    assert all(route["route"] == "workflow" for route in routes)
+
+
 class TestOffScriptTurns:
     async def test_verified_fact_question_bypasses_active_workflow(self):
         context = RuntimeContext(

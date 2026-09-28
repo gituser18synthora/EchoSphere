@@ -959,6 +959,13 @@ _BOT_HUMAN_SPEECH = {
         "en": {"primary": "hmm", "alternates": ["okay"]},
     },
     "latency_cue_probability": 0.55,
+    "breathing": False,
+    "filler_words": False,
+    "breath_gain_db": -6.0,
+    "adaptive_latency_cues": True,
+    "background_ambience": True,
+    "background_ambience_preset": "busy_office",
+    "background_ambience_volume": 72,
 }
 
 # Tenant-wide defaults (sparse), including the new keys, so the tenant layer
@@ -969,6 +976,7 @@ _TENANT_HUMAN_SPEECH = {
     "latency_filler_kind": "inhale",
     "latency_filler_cue_selection": {"hi": {"primary": "ji", "alternates": ["hmm"]}},
     "latency_cue_probability": 0.9,
+    "background_ambience_preset": "room_tone",
 }
 
 

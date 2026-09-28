@@ -18,6 +18,9 @@ class WorkflowState(TypedDict, total=False):
     user_text: str
     language: str  # caller's current conversation locale ("hi-IN"); "" = en
     slots: dict[str, str]
+    # Explicit valueReadback opt-in only: permitted display values, separate
+    # from masked slots and never included in exported slot/LLM context.
+    readback_values: dict[str, dict]
     pending_slot: str | None
     just_filled: bool
     reply: str

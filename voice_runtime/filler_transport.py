@@ -3,25 +3,34 @@
 Normal response audio retains Pipecat's output path. Filler never enters its
 untyped partial-chunk buffer, and retired filler can be dropped at every queue
 boundary without resetting a call's valid audio or interruption state.
+
+Optional background ambience (voice_runtime.ambience) is mixed in here, at the
+last point before the serializer — see ``attach_ambience``.
 """
 
 import asyncio
+import time
 
 import logging
 
 from pipecat.frames.frames import (
-    EndFrame, InterruptionFrame, OutputAudioRawFrame,
+    CancelFrame, EndFrame, InterruptionFrame, OutputAudioRawFrame,
     OutputTransportMessageFrame, OutputTransportMessageUrgentFrame,
     OutputTransportReadyFrame, StartFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
-from pipecat.transports.base_output import BaseOutputTransport
+from pipecat.transports.base_output import BOT_VAD_STOP_FALLBACK_SECS, BaseOutputTransport
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketOutputTransport, FastAPIWebsocketTransport,
 )
 
 from shared.audio.pcm import resample_pcm
-from voice_runtime.frames import FillerAudioRawFrame, FillerClearFrame
+from voice_runtime.frames import (
+    AUDIO_FLUSH_MESSAGE_TYPE, AmbienceAudioRawFrame, FillerAudioRawFrame, FillerClearFrame,
+)
+
+# Timer slack when deciding that an ambience chunk is due.
+_AMBIENCE_DUE_TOLERANCE_S = 0.001
 
 
 class FillerOutputTransportMixin:
@@ -129,6 +138,11 @@ class FillerOutputTransportMixin:
             return discarded
 
         async def _next_frame(self):
+            ambience = self._room_ambience()
+            if ambience is not None:
+                async for frame in self._next_frame_with_ambience(ambience):
+                    yield frame
+                return
             async for frame in super()._next_frame():
                 if isinstance(frame, FillerAudioRawFrame) and (
                     frame.owner is None or frame.owner.cancelled
@@ -141,6 +155,97 @@ class FillerOutputTransportMixin:
                     # (EndFrame) is never held back.
                     await self._playback_gate.wait()
                 yield frame
+
+        def _room_ambience(self):
+            """The call's background ambience (default destination only)."""
+            if self._destination is not None:
+                return None
+            return getattr(self._transport, "_ambience", None)
+
+        async def _next_frame_with_ambience(self, ambience):
+            """``_next_frame`` while background ambience is on.
+
+            Queued frames, their order, and every pause / interruption /
+            teardown rule are exactly the plain path's. In addition, while no
+            bot audio is playing — between turns, or during a provisional
+            pause — an ambience-only frame is yielded each time the playout
+            horizon drains to the ambience lead, so the room stays audible.
+            Queued frames always win: the ambience deadline only bounds the
+            wait for them, it never replaces it with a sleep.
+
+            No room audio is inserted while the bot is speaking: a reply is
+            one continuous paced stream (it already carries the ambience),
+            and interleaving would stretch it.
+            """
+            ambience.begin()
+            last_frame_time = time.time()   # the plain path's 3 s bot-stopped fallback
+            last_audio_at = 0.0             # monotonic: last bot audio written
+            held = None                     # dequeued just as a pause began
+            while True:
+                if self._playback_paused:
+                    # Nothing queued may reach the wire; the room carries on.
+                    wait = ambience.idle_wait(time.monotonic())
+                    if wait is not None and wait <= _AMBIENCE_DUE_TOLERANCE_S:
+                        yield ambience.idle_frame(flush_pending=False)
+                        continue
+                    try:
+                        await asyncio.wait_for(self._playback_gate.wait(), timeout=wait)
+                    except TimeoutError:
+                        pass
+                    continue
+                if held is not None:
+                    frame, held = held, None
+                else:
+                    if not self._audio_queue.empty():
+                        # Queued frames always win, taken directly: wait_for()
+                        # with a zero timeout cancels its get() before it runs,
+                        # so it never returns an item even when one is waiting
+                        # (an overdue room chunk + a queued reply livelocked).
+                        frame = self._audio_queue.get_nowait()
+                    else:
+                        wait = None
+                        if not self._bot_speaking:
+                            wait = ambience.idle_wait(time.monotonic(), last_audio_at=last_audio_at)
+                        if wait is not None and wait <= _AMBIENCE_DUE_TOLERANCE_S:
+                            yield ambience.idle_frame(flush_pending=ambience.audio_since_idle)
+                            continue
+                        fallback = last_frame_time + BOT_VAD_STOP_FALLBACK_SECS - time.time()
+                        timeout = fallback if wait is None else min(wait, fallback)
+                        try:
+                            if timeout <= 0:
+                                raise TimeoutError
+                            frame = await asyncio.wait_for(self._audio_queue.get(), timeout=timeout)
+                        except TimeoutError:
+                            if time.time() - last_frame_time >= BOT_VAD_STOP_FALLBACK_SECS:
+                                # As the plain path: no frame at all for 3 s.
+                                await self._bot_stopped_speaking()
+                                last_frame_time = time.time()
+                            continue
+                    last_frame_time = time.time()
+                    if isinstance(frame, FillerAudioRawFrame) and (
+                        frame.owner is None or frame.owner.cancelled
+                    ):
+                        self._audio_queue.task_done()
+                        continue
+                    if isinstance(frame, EndFrame):
+                        # The call is ending: the room stops with the last
+                        # queued audio (end-of-call silence stays silent).
+                        ambience.stop("end")
+                    elif self._playback_paused:
+                        held = frame   # plays when the pause ends
+                        continue
+                yield frame
+                self._audio_queue.task_done()
+                if isinstance(frame, OutputAudioRawFrame):
+                    last_audio_at = time.monotonic()
+                elif (
+                    isinstance(frame, OutputTransportMessageFrame)
+                    and (frame.message or {}).get("type") == AUDIO_FLUSH_MESSAGE_TYPE
+                ):
+                    # A latency-filler clip completed (telephony marker):
+                    # none of its audio is still coming, so the room resumes
+                    # at once instead of after the confirmation window.
+                    last_audio_at = 0.0
 
     async def set_transport_ready(self, frame: StartFrame):
         # Pipecat's base factory hardcodes BaseOutputTransport.MediaSender.
@@ -238,6 +343,93 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         self._filler_send_lock = asyncio.Lock()
         self._cleared_fillers = set()
         self._echo_reference = None
+        self._ambience = None
+
+    def attach_ambience(self, ambience) -> None:
+        """Background ambience (voice_runtime.ambience.AmbienceMixer) for this
+        call. Attach before the pipeline starts; without it (the default)
+        every code path below is exactly the plain one.
+
+        - Bot audio is mixed with the room sound in ``_write_frame`` AFTER
+          the echo reference has been fed the clean frame and BEFORE the
+          serializer encodes it. The frame the media sender pushes on to
+          the recorder is the clean original.
+        - Ambience-only frames (between turns) are written by the media
+          sender on the playout-horizon clock; they are never fed to the
+          echo reference and never pushed downstream.
+        """
+        self._ambience = ambience
+
+    @staticmethod
+    def _audio_seconds(frame) -> float:
+        rate = frame.sample_rate * max(1, frame.num_channels) * 2
+        return len(frame.audio) / rate if rate else 0.0
+
+    def _packet_backlog(self) -> int | None:
+        """Bytes a packetizing serializer (FreeSWITCH, Vaani) still holds."""
+        pending = getattr(self._params.serializer, "_pending_audio", None)
+        return None if pending is None else len(pending)
+
+    def _with_ambience(self, frame):
+        """``frame`` with the room sound mixed in (a new frame), or ``frame``."""
+        ambience = self._ambience
+        if (
+            ambience is None or not ambience.running
+            or not isinstance(frame, OutputAudioRawFrame) or not frame.audio
+            or frame.sample_rate != ambience.sample_rate or frame.num_channels != 1
+        ):
+            return frame
+        audio = ambience.mix(frame.audio)
+        ambience.audio_since_idle = True
+        if isinstance(frame, FillerAudioRawFrame):
+            return FillerAudioRawFrame(
+                audio=audio, sample_rate=frame.sample_rate, num_channels=1, owner=frame.owner,
+            )
+        return OutputAudioRawFrame(audio=audio, sample_rate=frame.sample_rate, num_channels=1)
+
+    async def _send_ambience_payload(self, payload) -> bool:
+        if self._client.is_closing or not self._client.is_connected:
+            return False
+        try:
+            await self._client.send(payload)
+        except Exception as exc:  # noqa: BLE001 — the room must never break a call
+            logger.debug("ambience send failed: %s", exc)
+            return False
+        return True
+
+    async def _write_ambience(self, frame, ambience) -> bool:
+        if not ambience.running:
+            return False
+        if self._client.is_closing or not self._client.is_connected:
+            ambience.stop("disconnected")
+            return False
+        serializer = self._params.serializer
+        pending = getattr(serializer, "_pending_audio", None)
+        if frame.flush_pending and pending:
+            # A reply just ended with its last partial packet still in the
+            # serializer's buffer. It belongs BEFORE the room audio.
+            seconds = len(pending) / (ambience.sample_rate * 2)
+            payload = await serializer.serialize(
+                OutputTransportMessageFrame(message={"type": AUDIO_FLUSH_MESSAGE_TYPE})
+            )
+            if payload and await self._send_ambience_payload(payload):
+                ambience.note_sent(seconds)
+                ambience.note_remnant_flushed()
+        payload = await serializer.serialize(frame)
+        if not payload or not await self._send_ambience_payload(payload):
+            return False
+        ambience.note_room_sent(self._audio_seconds(frame))
+        ambience.idle_since_audio = True
+        ambience.audio_since_idle = False
+        return True
+
+    async def _ambience_handoff(self, ambience) -> None:
+        """Bot audio follows room audio: let the client drop the room audio it
+        still has queued (the browser client does; telephony serializers
+        return nothing — their queue plays out, at most one chunk + lead)."""
+        payload = await self._params.serializer.serialize(FillerClearFrame(ambience.owner))
+        cleared = bool(payload) and await self._send_ambience_payload(payload)
+        ambience.note_handoff(cleared)
 
     def attach_echo_reference(self, reference) -> None:
         """Feed every audio frame to ``reference`` (voice_runtime.echo_reference)
@@ -268,15 +460,24 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
 
     async def _write_frame(self, frame):
         async with self._filler_send_lock:
+            ambience = self._ambience
+            if ambience is not None:
+                if isinstance(frame, AmbienceAudioRawFrame):
+                    return await self._write_ambience(frame, ambience)
+                ambience.arm()
             if isinstance(frame, FillerAudioRawFrame):
                 if frame.owner is None or frame.owner.cancelled:
                     return
+                if ambience is not None and ambience.idle_since_audio and frame.audio:
+                    await self._ambience_handoff(ambience)
                 # Tagged filler bypasses optional fixed-size PCM buffering:
                 # it must never be concatenated with a real response packet.
-                payload = await self._params.serializer.serialize(frame)
+                payload = await self._params.serializer.serialize(self._with_ambience(frame))
                 if payload and not frame.owner.cancelled:
                     self._note_wire_audio(frame)
                     await self._client.send(payload)
+                    if ambience is not None:
+                        ambience.note_sent(self._audio_seconds(frame))
                     return True
                 return False
             # Enforce wire order even when an urgent clear and an already
@@ -286,9 +487,40 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                     await super()._write_frame(FillerClearFrame(owner))
                     self._cleared_fillers.add(owner.token)
             self._note_wire_audio(frame)
-            await super()._write_frame(frame)
+            if ambience is None:
+                await super()._write_frame(frame)
+                return
+            await self._write_with_ambience(frame, ambience)
+
+    async def _write_with_ambience(self, frame, ambience) -> None:
+        serializer = self._params.serializer
+        if ambience.idle_since_audio and isinstance(frame, OutputAudioRawFrame) and frame.audio:
+            await self._ambience_handoff(ambience)
+        backlog = self._packet_backlog()
+        dropped = getattr(serializer, "stale_audio_dropped", 0)
+        await super()._write_frame(self._with_ambience(frame))
+        if isinstance(frame, OutputAudioRawFrame) and frame.audio:
+            seconds = self._audio_seconds(frame)
+            if backlog is not None:
+                # Only what actually left the packet buffer reaches the far
+                # end now; a stale remnant it discarded never does.
+                if getattr(serializer, "stale_audio_dropped", 0) != dropped:
+                    backlog = 0
+                sent = backlog + len(frame.audio) - (self._packet_backlog() or 0)
+                seconds = max(0, sent) / (frame.sample_rate * 2)
+            ambience.note_sent(seconds)
+        elif isinstance(frame, InterruptionFrame):
+            ambience.note_interruption()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            ambience.stop("end" if isinstance(frame, EndFrame) else "cancel")
 
     async def write_audio_frame(self, frame):
+        if isinstance(frame, AmbienceAudioRawFrame):
+            # Paced by the media sender's playout clock, not by a sleep here:
+            # a reply frame arriving meanwhile goes out at once. Never pushed
+            # downstream — room audio is not recorded.
+            await self._write_frame(frame)
+            return False
         if not isinstance(frame, FillerAudioRawFrame):
             return await super().write_audio_frame(frame)
         owner = frame.owner

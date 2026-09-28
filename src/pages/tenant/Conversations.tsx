@@ -20,7 +20,7 @@ import { CurrencySelect, useDisplayCurrency, type DisplayCurrencyState } from "@
 import {
   downloadConversationTranscript,
   downloadOperationalExport,
-  type StructuredExportFormat,
+  type TranscriptExportFormat,
 } from "@/services/exportDownload";
 import { formatChatTime } from "@/services/chatTime";
 
@@ -301,7 +301,7 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
     { label: "Compliance (PII, disclosures)", score: qa ? Math.min(100, qa + 10) : 0 },
   ];
 
-  const exportTranscript = async (format: StructuredExportFormat) => {
+  const exportTranscript = async (format: TranscriptExportFormat) => {
     if (transcriptBusy) return;
     setTranscriptBusy(true);
     try {
@@ -335,33 +335,39 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
         </span>
       )}
       headerExtra={
-        <MenuButton actions={[
-          {
-            label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag",
-            onClick: async () => {
-              try {
-                const updated = await flagConversation(conv.id, !conv.flagged);
-                onUpdate(updated);
-                toast(updated.flagged ? "Flagged for QA review" : "Flag removed");
-              } catch (e) {
-                toast(e instanceof Error ? e.message : "Could not update flag", "error");
-              }
+        <>
+          {/* PDF/text are the readable conversation to forward to someone;
+              CSV/Excel stay the per-turn analytics tables. The recording has
+              its own Download next to the player. */}
+          <MenuButton
+            label="Download conversation"
+            buttonText="Download"
+            icon="download"
+            busy={transcriptBusy}
+            actions={[
+              { label: "Conversation as PDF", icon: "file", onClick: () => void exportTranscript("pdf") },
+              { label: "Conversation as text", icon: "message", onClick: () => void exportTranscript("txt") },
+              "sep",
+              { label: "Transcript as CSV", icon: "database", onClick: () => void exportTranscript("csv") },
+              { label: "Transcript as Excel", icon: "database", onClick: () => void exportTranscript("xlsx") },
+            ]}
+          />
+          <MenuButton actions={[
+            {
+              label: conv.flagged ? "Remove flag" : "Flag for review", icon: "flag",
+              onClick: async () => {
+                try {
+                  const updated = await flagConversation(conv.id, !conv.flagged);
+                  onUpdate(updated);
+                  toast(updated.flagged ? "Flagged for QA review" : "Flag removed");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Could not update flag", "error");
+                }
+              },
             },
-          },
-          { label: "Add comment", icon: "message", onClick: () => toast("Comment added to QA thread") },
-          {
-            label: transcriptBusy ? "Exporting transcript…" : "Export transcript as CSV",
-            icon: "download",
-            disabled: transcriptBusy,
-            onClick: () => void exportTranscript("csv"),
-          },
-          {
-            label: transcriptBusy ? "Exporting transcript…" : "Export transcript as Excel",
-            icon: "download",
-            disabled: transcriptBusy,
-            onClick: () => void exportTranscript("xlsx"),
-          },
-        ]} />
+            { label: "Add comment", icon: "message", onClick: () => toast("Comment added to QA thread") },
+          ]} />
+        </>
       }
       footer={
         <>

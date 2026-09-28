@@ -217,6 +217,23 @@ class EscalationPolicy(BaseModel):
     triggers: list[str] = Field(default_factory=list)
 
 
+class EndCallPolicy(BaseModel):
+    """When a bot WITHOUT a domain policy may end the call itself.
+
+    Off by default: a generic bot's goodbye is only words — the call stays
+    open until the caller hangs up. Opted in, a validated Goal Engine
+    ``end_call`` decision closes the call after the reply, but only for the
+    listed caller signals and at or above ``minConfidence`` (the engine also
+    emits ``end_call`` mid-script, often at confidence 0.0).
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    enabled: bool = False
+    signals: list[str] = Field(default_factory=lambda: ["wrong_person"])
+    min_confidence: float = Field(default=0.9, alias="minConfidence", ge=0.5, le=1.0)
+
+
 class BotGoalPolicy(BaseModel):
     """The compiled, structured policy the Goal Engine runs on.
 
@@ -236,6 +253,8 @@ class BotGoalPolicy(BaseModel):
     tool_rules: list[str] = Field(default_factory=list, alias="toolRules")
     escalation: EscalationPolicy = Field(default_factory=EscalationPolicy)
     completion_criteria: list[str] = Field(default_factory=list, alias="completionCriteria")
+    # Runtime-only: never rendered into the decision prompt.
+    end_call: EndCallPolicy = Field(default_factory=EndCallPolicy, alias="endCall")
     tone: str = ""
     # Additional Next-Best-Action names this bot's post-call analysis may
     # recommend, ON TOP of the platform vocabulary
@@ -287,21 +306,22 @@ def compile_goal_policy(
     published prompt, configured intents and the runtime-context domain
     policy — so every existing bot keeps working with no new configuration.
     """
-    post_call_only: BotGoalPolicy | None = None
+    engine_neutral: BotGoalPolicy | None = None
     if goal_config:
         try:
             policy = BotGoalPolicy.model_validate(goal_config)
-            if set(goal_config) - _POST_CALL_ONLY_KEYS:
+            if set(goal_config) - _ENGINE_NEUTRAL_KEYS:
                 policy.source = "configured"
                 if not policy.role:
                     policy.role = bot_name or "voice assistant"
                 if not policy.prompt_excerpt:
                     policy.prompt_excerpt = (system_prompt or "")[:_MAX_PROMPT_EXCERPT_CHARS]
                 return policy
-            # Only post-call keys (summary fields / extra next actions) were
-            # authored: the LIVE policy stays the derived default — adding a
-            # structured summary must never change how the bot talks.
-            post_call_only = policy
+            # Only post-call / runtime-only keys (summary fields, extra next
+            # actions, end-call opt-in) were authored: the LIVE decision
+            # policy stays the derived default — adding a structured summary
+            # or the end-call switch must never change how the bot talks.
+            engine_neutral = policy
         except Exception:  # noqa: BLE001 — a bad config degrades to derived
             logger.exception("invalid goal_policy configuration; deriving defaults")
 
@@ -323,9 +343,10 @@ def compile_goal_policy(
         source="derived",
         prompt_excerpt=(system_prompt or "")[:_MAX_PROMPT_EXCERPT_CHARS],
     )
-    if post_call_only is not None:
-        derived.summary_fields = list(post_call_only.summary_fields)
-        derived.next_actions = list(post_call_only.next_actions)
+    if engine_neutral is not None:
+        derived.summary_fields = list(engine_neutral.summary_fields)
+        derived.next_actions = list(engine_neutral.next_actions)
+        derived.end_call = engine_neutral.end_call
     return derived
 
 
@@ -334,6 +355,9 @@ def compile_goal_policy(
 _POST_CALL_ONLY_KEYS = frozenset({
     "summaryFields", "summary_fields", "nextActions", "next_actions",
 })
+# Keys the decision prompt never renders; like the post-call keys they do not
+# switch the live Goal Engine to "configured" mode on their own.
+_ENGINE_NEUTRAL_KEYS = _POST_CALL_ONLY_KEYS | {"endCall", "end_call"}
 
 
 class GoalEngine:
@@ -717,6 +741,23 @@ class GoalSession:
             spec.name for spec in self.policy.slots
             if spec.required and spec.name not in self.slots
         ]
+
+    def end_call_reason(self, decision: ConversationDecision) -> str:
+        """Why this validated decision closes the call ("" = it does not).
+
+        Only the bot's opt-in (goal_policy.endCall) makes an ``end_call``
+        decision binding, and only for its listed caller signals at or above
+        its confidence floor. The schema already downgrades ``end_call`` on a
+        denied/ambiguous gate answer, so a re-ask never closes.
+        """
+        rule = self.policy.end_call
+        if not rule.enabled or decision.next_action != "end_call":
+            return ""
+        if decision.signal not in rule.signals:
+            return ""
+        if decision.confidence < rule.min_confidence:
+            return ""
+        return f"end_call:{decision.signal}"
 
     # ── views for the engine and the response stage ───────────────────────
 

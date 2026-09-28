@@ -34,6 +34,13 @@ import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 
+from shared.audio.ambience_presets import (
+    AMBIENCE_PRESET_IDS,
+    AMBIENCE_VOLUME_RANGE,
+    DEFAULT_AMBIENCE_PRESET,
+    DEFAULT_AMBIENCE_VOLUME,
+)
+
 from .voice_identity import VoiceIdentity, adapt_authored_speaker_grammar
 
 # --------------------------------------------------------------------------
@@ -139,6 +146,16 @@ HUMAN_SPEECH_DEFAULTS: dict = {
     # the breath has played; below it the wait stays a breath — a person does
     # not put a word into every silence.
     "latency_cue_probability": 0.7,
+    # Background ambience: a quiet office / call-centre room sound under the
+    # whole call, pauses included (voice_runtime.ambience, mixed at the output
+    # transport for every TTS provider). Off by default; absent = off.
+    "background_ambience": False,
+    # Which room (a stable id from shared.audio.ambience_presets — never a
+    # file path) and how loud: 0–100, resolved to dB below speech by the
+    # runtime (0 mutes, 50 = the original level). Only read while
+    # background_ambience is on.
+    "background_ambience_preset": DEFAULT_AMBIENCE_PRESET,
+    "background_ambience_volume": DEFAULT_AMBIENCE_VOLUME,
 }
 
 _BOOL_KEYS = (
@@ -146,6 +163,7 @@ _BOOL_KEYS = (
     "prosody_variation", "gender_agreement", "micro_pauses", "self_correction",
     "breathing", "filler_words",
     "latency_fillers", "sentence_breaths", "latency_filler_ladder", "adaptive_latency_cues",
+    "background_ambience",
 )
 _PROBABILITY_KEYS = (
     "thinking_filler_probability", "acknowledgement_probability",
@@ -163,9 +181,13 @@ _INT_KEYS = {
     # Ladder rungs, measured from the caller's end of speech like the delay.
     "latency_filler_hmm_ms": (2000, 8000),
     "latency_filler_spoken_ms": (3000, 12000),
+    "background_ambience_volume": AMBIENCE_VOLUME_RANGE,
 }
 _FLOAT_KEYS = {"breath_gain_db": (-24.0, 0.0)}
-_CHOICE_KEYS = {"latency_filler_kind": FILLER_SOUND_KINDS}
+_CHOICE_KEYS = {
+    "latency_filler_kind": FILLER_SOUND_KINDS,
+    "background_ambience_preset": AMBIENCE_PRESET_IDS,
+}
 # Nested selection maps: {name: … {name: {"primary", "alternates"}}} with the
 # given number of string-key levels above the choice.
 _SELECTION_KEYS = {"filler_audio_selection": 2, "latency_filler_cue_selection": 1}

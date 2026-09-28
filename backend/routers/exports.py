@@ -19,6 +19,14 @@ from backend.core.deps import (
     is_super_admin,
     require_permission,
 )
+from backend.reports.conversation_document import (
+    PDF_CONTENT_TYPE,
+    TEXT_CONTENT_TYPE,
+    build_conversation_document,
+    render_conversation_pdf,
+    render_conversation_text,
+    resolve_viewer_zone,
+)
 from backend.reports.exporter import (
     CSV_CONTENT_TYPE,
     XLSX_CONTENT_TYPE,
@@ -37,6 +45,7 @@ from backend.reports.operational import (
     build_subscriptions_export,
     build_transcript_export,
 )
+from backend.routers.conversations import _ai_summary
 from shared.db.mysql import get_db
 from shared.errors import ApiError, ForbiddenError, NotFoundError
 from shared.models import ConversationSession, Invoice, Plan, Tenant, User, VoiceBot
@@ -50,6 +59,19 @@ def _validate_format(export_format: str) -> None:
             f"Unsupported export format '{export_format}'.",
             422,
             errors=[{"field": "format", "message": "Choose csv or xlsx."}],
+        )
+
+
+# Readable documents meant to be forwarded, next to the csv/xlsx turn tables.
+_DOCUMENT_FORMATS = {"pdf": PDF_CONTENT_TYPE, "txt": TEXT_CONTENT_TYPE}
+
+
+def _validate_transcript_format(export_format: str) -> None:
+    if export_format not in {"csv", "xlsx", *_DOCUMENT_FORMATS}:
+        raise ApiError(
+            f"Unsupported export format '{export_format}'.",
+            422,
+            errors=[{"field": "format", "message": "Choose csv, xlsx, pdf or txt."}],
         )
 
 
@@ -306,10 +328,16 @@ async def export_conversation_transcript(
     conversation_id: str,
     request: Request,
     export_format: str = Query("csv", alias="format", max_length=8),
+    tz: str | None = Query(
+        None,
+        max_length=64,
+        description="IANA timezone for the clock times in pdf/txt documents "
+        "(the viewer's own); UTC when absent or unknown.",
+    ),
     user: User = Depends(require_permission("conversations.view")),
     db: Session = Depends(get_db),
 ):
-    _validate_format(export_format)
+    _validate_transcript_format(export_format)
     # Outer join, and no bot-deletion filter: archiving a bot must not make
     # its past conversations un-exportable (the conversations list keeps
     # showing them; the bot name here is only a label).
@@ -327,9 +355,28 @@ async def export_conversation_transcript(
     bot_name = bot_name or conversation.bot_id
     assert_tenant_access(user, conversation.tenant_id)
     transcript_doc = await find_transcript_doc(conversation)
-    report = _without_cost_columns(
-        build_transcript_export(ui_turns((transcript_doc or {}).get("turns"))), user
-    )
+    turns = ui_turns((transcript_doc or {}).get("turns"))
+    if export_format in _DOCUMENT_FORMATS:
+        # Never carries costs, so no costs.view stripping is needed. Rendered
+        # before the audit row so a failed render is not logged as exported,
+        # and on the event loop rather than a worker thread: PyMuPDF is not
+        # thread-safe (a 30-minute call renders in ~0.2 s).
+        document = build_conversation_document(
+            conversation,
+            bot_name=bot_name,
+            turns=turns,
+            summary=_ai_summary(db, conversation),
+            zone=resolve_viewer_zone(tz),
+        )
+        content = (
+            render_conversation_pdf(document)
+            if export_format == "pdf"
+            else render_conversation_text(document)
+        )
+        row_count = len(document.turns)
+    else:
+        report = _without_cost_columns(build_transcript_export(turns), user)
+        row_count = len(report.rows)
     record_audit(
         db,
         user=user,
@@ -340,15 +387,29 @@ async def export_conversation_transcript(
         tenant_id=conversation.tenant_id,
         new_value={
             "format": export_format,
-            "rowCount": len(report.rows),
+            "rowCount": row_count,
         },
         request=request,
     )
     db.commit()
-    return _file_response(
-        report,
-        export_format,
-        f"echosphere-transcript-{conversation.id}-{date.today().isoformat()}",
+    if export_format not in _DOCUMENT_FORMATS:
+        return _file_response(
+            report,
+            export_format,
+            f"echosphere-transcript-{conversation.id}-{date.today().isoformat()}",
+        )
+    filename = (
+        safe_filename(f"echosphere-conversation-{conversation.id}-{date.today().isoformat()}")
+        + f".{export_format}"
+    )
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_DOCUMENT_FORMATS[export_format],
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

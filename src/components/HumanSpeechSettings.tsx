@@ -1,4 +1,5 @@
 import type {
+  AmbiencePresetId,
   HumanSpeechEffectiveSettings,
   HumanSpeechSettingKey,
   HumanSpeechSettingSource,
@@ -29,9 +30,31 @@ interface NumberField {
   help: string;
 }
 
+interface ChoiceOption { value: string; label: string; description: string }
+/** A select shown inline in its section (never under Advanced tuning). */
+interface ChoiceField {
+  key: HumanSpeechSettingKey;
+  label: string;
+  help: string;
+  options: ChoiceOption[];
+  fallback: string;
+}
+/** A 0–N slider shown inline in its section (never under Advanced tuning). */
+interface RangeField {
+  key: HumanSpeechSettingKey;
+  label: string;
+  help: string;
+  min: number;
+  max: number;
+  step: number;
+  fallback: number;
+  format: (value: number) => string;
+}
+
 /** One section of the editor. A section with a `master` key is a feature
- *  family (Breathing, Filler words): its child switches only take effect
- *  while the master is on, and the two families never imply each other. */
+ *  family (Breathing, Filler words, Call environment): its child controls
+ *  only take effect while the master is on, and families never imply each
+ *  other. */
 interface Group {
   id: string;
   title: string;
@@ -39,7 +62,21 @@ interface Group {
   master?: BoolField;
   bools: BoolField[];
   numbers: NumberField[];
+  choices?: ChoiceField[];
+  ranges?: RangeField[];
 }
+
+/** Room sounds offered for Background ambience. Mirrors the backend
+ *  registry (shared/audio/ambience_presets.py — ids and labels are checked
+ *  against it in tests); only the id is ever saved. */
+export const AMBIENCE_PRESET_OPTIONS: { value: AmbiencePresetId; label: string; description: string }[] = [
+  { value: "office", label: "Office", description: "Steady office air, a few distant colleagues talking, occasional typing." },
+  { value: "call_center", label: "Call Center", description: "Many agents talking almost continuously in a treated room; little typing." },
+  { value: "light_office", label: "Light Office", description: "A calm, sparsely occupied office: soft air, the odd far-away voice, a little typing." },
+  { value: "busy_office", label: "Busy Office", description: "A lively open-plan floor: more and nearer voices, frequent typing, footsteps, chairs, paper." },
+  { value: "room_tone", label: "Room Tone", description: "Neutral room air and ventilation only: no voices, no events." },
+];
+export const DEFAULT_AMBIENCE_VOLUME = 50;
 
 const LAYER: BoolField = {
   key: "enabled", label: "Human speech layer",
@@ -117,6 +154,32 @@ export const GROUPS: Group[] = [
       { key: "self_correction_probability", label: "Self-correction probability", min: 0, max: 1, step: 0.001, help: "Kept extremely low and used only when self-correction is explicitly enabled." },
     ],
   },
+  {
+    id: "ambience",
+    title: "Call environment",
+    description: "What the caller hears around the bot's voice.",
+    master: {
+      key: "background_ambience", label: "Background ambience",
+      help: "A quiet room sound under the whole call, including the pauses between turns, so the call sounds like it comes from a live environment. Mixed only into what the caller hears (never into speech recognition) and works with every voice provider. Off by default.",
+    },
+    bools: [],
+    numbers: [],
+    choices: [
+      {
+        key: "background_ambience_preset", label: "Background sound", fallback: "office",
+        help: "Which room the caller hears.",
+        options: AMBIENCE_PRESET_OPTIONS,
+      },
+    ],
+    ranges: [
+      {
+        key: "background_ambience_volume", label: "Background volume",
+        min: 0, max: 100, step: 1, fallback: DEFAULT_AMBIENCE_VOLUME,
+        help: "0 mutes the room; 50 is the standard level; 100 is the loudest allowed — always well below the bot's voice.",
+        format: (value) => (value === 0 ? "Muted" : String(value)),
+      },
+    ],
+  },
 ];
 
 const BOOL_FIELDS: BoolField[] = [
@@ -124,11 +187,26 @@ const BOOL_FIELDS: BoolField[] = [
   ...GROUPS.flatMap((group) => [...(group.master ? [group.master] : []), ...group.bools]),
 ];
 const NUMBER_FIELDS: NumberField[] = GROUPS.flatMap((group) => group.numbers);
+const CHOICE_FIELDS: ChoiceField[] = GROUPS.flatMap((group) => group.choices ?? []);
+const RANGE_FIELDS: RangeField[] = GROUPS.flatMap((group) => group.ranges ?? []);
 
 export function validateHumanSpeechOverrides(
   override: HumanSpeechSettings,
 ): string[] {
   const errors: string[] = [];
+  for (const field of RANGE_FIELDS) {
+    if (!hasOwn(override, field.key)) continue;
+    const value = override[field.key];
+    if (typeof value !== "number" || !Number.isInteger(value) || value < field.min || value > field.max) {
+      errors.push(`${field.label} must be a whole number between ${field.min} and ${field.max}.`);
+    }
+  }
+  for (const field of CHOICE_FIELDS) {
+    if (!hasOwn(override, field.key)) continue;
+    if (!field.options.some((option) => option.value === override[field.key])) {
+      errors.push(`${field.label} must be one of ${field.options.map((option) => option.label).join(", ")}.`);
+    }
+  }
   for (const field of NUMBER_FIELDS) {
     if (!hasOwn(override, field.key)) continue;
     const value = override[field.key];
@@ -150,13 +228,17 @@ const hasOwn = (value: HumanSpeechSettings, key: HumanSpeechSettingKey) =>
   Object.prototype.hasOwnProperty.call(value, key);
 
 /** The switches that must be on for `key` to have any effect: the layer
- *  master, then its family master (Breathing / Filler words). */
+ *  master, then its family master (Breathing / Filler words / Background
+ *  ambience). */
 export function gatesFor(key: HumanSpeechSettingKey): HumanSpeechSettingKey[] {
   if (key === "enabled") return [];
   const gates: HumanSpeechSettingKey[] = ["enabled"];
   for (const group of GROUPS) {
     if (!group.master || group.master.key === key) continue;
-    if (group.bools.some((field) => field.key === key) || group.numbers.some((field) => field.key === key)) {
+    const members = [
+      ...group.bools, ...group.numbers, ...(group.choices ?? []), ...(group.ranges ?? []),
+    ];
+    if (members.some((field) => field.key === key)) {
       gates.push(group.master.key);
     }
   }
@@ -180,11 +262,27 @@ export function HumanSpeechSettingsEditor({
     const effective = own === undefined ? inherited[key] : own;
     // Keys a newer form knows but an older backend snapshot has not sent yet
     // default to their platform value (every switch defaults to on except
-    // self-correction).
-    if (effective === undefined) return key === "self_correction" ? false : key === "latency_cue_probability" ? 0.7 : true;
+    // self-correction and background ambience).
+    if (effective === undefined) {
+      if (key === "self_correction" || key === "background_ambience") return false;
+      return key === "latency_cue_probability" ? 0.7 : true;
+    }
     return effective as boolean | number;
   };
-  const setValue = (key: HumanSpeechSettingKey, value: boolean | number) =>
+  /** A choice's effective value; an unknown or missing one shows its fallback. */
+  const choiceFor = (field: ChoiceField): string => {
+    const own = override[field.key];
+    const effective = own === undefined ? inherited[field.key] : own;
+    return field.options.some((option) => option.value === effective) ? String(effective) : field.fallback;
+  };
+  /** A range's effective value, clamped to its bounds; missing = fallback. */
+  const rangeFor = (field: RangeField): number => {
+    const own = override[field.key];
+    const effective = own === undefined ? inherited[field.key] : own;
+    if (typeof effective !== "number" || !Number.isFinite(effective)) return field.fallback;
+    return Math.min(field.max, Math.max(field.min, Math.round(effective)));
+  };
+  const setValue = (key: HumanSpeechSettingKey, value: boolean | number | string) =>
     onChange({ ...override, [key]: value });
   const clearValue = (key: HumanSpeechSettingKey) => {
     const next = { ...override };
@@ -274,6 +372,82 @@ export function HumanSpeechSettingsEditor({
     );
   };
 
+  const inactiveNote = (key: HumanSpeechSettingKey, reason: string | null) => reason && (
+    <span className="t-micro" data-testid={`human-speech-inactive-${key}`} style={{ color: "var(--status-warning, var(--ink-soft))" }}>
+      Inactive while {reason}.
+    </span>
+  );
+
+  const choiceControl = (field: ChoiceField) => {
+    const overridden = hasOwn(override, field.key);
+    const value = choiceFor(field);
+    const inactive = inactiveBecause(field.key);
+    const selected = field.options.find((option) => option.value === value);
+    return (
+      <div key={field.key} className="card-pad-sm col gap-6" data-testid={`human-speech-control-${field.key}`} style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+        <Field label={field.label} hint={`${selected?.description ?? ""} ${field.help}`.trim()}>
+          <div className="row gap-8">
+            <select
+              className="select"
+              aria-label={field.label}
+              value={value}
+              disabled={disabled || inactive !== null}
+              onChange={(event) => setValue(field.key, event.target.value)}
+            >
+              {field.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            {overridden && (
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => clearValue(field.key)}>
+                Inherit
+              </Button>
+            )}
+          </div>
+        </Field>
+        <span className="t-micro">Effective: {selected?.label ?? value} · source: {sourceFor(field.key)}</span>
+        {inactiveNote(field.key, inactive)}
+      </div>
+    );
+  };
+
+  const rangeControl = (field: RangeField) => {
+    const overridden = hasOwn(override, field.key);
+    const value = rangeFor(field);
+    const inactive = inactiveBecause(field.key);
+    return (
+      <div key={field.key} className="card-pad-sm col gap-6" data-testid={`human-speech-control-${field.key}`} style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
+        <label className="col gap-6">
+          <span className="row-between">
+            <span className="field-label">{field.label}</span>
+            <span className="t-num t-strong" style={{ fontSize: 12.5 }}>{field.format(value)}</span>
+          </span>
+          <input
+            type="range"
+            min={field.min}
+            max={field.max}
+            step={field.step}
+            value={value}
+            aria-label={field.label}
+            disabled={disabled || inactive !== null}
+            onChange={(event) => setValue(field.key, Math.round(Number(event.target.value)))}
+            style={{ accentColor: "var(--brand-500)", width: "100%" }}
+          />
+        </label>
+        <div className="row-between gap-8">
+          <span className="t-micro">Effective: {field.format(value)} · source: {sourceFor(field.key)}</span>
+          {overridden && (
+            <Button size="sm" variant="ghost" disabled={disabled} onClick={() => clearValue(field.key)}>
+              Inherit
+            </Button>
+          )}
+        </div>
+        {inactiveNote(field.key, inactive)}
+        <span className="field-hint">{field.help}</span>
+      </div>
+    );
+  };
+
   const groupSection = (group: Group) => (
     <section
       key={group.id}
@@ -287,9 +461,17 @@ export function HumanSpeechSettingsEditor({
         <p className="t-micro" style={{ margin: "4px 0 0" }}>{group.description}</p>
       </div>
       {group.master && toggleCard(group.master, { master: true })}
-      <div className="grid grid-2" style={{ gap: 12 }}>
-        {group.bools.map((field) => toggleCard(field))}
-      </div>
+      {group.bools.length > 0 && (
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          {group.bools.map((field) => toggleCard(field))}
+        </div>
+      )}
+      {((group.choices?.length ?? 0) > 0 || (group.ranges?.length ?? 0) > 0) && (
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          {(group.choices ?? []).map(choiceControl)}
+          {(group.ranges ?? []).map(rangeControl)}
+        </div>
+      )}
       {!collapseAdvanced && group.numbers.length > 0 && (
         <div className="grid grid-2" style={{ gap: 12 }}>
           {group.numbers.map(numberControl)}

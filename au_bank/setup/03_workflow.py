@@ -56,6 +56,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root for shared.*
 from _common import BOT, WORKFLOW_ID, check, client  # noqa: E402
+from number_confirmation import configure_nodes  # noqa: E402
 
 WORKFLOW_NAME = "AU Bank debit card and account services"
 
@@ -432,6 +433,8 @@ def service_edges(hub):
     return [E(hub, target, tokens) for key, tokens, target in SERVICES
             if key not in _OWN_BRANCH.get(hub, set())]
 
+
+NODES = configure_nodes(NODES)
 
 EDGES = [
     E("n_start", "n_cond_verified"),

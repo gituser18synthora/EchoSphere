@@ -82,6 +82,46 @@ describe("operational download service", () => {
     );
   });
 
+  it("downloads the readable conversation in the viewer's timezone", async () => {
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
+      ...new Intl.DateTimeFormat().resolvedOptions(),
+      timeZone: "Asia/Kolkata",
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(new Blob(["%PDF-1.7"]), {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      }))
+      .mockResolvedValueOnce(new Response(new Blob(["\ufeffConversation transcript"]), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Disposition": 'attachment; filename="echosphere-conversation-cv-001-2026-09-28.txt"',
+        },
+      }));
+
+    await expect(downloadConversationTranscript("cv-001", "pdf"))
+      .resolves.toBe("echosphere-conversation-cv-001.pdf");
+    await expect(downloadConversationTranscript("cv-001", "txt"))
+      .resolves.toBe("echosphere-conversation-cv-001-2026-09-28.txt");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/conversations/cv-001/transcript/export?format=pdf&tz=Asia%2FKolkata",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Accept: "application/pdf" }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/conversations/cv-001/transcript/export?format=txt&tz=Asia%2FKolkata",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Accept: "text/plain" }),
+      }),
+    );
+  });
+
   it("does not download validation JSON as a file", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       success: false,

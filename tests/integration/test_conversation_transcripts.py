@@ -11,7 +11,9 @@ import struct
 import uuid
 import wave
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import fitz
 import pymongo
 import pytest
 from fastapi.testclient import TestClient
@@ -160,6 +162,9 @@ def seed_and_cleanup():
     mongo_client.close()
     wav_path.unlink(missing_ok=True)
     with get_engine().begin() as conn:
+        # Exports of these test conversations are audited; drop those rows too.
+        conn.execute(sa_text("DELETE FROM audit_logs WHERE entity_id LIKE :p"),
+                     {"p": f"cv_{_SUFFIX}%"})
         conn.execute(sa_text("DELETE FROM conversation_sessions WHERE id LIKE :p"),
                      {"p": f"cv_{_SUFFIX}%"})
 
@@ -257,3 +262,84 @@ class TestCallRecording:
         body = response.content.decode("utf-8", errors="replace")
         assert "Namaskar" in body
         assert "bot" in body and "user" in body
+
+
+class TestConversationDocumentDownload:
+    """The readable PDF / text of a whole conversation, meant for forwarding."""
+
+    @staticmethod
+    def _clock(ts: float, zone: str) -> str:
+        return datetime.fromtimestamp(ts, tz=ZoneInfo(zone)).strftime("%I:%M:%S %p")
+
+    @staticmethod
+    def _download(client, headers, cid: str, query: str):
+        return client.get(f"{API}/conversations/{cid}/transcript/export?{query}",
+                          headers=headers)
+
+    def test_text_uses_the_viewers_timezone(self, client, tenant_a_admin, seed_and_cleanup):
+        cid = seed_and_cleanup["linked"]
+        response = self._download(client, tenant_a_admin, cid, "format=txt&tz=Asia/Kolkata")
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("text/plain")
+        disposition = response.headers["content-disposition"]
+        assert disposition.startswith(f'attachment; filename="echosphere-conversation-{cid}-')
+        assert disposition.endswith('.txt"')
+        text = response.content.decode("utf-8-sig")
+        bot_at = self._clock(_RUNTIME_TURNS[0]["ts"], "Asia/Kolkata")
+        caller_at = self._clock(_RUNTIME_TURNS[1]["ts"], "Asia/Kolkata")
+        assert f"[{bot_at}] Bot: Namaskar! Main Aditya bol raha hoon." in text
+        assert f"[{caller_at}] Caller: haan boliye, sun raha hoon" in text
+        assert "29 Jul 2026, 03:45:00 PM" in text  # row started_at is UTC 10:15
+        assert "Times are shown in IST (UTC+05:30)." in text
+
+    def test_pdf_downloads_with_every_turn(self, client, tenant_a_admin, seed_and_cleanup):
+        cid = seed_and_cleanup["linked"]
+        # Exactly what Chrome sends for India: the legacy CLDR zone name.
+        response = self._download(client, tenant_a_admin, cid, "format=pdf&tz=Asia%2FCalcutta")
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "application/pdf"
+        assert response.headers["content-disposition"].endswith('.pdf"')
+        pdf = fitz.open("pdf", response.content)
+        text = "".join(page.get_text() for page in pdf).replace("\xa0", " ")
+        assert cid in text
+        assert "Namaskar! Main Aditya bol raha hoon." in text
+        assert "haan boliye, sun raha hoon" in text and "Caller" in text
+        assert "Times are shown in IST (UTC+05:30)." in text
+        assert self._clock(_RUNTIME_TURNS[0]["ts"], "Asia/Kolkata") in text
+
+    def test_unknown_timezone_falls_back_to_labelled_utc(self, client, tenant_a_admin,
+                                                         seed_and_cleanup):
+        response = self._download(client, tenant_a_admin, seed_and_cleanup["linked"],
+                                  "format=txt&tz=Mars/Olympus_Mons")
+        assert response.status_code == 200, response.text
+        text = response.content.decode("utf-8-sig")
+        assert "Times are shown in UTC." in text
+        assert "29 Jul 2026, 10:15:00 AM" in text
+
+    def test_unsupported_format_is_rejected(self, client, tenant_a_admin, seed_and_cleanup):
+        response = self._download(client, tenant_a_admin, seed_and_cleanup["linked"],
+                                  "format=docx")
+        assert response.status_code == 422
+
+    def test_document_is_tenant_scoped(self, client, tenant_b_admin, seed_and_cleanup):
+        response = self._download(client, tenant_b_admin, seed_and_cleanup["linked"],
+                                  "format=pdf")
+        assert response.status_code == 404
+
+    def test_download_is_audited_with_its_format(self, client, tenant_a_admin,
+                                                 seed_and_cleanup):
+        from sqlalchemy import select
+
+        from shared.models import AuditLog
+
+        cid = seed_and_cleanup["legacy"]
+        assert self._download(client, tenant_a_admin, cid, "format=pdf").status_code == 200
+        session = get_sessionmaker()()
+        try:
+            rows = session.execute(select(AuditLog).where(
+                AuditLog.entity_id == cid,
+                AuditLog.action == "conversation.transcript.export",
+            )).scalars().all()
+        finally:
+            session.close()
+        assert [row.new_value for row in rows] == [{"format": "pdf", "rowCount": 1}]

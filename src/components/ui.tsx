@@ -381,7 +381,15 @@ export interface MenuAction {
   disabled?: boolean;
   onClick: () => void;
 }
-export function MenuButton({ actions, label = "More actions" }: { actions: (MenuAction | "sep")[]; label?: string }) {
+export function MenuButton({ actions, label = "More actions", buttonText, icon = "more", busy }: {
+  actions: (MenuAction | "sep")[];
+  label?: string;
+  /** Renders a labelled button (icon, text, chevron) instead of the bare icon. */
+  buttonText?: string;
+  icon?: IconName;
+  /** Spinner in place of the icon; the menu cannot be reopened meanwhile. */
+  busy?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -460,10 +468,11 @@ export function MenuButton({ actions, label = "More actions" }: { actions: (Menu
     <div style={{ position: "relative" }} ref={ref}>
       <button
         ref={buttonRef}
-        className="btn-icon"
+        className={buttonText ? "btn btn-secondary btn-sm" : "btn-icon"}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={busy}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((current) => {
@@ -472,7 +481,8 @@ export function MenuButton({ actions, label = "More actions" }: { actions: (Menu
           });
         }}
       >
-        <Icon name="more" />
+        {busy ? <span className="spinner" aria-hidden /> : <Icon name={icon} size={buttonText ? 14 : undefined} />}
+        {buttonText && <span className="menu-button-label">{buttonText}<Icon name="chevron-down" size={12} /></span>}
       </button>
       {open && createPortal(
         <div

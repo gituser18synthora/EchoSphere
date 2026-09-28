@@ -52,6 +52,9 @@ class LanguagePack:
     token_strip_extra: str = ""                     # punctuation stripped off tokens
     digits_restart: tuple[str, ...] = ()            # "start again", "dobara"
     digits_readback: tuple[str, ...] = ()           # "what did you note?"
+    value_readback_request: tuple[str, ...] = ()    # "confirm/repeat the value"
+    value_readback_negation: tuple[str, ...] = ()
+    caller_value_reference: tuple[str, ...] = ()    # "my …", "what I told you"
     hangup_negation: tuple[str, ...] = ()           # "don't hang up" (negations win)
     hangup_patterns: tuple[str, ...] = ()           # full regexes, any one ends the call
     dnc_patterns: tuple[str, ...] = ()              # "never call me again"

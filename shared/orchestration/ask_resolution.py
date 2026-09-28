@@ -490,6 +490,37 @@ def prepare_digits(ctx: AskContext) -> None:
     ctx.buffered = ctx.pending_digits.get(ctx.node_id, "") if ctx.expects_digits else ""
 
 
+def answer_is_rejected(node: dict, text: str) -> bool:
+    patterns = _node_config(node).get("rejectAnswerPatterns")
+    if not isinstance(patterns, list):
+        return False
+    for pattern in patterns:
+        if isinstance(pattern, str):
+            try:
+                if re.search(pattern, text, re.I):
+                    return True
+            except re.error:
+                continue
+    return False
+
+
+def rejected_answer(ctx: AskContext) -> bool:
+    """Authored exclusions run before numeric extraction, without a retry.
+
+    For example an OTP ask can exclude statements explicitly about a phone
+    number, even when those statements happen to contain six digits.
+    """
+    config = _node_config(ctx.node)
+    if not answer_is_rejected(ctx.node, ctx.text):
+        return False
+    replies = config.get("rejectedAnswerReplyByLanguage") or {}
+    reply = replies.get(ctx.lang.split("-")[0]) or config.get("rejectedAnswerReply")
+    ctx.replies.append(reply or ctx.ask_question(ctx.node, False, ctx.lang))
+    ctx.audit.append({"action": "answer_rejected", "node": ctx.node_id})
+    ctx.stay()
+    return True
+
+
 def digits_restart(ctx: AskContext) -> bool:
     """Explicit restart: the buffered partial is wrong — drop it. When the
     same utterance re-dictates digits ("wrong — seven zero…"), they seed the
@@ -801,7 +832,7 @@ _RESOLVERS: dict[str, Stage] = {
     "standard": resolve_standard,
 }
 DEFAULT_RESOLVERS: tuple[str, ...] = ("joint_yes_no", "semantic_slots", "narrative_guard", "standard")
-PRE_HANDLERS: tuple[Stage, ...] = (digits_restart, digits_readback)
+PRE_HANDLERS: tuple[Stage, ...] = (rejected_answer, digits_restart, digits_readback)
 OUTCOMES: tuple[Stage, ...] = (
     outcome_handled, outcome_filled, outcome_joint_partial, outcome_digits_overflow,
     outcome_digits_partial, outcome_semantic_reask, outcome_signal_unmatched,
