@@ -1,5 +1,5 @@
 import type {
-  AmbiencePresetId,
+  AmbiencePresetOption,
   HumanSpeechEffectiveSettings,
   HumanSpeechSettingKey,
   HumanSpeechSettingSource,
@@ -18,6 +18,8 @@ interface Props {
   onChange: (next: HumanSpeechSettings) => void;
   disabled?: boolean;
   collapseAdvanced?: boolean;
+  /** Background sounds from the backend registry (only productionEnabled ones are offered). */
+  ambiencePresets?: AmbiencePresetOption[];
 }
 
 interface BoolField { key: HumanSpeechSettingKey; label: string; help: string }
@@ -30,15 +32,27 @@ interface NumberField {
   help: string;
 }
 
-interface ChoiceOption { value: string; label: string; description: string }
-/** A select shown inline in its section (never under Advanced tuning). */
+interface ChoiceOption { value: string; label: string; description: string; selectable: boolean }
+/** A select shown inline in its section (never under Advanced tuning). Its
+ *  options come from a backend catalog, so the registry alone decides what
+ *  is offered. */
 interface ChoiceField {
   key: HumanSpeechSettingKey;
   label: string;
   help: string;
-  options: ChoiceOption[];
+  catalog: keyof Catalogs;
   fallback: string;
 }
+/** Backend catalogs that choice fields draw their options from. */
+interface Catalogs { ambiencePresets?: AmbiencePresetOption[] }
+
+const catalogOptions = (field: ChoiceField, catalogs: Catalogs): ChoiceOption[] =>
+  (catalogs[field.catalog] ?? []).map((preset) => ({
+    value: preset.id,
+    label: preset.label,
+    description: preset.description,
+    selectable: preset.productionEnabled,
+  }));
 /** A 0–N slider shown inline in its section (never under Advanced tuning). */
 interface RangeField {
   key: HumanSpeechSettingKey;
@@ -66,16 +80,6 @@ interface Group {
   ranges?: RangeField[];
 }
 
-/** Room sounds offered for Background ambience. Mirrors the backend
- *  registry (shared/audio/ambience_presets.py — ids and labels are checked
- *  against it in tests); only the id is ever saved. */
-export const AMBIENCE_PRESET_OPTIONS: { value: AmbiencePresetId; label: string; description: string }[] = [
-  { value: "office", label: "Office", description: "Steady office air, a few distant colleagues talking, occasional typing." },
-  { value: "call_center", label: "Call Center", description: "Many agents talking almost continuously in a treated room; little typing." },
-  { value: "light_office", label: "Light Office", description: "A calm, sparsely occupied office: soft air, the odd far-away voice, a little typing." },
-  { value: "busy_office", label: "Busy Office", description: "A lively open-plan floor: more and nearer voices, frequent typing, footsteps, chairs, paper." },
-  { value: "room_tone", label: "Room Tone", description: "Neutral room air and ventilation only: no voices, no events." },
-];
 export const DEFAULT_AMBIENCE_VOLUME = 50;
 
 const LAYER: BoolField = {
@@ -168,7 +172,7 @@ export const GROUPS: Group[] = [
       {
         key: "background_ambience_preset", label: "Background sound", fallback: "office",
         help: "Which room the caller hears.",
-        options: AMBIENCE_PRESET_OPTIONS,
+        catalog: "ambiencePresets",
       },
     ],
     ranges: [
@@ -192,6 +196,7 @@ const RANGE_FIELDS: RangeField[] = GROUPS.flatMap((group) => group.ranges ?? [])
 
 export function validateHumanSpeechOverrides(
   override: HumanSpeechSettings,
+  catalogs: Catalogs = {},
 ): string[] {
   const errors: string[] = [];
   for (const field of RANGE_FIELDS) {
@@ -203,8 +208,13 @@ export function validateHumanSpeechOverrides(
   }
   for (const field of CHOICE_FIELDS) {
     if (!hasOwn(override, field.key)) continue;
-    if (!field.options.some((option) => option.value === override[field.key])) {
-      errors.push(`${field.label} must be one of ${field.options.map((option) => option.label).join(", ")}.`);
+    const options = catalogOptions(field, catalogs);
+    if (!options.length) continue;   // no catalog (older API): the server validates
+    // Any listed id is valid here: a withdrawn preset saved earlier may stay
+    // (it cannot be picked again, and the server refuses it as a new choice).
+    if (!options.some((option) => option.value === override[field.key])) {
+      const offered = options.filter((option) => option.selectable).map((option) => option.label);
+      errors.push(`${field.label} must be one of ${offered.join(", ")}.`);
     }
   }
   for (const field of NUMBER_FIELDS) {
@@ -253,7 +263,9 @@ export function HumanSpeechSettingsEditor({
   onChange,
   disabled = false,
   collapseAdvanced = false,
+  ambiencePresets,
 }: Props) {
+  const catalogs: Catalogs = { ambiencePresets };
   const sourceFor = (key: HumanSpeechSettingKey): HumanSpeechSettingSource =>
     hasOwn(override, key) ? scope : inheritedSources[key] ?? "platform";
   const valueFor = (key: HumanSpeechSettingKey): boolean | number => {
@@ -273,7 +285,9 @@ export function HumanSpeechSettingsEditor({
   const choiceFor = (field: ChoiceField): string => {
     const own = override[field.key];
     const effective = own === undefined ? inherited[field.key] : own;
-    return field.options.some((option) => option.value === effective) ? String(effective) : field.fallback;
+    const options = catalogOptions(field, catalogs);
+    if (typeof effective !== "string") return field.fallback;
+    return !options.length || options.some((option) => option.value === effective) ? effective : field.fallback;
   };
   /** A range's effective value, clamped to its bounds; missing = fallback. */
   const rangeFor = (field: RangeField): number => {
@@ -382,7 +396,13 @@ export function HumanSpeechSettingsEditor({
     const overridden = hasOwn(override, field.key);
     const value = choiceFor(field);
     const inactive = inactiveBecause(field.key);
-    const selected = field.options.find((option) => option.value === value);
+    const options = catalogOptions(field, catalogs);
+    const selected = options.find((option) => option.value === value);
+    // Offered: the selectable options. A value saved before its option was
+    // withdrawn stays visible (disabled) so it is shown truthfully and can be
+    // changed, but never picked again.
+    const shown = options.filter((option) => option.selectable || option.value === value);
+    if (!selected) shown.push({ value, label: value, description: "", selectable: true });
     return (
       <div key={field.key} className="card-pad-sm col gap-6" data-testid={`human-speech-control-${field.key}`} style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
         <Field label={field.label} hint={`${selected?.description ?? ""} ${field.help}`.trim()}>
@@ -394,8 +414,10 @@ export function HumanSpeechSettingsEditor({
               disabled={disabled || inactive !== null}
               onChange={(event) => setValue(field.key, event.target.value)}
             >
-              {field.options.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
+              {shown.map((option) => (
+                <option key={option.value} value={option.value} disabled={!option.selectable}>
+                  {option.selectable ? option.label : `${option.label} (not available)`}
+                </option>
               ))}
             </select>
             {overridden && (
@@ -406,6 +428,11 @@ export function HumanSpeechSettingsEditor({
           </div>
         </Field>
         <span className="t-micro">Effective: {selected?.label ?? value} · source: {sourceFor(field.key)}</span>
+        {selected && !selected.selectable && (
+          <span className="t-micro" data-testid={`human-speech-unavailable-${field.key}`} style={{ color: "var(--status-warning, var(--ink-soft))" }}>
+            {selected.label} is no longer offered. It stays saved until you choose another sound.
+          </span>
+        )}
         {inactiveNote(field.key, inactive)}
       </div>
     );

@@ -130,7 +130,18 @@ export interface HumanSpeechSettings {
   background_ambience_volume?: number;
 }
 
-export type AmbiencePresetId = "office" | "call_center" | "light_office" | "busy_office" | "room_tone";
+/** A background-sound preset id from the backend registry (shared/audio/ambience_presets.py). */
+export type AmbiencePresetId = string;
+
+/** One background sound as the backend registry lists it. Only
+ *  `productionEnabled` presets are offered for selection; the others are
+ *  listed so a value saved earlier can still be shown by name. */
+export interface AmbiencePresetOption {
+  id: AmbiencePresetId;
+  label: string;
+  description: string;
+  productionEnabled: boolean;
+}
 
 export type FillerSoundKind = "breath" | "inhale" | "exhale" | "inhale_exhale";
 export type FillerGender = "male" | "female" | "neutral";
@@ -221,6 +232,8 @@ export interface VoiceSettings {
   humanSpeechSources: HumanSpeechSources;
   humanSpeechInherited: HumanSpeechEffectiveSettings;
   humanSpeechInheritedSources: HumanSpeechSources;
+  /** Background sounds from the backend registry (older API: absent). */
+  ambiencePresets?: AmbiencePresetOption[];
 }
 
 /* ---------- Provider catalog (database-driven) ---------- */
@@ -370,6 +383,8 @@ export interface TenantSettings {
   humanSpeechSources: HumanSpeechSources;
   humanSpeechInherited: HumanSpeechEffectiveSettings;
   humanSpeechInheritedSources: HumanSpeechSources;
+  /** Background sounds from the backend registry (older API: absent). */
+  ambiencePresets?: AmbiencePresetOption[];
 }
 
 export type TurnDetectionMode = "system_default" | "recommended" | "custom";

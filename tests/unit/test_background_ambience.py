@@ -11,10 +11,11 @@ import asyncio
 import base64
 import importlib.util
 import json
-import re
 import sys
 import time
 import wave
+from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -30,8 +31,8 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
 
 from shared.audio.ambience_presets import (
-    AMBIENCE_PRESETS, DEFAULT_AMBIENCE_PRESET, ambience_volume_db, resolve_ambience_preset,
-    resolve_ambience_volume,
+    AMBIENCE_PRESETS, DEFAULT_AMBIENCE_PRESET, PRODUCTION_AMBIENCE_PRESET_IDS, AmbiencePreset,
+    ambience_preset_catalog, ambience_volume_db, resolve_ambience_preset, resolve_ambience_volume,
 )
 from shared.orchestration.naturalness import (
     HUMAN_SPEECH_DEFAULTS, resolve_human_speech, validate_human_speech,
@@ -50,7 +51,22 @@ ROOM_MAX = 2000         # the -54 dBFS loop peaks near -30 dBFS (~1000)
 # ── asset / mixer ────────────────────────────────────────────────────────
 
 PRESET_IDS = list(AMBIENCE_PRESETS)
+PRODUCTION_IDS = list(PRODUCTION_AMBIENCE_PRESET_IDS)
 RATES = [8000, 16000, 22050, 24000]
+
+
+def _installed(pid):
+    return any(amb.ASSET_DIR.glob(f"{AMBIENCE_PRESETS[pid].asset}_*.wav"))
+
+
+# A withdrawn preset (production_enabled False) may have no audio in a
+# checkout; every offered preset must ship its audio.
+INSTALLED_IDS = [pid for pid in PRESET_IDS if AMBIENCE_PRESETS[pid].production_enabled or _installed(pid)]
+PRESET_PARAMS = [
+    pid if pid in INSTALLED_IDS
+    else pytest.param(pid, marks=pytest.mark.skip(reason=f"{pid}: withdrawn preset without shipped audio"))
+    for pid in PRESET_IDS
+]
 
 
 def _gen():
@@ -66,24 +82,28 @@ def _gen():
 
 class TestPresetAssets:
     def test_registry_matches_the_shipped_files(self):
-        assert PRESET_IDS == ["office", "call_center", "light_office", "busy_office", "room_tone"]
+        assert PRESET_IDS == ["office", "call_center", "light_office", "busy_office", "room_tone", "echo_ringing"]
+        # every preset is offered (echo_ringing is a supplied recording)
+        assert PRODUCTION_IDS == PRESET_IDS
         assert DEFAULT_AMBIENCE_PRESET == "office"
         for preset in AMBIENCE_PRESETS.values():
             files = sorted(amb.ASSET_DIR.glob(f"{preset.asset}_*.wav"))
-            assert files, preset.id
+            assert files or not preset.production_enabled, preset.id   # production audio always ships
             for path in files:
                 with wave.open(str(path), "rb") as wav:
                     rate = int(path.stem.rsplit("_", 1)[1])
                     assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, rate)
                     assert wav.getcomptype() == "NONE"
                     assert wav.getnframes() / rate >= 10
-        # office keeps its three baseline rates; the others one canonical file
+        # office keeps its three baseline rates; the other generated presets
+        # one canonical file; the supplied recording ships the rates it came in
         assert len(list(amb.ASSET_DIR.glob("office_ambience_*.wav"))) == 3
-        for pid in PRESET_IDS[1:]:
+        for pid in ("call_center", "light_office", "busy_office", "room_tone"):
             assert len(list(amb.ASSET_DIR.glob(f"{AMBIENCE_PRESETS[pid].asset}_*.wav"))) == 1
+        assert len(list(amb.ASSET_DIR.glob("echo_ringing_sound_*.wav"))) == 3
 
     @pytest.mark.parametrize("rate", RATES)
-    @pytest.mark.parametrize("preset", PRESET_IDS)
+    @pytest.mark.parametrize("preset", PRESET_PARAMS)
     def test_every_preset_loads_at_every_rate_at_its_level(self, preset, rate):
         bed = amb.load_ambience_bed(rate, preset=preset)
         spec = AMBIENCE_PRESETS[preset]
@@ -94,7 +114,7 @@ class TestPresetAssets:
         assert np.abs(bed.samples.astype(np.int32)).max() < ROOM_MAX
 
     @pytest.mark.parametrize("rate", [8000, 24000])
-    @pytest.mark.parametrize("preset", PRESET_IDS)
+    @pytest.mark.parametrize("preset", PRESET_PARAMS)
     def test_every_preset_loops_without_a_click(self, preset, rate):
         loop = amb.load_ambience_bed(rate, preset=preset).samples.astype(np.int32)
         steps = np.abs(np.diff(loop))
@@ -104,10 +124,10 @@ class TestPresetAssets:
     def test_presets_are_as_loud_as_office_unless_meant_to_be_lighter(self):
         gen = _gen()
         loud = {}
-        for pid in PRESET_IDS:
+        for pid in INSTALLED_IDS:
             x = amb.load_ambience_bed(8000, preset=pid).samples.astype(np.float64) / 32768
             loud[pid] = gen.phone_loudness(x, 8000) + 20 * np.log10(np.sqrt(np.mean(x ** 2)))
-        for pid in PRESET_IDS:
+        for pid in INSTALLED_IDS:
             offset = AMBIENCE_PRESETS[pid].character_offset_db
             assert abs(loud[pid] - loud["office"] - offset) < 0.5, (pid, loud)
 
@@ -123,7 +143,7 @@ class TestPresetAssets:
             r100 = 20 * np.log10(np.sqrt(np.mean(x[: len(x) // w * w].reshape(-1, w) ** 2, axis=1)) + 1e-9)
             spread = float(np.percentile(r100, 95) - np.percentile(r100, 5))
             return centroid, spread
-        feats = {pid: features(pid) for pid in PRESET_IDS}
+        feats = {pid: features(pid) for pid in INSTALLED_IDS}
         # room tone: steady (no voices, no events); every other preset moves
         assert feats["room_tone"][1] < 2.0
         assert min(v[1] for k, v in feats.items() if k != "room_tone") > 3.0
@@ -133,13 +153,47 @@ class TestPresetAssets:
         # busy office: livelier than the light office
         assert feats["busy_office"][1] > feats["light_office"][1]
         # no two presets are the same audio at a different level
-        beds = {pid: amb.load_ambience_bed(16000, preset=pid).samples.astype(np.float64) for pid in PRESET_IDS}
-        for a in PRESET_IDS:
-            for b in PRESET_IDS:
+        beds = {pid: amb.load_ambience_bed(16000, preset=pid).samples.astype(np.float64) for pid in INSTALLED_IDS}
+        for a in INSTALLED_IDS:
+            for b in INSTALLED_IDS:
                 if a < b:
                     n = min(len(beds[a]), len(beds[b]))
                     corr = np.corrcoef(beds[a][:n], beds[b][:n])[0, 1]
                     assert abs(corr) < 0.2, (a, b, corr)
+
+    def test_a_supplied_recording_loops_only_its_steady_middle(self):
+        """echo_ringing fades in and out over ~2.5 s at its ends: looping the
+        whole file would dip toward silence every 18 s (a 26 dB swing)."""
+        x = amb.load_ambience_bed(16000, preset="echo_ringing").samples.astype(np.float64)
+        w = 8000   # 500 ms windows, wrapping across the loop seam
+        ring = np.concatenate([x, x[:w]])
+        levels = [20 * np.log10(np.sqrt(np.mean(ring[i:i + w] ** 2)) + 1e-9) for i in range(0, len(x), w // 2)]
+        assert max(levels) - min(levels) < 12, (min(levels), max(levels))
+        assert amb.load_ambience_bed(16000, preset="echo_ringing").loop_seconds == pytest.approx(12.0, abs=0.01)
+
+    def test_a_loop_region_cuts_a_recordings_fades_before_it_loops(self, tmp_path):
+        """The loader feature itself, on a synthetic recording (runs without
+        any supplied asset installed)."""
+        rate = 8000
+        t = np.arange(rate * 12) / rate
+        body = np.random.default_rng(3).standard_normal(len(t)) * 3000
+        fades = np.clip(np.minimum(t / 2.0, (t[-1] - t) / 2.0), 0.0, 1.0)   # 2 s in, 2 s out
+        with wave.open(str(tmp_path / "faded_8000.wav"), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+            wav.writeframes(np.clip(np.rint(body * fades), -32768, 32767).astype("<i2").tobytes())
+
+        def swing(samples):
+            w = rate // 2
+            ring = np.concatenate([samples, samples[:w]])
+            levels = [20 * np.log10(np.sqrt(np.mean(ring[i:i + w] ** 2)) + 1e-9) for i in range(0, len(samples), w // 4)]
+            return max(levels) - min(levels)
+
+        spec = AmbiencePreset("faded", "Faded", "", "faded", loop_start_s=2.0, loop_end_s=10.0, loop_crossfade_ms=500)
+        middle, _ = amb._load_source(tmp_path, spec, rate)
+        assert len(middle) == rate * 8 - rate // 2
+        assert swing(middle) < 3
+        whole, _ = amb._load_source(tmp_path, replace(spec, loop_start_s=0.0, loop_end_s=None), rate)
+        assert swing(whole) > 10     # looping the fades would dip toward silence (~15 dB)
 
     def test_office_asset_is_still_the_accepted_baseline(self):
         gen = _gen()
@@ -224,7 +278,7 @@ class TestMixer:
         assert np.array_equal(out, voice.astype(np.int32) + room)
         assert m.stats()["guarded_chunks"] == 0
 
-    @pytest.mark.parametrize("preset", PRESET_IDS)
+    @pytest.mark.parametrize("preset", PRESET_PARAMS)
     def test_never_clips_even_at_maximum_volume_under_full_scale_speech(self, preset):
         m = self.mixer(preset=preset, level_db=ambience_volume_db(100))
         loop = m.bed.samples.astype(np.int32)
@@ -376,11 +430,71 @@ class TestSetting:
         assert amb.build_ambience(Config(), transport_kind="telephony", sample_rate=8000, recorder=Recorder()) is None
         assert events == ["background_ambience_unavailable"]
 
-    def test_ui_offers_exactly_the_registry_presets(self):
+    def test_the_ui_lists_presets_from_the_registry_catalog(self):
+        catalog = ambience_preset_catalog()
+        assert all(set(row) == {"id", "label", "description", "productionEnabled"} for row in catalog)
+        assert [row["id"] for row in catalog] == PRESET_IDS
+        assert [row["id"] for row in catalog if row["productionEnabled"]] == PRODUCTION_IDS
+        assert [(row["id"], row["label"]) for row in catalog] == [(p.id, p.label) for p in AMBIENCE_PRESETS.values()]
+        # The editor draws its options from that catalog: it keeps no preset
+        # list of its own (only the default id, as its fallback).
         source = (REPO / "src" / "components" / "HumanSpeechSettings.tsx").read_text()
-        block = source.split("AMBIENCE_PRESET_OPTIONS")[1].split("];")[0]
-        pairs = re.findall(r'value: "([a-z_]+)", label: "([^"]+)"', block)
-        assert pairs == [(p.id, p.label) for p in AMBIENCE_PRESETS.values()]
+        for pid in PRESET_IDS:
+            assert (f'"{pid}"' in source) == (pid == DEFAULT_AMBIENCE_PRESET), pid
+
+    def test_every_preset_including_echo_ringing_can_be_selected(self):
+        for pid in PRESET_IDS:
+            assert validate_human_speech({"background_ambience_preset": pid}) == []
+        assert validate_human_speech(
+            {"background_ambience_preset": "echo_ringing"}, existing={"background_ambience_preset": "office"},
+        ) == []
+
+    def test_a_withdrawn_preset_cannot_be_newly_selected_but_may_stay_saved(self, monkeypatch):
+        # No preset is withdrawn today; withdrawing one is a registry flag.
+        monkeypatch.setitem(
+            AMBIENCE_PRESETS, "echo_ringing", replace(AMBIENCE_PRESETS["echo_ringing"], production_enabled=False),
+        )
+        refused = ["'background_ambience_preset': 'echo_ringing' is not available for selection"]
+        assert validate_human_speech({"background_ambience_preset": "echo_ringing"}) == refused
+        assert validate_human_speech(
+            {"background_ambience_preset": "echo_ringing"}, existing={"background_ambience_preset": "office"},
+        ) == refused
+        # Saved earlier: other edits still save.
+        assert validate_human_speech(
+            {"background_ambience_preset": "echo_ringing", "background_ambience_volume": 40},
+            existing={"background_ambience_preset": "echo_ringing", "background_ambience": True},
+        ) == []
+        for pid in PRESET_IDS[:-1]:
+            assert validate_human_speech({"background_ambience_preset": pid}) == []
+        assert [row["id"] for row in ambience_preset_catalog() if not row["productionEnabled"]] == ["echo_ringing"]
+
+    def test_a_saved_preset_without_installed_audio_plays_office(self, monkeypatch):
+        monkeypatch.setitem(
+            AMBIENCE_PRESETS, "echo_ringing", replace(AMBIENCE_PRESETS["echo_ringing"], asset="not_installed_ambience"),
+        )
+        monkeypatch.setattr(amb, "_BED_CACHE", OrderedDict())
+        monkeypatch.setattr(amb, "_SOURCE_CACHE", {})
+        events = []
+
+        class Recorder:
+            def add_event(self, kind, **data):
+                events.append((kind, data))
+
+        class Config:
+            human_speech = {"background_ambience": True, "background_ambience_preset": "echo_ringing"}
+
+        mixer = amb.build_ambience(Config(), transport_kind="telephony", sample_rate=8000, recorder=Recorder())
+        assert mixer is not None and mixer.bed.preset == "office" and mixer.level_db == -36.0
+        assert events == [("background_ambience_fallback",
+                           {"requested": "echo_ringing", "used": "office", "reason": "asset_missing"})]
+
+    def test_echo_ringing_plays_on_every_transport(self):
+        class Config:
+            human_speech = {"background_ambience": True, "background_ambience_preset": "echo_ringing"}
+
+        for kind, rate in (("browser", 24000), ("browser", 16000), ("telephony", 8000)):
+            mixer = amb.build_ambience(Config(), transport_kind=kind, sample_rate=rate)
+            assert mixer.bed.preset == "echo_ringing" and mixer.bed.source == f"echo_ringing_sound_{rate}.wav"
 
 
 # ── transport ────────────────────────────────────────────────────────────
@@ -822,7 +936,7 @@ class TestTransportOn:
         assert not tail.size or np.abs(tail.astype(np.int32)).max() < ROOM_MAX
 
     @pytest.mark.parametrize("kind", ["browser", "fork"])
-    @pytest.mark.parametrize("preset", ["call_center", "busy_office", "room_tone"])
+    @pytest.mark.parametrize("preset", ["call_center", "busy_office", "room_tone", "echo_ringing"])
     async def test_presets_at_full_volume_on_the_wire(self, kind, preset):
         """A non-default room at volume 100: its level in the pauses, no
         playout holes, and a full-scale reply on top never clips."""

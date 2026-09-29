@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 
 from shared.audio.ambience_presets import (
     AMBIENCE_PRESET_IDS,
+    AMBIENCE_PRESETS,
     AMBIENCE_VOLUME_RANGE,
     DEFAULT_AMBIENCE_PRESET,
     DEFAULT_AMBIENCE_VOLUME,
@@ -297,11 +298,14 @@ _FIRST_REPLY_PREFACE_BOOST = 1.5
 _LONG_SENTENCE_WORDS = 10
 
 
-def validate_human_speech(value: object) -> list[str]:
+def validate_human_speech(value: object, *, existing: dict | None = None) -> list[str]:
     """Strict validation for API-saved overrides (runtime merging is lenient).
 
     Returns a list of problems; empty means valid. Overrides are sparse —
-    only overridden keys need to be present.
+    only overridden keys need to be present. ``existing`` is the stored
+    override of the same scope: a background sound that is not production
+    enabled may stay saved (so other edits still save) but cannot be newly
+    selected.
     """
     problems: list[str] = []
     if not isinstance(value, dict):
@@ -331,6 +335,12 @@ def validate_human_speech(value: object) -> list[str]:
                 problems.append(
                     f"'{key}' must be one of {', '.join(_CHOICE_KEYS[key])}"
                 )
+            elif (
+                key == "background_ambience_preset"
+                and not AMBIENCE_PRESETS[item].production_enabled
+                and item != (existing or {}).get(key)
+            ):
+                problems.append(f"'{key}': '{item}' is not available for selection")
         elif key in _SELECTION_KEYS:
             cleaned = normalize_selection(item, depth=_SELECTION_KEYS[key])
             if cleaned is None:

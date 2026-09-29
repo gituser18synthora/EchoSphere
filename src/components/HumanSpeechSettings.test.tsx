@@ -6,10 +6,25 @@ import {
   validateHumanSpeechOverrides,
 } from "./HumanSpeechSettings";
 import type {
+  AmbiencePresetOption,
   HumanSpeechEffectiveSettings,
   HumanSpeechSettings,
   HumanSpeechSources,
 } from "@/types/domain";
+
+/** The backend registry's catalog (GET voice-settings `ambiencePresets`). */
+const CATALOG: AmbiencePresetOption[] = [
+  { id: "office", label: "Office", description: "Steady office air, a few distant colleagues talking, occasional typing.", productionEnabled: true },
+  { id: "call_center", label: "Call Center", description: "Many agents talking almost continuously in a treated room; little typing.", productionEnabled: true },
+  { id: "light_office", label: "Light Office", description: "A calm, sparsely occupied office: soft air, the odd far-away voice, a little typing.", productionEnabled: true },
+  { id: "busy_office", label: "Busy Office", description: "A lively open-plan floor: more and nearer voices, frequent typing, footsteps, chairs, paper.", productionEnabled: true },
+  { id: "room_tone", label: "Room Tone", description: "Neutral room air and ventilation only: no voices, no events.", productionEnabled: true },
+  { id: "echo_ringing", label: "Echo Ringing", description: "A reverberant room: a warbling ring tone over a steady murmur.", productionEnabled: true },
+];
+/** The same catalog after a preset was withdrawn (registry flag off). */
+const WITHDRAWN: AmbiencePresetOption[] = CATALOG.map((preset) => (
+  preset.id === "echo_ringing" ? { ...preset, productionEnabled: false } : preset
+));
 
 const inherited: HumanSpeechEffectiveSettings = {
   enabled: true,
@@ -245,6 +260,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{}}
         inherited={inherited}
         inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
         onChange={onChange}
       />,
     );
@@ -280,6 +296,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{ background_ambience: true }}
         inherited={inherited}
         inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
         onChange={onChange}
       />,
     );
@@ -288,8 +305,9 @@ describe("HumanSpeechSettingsEditor", () => {
     const volume = screen.getByRole("slider", { name: "Background volume" });
     expect(sound).toBeEnabled();
     expect(volume).toBeEnabled();
+    // Every offered preset from the registry catalog, in registry order.
     expect(within(sound).getAllByRole("option").map((option) => option.textContent)).toEqual([
-      "Office", "Call Center", "Light Office", "Busy Office", "Room Tone",
+      "Office", "Call Center", "Light Office", "Busy Office", "Room Tone", "Echo Ringing",
     ]);
     expect(screen.queryByTestId("human-speech-inactive-background_ambience_preset")).toBeNull();
 
@@ -304,6 +322,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{ background_ambience: true, background_ambience_preset: "room_tone", background_ambience_volume: 0 }}
         inherited={inherited}
         inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
         onChange={onChange}
       />,
     );
@@ -322,6 +341,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{}}
         inherited={{ ...inherited, background_ambience: true, background_ambience_preset: "busy_office", background_ambience_volume: 30 }}
         inheritedSources={{ ...platformSources, background_ambience: "tenant", background_ambience_preset: "tenant", background_ambience_volume: "tenant" }}
+        ambiencePresets={CATALOG}
         onChange={() => undefined}
       />,
     );
@@ -340,6 +360,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{ enabled: false, background_ambience: true }}
         inherited={inherited}
         inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
         onChange={() => undefined}
       />,
     );
@@ -364,6 +385,7 @@ describe("HumanSpeechSettingsEditor", () => {
         override={{}}
         inherited={older as HumanSpeechEffectiveSettings}
         inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
         onChange={() => undefined}
       />,
     );
@@ -373,19 +395,84 @@ describe("HumanSpeechSettingsEditor", () => {
     expect(screen.getByRole("slider", { name: "Background volume" })).toHaveValue("50");
   });
 
+  it("selects and saves Echo Ringing like any other sound", async () => {
+    const onChange = vi.fn();
+    render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ background_ambience: true }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        ambiencePresets={CATALOG}
+        onChange={onChange}
+      />,
+    );
+    const sound = screen.getByRole("combobox", { name: "Background sound" });
+    expect(within(sound).getByRole("option", { name: "Echo Ringing" })).toBeEnabled();
+    await userEvent.selectOptions(sound, "echo_ringing");
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true, background_ambience_preset: "echo_ringing" });
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "echo_ringing" }, { ambiencePresets: CATALOG })).toEqual([]);
+  });
+
+  it("keeps a saved preset that is no longer offered visible, but never offers it again", async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ background_ambience: true, background_ambience_preset: "echo_ringing" }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        ambiencePresets={WITHDRAWN}
+        onChange={onChange}
+      />,
+    );
+
+    const sound = screen.getByRole("combobox", { name: "Background sound" });
+    expect(sound).toHaveValue("echo_ringing");
+    const saved = within(sound).getByRole("option", { name: "Echo Ringing (not available)" });
+    expect(saved).toBeDisabled();
+    expect(screen.getByText("Effective: Echo Ringing · source: bot")).toBeInTheDocument();
+    expect(screen.getByTestId("human-speech-unavailable-background_ambience_preset")).toHaveTextContent(
+      "Echo Ringing is no longer offered. It stays saved until you choose another sound.",
+    );
+    await userEvent.selectOptions(sound, "office");
+    expect(onChange).toHaveBeenLastCalledWith({ background_ambience: true, background_ambience_preset: "office" });
+
+    rerender(
+      <HumanSpeechSettingsEditor
+        scope="bot"
+        override={{ background_ambience: true, background_ambience_preset: "office" }}
+        inherited={inherited}
+        inheritedSources={platformSources}
+        ambiencePresets={WITHDRAWN}
+        onChange={onChange}
+      />,
+    );
+    const options = within(screen.getByRole("combobox", { name: "Background sound" })).getAllByRole("option");
+    expect(options.map((option) => option.textContent)).not.toContain("Echo Ringing");
+    expect(options.map((option) => option.textContent)).not.toContain("Echo Ringing (not available)");
+    expect(screen.queryByTestId("human-speech-unavailable-background_ambience_preset")).toBeNull();
+  });
+
   it("rejects out-of-range volumes and unknown sounds before saving", () => {
+    const catalogs = { ambiencePresets: CATALOG };
     expect(validateHumanSpeechOverrides({ background_ambience_volume: 0 })).toEqual([]);
     expect(validateHumanSpeechOverrides({ background_ambience_volume: 100 })).toEqual([]);
-    expect(validateHumanSpeechOverrides({ background_ambience_preset: "call_center" })).toEqual([]);
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "call_center" }, catalogs)).toEqual([]);
+    // A value saved before its preset was withdrawn is not a client-side error
+    // (the server refuses it only as a NEW choice).
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "echo_ringing" }, { ambiencePresets: WITHDRAWN })).toEqual([]);
     for (const volume of [-1, 101, 12.5, Number.NaN]) {
       expect(validateHumanSpeechOverrides({ background_ambience_volume: volume })).toEqual([
         "Background volume must be a whole number between 0 and 100.",
       ]);
     }
     expect(validateHumanSpeechOverrides({ background_ambience_volume: "70" as never })).toHaveLength(1);
-    expect(validateHumanSpeechOverrides({ background_ambience_preset: "jungle" as never })).toEqual([
-      "Background sound must be one of Office, Call Center, Light Office, Busy Office, Room Tone.",
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "jungle" }, catalogs)).toEqual([
+      "Background sound must be one of Office, Call Center, Light Office, Busy Office, Room Tone, Echo Ringing.",
     ]);
+    // Without a catalog (older API) the server is the only judge of the id.
+    expect(validateHumanSpeechOverrides({ background_ambience_preset: "jungle" })).toEqual([]);
   });
 
   it("marks a family's members inactive while its master is off, without touching the other family", () => {

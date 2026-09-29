@@ -27,6 +27,16 @@ class AmbiencePreset:
     (scripts/generate_ambience_asset.py prints it). ``character_offset_db``
     is intentional: a sparse or perfectly steady bed at office loudness
     reads as more hiss, so those presets sit a little lower.
+
+    A supplied recording may fade in and out at its ends; ``loop_start_s`` /
+    ``loop_end_s`` pick its steady middle (None = to the end) and
+    ``loop_crossfade_ms`` closes that loop.
+
+    ``production_enabled``: offered for selection (the UI lists only these;
+    the API refuses a NEW selection of any other). Every preset is enabled
+    today; the flag lets one be withdrawn later without UI changes. A saved
+    value of a withdrawn preset still resolves: it plays if its asset is
+    installed, otherwise the call falls back to ``office``.
     """
 
     id: str
@@ -35,6 +45,10 @@ class AmbiencePreset:
     asset: str
     loudness_trim_db: float = 0.0
     character_offset_db: float = 0.0
+    loop_start_s: float = 0.0
+    loop_end_s: float | None = None
+    loop_crossfade_ms: int = 150
+    production_enabled: bool = True
 
     @property
     def trim_db(self) -> float:
@@ -69,10 +83,42 @@ AMBIENCE_PRESETS: dict[str, AmbiencePreset] = {
             "Neutral room air and ventilation only: no voices, no events.",
             "room_tone_ambience", loudness_trim_db=0.03, character_offset_db=-2.0,
         ),
+        # Supplied recording (not generated): 18 s with ~2.5 s fades at both
+        # ends, so only its steady 2.5–15.5 s middle loops. Offered by product
+        # decision (2026-09-29) with two documented caveats
+        # (docs/HUMAN_SPEECH_NATURALNESS.md): its licence/source is unverified,
+        # and under an extreme echo (volume 100, 10 dB echo loss) Sarvam
+        # transcribed its room echo as a word; at 15–25 dB echo loss nothing
+        # reached STT, as for the generated presets.
+        AmbiencePreset(
+            "echo_ringing", "Echo Ringing",
+            "A reverberant room: a warbling ring tone over a steady murmur.",
+            "echo_ringing_sound", loudness_trim_db=0.72,
+            loop_start_s=2.5, loop_end_s=15.5, loop_crossfade_ms=1000,
+        ),
     )
 }
 AMBIENCE_PRESET_IDS: tuple[str, ...] = tuple(AMBIENCE_PRESETS)
+PRODUCTION_AMBIENCE_PRESET_IDS: tuple[str, ...] = tuple(
+    preset.id for preset in AMBIENCE_PRESETS.values() if preset.production_enabled
+)
 DEFAULT_AMBIENCE_PRESET = "office"
+assert DEFAULT_AMBIENCE_PRESET in PRODUCTION_AMBIENCE_PRESET_IDS
+
+
+def ambience_preset_catalog() -> list[dict]:
+    """Every preset for the settings UI, in registry order. The UI offers
+    only ``productionEnabled`` ones; the others are listed so a saved value
+    can still be shown by name."""
+    return [
+        {
+            "id": preset.id,
+            "label": preset.label,
+            "description": preset.description,
+            "productionEnabled": preset.production_enabled,
+        }
+        for preset in AMBIENCE_PRESETS.values()
+    ]
 
 # ── volume scale ─────────────────────────────────────────────────────────
 # A 0–100 control, resolved to dB relative to normal bot speech — never to a
