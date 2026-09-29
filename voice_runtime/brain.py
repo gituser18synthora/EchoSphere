@@ -115,6 +115,7 @@ from shared.orchestration.goal_engine import (
     GoalEngine,
     GoalSession,
     compile_goal_policy,
+    goal_policy_enables_engine,
 )
 from shared.orchestration.intent_classifier import (
     HybridIntentPipeline,
@@ -753,7 +754,10 @@ class ConversationBrain(FrameProcessor):
         engine_enabled = bool(
             llm_settings_early.get("goal_engine_enabled", True)
         ) and (
-            bool(goal_config) or bool(config.intents) or self._policy is not None
+            # The end-call opt-in alone never starts the engine: it only acts
+            # on decisions the engine is already making.
+            goal_policy_enables_engine(goal_config)
+            or bool(config.intents) or self._policy is not None
             or has_configured_guardrails
         )
         self._goal_engine = GoalEngine(

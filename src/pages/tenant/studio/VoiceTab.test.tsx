@@ -26,9 +26,12 @@ vi.mock("@/services/api", () => ({
   testProviderConnection: vi.fn(),
   generateTtsPreview: vi.fn(),
   listPrompts: vi.fn(),
+  setGoalPolicyEndCall: vi.fn(),
 }));
+/* Permissions are switchable per test (default: everything granted). */
+const perms = vi.hoisted(() => ({ has: (_code: string) => true }));
 vi.mock("@/state/AppContext", () => ({
-  useApp: () => ({ toast: vi.fn(), hasPermission: () => true }),
+  useApp: () => ({ toast: vi.fn(), hasPermission: (code: string) => perms.has(code) }),
 }));
 
 const BOT = { id: "bot_1", languages: ["en-IN", "hi-IN"] } as unknown as VoiceBot;
@@ -834,5 +837,154 @@ describe("VoiceTab — STT auto-detect language", () => {
     await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
     expect(payload.sttSettings).toEqual({ mode: "transcribe" });
+  });
+});
+
+describe("VoiceTab — End call after goodbye", () => {
+  const SURVEY_GOAL_POLICY = {
+    role: "closure feedback executive",
+    goals: [{ id: "feedback", description: "Collect closure feedback." }],
+  };
+  const LLM_SETTINGS = {
+    ...SETTINGS,
+    llmProvider: "openai", llmModel: "gpt-4o-mini",
+    llmSettings: { temperature: 0.3, max_output_characters: 500 },
+    goalPolicy: SURVEY_GOAL_POLICY,
+  };
+
+  function install(settings: Record<string, unknown> = LLM_SETTINGS) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [],
+      llm: [
+        { code: "openai", name: "OpenAI", capability: "llm", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+      tts: [
+        { code: "sarvam", name: "Sarvam AI", capability: "tts", description: "", requiresApiKey: true, hasCredentials: true },
+      ],
+    } as never);
+    const ttsModels = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: string, provider: string) =>
+      provider === "openai"
+        ? Promise.resolve([
+            { code: "gpt-4o-mini", displayName: "GPT-4o mini", isDefault: true, capability: "llm", streaming: true, paramsSchema: {} },
+          ])
+        : (ttsModels as (c: string, p: string) => Promise<unknown>)(cap, provider)) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    perms.has = () => true;
+    install();
+    vi.mocked(api.setGoalPolicyEndCall).mockImplementation(((botId: string, enabled: boolean) =>
+      Promise.resolve({ botId, enabled })) as never);
+  });
+
+  const endCallSwitch = async () => {
+    await userEvent.click(await screen.findByText("Advanced orchestration"));
+    return screen.getByRole("switch", { name: "End call after goodbye" });
+  };
+
+  it("is OFF when goalPolicy has no endCall", async () => {
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("is OFF when the settings carry no goalPolicy at all", async () => {
+    const { goalPolicy: _omit, ...withoutPolicy } = LLM_SETTINGS;
+    install(withoutPolicy);
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("reads a saved ON switch from goalPolicy.endCall.enabled", async () => {
+    install({ ...LLM_SETTINGS, goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true } } });
+    render(<VoiceTab bot={BOT} />);
+    expect(await endCallSwitch()).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("saves through the dedicated PATCH only, never the voice-settings PUT", async () => {
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenCalledWith("bot_1", true));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenLastCalledWith("bot_1", false));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(api.saveVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved state when the PATCH fails", async () => {
+    vi.mocked(api.setGoalPolicyEndCall).mockRejectedValue(new Error("nope"));
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(api.setGoalPolicyEndCall).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("main Save and Validate never send goalPolicy, even after switching end call", async () => {
+    vi.mocked(api.validateVoiceConfig).mockResolvedValue({ valid: true, errors: [], warnings: [] });
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveVoiceSettings).mock.calls[0][1]).not.toHaveProperty("goalPolicy");
+
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+    await waitFor(() => expect(api.validateVoiceConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.validateVoiceConfig).mock.calls[0][1]).not.toHaveProperty("goalPolicy");
+  });
+
+  it("is disabled with a hint when the SAVED Goal Engine is off", async () => {
+    install({
+      ...LLM_SETTINGS,
+      llmSettings: { ...LLM_SETTINGS.llmSettings, goal_engine_enabled: false },
+      goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true } },
+    });
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    expect(toggle).toBeDisabled();
+    expect(screen.getByTestId("end-call-engine-off")).toHaveTextContent("Goal Engine is off");
+    await userEvent.click(toggle);
+    expect(api.setGoalPolicyEndCall).not.toHaveBeenCalled();
+  });
+
+  it("an unsaved Goal Engine change does not gate the switch", async () => {
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    await userEvent.click(screen.getByRole("switch", { name: "Goal Engine" }));
+    expect(toggle).not.toBeDisabled();
+    expect(screen.queryByTestId("end-call-engine-off")).not.toBeInTheDocument();
+  });
+
+  it("requires bots.manage: a voice editor without it sees the switch read-only", async () => {
+    perms.has = (code) => code === "manage_voices";
+    render(<VoiceTab bot={BOT} />);
+    const toggle = await endCallSwitch();
+    expect(toggle).toBeDisabled();
+    // General voice editing is still available to this role.
+    expect(screen.getByRole("switch", { name: "Goal Engine" })).not.toBeDisabled();
+  });
+
+  it("does not expose signals or minConfidence", async () => {
+    install({
+      ...LLM_SETTINGS,
+      goalPolicy: { ...SURVEY_GOAL_POLICY, endCall: { enabled: true, signals: ["wrong_person"], minConfidence: 0.95 } },
+    });
+    render(<VoiceTab bot={BOT} />);
+    await endCallSwitch();
+    expect(screen.queryByText(/minConfidence|min confidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/wrong_person/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^signals$/i)).not.toBeInTheDocument();
   });
 });

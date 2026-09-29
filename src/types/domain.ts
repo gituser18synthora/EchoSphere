@@ -225,7 +225,7 @@ export interface VoiceSettings {
    * the runtime derives a safe default from the published prompt, intents
    * and domain policy.
    */
-  goalPolicy: Record<string, unknown>;
+  goalPolicy: Record<string, unknown> & { endCall?: GoalPolicyEndCall };
   /** Sparse bot overrides; empty means inherit tenant/platform. */
   humanSpeech: HumanSpeechSettings;
   humanSpeechEffective: HumanSpeechEffectiveSettings;
@@ -234,6 +234,21 @@ export interface VoiceSettings {
   humanSpeechInheritedSources: HumanSpeechSources;
   /** Background sounds from the backend registry (older API: absent). */
   ambiencePresets?: AmbiencePresetOption[];
+}
+
+/** goal_policy.endCall — lets a generic bot hang up after its goodbye when a
+ *  confident Goal Engine decision says end_call (default wrong_person, ≥0.9).
+ *  Missing = OFF. The UI edits only `enabled`, through its own PATCH. */
+export interface GoalPolicyEndCall {
+  enabled?: boolean;
+  signals?: string[];
+  minConfidence?: number;
+}
+
+export interface EndCallToggleResult {
+  botId: string;
+  /** Effective switch after the save (an invalid stored config reads OFF). */
+  enabled: boolean;
 }
 
 /* ---------- Provider catalog (database-driven) ---------- */

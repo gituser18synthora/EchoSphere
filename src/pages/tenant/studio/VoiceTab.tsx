@@ -14,7 +14,7 @@ import { useAsync } from "@/hooks/useAsync";
 import {
   generateTtsPreview, getModelLanguages, getProviderCatalog, getRuntimeContext, getVoiceSettings,
   listLanguages, listPrompts, listProviderModels, listProviderVoices, saveVoiceSettings,
-  testProviderConnection, validateVoiceConfig,
+  setGoalPolicyEndCall, testProviderConnection, validateVoiceConfig,
 } from "@/services/api";
 import type { ApiRequestError } from "@/services/http";
 import {
@@ -278,8 +278,37 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
   const { toast, hasPermission } = useApp();
   const canManage = hasPermission("manage_voices") || hasPermission("bots.manage");
   const noPermTitle = canManage ? undefined : "Requires the manage_voices permission";
+  /* The end-call switch decides when the bot may hang up on a caller: bot
+     management level, not general voice editing (the backend enforces it). */
+  const canManageBot = hasPermission("bots.manage");
 
   const settingsQ = useAsync(() => getVoiceSettings(bot.id), [bot.id]);
+  /* goal_policy.endCall.enabled — saved immediately through its own PATCH
+     (the server merges it into the latest goal policy). It is deliberately
+     NOT part of assembleConfig: the voice-settings PUT replaces goalPolicy
+     whole, so sending a tab-load copy could drop the bot's goals. */
+  const [endCallOn, setEndCallOn] = useState(false);
+  const [endCallSaving, setEndCallSaving] = useState(false);
+  useEffect(() => {
+    if (settingsQ.data) setEndCallOn(settingsQ.data.goalPolicy?.endCall?.enabled === true);
+  }, [settingsQ.data]);
+  /* The SAVED Goal Engine state gates the switch — an unsaved toggle of the
+     Goal Engine above does not change what live calls do yet. */
+  const goalEngineOffSaved = settingsQ.data?.llmSettings?.goal_engine_enabled === false;
+  const toggleEndCall = async (enabled: boolean) => {
+    setEndCallSaving(true);
+    try {
+      const result = await setGoalPolicyEndCall(bot.id, enabled);
+      setEndCallOn(result.enabled);
+      toast(result.enabled
+        ? "End call after goodbye is on. New calls use it."
+        : "End call after goodbye is off.");
+    } catch (e) {
+      toast((e as ApiRequestError).message || "Could not update end call after goodbye", "error");
+    } finally {
+      setEndCallSaving(false);
+    }
+  };
   const catalogQ = useAsync(() => getProviderCatalog(), []);
   /* Voice Preview speaks the bot's current Greeting prompt instead of an
      unrelated catalog sentence. A prompt-load failure is non-blocking: the
@@ -868,6 +897,28 @@ export default function VoiceTab({ bot, onOpenNaturalConversation }: {
                     before publishing this configuration.
                   </Callout>
                 )}
+                <div className="row-between gap-12">
+                  <div className="col gap-6">
+                    <span className="field-label">End call after goodbye</span>
+                    <span className="field-hint">
+                      When the Goal Engine is sure the caller is not the intended person, the bot says a
+                      short goodbye and hangs up. Off by default. Saved immediately for new calls.
+                    </span>
+                    {goalEngineOffSaved && (
+                      <span className="field-hint" data-testid="end-call-engine-off">
+                        Goal Engine is off for this bot, so this cannot run.
+                      </span>
+                    )}
+                  </div>
+                  <span title={canManageBot ? undefined : "Requires the bots.manage permission"}>
+                    <Toggle
+                      label="End call after goodbye"
+                      checked={endCallOn}
+                      disabled={!canManageBot || goalEngineOffSaved || endCallSaving}
+                      onChange={(enabled) => { void toggleEndCall(enabled); }}
+                    />
+                  </span>
+                </div>
               </div>
             </details>
           </SectionCard>

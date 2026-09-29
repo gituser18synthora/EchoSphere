@@ -20,7 +20,7 @@ import type {
   StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
   TenantSettings, TestScenario, TurnDetectionConfig, TurnDetectionMode,
   TurnDetectionOverrides, UploadConfig, VoiceBot, VoiceCatalog,
-  VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow,
+  VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow, EndCallToggleResult,
   ReviewDocument, ReviewDocumentDetail, ReviewChunk, ReviewChunkDetail,
   ReviewFacets, ReviewKnowledgeBase, RetrievalTestResult,
   ModelLanguagesInfo, PronunciationDictionary, PronunciationMap,
@@ -195,6 +195,11 @@ export const saveVoiceSettings = async (
   const { data, meta } = await requestWithMeta<VoiceSettings>("PUT", `/bots/${botId}/voice-settings`, body);
   return { settings: data, warnings: meta?.warnings ?? [] };
 };
+
+/** Switch ONLY goal_policy.endCall.enabled; the server merges it into the
+ *  latest stored goal policy (never send goalPolicy through saveVoiceSettings). */
+export const setGoalPolicyEndCall = (botId: string, enabled: boolean): Promise<EndCallToggleResult> =>
+  http.patch(`/bots/${botId}/goal-policy/end-call`, { enabled });
 
 /* ---------- Natural Conversation audio (read-only preview catalog) ---------- */
 export const getNaturalConversationAudio = (botId: string): Promise<NaturalConversationAudio> =>

@@ -41,7 +41,15 @@ import logging
 import re
 import time
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from shared.orchestration.decision_schema import (
     SCOPE_IN,
@@ -225,13 +233,97 @@ class EndCallPolicy(BaseModel):
     ``end_call`` decision closes the call after the reply, but only for the
     listed caller signals and at or above ``minConfidence`` (the engine also
     emits ``end_call`` mid-script, often at confidence 0.0).
+
+    Strict on purpose (unknown keys, non-boolean ``enabled``, signals outside
+    the Goal Engine vocabulary are all invalid): saves reject such a config,
+    and at runtime :class:`BotGoalPolicy` turns it into "end-call OFF".
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    enabled: bool = False
-    signals: list[str] = Field(default_factory=lambda: ["wrong_person"])
+    enabled: StrictBool = False
+    signals: list[str] = Field(default_factory=lambda: ["wrong_person"], min_length=1)
     min_confidence: float = Field(default=0.9, alias="minConfidence", ge=0.5, le=1.0)
+
+    @field_validator("signals")
+    @classmethod
+    def _known_signals(cls, value: list[str]) -> list[str]:
+        unknown = [s for s in value if s not in PLATFORM_SIGNALS]
+        if unknown:
+            raise ValueError(
+                f"unknown signal(s) {unknown}; allowed: {', '.join(PLATFORM_SIGNALS)}"
+            )
+        return value
+
+
+# goal_policy keys that hold the end-call opt-in (camelCase is canonical).
+END_CALL_KEYS = frozenset({"endCall", "end_call"})
+
+
+def _raw_end_call(goal_config: dict | None):
+    config = goal_config or {}
+    return config.get("endCall", config.get("end_call"))
+
+
+def end_call_problems(goal_config: dict | None) -> list[str]:
+    """Save-time check of goal_policy.endCall ([] = valid or absent).
+
+    Runtime compilation is fail-soft (an invalid endCall only switches the
+    close OFF), so writes must validate it explicitly to fail loudly.
+    """
+    raw = _raw_end_call(goal_config)
+    if raw is None:
+        return []
+    try:
+        EndCallPolicy.model_validate(raw)
+    except ValidationError as exc:
+        return [
+            f"endCall.{'.'.join(str(p) for p in err['loc']) or 'value'}: {err['msg']}"
+            for err in exc.errors()
+        ]
+    return []
+
+
+def end_call_enabled(goal_config: dict | None) -> bool:
+    """The EFFECTIVE switch — what the runtime will do (invalid config = OFF)."""
+    raw = _raw_end_call(goal_config)
+    try:
+        return raw is not None and EndCallPolicy.model_validate(raw).enabled
+    except ValidationError:
+        return False
+
+
+def with_end_call_enabled(goal_config: dict | None, enabled: bool) -> dict:
+    """goal_config with ONLY endCall.enabled changed; every other key kept.
+
+    A valid existing endCall keeps its explicit tuning (signals /
+    minConfidence); an invalid one is replaced by the bare switch so the
+    platform defaults apply. Turning OFF an absent endCall changes nothing
+    (absent already means OFF).
+    """
+    config = dict(goal_config or {})
+    raw = _raw_end_call(config)
+    if raw is None and not enabled:
+        return config
+    try:
+        EndCallPolicy.model_validate(raw if raw is not None else {})
+        base = dict(raw) if isinstance(raw, dict) else {}
+    except ValidationError:
+        base = {}
+    base["enabled"] = enabled
+    config.pop("end_call", None)
+    config["endCall"] = base
+    return config
+
+
+def goal_policy_enables_engine(goal_config: dict | None) -> bool:
+    """Whether an authored goal_policy by itself turns the Goal Engine on.
+
+    The end-call opt-in only acts ON engine decisions; it must never be the
+    reason the engine starts running (a new decision call per turn changes
+    who writes the reply). Every other key keeps its existing effect.
+    """
+    return bool(set(goal_config or {}) - END_CALL_KEYS)
 
 
 class BotGoalPolicy(BaseModel):
@@ -253,7 +345,8 @@ class BotGoalPolicy(BaseModel):
     tool_rules: list[str] = Field(default_factory=list, alias="toolRules")
     escalation: EscalationPolicy = Field(default_factory=EscalationPolicy)
     completion_criteria: list[str] = Field(default_factory=list, alias="completionCriteria")
-    # Runtime-only: never rendered into the decision prompt.
+    # Runtime-only: never rendered into the decision prompt. Fail-soft: an
+    # invalid endCall disables only the end-call close (see validator below).
     end_call: EndCallPolicy = Field(default_factory=EndCallPolicy, alias="endCall")
     tone: str = ""
     # Additional Next-Best-Action names this bot's post-call analysis may
@@ -276,6 +369,18 @@ class BotGoalPolicy(BaseModel):
     source: str = "derived"  # configured | derived
     # Derived mode grounds scope decisions in the published prompt itself.
     prompt_excerpt: str = ""
+
+    @field_validator("end_call", mode="wrap")
+    @classmethod
+    def _end_call_fail_soft(cls, value, handler):
+        # A bad endCall must never invalidate the rest of the policy (which
+        # would silently fall back to the derived default): it only turns
+        # the end-call close OFF.
+        try:
+            return handler(value)
+        except ValidationError:
+            logger.warning("invalid goal_policy.endCall ignored; end-call close disabled")
+            return EndCallPolicy()
 
     def slot_by_name(self, name: str) -> SlotSpec | None:
         for spec in self.slots:
@@ -357,7 +462,7 @@ _POST_CALL_ONLY_KEYS = frozenset({
 })
 # Keys the decision prompt never renders; like the post-call keys they do not
 # switch the live Goal Engine to "configured" mode on their own.
-_ENGINE_NEUTRAL_KEYS = _POST_CALL_ONLY_KEYS | {"endCall", "end_call"}
+_ENGINE_NEUTRAL_KEYS = _POST_CALL_ONLY_KEYS | END_CALL_KEYS
 
 
 class GoalEngine:

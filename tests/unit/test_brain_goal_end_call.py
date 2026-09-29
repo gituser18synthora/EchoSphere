@@ -143,3 +143,37 @@ async def test_speech_after_the_goodbye_gets_no_new_reply():
 
     assert len(llm.systems) == replies
     assert "post_hangup_transcript_dropped" in brain._recorder.event_kinds()
+
+
+# ── the opt-in alone never switches the Goal Engine on ───────────────────────
+
+
+def engine_runs(goal_policy) -> bool:
+    brain, _ = survey_brain(goal_policy)
+    return brain._goal_engine.enabled
+
+
+def test_end_call_alone_does_not_enable_the_goal_engine():
+    # A bot with no intents, no domain policy and no guardrail profile runs
+    # WITHOUT the engine; saving only the end-call switch must keep it so.
+    assert not engine_runs({})
+    assert not engine_runs({"endCall": {"enabled": True}})
+    assert not engine_runs({"end_call": {"enabled": True}})
+
+
+def test_other_goal_policy_keys_keep_enabling_it():
+    assert engine_runs(SURVEY_POLICY)
+    assert engine_runs(opted_in())
+    assert engine_runs({"summaryFields": [{"name": "rating"}]})
+
+
+def test_goal_engine_off_setting_still_wins():
+    llm = _LLMStub(reply=GOODBYE)
+    template = make_brain(llm=llm)
+    config = replace(
+        template._config, goal_policy=opted_in(),
+        llm={**(template._config.llm or {}), "settings": {"goal_engine_enabled": False}},
+    )
+    brain = ConversationBrain(config=config, llm=llm, recorder=_RecorderStub(),
+                              finalize_grace=GRACE)
+    assert not brain._goal_engine.enabled
