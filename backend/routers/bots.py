@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -826,7 +826,7 @@ def update_voice_settings(
     # a config that cannot compile would silently fall back to the derived
     # default at runtime, which is exactly the confusion to reject here.
     if body.goal_policy:
-        from shared.orchestration.goal_engine import BotGoalPolicy
+        from shared.orchestration.goal_engine import BotGoalPolicy, end_call_problems
 
         try:
             BotGoalPolicy.model_validate(body.goal_policy)
@@ -834,6 +834,14 @@ def update_voice_settings(
             raise ApiError(
                 "Goal policy configuration is invalid.", 422,
                 errors=[{"field": "goalPolicy", "message": str(exc)[:300]}],
+            )
+        # The runtime only switches an invalid endCall OFF (fail-soft), so a
+        # write must reject it explicitly instead of storing a dead switch.
+        problems = end_call_problems(body.goal_policy)
+        if problems:
+            raise ApiError(
+                "Goal policy configuration is invalid.", 422,
+                errors=[{"field": "goalPolicy.endCall", "message": p[:300]} for p in problems],
             )
 
     # Human speech overrides are sparse per-key; junk keys/values are
@@ -899,6 +907,66 @@ def update_voice_settings(
         _serialize_voice_settings(s, tenant_human_speech, **serialize_kwargs),
         meta={"warnings": warnings} if warnings else None,
     )
+
+
+# ── Goal policy: end-call switch ─────────────────────────────────────────────
+#
+# goal_policy is one JSON document that the generic voice-settings PUT
+# replaces WHOLE. A UI switch posting a stale or partial copy would drop the
+# bot's goals/safety rules, so the end-call switch has its own endpoint: the
+# server merges ONLY endCall.enabled into the latest stored value, under a row
+# lock. Bot-management level (not general voice editing): it decides when the
+# bot may hang up on a caller.
+
+
+class EndCallToggleRequest(BaseModel):
+    enabled: StrictBool
+
+    model_config = {"extra": "forbid"}
+
+
+@router.patch("/bots/{bot_id}/goal-policy/end-call")
+def set_goal_policy_end_call(
+    bot_id: str,
+    body: EndCallToggleRequest,
+    request: Request,
+    user: User = Depends(require_permission("bots.manage")),
+    db: Session = Depends(get_db),
+):
+    from shared.orchestration.goal_engine import end_call_enabled, with_end_call_enabled
+
+    bot = _get_bot_checked(db, bot_id, user)
+    s = db.scalar(
+        select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot.id).with_for_update()
+    )
+    if s is None:
+        s = VoiceBotSetting(
+            id=new_id("vbs"), bot_id=bot.id, tenant_id=bot.tenant_id,
+            voice_id=bot.voice_id, created_by=user.id,
+        )
+        db.add(s)
+    current = dict(s.goal_policy or {}) if isinstance(s.goal_policy, dict) else {}
+    merged = with_end_call_enabled(current, body.enabled)
+    changed = merged != current
+    if changed:
+        s.goal_policy = merged
+        s.updated_by = user.id
+        record_audit(
+            db, user=user,
+            action="Enabled end call on goal decision" if body.enabled
+            else "Disabled end call on goal decision",
+            entity_type="voice_bot", entity_id=bot.id, target_label=bot.name,
+            tenant_id=bot.tenant_id,
+            previous_value={"goalPolicy": {"endCall": current.get("endCall", current.get("end_call"))}},
+            new_value={"goalPolicy": {"endCall": merged.get("endCall")}},
+            request=request,
+        )
+    db.commit()
+    if changed:
+        from shared.bot_config import invalidate_bot_config_sync
+
+        invalidate_bot_config_sync(bot.tenant_id, bot.id)
+    return ok({"botId": bot.id, "enabled": end_call_enabled(merged)})
 
 
 # ── Bot-level guardrail profile ───────────────────────────────────────────────

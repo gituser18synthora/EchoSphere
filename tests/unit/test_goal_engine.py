@@ -29,12 +29,17 @@ from shared.orchestration.decision_schema import (
 )
 from shared.orchestration.goal_engine import (
     BotGoalPolicy,
+    EndCallPolicy,
     GoalEngine,
     GoalSession,
     GoalSpec,
     IdentityPolicy,
     SlotSpec,
     compile_goal_policy,
+    end_call_enabled,
+    end_call_problems,
+    goal_policy_enables_engine,
+    with_end_call_enabled,
 )
 
 # ── fakes ────────────────────────────────────────────────────────────────────
@@ -607,7 +612,7 @@ class TestEndCallPolicy:
         refusal = {**_WRONG_PERSON_END, "signal": "refusal", "confidence": 0.75}
         assert session.end_call_reason(_decision(**refusal)) == "end_call:refusal"
         with pytest.raises(ValueError):
-            BotGoalPolicy.model_validate({"endCall": {"minConfidence": 0.2}})
+            EndCallPolicy.model_validate({"minConfidence": 0.2})
 
     def test_opt_in_alone_keeps_the_derived_decision_policy(self):
         derived = compile_goal_policy(
@@ -631,6 +636,87 @@ class TestEndCallPolicy:
         assert opted.source == "configured" and opted.end_call.enabled
         assert (GoalEngine(llm=None, policy=opted)._build_system()
                 == GoalEngine(llm=None, policy=plain)._build_system())
+
+
+# Manappuram-shaped authored policy (keys as stored on the bot, 2026-09-28).
+_SURVEY_CONFIG = {
+    "role": "closure feedback executive",
+    "domain": "Customer feedback survey",
+    "goals": [{"id": "feedback", "description": "Collect closure feedback."}],
+    "safety": ["A clear wrong-person answer at opening means no survey."],
+    "toolRules": ["Product facts come from the knowledge base."],
+    "outOfScope": "Briefly return to the feedback survey.",
+    "allowedTopics": ["gold-loan closure experience", "service rating"],
+}
+
+
+class TestEndCallHardening:
+    @pytest.mark.parametrize("bad", [
+        {"enabled": "yes"},                                  # not a real boolean
+        {"enabled": True, "signals": ["wrong-person"]},      # outside the vocabulary
+        {"enabled": True, "signals": []},                    # nothing could ever match
+        {"enabled": True, "minConfidence": 5},               # out of range
+        {"enabled": True, "minconfidence": 0.95},            # typo'd key
+        "on",                                                # not an object
+    ])
+    def test_invalid_end_call_disables_only_end_call(self, bad):
+        policy = compile_goal_policy(
+            {**_SURVEY_CONFIG, "endCall": bad}, bot_name="S", system_prompt="p", intents=[],
+        )
+        # The rest of the authored policy survives untouched …
+        assert policy.source == "configured"
+        assert [g.id for g in policy.goals] == ["feedback"]
+        assert policy.safety == _SURVEY_CONFIG["safety"]
+        assert policy.tool_rules == _SURVEY_CONFIG["toolRules"]
+        assert policy.allowed_topics == _SURVEY_CONFIG["allowedTopics"]
+        # … only the end-call close is off, and a save would be rejected.
+        assert policy.end_call == EndCallPolicy()
+        assert not end_call_enabled({"endCall": bad})
+        assert end_call_problems({"endCall": bad})
+
+    def test_signals_follow_the_goal_engine_vocabulary(self):
+        from shared.orchestration.intent_classifier import PLATFORM_SIGNALS
+
+        assert EndCallPolicy.model_validate({"signals": list(PLATFORM_SIGNALS)}).signals
+        problems = end_call_problems({"endCall": {"signals": ["wrong_person", "angry"]}})
+        assert problems and "angry" in problems[0]
+
+    def test_defaults_are_off_wrong_person_and_point_nine(self):
+        rule = EndCallPolicy()
+        assert (rule.enabled, rule.signals, rule.min_confidence) == (False, ["wrong_person"], 0.9)
+        assert end_call_problems(_SURVEY_CONFIG) == []
+        assert not end_call_enabled(_SURVEY_CONFIG)
+        assert not end_call_enabled({"endCall": {}})
+
+    def test_switch_merge_preserves_every_other_key(self):
+        on = with_end_call_enabled(_SURVEY_CONFIG, True)
+        assert on == {**_SURVEY_CONFIG, "endCall": {"enabled": True}}
+        off = with_end_call_enabled(on, False)
+        assert off == {**_SURVEY_CONFIG, "endCall": {"enabled": False}}
+        assert end_call_enabled(on) and not end_call_enabled(off)
+
+    def test_switch_merge_keeps_valid_tuning_and_resets_invalid(self):
+        tuned = {**_SURVEY_CONFIG, "endCall": {"enabled": False, "minConfidence": 0.95}}
+        assert with_end_call_enabled(tuned, True)["endCall"] == {"enabled": True, "minConfidence": 0.95}
+        broken = {**_SURVEY_CONFIG, "endCall": {"enabled": "yes", "signals": ["x"]}}
+        assert with_end_call_enabled(broken, True)["endCall"] == {"enabled": True}
+        snake = {"role": "r", "end_call": {"enabled": False}}
+        assert with_end_call_enabled(snake, True) == {"role": "r", "endCall": {"enabled": True}}
+
+    def test_turning_off_an_absent_switch_writes_nothing(self):
+        assert with_end_call_enabled(_SURVEY_CONFIG, False) == _SURVEY_CONFIG
+        assert with_end_call_enabled(None, False) == {}
+
+    @pytest.mark.parametrize("config, enables", [
+        ({}, False),
+        (None, False),
+        ({"endCall": {"enabled": True}}, False),        # the opt-in alone never starts it
+        ({"end_call": {"enabled": True}}, False),
+        ({"summaryFields": [{"name": "rating"}]}, True),  # unchanged: any other key counts
+        ({"role": "r", "endCall": {"enabled": True}}, True),
+    ])
+    def test_only_end_call_never_enables_the_engine(self, config, enables):
+        assert goal_policy_enables_engine(config) is enables
 
 
 if __name__ == "__main__":  # pragma: no cover

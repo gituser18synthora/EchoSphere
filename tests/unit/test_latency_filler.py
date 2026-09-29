@@ -1383,7 +1383,7 @@ class TestDelayedAcknowledgement:
         async def renderer(engine, language, text):
             renders.append(text)
             await release.wait()
-            return b"\x00\x20" * 1600, RATE
+            return tone_with_padding(), RATE  # voiced: passes the take gate
 
         cues = VoicedCueLibrary(renderer=renderer)
         filler = make_filler(delay_ms=60, cue_library=cues)
@@ -1391,7 +1391,8 @@ class TestDelayedAcknowledgement:
         await filler.arm(turn_id=1, gender="female", engine=engine, language="hi-IN",
                          acknowledgement={"text": "जी…"})
         await wait(0.01)
-        assert renders == ["जी…"] and not release.is_set()
+        # Synthesized without the pool text's trailing ellipsis.
+        assert renders == ["जी"] and not release.is_set()
         reply = TTSAudioRawFrame(audio=b"\x01\x02" * 320, sample_rate=RATE, num_channels=1)
         await asyncio.wait_for(filler.process_frame(reply, DOWN), timeout=0.1)
         assert filler.pushed[-1][0] is reply and filler_audio(filler) == []
@@ -1400,7 +1401,7 @@ class TestDelayedAcknowledgement:
         await wait(0.08)
         assert filler_audio(filler) == []  # late render cannot resurrect this turn
         assert cues.acknowledgement_clip(engine, "hi-IN", "जी…", RATE)
-        assert renders == ["जी…"]
+        assert renders == ["जी"]
 
 
 class TestFillerSoundKinds:
