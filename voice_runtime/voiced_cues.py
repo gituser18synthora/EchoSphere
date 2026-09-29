@@ -19,8 +19,9 @@ Every take is checked before it is cached (:func:`assess_take`), in the
 background render only: a cue is never cut while a word is still sounding,
 and an acknowledgement that ends whispered, is drawn out or holds a long
 hesitation is rejected and rendered again. A cue with no acceptable take in
-``_MAX_RENDER_ATTEMPTS`` renders is skipped for that voice — silence is
-better than a breathy, sighing filler.
+``_MAX_RENDER_ATTEMPTS`` renders plays nothing for that voice — silence is
+better than a breathy, sighing filler — and is negative-cached for
+``_NEGATIVE_CACHE_S``; the next render opportunity after that tries again.
 """
 
 from __future__ import annotations
@@ -79,6 +80,11 @@ _TRIM_THRESHOLD_DBFS = -45.0
 # without its trailing ellipsis, the take gate, never-cut-voice ceilings.
 _RENDER_VERSION = 2
 _FAILURE_COOLDOWN_S = 300.0
+# A background render whose every take was rejected is not repeated for this
+# long — recorded on disk, so neither later calls nor a restarted worker
+# re-bill the provider — and the cue is eligible again afterwards: Eleven v3
+# takes are stochastic, and four unlucky ones must not disable a cue for good.
+_NEGATIVE_CACHE_S = 12 * 3600.0
 _RENDER_TIMEOUT_S = 12.0
 # Cues are rendered once at the highest rate both streaming providers
 # synthesize natively and resampled (anti-aliased) to each call's rate. The
@@ -368,12 +374,17 @@ class VoicedCueLibrary:
         self._resampled: dict[tuple[str, int], bytes] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._failed_at: dict[str, float] = {}
+        # key -> wall-clock time until which the cue is negative-cached (all
+        # takes of its last render rejected). Wall clock, not monotonic: the
+        # deadline is persisted in the marker and must survive a restart.
+        self._negative_until: dict[str, float] = {}
+        self._clock = time.time
         # The cue id most recently handed out (telemetry).
         self.last_cue_id: str | None = None
         self.renders = 0
         self.render_failures = 0
-        # Take gate telemetry: takes rejected, cues skipped for a voice, and
-        # per key the outcome of its last background render.
+        # Take gate telemetry: takes rejected, renders that ended negative-
+        # cached, and per key the outcome of its last background render.
         self.rejected_takes = 0
         self.skipped_cues = 0
         self.render_log: dict[str, dict] = {}
@@ -435,10 +446,37 @@ class VoicedCueLibrary:
         return (self._cache_dir / f"{key}.wav") if self._cache_dir is not None else None
 
     def _skip_path(self, key: str) -> Path | None:
-        """Marker for a cue that had no acceptable take for this voice: no
-        audio is stored, and neither a later turn nor a restart renders it
-        again (a new render version re-evaluates it)."""
+        """Negative-cache marker of a cue whose last render had no acceptable
+        take: no audio is stored, and until its ``retry_after`` neither a
+        later turn nor a restart renders it again. A different synthesized
+        text, voice parameters or render version is a different key and so
+        never inherits the marker."""
         return (self._cache_dir / f"{key}.skip.json") if self._cache_dir is not None else None
+
+    def _negative_active(self, key: str) -> bool:
+        """Whether ``key`` is inside its negative-cache window (an expired
+        window is forgotten: the cue is eligible for a render again)."""
+        until = self._negative_until.get(key)
+        if until is None:
+            return False
+        if self._clock() < until:
+            return True
+        self._negative_until.pop(key, None)
+        return False
+
+    def _marker_retry_after(self, marker: Path) -> float:
+        """The marker's ``retry_after``; a marker without a readable one (an
+        older permanent skip) counts from its file time."""
+        try:
+            value = json.loads(marker.read_text(encoding="utf-8")).get("retry_after")
+            if isinstance(value, (int, float)):
+                return float(value)
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            return marker.stat().st_mtime + _NEGATIVE_CACHE_S
+        except OSError:
+            return 0.0
 
     # -- public API -----------------------------------------------------
 
@@ -512,6 +550,8 @@ class VoicedCueLibrary:
         key = self._key(engine, language, kind, text)
         cached = self._clips.get(key)
         if cached is None:
+            if self._negative_active(key):
+                return b""  # negative-cached: no render until the window ends
             cached = self._load_from_disk(key)
         if cached is None:
             self._schedule_render(key, engine, language, kind, text)
@@ -584,23 +624,24 @@ class VoicedCueLibrary:
     # -- rendering ------------------------------------------------------
 
     def _load_from_disk(self, key: str) -> tuple[bytes, int] | None:
+        path = self._disk_path(key)
+        if path is not None and path.is_file():
+            try:
+                pcm, rate = wav_to_pcm(path.read_bytes())
+            except (OSError, ValueError):
+                logger.warning("voiced-cues: unreadable cache file %s; re-rendering", path)
+                pcm, rate = b"", 0
+            if pcm and rate > 0:
+                self._clips[key] = (pcm, rate)
+                return self._clips[key]
         skip = self._skip_path(key)
         if skip is not None and skip.is_file():
-            # No acceptable take for this voice: "rendered, nothing usable".
-            self._clips[key] = (b"", 0)
-            return self._clips[key]
-        path = self._disk_path(key)
-        if path is None or not path.is_file():
-            return None
-        try:
-            pcm, rate = wav_to_pcm(path.read_bytes())
-        except (OSError, ValueError):
-            logger.warning("voiced-cues: unreadable cache file %s; re-rendering", path)
-            return None
-        if not pcm or rate <= 0:
-            return None
-        self._clips[key] = (pcm, rate)
-        return self._clips[key]
+            retry_after = self._marker_retry_after(skip)
+            if self._clock() < retry_after:
+                # Negative-cached (possibly by another process): no audio and
+                # no render until the window ends; an expired marker is ignored.
+                self._negative_until[key] = retry_after
+        return None
 
     def _schedule_render(
         self, key: str, engine: dict | None, language: str, kind: str, text: str | None = None,
@@ -608,6 +649,8 @@ class VoicedCueLibrary:
         task = self._tasks.get(key)
         if task is not None and not task.done():
             return
+        if self._negative_active(key):
+            return  # every take of its last render was rejected: wait out the window
         failed_at = self._failed_at.get(key)
         if failed_at is not None and time.monotonic() - failed_at < _FAILURE_COOLDOWN_S:
             return
@@ -643,8 +686,10 @@ class VoicedCueLibrary:
         Runs only in this background task — a call never waits on it and a
         turn whose cue is not ready simply gets none. A rejected take is
         rendered again, up to ``_MAX_RENDER_ATTEMPTS`` renders; with no
-        acceptable take the cue is skipped for this voice (a skip marker, no
-        audio) rather than cached breathy or cut.
+        acceptable take nothing is stored (no breathy or cut clip) and the cue
+        is negative-cached for ``_NEGATIVE_CACHE_S`` — a marker with its
+        ``retry_after`` — after which a later render opportunity tries again.
+        An accepted take clears any negative state.
         """
         text = ladder_cue(language, kind) if text is None else text
         spoken = synthesis_text(kind, text)
@@ -676,6 +721,14 @@ class VoicedCueLibrary:
                         path.write_bytes(pcm_to_wav_bytes(clip, sample_rate=rate))
                     except OSError:
                         logger.debug("voiced-cues: could not cache %s", path, exc_info=True)
+                # An accepted take ends any negative state of this cue.
+                self._negative_until.pop(key, None)
+                skip = self._skip_path(key)
+                if skip is not None:
+                    try:
+                        skip.unlink(missing_ok=True)
+                    except OSError:
+                        logger.debug("voiced-cues: could not clear %s", skip, exc_info=True)
                 logger.info(
                     "voiced-cues: rendered %s (%.0f ms, take %d/%d)",
                     key, len(clip) / (rate * 2) * 1000.0, attempt, _MAX_RENDER_ATTEMPTS,
@@ -695,10 +748,13 @@ class VoicedCueLibrary:
                 "voiced-cues: rejected take %d/%d for %s: %s",
                 attempt, _MAX_RENDER_ATTEMPTS, key, reason,
             )
-        self._clips[key] = (b"", rate)
+        # Nothing stored or played; negative-cached, not disabled for good.
+        now = self._clock()
+        retry_after = now + _NEGATIVE_CACHE_S
+        self._negative_until[key] = retry_after
         self.skipped_cues += 1
         self.render_log[key] = {"attempts": _MAX_RENDER_ATTEMPTS, "accepted": False,
-                                "rejections": reasons, "ms": 0}
+                                "rejections": reasons, "ms": 0, "retry_after": retry_after}
         skip = self._skip_path(key)
         if skip is not None:
             try:
@@ -706,13 +762,15 @@ class VoicedCueLibrary:
                 skip.write_text(json.dumps({
                     "kind": kind, "text": spoken, "attempts": _MAX_RENDER_ATTEMPTS,
                     "rejections": reasons, "render_version": _RENDER_VERSION,
-                    "skipped_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "rejected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)),
+                    "retry_after": retry_after,
+                    "retry_after_local": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(retry_after)),
                 }, ensure_ascii=False, indent=1))
             except OSError:
-                logger.debug("voiced-cues: could not record skip for %s", key, exc_info=True)
+                logger.debug("voiced-cues: could not record the negative cache for %s", key, exc_info=True)
         logger.warning(
-            "voiced-cues: no acceptable take for %s in %d renders (%s); skipped for this voice",
-            key, _MAX_RENDER_ATTEMPTS, "; ".join(reasons),
+            "voiced-cues: no acceptable take for %s in %d renders (%s); not rendered again for %.0f h",
+            key, _MAX_RENDER_ATTEMPTS, "; ".join(reasons), _NEGATIVE_CACHE_S / 3600.0,
         )
 
     @staticmethod

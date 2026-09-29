@@ -4,9 +4,10 @@ A cue is rendered once per voice and replayed on every call. These tests pin
 what reaches that cache: acknowledgements are synthesized without their
 trailing ellipsis (Eleven v3 read "अच्छा…" as a sigh), a take is never cut
 while a word is still sounding, clearly bad acknowledgement takes are
-rejected and rendered again, and a cue with no acceptable take is skipped for
-that voice instead of cached breathy. Voice is modelled by a harmonic tone
-(periodic), breath/whisper by noise (aperiodic).
+rejected and rendered again, and a cue with no acceptable take stores nothing
+and is negative-cached for 12 h (then eligible again) instead of cached
+breathy. Voice is modelled by a harmonic tone (periodic), breath/whisper by
+noise (aperiodic).
 """
 
 import hashlib
@@ -17,8 +18,10 @@ import pytest
 
 from shared.audio.pcm import pcm_to_wav_bytes
 from shared.audio.text import sanitize_for_tts
+from voice_runtime import voiced_cues
 from voice_runtime.voiced_cues import (
     _MAX_RENDER_ATTEMPTS,
+    _NEGATIVE_CACHE_S,
     _RENDER_VERSION,
     VoicedCueLibrary,
     assess_take,
@@ -170,24 +173,137 @@ def test_whispered_drawn_out_and_hesitant_acks_are_rejected():
     assert assess_take(natural, RATE, "ack", synthesis_text("ack", JI_THEEK_HAI))[1] is None
 
 
-async def test_rejected_takes_are_retried_up_to_the_limit_then_the_cue_is_skipped(tmp_path):
-    calls = []
-    whispered = pcm(silence(100), breath(450, level=0.06), silence(100))
-    lib = VoicedCueLibrary(tmp_path, renderer=renderer([whispered], calls))
-    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
+# ── negative cache after four rejected takes ──────────────────────────────
+
+WHISPERED = pcm(silence(100), breath(450, level=0.06), silence(100))
+NATURAL = pcm(silence(150), voiced(420), silence(150))
+
+
+class FakeClock:
+    def __init__(self, now=1_800_000_000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def library(tmp_path, takes, calls, clock):
+    lib = VoicedCueLibrary(tmp_path, renderer=renderer(takes, calls))
+    lib._clock = clock
+    return lib
+
+
+async def settle(lib):
     for task in list(lib._tasks.values()):
         await task
+
+
+async def test_four_rejected_takes_write_a_temporary_negative_cache_marker(tmp_path):
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [WHISPERED], calls, clock)
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""  # never waits
+    await settle(lib)
     assert len(calls) == _MAX_RENDER_ATTEMPTS == 4
     assert lib.rejected_takes == 4 and lib.skipped_cues == 1
     key = lib._key(ENGINE, "hi-IN", "ack", ACHHA)
-    assert not (tmp_path / f"{key}.wav").exists()  # nothing stored
+    assert not (tmp_path / f"{key}.wav").exists()  # no bad clip is stored
     marker = json.loads((tmp_path / f"{key}.skip.json").read_text())
     assert marker["attempts"] == 4 and len(marker["rejections"]) == 4
-    # Skipped for this voice: later turns and a restarted worker render nothing.
-    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
-    restarted = VoicedCueLibrary(tmp_path, renderer=renderer([whispered], calls))
+    assert _NEGATIVE_CACHE_S == 12 * 3600
+    assert marker["retry_after"] == pytest.approx(clock.now + _NEGATIVE_CACHE_S)
+    assert lib.render_log[key]["retry_after"] == pytest.approx(clock.now + _NEGATIVE_CACHE_S)
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""  # nothing plays
+
+
+async def test_rendering_is_suppressed_during_the_cooldown(tmp_path):
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [WHISPERED], calls, clock)
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    finished = dict(lib._tasks)
+    clock.now += _NEGATIVE_CACHE_S - 60  # a minute before the window ends
+    for _ in range(3):  # later turns of this call and of later calls
+        assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
+    assert lib._tasks == finished  # no new background job
+    restarted = library(tmp_path, [NATURAL], calls, clock)  # a worker restart reads the marker
     assert restarted.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
-    assert not restarted._tasks and len(calls) == 4
+    assert not restarted._tasks and len(calls) == 4  # ElevenLabs is not hit again
+
+
+async def test_rendering_is_eligible_again_after_the_cooldown(tmp_path):
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [WHISPERED], calls, clock)
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    key = lib._key(ENGINE, "hi-IN", "ack", ACHHA)
+    clock.now += _NEGATIVE_CACHE_S + 1
+    restarted = library(tmp_path, [WHISPERED], calls, clock)
+    assert restarted.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""  # schedules, never waits
+    await settle(restarted)
+    assert len(calls) == 8  # one more bounded 4-attempt job
+    renewed = json.loads((tmp_path / f"{key}.skip.json").read_text())
+    assert renewed["retry_after"] == pytest.approx(clock.now + _NEGATIVE_CACHE_S)
+    # The first worker's own window has ended too, but it honours the renewed
+    # marker written by the other process instead of rendering again.
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
+    await settle(lib)
+    assert len(calls) == 8
+
+
+async def test_a_later_successful_render_clears_the_negative_state(tmp_path):
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [WHISPERED] * 4 + [NATURAL], calls, clock)
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    key = lib._key(ENGINE, "hi-IN", "ack", ACHHA)
+    assert (tmp_path / f"{key}.skip.json").is_file()
+    clock.now += _NEGATIVE_CACHE_S + 1
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    assert len(calls) == 5 and lib.render_log[key]["accepted"]
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)  # plays now
+    assert (tmp_path / f"{key}.wav").is_file()
+    assert not (tmp_path / f"{key}.skip.json").exists() and key not in lib._negative_until
+    restarted = library(tmp_path, [WHISPERED], calls, clock)
+    assert restarted.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) and len(calls) == 5
+
+
+async def test_a_marker_without_retry_after_expires_from_its_file_time(tmp_path):
+    # An older permanent-skip marker (or an unreadable one) is not permanent.
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [NATURAL], calls, clock)
+    marker = tmp_path / f"{lib._key(ENGINE, 'hi-IN', 'ack', ACHHA)}.skip.json"
+    marker.write_text(json.dumps({"kind": "ack", "attempts": 4}))
+    written = marker.stat().st_mtime
+    clock.now = written + 3600
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
+    await settle(lib)
+    assert calls == []
+    clock.now = written + _NEGATIVE_CACHE_S + 1
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    assert len(calls) == 1 and lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+
+
+async def test_a_changed_identity_does_not_inherit_the_negative_state(tmp_path, monkeypatch):
+    calls, clock = [], FakeClock()
+    lib = library(tmp_path, [WHISPERED] * 4 + [NATURAL], calls, clock)
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    assert len(calls) == 4
+    tuned = {**ENGINE, "params": {"stability": 0.5}}
+    for engine, text in ((ENGINE, JI_THEEK_HAI), (tuned, ACHHA)):  # other text / voice params
+        assert lib.acknowledgement_clip(engine, "hi-IN", text, RATE) == b""
+        await settle(lib)
+        assert lib.acknowledgement_clip(engine, "hi-IN", text, RATE)
+    monkeypatch.setattr(voiced_cues, "_RENDER_VERSION", _RENDER_VERSION + 1)  # render version
+    lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    await settle(lib)
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE)
+    monkeypatch.undo()
+    # The original identity is still inside its own window.
+    assert lib.acknowledgement_clip(ENGINE, "hi-IN", ACHHA, RATE) == b""
+    assert len(calls) == 7
 
 
 async def test_a_bad_first_take_is_replaced_by_a_good_retry(tmp_path):
