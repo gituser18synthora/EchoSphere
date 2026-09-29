@@ -949,7 +949,7 @@ def update_tenant_settings(
     if body.human_speech:
         from shared.orchestration.naturalness import validate_human_speech
 
-        problems = validate_human_speech(body.human_speech)
+        problems = validate_human_speech(body.human_speech, existing=s.human_speech)
         if problems:
             raise ApiError(
                 "Human speech configuration is invalid.", 422,

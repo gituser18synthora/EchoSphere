@@ -57,6 +57,11 @@ const SETTINGS = {
   humanSpeechInherited: inherited, humanSpeechInheritedSources: inheritedSources,
   humanSpeechEffective: { ...inherited, thinking_fillers: false },
   humanSpeechSources: { ...inheritedSources, thinking_fillers: "bot" },
+  ambiencePresets: [
+    { id: "office", label: "Office", description: "Office.", productionEnabled: true },
+    { id: "busy_office", label: "Busy Office", description: "Busy office.", productionEnabled: true },
+    { id: "echo_ringing", label: "Echo Ringing", description: "Echo ringing.", productionEnabled: true },
+  ],
 } as VoiceSettings;
 
 const saveButton = () => screen.getByRole("button", { name: "Save natural conversation settings" });

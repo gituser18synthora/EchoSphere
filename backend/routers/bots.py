@@ -20,6 +20,7 @@ from backend.core.deps import (
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from shared.providers.tts.delivery import strip_speed_params
+from shared.audio.ambience_presets import ambience_preset_catalog
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.providers.stt_language_policy import resolve_auto_detect_language
 from backend.core.pagination import PageParams, page_params
@@ -727,6 +728,7 @@ def _serialize_voice_settings(
         "humanSpeechSources": sources,
         "humanSpeechInherited": inherited,
         "humanSpeechInheritedSources": inherited_sources,
+        "ambiencePresets": ambience_preset_catalog(),
     }
 
 
@@ -839,7 +841,7 @@ def update_voice_settings(
     if body.human_speech:
         from shared.orchestration.naturalness import validate_human_speech
 
-        problems = validate_human_speech(body.human_speech)
+        problems = validate_human_speech(body.human_speech, existing=s.human_speech)
         if problems:
             raise ApiError(
                 "Human speech configuration is invalid.", 422,

@@ -269,6 +269,56 @@ class TestBackgroundAmbienceSetting:
         config = _load_config_sync(bot_id, require_published=False)
         assert build_ambience(config, transport_kind="telephony", sample_rate=8000) is None
 
+    def test_echo_ringing_is_offered_and_saves_per_bot(self, client, tenant_admin, bot):
+        from shared.audio.ambience_presets import ambience_preset_catalog
+        from voice_runtime.ambience import build_ambience
+
+        bot_id, _ = bot
+        url = f"{API}/bots/{bot_id}/voice-settings"
+        got = data(client.get(url, headers=tenant_admin))
+        assert got["ambiencePresets"] == ambience_preset_catalog()
+        assert [p["id"] for p in got["ambiencePresets"] if p["productionEnabled"]] == [
+            "office", "call_center", "light_office", "busy_office", "room_tone", "echo_ringing",
+        ]
+        wanted = {"background_ambience": True, "background_ambience_preset": "echo_ringing"}
+        saved = data(client.put(url, headers=tenant_admin, json={"humanSpeech": wanted}))
+        assert saved["humanSpeech"] == wanted
+        assert saved["humanSpeechSources"]["background_ambience_preset"] == "bot"
+        config = _load_config_sync(bot_id, require_published=False)
+        assert build_ambience(config, transport_kind="telephony", sample_rate=8000).bed.preset == "echo_ringing"
+        # Away and back again.
+        data(client.put(url, headers=tenant_admin, json={"humanSpeech": {**wanted, "background_ambience_preset": "office"}}))
+        again = data(client.put(url, headers=tenant_admin, json={"humanSpeech": {**wanted, "background_ambience_volume": 40}}))
+        assert again["humanSpeechEffective"]["background_ambience_preset"] == "echo_ringing"
+
+    def test_a_withdrawn_preset_is_refused_as_new_but_a_saved_one_keeps_saving(
+        self, client, tenant_admin, bot, monkeypatch,
+    ):
+        """No preset is withdrawn today; withdrawing one is a registry flag."""
+        from dataclasses import replace
+
+        from shared.audio.ambience_presets import AMBIENCE_PRESETS
+
+        bot_id, session = bot
+        url = f"{API}/bots/{bot_id}/voice-settings"
+        saved_before = {"background_ambience": True, "background_ambience_preset": "echo_ringing"}
+        data(client.put(url, headers=tenant_admin, json={"humanSpeech": saved_before}))
+        monkeypatch.setitem(
+            AMBIENCE_PRESETS, "echo_ringing", replace(AMBIENCE_PRESETS["echo_ringing"], production_enabled=False),
+        )
+        got = data(client.get(url, headers=tenant_admin))
+        assert {p["id"]: p["productionEnabled"] for p in got["ambiencePresets"]}["echo_ringing"] is False
+        # Saved before it was withdrawn: other edits still save.
+        kept = data(client.put(url, headers=tenant_admin, json={
+            "humanSpeech": {**saved_before, "background_ambience_volume": 40},
+        }))
+        assert kept["humanSpeech"]["background_ambience_preset"] == "echo_ringing"
+        # Once changed away, it cannot be picked again.
+        data(client.put(url, headers=tenant_admin, json={"humanSpeech": {"background_ambience": True}}))
+        refused = client.put(url, headers=tenant_admin, json={"humanSpeech": saved_before})
+        assert refused.status_code == 422
+        assert "not available for selection" in str(refused.json())
+
     def test_tenant_defaults_are_inherited_and_bot_overrides_win(
         self, client, tenant_admin, bot, tenant_ambience,
     ):
@@ -298,7 +348,25 @@ class TestBackgroundAmbienceSetting:
         mixer = build_ambience(config, transport_kind="telephony", sample_rate=8000)
         assert mixer.bed.preset == "call_center" and mixer.volume == 20
 
+    def test_echo_ringing_saves_as_a_tenant_default(self, client, tenant_admin, bot, tenant_ambience):
+        from voice_runtime.ambience import build_ambience
+
+        wanted = {"background_ambience": True, "background_ambience_preset": "echo_ringing"}
+        saved = data(client.put(f"{API}/tenant/settings", headers=tenant_admin, json={"humanSpeech": wanted}))
+        assert saved["humanSpeech"] == wanted
+        assert saved["humanSpeechSources"]["background_ambience_preset"] == "tenant"
+        bot_id, _ = bot
+        got = data(client.get(f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin))
+        assert got["humanSpeechEffective"]["background_ambience_preset"] == "echo_ringing"
+        assert got["humanSpeechSources"]["background_ambience_preset"] == "tenant"
+        config = _load_config_sync(bot_id, require_published=False)
+        assert build_ambience(config, transport_kind="telephony", sample_rate=8000).bed.preset == "echo_ringing"
+
     def test_tenant_defaults_api_rejects_bad_ambience_values(self, client, tenant_admin):
+        from shared.audio.ambience_presets import ambience_preset_catalog
+
+        got = data(client.get(f"{API}/tenant/settings", headers=tenant_admin))
+        assert got["ambiencePresets"] == ambience_preset_catalog()
         for bad in (
             {"background_ambience_volume": 150},
             {"background_ambience_preset": "forest"},

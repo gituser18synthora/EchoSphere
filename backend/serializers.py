@@ -1052,6 +1052,7 @@ def serialize_sip_trunk(t: SipTrunk) -> dict:
 
 
 def serialize_tenant_settings(s: TenantSetting) -> dict:
+    from shared.audio.ambience_presets import ambience_preset_catalog
     from shared.orchestration.naturalness import resolve_human_speech_with_sources
 
     effective, sources = resolve_human_speech_with_sources(s.human_speech)
@@ -1072,6 +1073,7 @@ def serialize_tenant_settings(s: TenantSetting) -> dict:
         "humanSpeechSources": sources,
         "humanSpeechInherited": inherited,
         "humanSpeechInheritedSources": inherited_sources,
+        "ambiencePresets": ambience_preset_catalog(),
     }
 
 

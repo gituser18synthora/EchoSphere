@@ -46,7 +46,7 @@ export default function Settings() {
 
   const save = async () => {
     if (!form) return;
-    const humanSpeechErrors = validateHumanSpeechOverrides(form.humanSpeech);
+    const humanSpeechErrors = validateHumanSpeechOverrides(form.humanSpeech, { ambiencePresets: form.ambiencePresets });
     if (humanSpeechErrors.length) {
       toast(humanSpeechErrors[0], "error");
       return;
@@ -143,6 +143,7 @@ export default function Settings() {
                 override={form.humanSpeech}
                 inherited={form.humanSpeechInherited}
                 inheritedSources={form.humanSpeechInheritedSources}
+                ambiencePresets={form.ambiencePresets}
                 onChange={(humanSpeech) => patch({ humanSpeech })}
               />
             </section>

@@ -48,6 +48,7 @@ from shared.audio.ambience_presets import (
     AMBIENCE_DEFAULT_DB,
     AMBIENCE_PRESETS,
     DEFAULT_AMBIENCE_PRESET,
+    AmbiencePreset,
     ambience_volume_db,
     resolve_ambience_preset,
     resolve_ambience_volume,
@@ -58,11 +59,14 @@ from voice_runtime.frames import AmbienceAudioRawFrame, FillerAudioOwner
 logger = logging.getLogger(__name__)
 
 # ── assets ───────────────────────────────────────────────────────────────
-# Procedurally generated, seeded, our own (scripts/generate_ambience_asset.py):
-# mono 16-bit PCM WAV, ``<preset asset>_<rate>.wav``. A preset needs only one
-# canonical rate; any other rate the output transport runs at (telephony
-# 8 kHz; browser 16/22.05/24 kHz) is resampled ONCE at load from the
-# highest-rate file. ``office`` also ships pre-rendered 8/16/24 kHz files.
+# Mono 16-bit PCM WAV, ``<preset asset>_<rate>.wav``: procedurally generated,
+# seeded, our own (scripts/generate_ambience_asset.py), or a supplied
+# recording (``echo_ringing``). A preset needs only one canonical rate; any
+# other rate the output transport runs at (telephony 8 kHz; browser
+# 16/22.05/24 kHz) is resampled ONCE at load from the highest-rate file.
+# ``office`` also ships pre-rendered 8/16/24 kHz files. Every loop is closed
+# at load with the preset's crossfade (150 ms unless it says otherwise), so
+# any asset loops without a click.
 ASSET_DIR = Path(__file__).resolve().parent / "assets" / "ambience"
 ASSET_NAME = AMBIENCE_PRESETS[DEFAULT_AMBIENCE_PRESET].asset
 
@@ -96,8 +100,6 @@ IDLE_CONFIRM_S = 0.015
 START_AFTER_S = 1.0
 # The room fades in at call start instead of switching on.
 FADE_IN_MS = 400
-# Loop closure applied at load time (any asset loops without a click).
-LOOP_CROSSFADE_MS = 150
 # Chunks up to this long are sliced without wrap handling.
 _MAX_FAST_SLICE_S = 0.5
 _TIMING_SAMPLES = 4096
@@ -170,19 +172,25 @@ def _close_loop(samples: np.ndarray, fade: int) -> np.ndarray:
     return out
 
 
-def _load_source(asset_dir: Path, name: str, sample_rate: int) -> tuple[np.ndarray, str]:
-    """A preset's loop at ``sample_rate``, decoded, resampled if needed and
-    loop-closed — once per process (call with ``_BED_LOCK`` held)."""
-    key = (str(asset_dir), name, sample_rate)
+def _load_source(asset_dir: Path, spec: AmbiencePreset, sample_rate: int) -> tuple[np.ndarray, str]:
+    """A preset's loop at ``sample_rate``, decoded, resampled if needed, cut
+    to its loop region and loop-closed — once per process (call with
+    ``_BED_LOCK`` held)."""
+    key = (str(asset_dir), spec.asset, sample_rate, spec.loop_start_s, spec.loop_end_s, spec.loop_crossfade_ms)
     cached = _SOURCE_CACHE.get(key)
     if cached is not None:
         return cached
-    path = _asset_for(asset_dir, name, sample_rate)
+    path = _asset_for(asset_dir, spec.asset, sample_rate)
     pcm, rate = _read_wav(path)
     if rate != sample_rate:
         pcm = resample_pcm(pcm, rate, sample_rate)
     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
-    samples = _close_loop(samples, int(sample_rate * LOOP_CROSSFADE_MS / 1000))
+    start = int(round(spec.loop_start_s * sample_rate))
+    end = len(samples) if spec.loop_end_s is None else int(round(spec.loop_end_s * sample_rate))
+    samples = samples[start:end]
+    if len(samples) < sample_rate:
+        raise ValueError(f"{path.name}: ambience loop region shorter than one second")
+    samples = _close_loop(samples, int(sample_rate * spec.loop_crossfade_ms / 1000))
     if float(np.sqrt(np.mean(np.square(samples)))) <= 0.0:
         raise ValueError(f"{path.name}: ambience asset is silent")
     cached = (samples.astype(np.float32), path.name)
@@ -218,7 +226,7 @@ def load_ambience_bed(
         if bed is not None:
             _BED_CACHE.move_to_end(key)
             return bed
-        samples, source = _load_source(asset_dir, spec.asset, rate)
+        samples, source = _load_source(asset_dir, spec, rate)
         rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
         gain = (32768.0 * 10 ** (target / 20.0)) / rms
         loop = np.clip(np.rint(samples * gain), -32768, 32767).astype(np.int16)
@@ -528,7 +536,23 @@ def build_ambience(
         return None  # muted: no room audio at all, not a stream of zeros
     preset = resolve_ambience_preset(settings.get("background_ambience_preset"))
     try:
-        bed = load_ambience_bed(int(sample_rate), preset=preset.id, level_db=level_db)
+        try:
+            bed = load_ambience_bed(int(sample_rate), preset=preset.id, level_db=level_db)
+        except FileNotFoundError as exc:
+            # A saved preset whose audio is not installed here (e.g. one that
+            # is not production enabled and so never shipped): the default room.
+            if preset.id == DEFAULT_AMBIENCE_PRESET:
+                raise
+            logger.warning(
+                "background ambience %s not installed (%s); using %s",
+                preset.id, exc, DEFAULT_AMBIENCE_PRESET,
+            )
+            if recorder is not None:
+                recorder.add_event(
+                    "background_ambience_fallback",
+                    requested=preset.id, used=DEFAULT_AMBIENCE_PRESET, reason="asset_missing",
+                )
+            bed = load_ambience_bed(int(sample_rate), preset=DEFAULT_AMBIENCE_PRESET, level_db=level_db)
     except (OSError, ValueError, wave.Error) as exc:
         logger.warning("background ambience unavailable (%s); call continues without it", exc)
         if recorder is not None:

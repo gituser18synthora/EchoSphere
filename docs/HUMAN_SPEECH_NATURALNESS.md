@@ -384,11 +384,65 @@ different room, not the same audio at another level:
 | `light_office` | Light Office | soft air, 3 far talkers with long pauses, sparse typing, rare events | −3 dB (intentional) |
 | `busy_office` | Busy Office | 12 far + 2 nearer talkers, 6 desks typing, footsteps, chair rolls, paper; the most level movement | same loudness |
 | `room_tone` | Room Tone | air + ventilation only — no voices, no events; steady | −2 dB (intentional) |
+| `echo_ringing` | Echo Ringing | supplied recording (⚠ licence unverified; STT caveat below): reverberant room, warbling (~10 Hz) ring tone over murmur; loops its steady 2.5–15.5 s middle with a 1 s crossfade (the file fades in/out at its ends) | same loudness |
 
 "Same loudness" is measured (K-weighted over the 300–3400 Hz phone band) and
 stored as `loudness_trim_db`; a sparse or perfectly steady bed at office
 loudness reads as hiss, so Light Office and Room Tone carry a deliberate
 `character_offset_db`.
+
+### Production-enabled presets and safety
+
+Each registry entry carries `production_enabled` (all six are enabled). The
+settings responses (`GET/PUT /bots/{id}/voice-settings` and `/tenant/settings`)
+include the whole catalog as `ambiencePresets` (`id`, `label`, `description`,
+`productionEnabled`); the editor builds the Background sound list from it —
+there is no preset list in the React code. Withdrawing a preset later is a
+one-line registry change: the editor stops offering it, a bot that saved it
+earlier still shows it (disabled, "… (not available)") and keeps saving its
+other edits, and the API refuses it only as a NEW selection (422
+"'background_ambience_preset': '<id>' is not available for selection"). At
+call time a saved preset plays if its audio is installed; otherwise the call
+gets `office` and a `background_ambience_fallback` event (`requested`, `used`,
+`reason=asset_missing`).
+
+**`echo_ringing` caveats** (kept offered by product decision, 2026-09-29):
+
+- *Licence unverified.* The recording was supplied, not generated here. Its
+  WAVs carry no title/author/copyright/licence metadata (only the FFmpeg
+  encoder tag `Lavf63.1.101`); an earlier `.mp3` of it arrived with a Windows
+  download marker (`Zone.Identifier`) and no recorded source URL. Confirm the
+  source and that its licence allows commercial redistribution before relying
+  on it in production.
+- *STT under extreme echo.* In the evaluation below, its room echo alone
+  produced an STT word ("Hello") at volume 100 with only 10 dB echo loss; no
+  generated preset produced any STT output even at 5 dB. At realistic echo loss
+  (15–25 dB) it behaved exactly like the generated presets (nothing reached
+  STT). Prefer volumes ≤ 50 for it on echo-prone telephony.
+
+**Echo evaluation (2026-09-29).** Real calls on the private worker: FreeSWITCH
+audio fork (8 kHz), Hindi demo bot (Sarvam STT hi-IN), production gate / VAD /
+STT / turn settings (echo reference mode 0 = off, the default), a caller who
+never speaks, and the far end echoing what it plays back into the caller leg
+(180 ms lag). Volumes 25 / 50 / 100 × echo −15 / −20 / −25 dB for all six
+presets plus ambience off, in two modes (114 calls), plus a stress set at
+−10 / −5 dB (14 calls):
+
+- *Room-only echo* (only the room between turns echoes): the gate's noise
+  floor tracked the echoed room (≈ −55 dBFS at volume 100 / −15 dB) but the
+  gate never opened — 0 VAD starts, 0 STT results, 0 caller turns in all 57
+  calls, every preset. Stress: at volume 100 the gate opens at −5 dB (and for
+  some presets at −10 dB), yet VAD never started and STT returned nothing for
+  the five generated presets; `echo_ringing` at volume 100 / −10 dB produced an
+  STT result ("Hello"; no VAD start, so no caller turn). At volume 50 the gate
+  stays shut even at −5 dB.
+- *Full echo* (bot voice + room): dominated by the bot's own voice coming
+  back — with ambience OFF too (8.7 STT results and 5 accepted caller turns
+  per call, e.g. its greeting, "ji", "achha" taken as `signal=affirm`). Every
+  STT result fell within 3 s of bot speech; none in room-only windows; the
+  presets did not raise the counts (7.0–7.8 STT results, 3.1–4.6 accepted
+  turns per call). That self-echo is a telephony echo issue independent of
+  ambience (echo reference is off by default).
 
 ### Volume
 
@@ -442,12 +496,16 @@ chunk.
 procedurally generated (no recorded or intelligible speech: talkers are
 formant-synthesized vowel glides) and reproducible with
 `scripts/generate_ambience_asset.py [--preset ID]`. `office` keeps its
-8/16/24 kHz files (the accepted baseline, byte-identical); the other presets
-ship one 16 kHz file each and are resampled once to other rates (8 kHz
-telephony, 22.05/24 kHz browser). The loader decodes a (preset, rate) source
-once per process and closes the loop with a 150 ms equal-power crossfade, so
-any replacement recording loops without a click; a new volume only rescales
-that cached source. Beds are kept in a small LRU (12 entries). A call's
+8/16/24 kHz files (the accepted baseline, byte-identical); the other generated
+presets ship one 16 kHz file each and are resampled once to other rates (8 kHz
+telephony, 22.05/24 kHz browser). The exception is `echo_ringing`, a supplied
+recording (`echo_ringing_sound_{8000,16000,24000}.wav`, not generated, licence
+unverified — see "Production-enabled presets and safety"): its
+registry entry sets `loop_start_s`/`loop_end_s` so only its steady middle
+loops, and `loop_crossfade_ms` = 1000. The loader decodes a (preset, rate)
+source once per process, cuts it to the loop region and closes the loop with an
+equal-power crossfade (150 ms by default), so any replacement recording loops
+without a click; a new volume only rescales that cached source. Beds are kept in a small LRU (12 entries). A call's
 preset and volume are resolved when the pipeline is built, not per chunk.
 
 Listening samples through the real mixer (solo room, and each preset under a

@@ -110,7 +110,7 @@ export default function NaturalConversationTab({ bot, onDirtyChange, onSavingCha
   const save = async () => {
     if (!canManage || saving || !dirty) return;
     clearFeedback();
-    const localErrors = validateHumanSpeechOverrides(override);
+    const localErrors = validateHumanSpeechOverrides(override, { ambiencePresets: saved?.ambiencePresets });
     if (localErrors.length) {
       setErrors(localErrors);
       return;
@@ -180,6 +180,7 @@ export default function NaturalConversationTab({ bot, onDirtyChange, onSavingCha
           override={override}
           inherited={saved.humanSpeechInherited}
           inheritedSources={saved.humanSpeechInheritedSources}
+          ambiencePresets={saved.ambiencePresets}
           collapseAdvanced
           disabled={!canManage || saving}
           onChange={(next) => { setOverride(next); clearFeedback(); }}
