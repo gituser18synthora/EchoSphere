@@ -4851,9 +4851,11 @@ class ConversationBrain(FrameProcessor):
             # Generic bots: guarded goal-state transitions (identity, slots,
             # scope counters) move ONLY through the validated decision.
             self._goal_session.apply(orchestrated)
-            if not workflow_owns_turn and not self._transfer_requested:
+            if not workflow_owns_turn and not self._transfer_requested and signal != "hold":
                 # Opt-in close (goal_policy.endCall). A workflow that owns the
-                # turn keeps its own terminal nodes as the only close.
+                # turn keeps its own terminal nodes as the only close, and a
+                # hold ("ek minute rukiye") is answered by the hold branch
+                # below — never followed by a hang-up.
                 goal_close = self._goal_session.end_call_reason(orchestrated)
             if goal_close:
                 # The goodbye turn runs no tool and no knowledge retrieval.

@@ -150,6 +150,23 @@ class TestDecisionSchema:
             "next_action": "continue_workflow",
         })
         assert d.next_action == "ask_identity_confirmation"
+        # … while what the model asked for stays on record.
+        assert d.requested_action == "continue_workflow"
+
+    def test_requested_action_is_the_models_own_ask_never_its_claim(self):
+        # cv_c082ce24e2dc (2026-09-29): the raw decision asked to end the
+        # call; the denied-gate rule rewrote it into a re-ask.
+        d = ConversationDecision.model_validate({
+            "intent": "identity_confirmation", "signal": "wrong_person",
+            "decision": "denied", "scope": "in_scope", "confidence": 0.9,
+            "next_action": "end_call",
+            "requested_action": "escalate_to_human",  # a model cannot set this
+        })
+        assert (d.requested_action, d.next_action) == ("end_call", "ask_identity_confirmation")
+        assert d.as_event()["requested_action"] == "end_call"
+        # An unknown action clamps to answer and is recorded as such.
+        d = ConversationDecision.model_validate({"next_action": "launch_missiles"})
+        assert (d.requested_action, d.next_action) == ("answer", "answer")
 
     def test_unknown_enums_clamp_to_safe_defaults(self):
         d = ConversationDecision.model_validate({
@@ -600,12 +617,32 @@ class TestEndCallPolicy:
         {"signal": None, "scope": "in_scope", "decision": None, "confidence": 0.0},
         {"confidence": 0.8},
         {"next_action": "redirect_to_goal"},
-        # The schema turns end_call on a denied gate answer into a re-ask.
-        {"scope": "in_scope", "decision": "denied"},
+        # The model itself asked to re-ask / clarify instead of ending.
+        {"scope": "in_scope", "decision": "denied", "next_action": "ask_identity_confirmation"},
+        {"scope": "in_scope", "decision": "denied", "next_action": "clarify"},
+        # The model judged the turn unclear: never a hang-up.
+        {"scope": "in_scope", "decision": "ambiguous"},
+        {"scope": "in_scope", "decision": "needs_clarification"},
+        {"scope": "in_scope", "decision": None, "needs_clarification": True},
     ])
     def test_everything_else_keeps_the_call_open(self, change):
         session = _end_call_session()
         assert session.end_call_reason(_decision(**{**_WRONG_PERSON_END, **change})) == ""
+
+    @pytest.mark.parametrize("intent, rewritten_to", [
+        ("identity_confirmation", "ask_identity_confirmation"),   # cv_c082ce24e2dc
+        (None, "clarify"),                                        # replay D, MDND shape
+    ])
+    def test_denied_gate_rewrite_cannot_hide_the_models_end_call(self, intent, rewritten_to):
+        # The schema keeps turning end_call + denied into a re-ask (that rule
+        # protects workflows and tools); the close reads the requested action.
+        d = _decision(**{**_WRONG_PERSON_END, "intent": intent, "scope": "in_scope",
+                         "decision": "denied", "confidence": 0.9})
+        assert (d.next_action, d.requested_action) == (rewritten_to, "end_call")
+        assert _end_call_session().end_call_reason(d) == "end_call:wrong_person"
+        assert GoalSession(compile_goal_policy(
+            {"role": "survey"}, bot_name="S", system_prompt="p", intents=[],
+        )).end_call_reason(d) == ""  # still opt-in only
 
     def test_configured_signals_and_floor(self):
         session = _end_call_session(signals=["wrong_person", "refusal"], minConfidence=0.7)
