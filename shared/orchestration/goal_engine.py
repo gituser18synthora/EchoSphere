@@ -852,11 +852,19 @@ class GoalSession:
 
         Only the bot's opt-in (goal_policy.endCall) makes an ``end_call``
         decision binding, and only for its listed caller signals at or above
-        its confidence floor. The schema already downgrades ``end_call`` on a
-        denied/ambiguous gate answer, so a re-ask never closes.
+        its confidence floor. It reads the model's REQUESTED action: the
+        schema rewrites ``end_call`` on a denied gate answer into a re-ask
+        (cv_c082ce24e2dc, 2026-09-29: wrong_person + denied → the goodbye
+        was spoken but the call stayed open), and that rewrite protects
+        workflow/tool flows, not this close. A model that itself asked to
+        re-ask or clarify, or judged the turn unclear, never closes.
         """
         rule = self.policy.end_call
-        if not rule.enabled or decision.next_action != "end_call":
+        if not rule.enabled or decision.requested_action != "end_call":
+            return ""
+        if decision.decision in ("ambiguous", "needs_clarification"):
+            return ""
+        if decision.needs_clarification or decision.context_question:
             return ""
         if decision.signal not in rule.signals:
             return ""

@@ -86,6 +86,45 @@ async def test_opted_in_wrong_person_says_goodbye_then_ends_the_call():
     assert brain._closing
 
 
+async def test_denied_wrong_person_still_says_goodbye_and_ends_the_call():
+    # cv_c082ce24e2dc (local, 2026-09-29): the model asked end_call, the
+    # schema's denied-gate rule rewrote it to ask_identity_confirmation, the
+    # goodbye was spoken and the call stayed open.
+    brain, llm = survey_brain(opted_in())
+    decide(brain, intent="identity_confirmation", signal="wrong_person", decision="denied",
+           scope="in_scope", next_action="end_call", confidence=0.9,
+           reason="Caller is not the intended person.")
+    await brain._handle_turn("मैं गौरव नहीं हूँ। था वो। Okay")
+
+    assert ended(brain)
+    assert ("call_completed_by_decision", {"reason": "end_call:wrong_person"}) in brain._recorder.events
+    assert "# Ending the call" in llm.systems[-1]
+    assert brain._closing
+
+
+async def test_models_own_reask_keeps_the_call_open():
+    brain, llm = survey_brain(opted_in())
+    decide(brain, intent="identity_confirmation", signal="wrong_person", decision="denied",
+           scope="in_scope", next_action="ask_identity_confirmation", confidence=0.9)
+    await brain._handle_turn("नहीं नहीं")
+
+    assert not ended(brain)
+    assert "call_completed_by_decision" not in brain._recorder.event_kinds()
+    assert "# Ending the call" not in llm.systems[-1]
+
+
+async def test_a_hold_is_acknowledged_never_hung_up_on():
+    # Even a (nonsensical) endCall.signals containing "hold" must not turn
+    # "ek minute rukiye" into a goodbye + hang-up.
+    brain, llm = survey_brain(opted_in(signals=["wrong_person", "hold"]))
+    decide(brain, signal="hold", scope="in_scope", next_action="end_call", confidence=1.0)
+    await brain._handle_turn("एक मिनट रुकिए")
+
+    assert not ended(brain)
+    assert "hold_acknowledged" in brain._recorder.event_kinds()
+    assert "call_completed_by_decision" not in brain._recorder.event_kinds()
+
+
 async def test_default_bot_keeps_todays_behaviour():
     brain, llm = survey_brain(SURVEY_POLICY)
     decide(brain, **WRONG_PERSON)

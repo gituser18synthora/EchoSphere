@@ -133,6 +133,11 @@ class ConversationDecision(BaseModel):
     # Runtime bookkeeping (never model-supplied).
     source: str = "llm"          # llm | fallback
     latency_ms: float = 0.0
+    # The model's OWN next_action, kept before the guardrails below rewrite
+    # it (a denied gate answer turns end_call into a re-ask). A consumer that
+    # must know what the model asked for — not what the gate allows — reads
+    # this; everything else keeps following next_action.
+    requested_action: str = ""
 
     @field_validator("intent", "signal", "tool_request", mode="before")
     @classmethod
@@ -210,6 +215,9 @@ class ConversationDecision(BaseModel):
     @model_validator(mode="after")
     def _enforce_scope_rules(self):
         """Deterministic guardrails no model output can bypass."""
+        # Recorded first and unconditionally: the model cannot supply it, and
+        # every rewrite below leaves it untouched.
+        self.requested_action = self.next_action
         self.context_question = bool(
             self.context_question and self.scope == SCOPE_IN
             and self.signal == "question" and self.confidence >= 0.6
@@ -262,6 +270,7 @@ class ConversationDecision(BaseModel):
             "reason": self.reason[:160],
             "slots": {name: obs.status for name, obs in self.slots.items()},
             "next_action": self.next_action,
+            "requested_action": self.requested_action,
             "tool_request": self.tool_request,
             "needs_clarification": self.needs_clarification,
             "context_question": self.context_question,
