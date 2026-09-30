@@ -310,6 +310,57 @@ def _foreign_script_share(text: str, allowed: frozenset[str]) -> tuple[int, floa
     return foreign, (foreign / letters) if letters else 0.0
 
 
+# ── Indic script families (rescue-language evidence) ─────────────────────────
+# Sarvam's auto-detect confuses Hindi mostly with the languages whose scripts
+# are ISCII-aligned with Devanagari (Punjabi, Bengali, Gujarati, Odia, …) —
+# the northern family. The Dravidian scripts are a separate family. Urdu
+# (Arabic script) belongs to neither: it is never taken as script evidence.
+INDIC_NORTHERN_LANGUAGES = frozenset({"hi", "mr", "ne", "bn", "as", "pa", "gu", "or"})
+INDIC_DRAVIDIAN_LANGUAGES = frozenset({"ta", "te", "kn", "ml"})
+_FAMILY_PATTERNS = {
+    "northern": tuple({id(_SCRIPT_PATTERNS[b]): _SCRIPT_PATTERNS[b] for b in INDIC_NORTHERN_LANGUAGES}.values()),
+    "dravidian": tuple({id(_SCRIPT_PATTERNS[b]): _SCRIPT_PATTERNS[b] for b in INDIC_DRAVIDIAN_LANGUAGES}.values()),
+}
+
+
+def indic_language(code: str | None) -> bool:
+    """Whether a locale/base code is one of the Indic (Brahmic-script) languages."""
+    base = base_language(code)
+    return bool(base) and (base in INDIC_NORTHERN_LANGUAGES or base in INDIC_DRAVIDIAN_LANGUAGES)
+
+
+def language_family(code: str | None) -> str | None:
+    """"northern" / "dravidian" for an Indic language code, else None."""
+    base = base_language(code)
+    if base in INDIC_NORTHERN_LANGUAGES:
+        return "northern"
+    if base in INDIC_DRAVIDIAN_LANGUAGES:
+        return "dravidian"
+    return None
+
+
+def indic_script_family(text: str) -> str | None:
+    """The Indic script family an utterance is mostly written in, or None.
+
+    "northern" when at least half of the lettered text is Devanagari, Bengali,
+    Gurmukhi, Gujarati or Oriya; "dravidian" for Tamil, Telugu, Kannada or
+    Malayalam. Latin-dominant text (English, romanized Hinglish), Arabic
+    script and empty text give None.
+    """
+    if not text:
+        return None
+    counts = {
+        family: sum(len(p.findall(text)) for p in patterns)
+        for family, patterns in _FAMILY_PATTERNS.items()
+    }
+    indic = sum(counts.values())
+    if not indic:
+        return None
+    letters = indic + len(_LATIN_CHARS.findall(text)) + len(_ARABIC_CHARS.findall(text))
+    family = max(counts, key=counts.get)
+    return family if counts[family] / letters >= FOREIGN_SCRIPT_DOMINANCE else None
+
+
 # ── provider quality metadata ───────────────────────────────────────────────
 
 
