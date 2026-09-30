@@ -94,7 +94,7 @@ Current governed live matrix:
 
 | Capability | Active production providers | Platform default |
 | --- | --- | --- |
-| STT | `sarvam`, `deepgram` | `sarvam/saaras:v3` |
+| STT | `sarvam` (`saaras:v3` default, `saaras:v4` selectable, `saarika:v2.5`), `deepgram` | `sarvam/saaras:v3` |
 | TTS | `sarvam`, `elevenlabs`, `deepgram` | `sarvam/bulbul:v3`, voice `shubh` |
 | LLM | `openai` | `openai/gpt-4o-mini` |
 | Embedding | `openai` | `openai/text-embedding-3-small` |
@@ -103,10 +103,36 @@ The code registry contains additional dormant adapters, but a live bot cannot
 select them unless governance/catalog status is changed in code. `mock` remains
 a development/test pseudo-provider and is excluded in production.
 
+### Sarvam saaras:v4 and key terms
+
+`saaras:v4` (catalog row from migration `a9c1e3b5d7f9`, or pre-staged with
+`backend/scripts/stage_saaras_v4_catalog.py`) is selectable per bot; `saaras:v3`
+keeps `is_default` and remains the platform default, so nothing changes for a
+bot that never picked a model. v4 uses the same WebSocket endpoint, language
+codes, modes and VAD controls as v3 and adds **key-term biasing**:
+
+- `voice_bot_settings.stt_settings.keyterms` — a list of up to 50 terms
+  (≤ 64 characters each, one term or phrase per entry). The key exists only in
+  the v4 `params_schema`, so the Voice tab renders it only for v4 and the API
+  rejects it for any other model (`unknown parameter 'keyterms'`). The PUT
+  trims, de-duplicates and drops an empty list; `shared/providers/stt/
+  sarvam_keyterms.py` holds the limits (Sarvam does NOT reject over-limit or
+  comma-joined lists at handshake time — verified 2026-10-01).
+- Runtime: `build_stt_service` hands the cleaned list to
+  `EndpointedSarvamSTTService`, whose connect proxy adds
+  `keyterms=<JSON array>` to the Sarvam handshake — only for v4; a stale v3
+  configuration logs a warning and records `stt_keyterms sent=false`. The
+  identifier-recovery REST transcriber forwards the same list (v4 only).
+- Pipecat ≤ 1.6 does not know `saaras:v4`; `voice_runtime/sarvam_stt.py`
+  registers it as a copy of the v3 capability row, so a deployment whose code
+  predates that module must keep the catalog row `inactive` (the staging
+  script's `--status inactive`; the migration activates it on upgrade).
+
 ## Runtime data flow
 
 ```
-caller/browser → Sarvam STT WS (saarika/saaras, auto-detect supported)
+caller/browser → Sarvam STT WS (saarika/saaras v3|v4, auto-detect supported;
+                                 saaras:v4 adds ?keyterms=[…] key-term biasing)
   → transcript → VAD/turn control → intent routing → KB retrieval (when needed)
   → OpenAI LLM token stream → sanitizer → sentence buffer
   → StreamingTTSRouter → Sarvam TTS WS | ElevenLabs TTS WS

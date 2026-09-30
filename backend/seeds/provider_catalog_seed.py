@@ -172,6 +172,31 @@ _SAARAS_V3_SCHEMA = {
     },
 }
 
+# Sarvam saaras:v4 — same modes, languages and VAD controls as v3, plus
+# key-term biasing. ``keyterms`` has no default on purpose: an absent key
+# means "no biasing", so existing bots and a fresh v4 selection behave
+# identically until an operator enters terms. Limits are Sarvam's documented
+# contract (50 terms × 64 characters, one term or phrase per entry); the
+# shared rule set in shared/providers/stt/sarvam_keyterms.py enforces them
+# for the API and the runtime. The key is NOT part of the v3 schema, which
+# is what makes the UI hide it and the API reject it for v3.
+_SAARAS_V4_SCHEMA = {
+    **_SAARAS_V3_SCHEMA,
+    "mode": {
+        **_SAARAS_V3_SCHEMA["mode"],
+        "help": "Output mode. 'transcribe' is standard; 'translate' returns English.",
+    },
+    "keyterms": {
+        "type": "string_list", "max_items": 50, "max_length": 64,
+        "optional": True, "multiline": True,
+        "label": "Key terms (saaras:v4)",
+        "help": "Up to 50 names, places, brands or technical terms (64 characters "
+                "each) that recognition is biased toward — one term or phrase per "
+                "line, e.g. Zepto / New Delhi. Biasing only: a term is not "
+                "guaranteed to appear in the transcript.",
+    },
+}
+
 _SARVAM_TTS_V3_SCHEMA = {
     "pace": {
         "type": "number", "min": 0.5, "max": 2.0, "default": 1.0, "step": 0.05,
@@ -383,6 +408,10 @@ _SAARAS_V3_LANGS = _SAARIKA_LANGS + [
     "as-IN", "ur-IN", "ne-IN", "kok-IN", "ks-IN", "sd-IN",
     "sa-IN", "sat-IN", "mni-IN", "brx-IN", "mai-IN", "doi-IN",
 ]
+# saaras:v4 accepts the same streaming ``language_code`` set as v3 (sarvamai
+# 0.1.35 literal, verified 2026-10-01); its added "global English" coverage
+# arrives through the same en-IN/unknown codes, not a new locale.
+_SAARAS_V4_LANGS = list(_SAARAS_V3_LANGS)
 
 # ElevenLabs Flash/Turbo v2.5 languages (bare ISO 639-1, 32 languages).
 _ELEVEN_V2_5_LANGS = [
@@ -541,6 +570,16 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
         "Cheaper GPT-4o mini transcription (batch/REST). Inactive under "
         "platform governance: STT is Sarvam-only."
     ),
+    ("sarvam", "stt", "saaras:v3"): (
+        "Sarvam Saaras v3 realtime STT: 22 Indic languages + Indian English, "
+        "auto-detect, output modes (transcribe/verbatim/translit/codemix/"
+        "translate). Platform default."
+    ),
+    ("sarvam", "stt", "saaras:v4"): (
+        "Sarvam Saaras v4 realtime STT: v3 coverage plus global English, "
+        "better noise/accent robustness, and key-term biasing (up to 50 "
+        "names/brands/terms). Not the default — select it per bot."
+    ),
     ("deepgram", "tts", "aura-2"): (
         "Deepgram Aura-2 low-latency neural voices over /v1/speak (REST and "
         "realtime WebSocket). Speaks English, Spanish, German, Dutch, French, "
@@ -579,6 +618,11 @@ PROVIDER_MODELS = [
     ("sarvam", "stt", "saaras:v3", "Saaras v3 (streaming)",
      _SAARAS_V3_LANGS, ["linear16"], [8000, 16000], True,
      _SAARAS_V3_SCHEMA, True, "active", 0),
+    # saaras:v4 is selectable but NOT the default — v3 stays the platform and
+    # provider default until an operator explicitly chooses v4 for a bot.
+    ("sarvam", "stt", "saaras:v4", "Saaras v4 (streaming)",
+     _SAARAS_V4_LANGS, ["linear16"], [8000, 16000], True,
+     _SAARAS_V4_SCHEMA, False, "active", 1),
     ("mock", "stt", "mock", "Mock STT", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # ── TTS ──────────────────────────────────────────────────────────────

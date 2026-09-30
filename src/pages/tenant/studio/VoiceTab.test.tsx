@@ -840,6 +840,96 @@ describe("VoiceTab — STT auto-detect language", () => {
   });
 });
 
+/* Sarvam saaras:v4 key terms: the field exists only in v4's catalog schema,
+   so the Voice tab shows it for v4 (multi-line, one term per line, limits
+   enforced inline) and hides it for v3; switching models reconciles the
+   settings so v3 never carries `keyterms`. v3 stays the default model. */
+describe("VoiceTab — Sarvam saaras:v4 key terms", () => {
+  const V3_SCHEMA = {
+    mode: { type: "enum", values: ["transcribe", "translate"], default: "transcribe", label: "Mode" },
+  };
+  const V4_SCHEMA = {
+    ...V3_SCHEMA,
+    keyterms: {
+      type: "string_list", max_items: 50, max_length: 64, optional: true, multiline: true,
+      label: "Key terms (saaras:v4)", help: "Up to 50 terms.",
+    },
+  };
+  const SARVAM_STT_MODELS = [
+    { code: "saaras:v3", displayName: "Saaras v3", isDefault: true, capability: "stt", streaming: true, paramsSchema: V3_SCHEMA },
+    { code: "saaras:v4", displayName: "Saaras v4", isDefault: false, capability: "stt", streaming: true, paramsSchema: V4_SCHEMA },
+  ];
+
+  function installV4Mocks(settings: Record<string, unknown>) {
+    installDefaultMocks(settings);
+    vi.mocked(api.getProviderCatalog).mockResolvedValue({
+      stt: [{ code: "sarvam", name: "Sarvam AI", capability: "stt", description: "", requiresApiKey: true, hasCredentials: true }],
+      llm: [], tts: [],
+    } as never);
+    const tts = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      cap === "stt" && provider === "sarvam" ? Promise.resolve(SARVAM_STT_MODELS) : tts(cap, provider)) as never);
+  }
+
+  const V3_SETTINGS = {
+    ...SETTINGS,
+    sttProvider: "sarvam", sttModel: "saaras:v3", sttLanguage: "", sttSettings: { mode: "transcribe" },
+    sttAutoDetectLanguage: { value: null, effective: true, source: "derived", derivedDefault: true, languages: ["en-IN", "hi-IN"] },
+  };
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("hides key terms on saaras:v3 and lists v3 as the default model", async () => {
+    installV4Mocks(V3_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const select = await screen.findByRole("combobox", { name: "STT model" }) as HTMLSelectElement;
+    // The model list loads asynchronously after the select renders.
+    expect(await within(select).findByRole("option", { name: "Saaras v3 (default)" })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "Saaras v4" })).toBeInTheDocument();
+    expect(select.value).toBe("saaras:v3");
+    expect(screen.queryByLabelText("Key terms (saaras:v4)")).not.toBeInTheDocument();
+  });
+
+  it("shows key terms after selecting saaras:v4, saves one term per line, and never sends them for v3", async () => {
+    installV4Mocks(V3_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    const select = await screen.findByRole("combobox", { name: "STT model" });
+    await within(select).findByRole("option", { name: "Saaras v4" });
+    await userEvent.selectOptions(select, "saaras:v4");
+    const editor = await screen.findByLabelText("Key terms (saaras:v4)");
+    expect(editor.tagName).toBe("TEXTAREA");
+    await userEvent.type(editor, "Zepto\nNew Delhi\n\n Zepto ");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.sttModel).toBe("saaras:v4");
+    expect(payload.sttSettings).toEqual({ mode: "transcribe", keyterms: ["Zepto", "New Delhi", "Zepto"] });
+
+    // Back to v3: the field disappears and the reconciled settings drop the key.
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "STT model" }), "saaras:v3");
+    expect(screen.queryByLabelText("Key terms (saaras:v4)")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(2));
+    const back = vi.mocked(api.saveVoiceSettings).mock.calls[1][1] as Record<string, unknown>;
+    expect(back.sttModel).toBe("saaras:v3");
+    expect(back.sttSettings).toEqual({ mode: "transcribe" });
+  });
+
+  it("enforces the 64-character and 50-entry limits inline", async () => {
+    installV4Mocks({ ...V3_SETTINGS, sttModel: "saaras:v4", sttSettings: { mode: "transcribe", keyterms: ["Zepto"] } });
+    render(<VoiceTab bot={BOT} />);
+    const editor = await screen.findByLabelText("Key terms (saaras:v4)");
+    expect(editor).toHaveValue("Zepto");
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "x".repeat(65));
+    expect(await screen.findByText(/longer than 64 characters/)).toBeInTheDocument();
+    expect(editor).toHaveAttribute("aria-invalid", "true");
+    await userEvent.clear(editor);
+    await userEvent.paste(Array.from({ length: 51 }, (_, i) => `t${i}`).join("\n"));
+    expect(await screen.findByText(/At most 50 entries allowed/)).toBeInTheDocument();
+  });
+});
+
 describe("VoiceTab — End call after goodbye", () => {
   const SURVEY_GOAL_POLICY = {
     role: "closure feedback executive",

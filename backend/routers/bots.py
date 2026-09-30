@@ -20,6 +20,7 @@ from backend.core.deps import (
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
 from shared.providers.tts.delivery import strip_speed_params
+from shared.providers.stt.sarvam_keyterms import KEYTERMS_SETTING, normalize_keyterms
 from shared.audio.ambience_presets import ambience_preset_catalog
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.providers.stt_language_policy import resolve_auto_detect_language
@@ -860,6 +861,20 @@ def update_voice_settings(
     # persistence — Delivery tuning's speed is the only speed control.
     if body.tts_settings is not None:
         body.tts_settings = strip_speed_params(body.tts_settings)
+    if body.stt_settings is not None and KEYTERMS_SETTING in body.stt_settings:
+        # Sarvam key terms (saaras:v4): persist the cleaned list — trimmed,
+        # de-duplicated, blanks dropped — and never store an empty list, so
+        # "no key terms" and "key terms removed" are the same absent key.
+        # Validation below still reports over-limit or malformed entries
+        # (and rejects the key outright for models without the feature).
+        raw = body.stt_settings[KEYTERMS_SETTING]
+        cleaned = normalize_keyterms(raw) if isinstance(raw, (list, tuple)) else raw
+        body.stt_settings = {
+            key: value for key, value in body.stt_settings.items()
+            if key != KEYTERMS_SETTING
+        }
+        if cleaned:
+            body.stt_settings[KEYTERMS_SETTING] = cleaned
     if body.language_voice_map is not None:
         body.language_voice_map = _sanitize_language_voice_map(body.language_voice_map)
 
