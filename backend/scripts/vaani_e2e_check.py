@@ -59,7 +59,7 @@ async def sarvam_pcm_8k(text: str) -> tuple[bytes, str]:
             r = await cx.post(
                 "https://api.sarvam.ai/text-to-speech",
                 headers={"api-subscription-key": os.environ["SARVAM_API_KEY"]},
-                json={"text": text, "target_language_code": "hi-IN",
+                json={"text": text, "language_code": "hi-IN",
                       "speaker": "anand", "model": "bulbul:v3",
                       "speech_sample_rate": 8000},
             )

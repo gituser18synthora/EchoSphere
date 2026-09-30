@@ -117,7 +117,7 @@ class MockSarvamTTSServer(_BaseMockServer):
             return
         if self.behavior == "invalid_config":
             # Exactly what api.sarvam.ai returns for a bad config payload
-            # (e.g. an unsupported target_language_code).
+            # (e.g. an unsupported language_code).
             await websocket.send(json.dumps({
                 "type": "error",
                 "data": {"request_id": "req-invalid",

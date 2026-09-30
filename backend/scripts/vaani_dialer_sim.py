@@ -175,7 +175,7 @@ async def caller_audio(args, text: str) -> tuple[bytes, str]:
                 r = await cx.post(
                     "https://api.sarvam.ai/text-to-speech",
                     headers={"api-subscription-key": api_key},
-                    json={"text": text, "target_language_code": tts_lang,
+                    json={"text": text, "language_code": tts_lang,
                           "speaker": "anand", "model": "bulbul:v3",
                           "speech_sample_rate": 8000})
                 r.raise_for_status()

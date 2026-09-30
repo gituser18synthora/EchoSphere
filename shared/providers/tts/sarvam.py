@@ -9,6 +9,7 @@ legacy per-sample pure-python loop), and output is 16 kHz 16-bit mono PCM.
 
 import asyncio
 import base64
+import inspect
 import logging
 import re
 import time
@@ -84,6 +85,30 @@ def _normalize_speaker(voice: object) -> str:
     return str(voice).strip().lower() if voice is not None else ""
 
 
+# The sarvamai SDK renamed the TTS language keyword: ``target_language_code``
+# up to 0.1.2x, ``language_code`` from 0.1.3x (0.1.35 is installed locally and
+# on live; the HTTP body it sends is ``language_code`` and the Sarvam API
+# accepts both spellings). Passing the old keyword to the new SDK raises
+# ``TypeError: unexpected keyword argument`` before any request is made, which
+# silently killed every REST render (voiced cues, previews). The keyword is
+# read from the installed ``convert`` signature so the adapter follows the
+# SDK it runs against instead of assuming a version.
+_LANGUAGE_KWARG_CANDIDATES = ("language_code", "target_language_code")
+_DEFAULT_LANGUAGE_KWARG = "language_code"
+
+
+def _tts_language_kwarg(convert) -> str:
+    """The keyword ``convert`` accepts for the synthesis language."""
+    try:
+        params = inspect.signature(convert).parameters
+    except (TypeError, ValueError):
+        return _DEFAULT_LANGUAGE_KWARG
+    for name in _LANGUAGE_KWARG_CANDIDATES:
+        if name in params:
+            return name
+    return _DEFAULT_LANGUAGE_KWARG
+
+
 class SarvamTTS(TTSProvider):
     name = "sarvam-tts"
 
@@ -141,10 +166,11 @@ class SarvamTTS(TTSProvider):
                 "sarvam-tts: no speaker configured; using model default '%s' for %s",
                 speaker, self._model,
             )
+        convert = self._client.text_to_speech.convert
         request = {
             "text": text,
             "model": self._model,
-            "target_language_code": language_code,
+            _tts_language_kwarg(convert): language_code,
             "speaker": speaker,
             "speech_sample_rate": self.output_sample_rate,
             "output_audio_codec": "wav",
@@ -160,7 +186,7 @@ class SarvamTTS(TTSProvider):
         request["pace"] = max(0.5, min(2.0, float(pace or 1.0)))
         try:
             response = await asyncio.wait_for(
-                self._client.text_to_speech.convert(**request),
+                convert(**request),
                 timeout=self._timeout,
             )
         except TimeoutError as exc:
