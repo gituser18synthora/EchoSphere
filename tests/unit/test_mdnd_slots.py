@@ -295,3 +295,72 @@ async def test_field_words_in_the_quote_are_accepted_whatever_is_pending():
     result = await _extract(llm, text, pending_variable="m_reached_location",
                             pending_question="क्या आप customer की location पर पहुंचे थे?")
     assert result.patch == patch
+
+
+# ── Hindi/Hinglish grounding (2026-09-30, cv_ceb9e7e7f458) ──────────────────
+
+async def test_quote_wrapped_evidence_is_still_a_verbatim_span():
+    text = "और कस्टमर को खुद ही प्रोडक्ट मैंने दिया था, कस्टमर ने ही प्रोडक्ट लिया था।"
+    for wrapped in ('"कस्टमर ने ही प्रोडक्ट लिया था।"', "“कस्टमर ने ही प्रोडक्ट लिया था।”",
+                    " 'कस्टमर ने ही प्रोडक्ट लिया था।' "):
+        llm = _provider({"delivery_handoff": "customer"}, {"delivery_handoff": wrapped},
+                        handoff_type="person")
+        result = await _extract(llm, text, pending_variable="m_issue_description", language="hi-IN")
+        assert result.patch == {"delivery_handoff": "customer"}, wrapped
+        assert result.evidence["delivery_handoff"] == "कस्टमर ने ही प्रोडक्ट लिया था।"
+    # Quotation marks never make a non-span verbatim.
+    llm = _provider({"delivery_handoff": "customer"}, {"delivery_handoff": '"कस्टमर को नहीं दिया"'})
+    result = await _extract(llm, text, pending_variable="m_issue_description", language="hi-IN")
+    assert result.patch == {}
+
+
+async def test_indic_story_denials_must_sit_on_the_facts_verb():
+    text = "मैंने कस्टमर को कॉल किया था, लोकेशन पर भी गया था, लेकिन कस्टमर को नहीं दिया, गार्ड के पास छोड़ा था।"
+    handover = "लेकिन कस्टमर को नहीं दिया, गार्ड के पास छोड़ा था।"
+    llm = _provider(
+        {"customer_called": "yes", "reached_location": "no", "delivery_handoff": "guard",
+         "cx_support_called": "no"},
+        {"customer_called": "मैंने कस्टमर को कॉल किया था", "reached_location": handover,
+         "delivery_handoff": handover, "cx_support_called": handover}, handoff_type="person")
+    result = await _extract(llm, text, pending_variable="m_issue_description", language="hi-IN")
+    assert result.patch == {"customer_called": "yes", "delivery_handoff": "guard"}
+
+
+async def test_indic_customer_not_answering_is_neither_a_missing_call_nor_a_cx_answer():
+    text = "लोकेशन पर गया था लेकिन कस्टमर घर पर नहीं था, कॉल भी नहीं उठाया, तो गार्ड को दे दिया।"
+    llm = _provider(
+        {"customer_called": "no", "reached_location": "no", "delivery_handoff": "guard",
+         "cx_support_called": "no"},
+        {"customer_called": "कॉल भी नहीं उठाया", "reached_location": text,
+         "delivery_handoff": "गार्ड को दे दिया", "cx_support_called": "कॉल भी नहीं उठाया"},
+        handoff_type="person")
+    result = await _extract(llm, text, pending_variable="m_issue_description", language="hi-IN")
+    assert result.patch == {"delivery_handoff": "guard"}
+
+
+@pytest.mark.parametrize("text, field, quote", [
+    ("CX सपोर्ट से कोई कॉल नहीं आया।", "cx_support_called", "CX सपोर्ट से कोई कॉल नहीं आया"),
+    ("मैंने कॉल किया था पर लोकेशन पर नहीं पहुँच पाया।", "reached_location", "लोकेशन पर नहीं पहुँच पाया"),
+    ("मैंने कॉल नहीं किया था, सीधा कस्टमर के घर गया।", "customer_called", "मैंने कॉल नहीं किया था"),
+    ("Customer ko call nahi kiya tha, seedha ghar gaya.", "customer_called", "Customer ko call nahi kiya tha"),
+])
+async def test_indic_real_denials_survive(text, field, quote):
+    llm = _provider({field: "no"}, {field: quote})
+    result = await _extract(llm, text, pending_variable="m_issue_description", language="hi-IN")
+    assert result.patch == {field: "no"}
+
+
+async def test_indic_pending_ask_accepts_any_negation_and_bare_answers():
+    llm = _provider({"reached_location": "no"}, {"reached_location": "नहीं गया था"})
+    result = await _extract(llm, "नहीं गया था", pending_variable="m_reached_location",
+                            pending_question="क्या आप location पर पहुँचे थे?", language="hi-IN")
+    assert result.patch == {"reached_location": "no"}
+    llm = _provider({"cx_support_called": "yes"}, {"cx_support_called": "हाँ"})
+    result = await _extract(llm, "हाँ", pending_variable="m_cx_support_call",
+                            pending_question="CX support से call आया था?", language="hi-IN")
+    assert result.patch == {"cx_support_called": "yes"}
+    # A pending CX ask answered about the partner's own customer call stays unknown.
+    llm = _provider({"cx_support_called": "no"}, {"cx_support_called": "कस्टमर को कॉल नहीं किया"})
+    result = await _extract(llm, "कस्टमर को कॉल नहीं किया", pending_variable="m_cx_support_call",
+                            pending_question="CX support से call आया था?", language="hi-IN")
+    assert result.patch == {}

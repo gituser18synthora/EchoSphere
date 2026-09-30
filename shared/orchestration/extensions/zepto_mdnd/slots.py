@@ -161,10 +161,24 @@ _BARE_YES_NO = re.compile(
     r"bilkul|nahi|nahin|nai|na|no|nope|not|हाँ|हां|हा|हाँजी|जी|हाँ\s*जी|जी\s*हाँ|ठीक|सही|"
     r"बिल्कुल|बिलकुल|नहीं|नही|ना|है|hai|tha|था|correct|right|dono|both|दोनों|bhi|भी|ये|यह|all|सब)"
     r"[\s,.।!?…\-]*)+$", re.IGNORECASE)
+# Quotation marks a model wraps its evidence in ("…", “…”) are not part of
+# the utterance; the span inside still has to be verbatim.
+_EVIDENCE_WRAPPERS = "\"'“”‘’«»`"
+
+
 def _quoted_span(value: Any, text: str) -> str | None:
+    """The evidence, if it is a verbatim span of the utterance.
+
+    cv_ceb9e7e7f458 (2026-09-30): the Hindi handoff reader answered
+    ``customer`` with the right clause wrapped in a pair of double quotes,
+    and the exact-substring check dropped the fact — the partner was asked
+    the handover question they had just answered.
+    """
     if not isinstance(value, str) or not value.strip():
         return None
-    stripped = value.strip()
+    stripped = value.strip().strip(_EVIDENCE_WRAPPERS).strip()
+    if not stripped:
+        return None
     return stripped if _normalized(stripped) in _normalized(text) else None
 
 
@@ -270,6 +284,97 @@ def _ground_english_evidence(result: MDNDExtraction,
     return replace(result, patch=patch, evidence=evidence)
 
 
+# Hindi/Hinglish denials sit ON the fact's verb — the shapes of the workflow's
+# own "no" lexicon ("location par nahi pahuncha", "call nahi kiya", "CX se
+# call nahi aaya") — never anywhere in the quote: "customer ko nahi diya"
+# denies a handover, not arrival or a support call.
+_INDIC_DENIALS = {
+    "reached_location": re.compile(
+        r"(?:location|लोकेशन|address|एड्रेस|ghar|घर|wahan|wahaan|वहाँ|वहां|jagah|जगह"
+        r"|society|सोसाइटी|building|बिल्डिंग|flat|फ्लैट|gate|गेट)"
+        r"\s*(?:par|pe|pr|tak|पर|पे|तक)?\s*(?:\S+\s+){0,2}?(?:nahi|nahin|नहीं|नही)\s*"
+        r"(?:pahunch\w*|pahuch\w*|pohonch\w*|gaya|gayi|gaye|ja\s*paya"
+        r"|पहुंच\w*|पहुँच\w*|पहुच\w*|गया|गई|गए|जा\s*पाया)"
+        r"|(?:pahunch|pahuch|pohonch|पहुँच|पहुंच|पहुच)\w*\s*(?:hi\s*|ही\s*)?(?:nahi|nahin|नहीं|नही)"
+        r"|(?:did\s*not|didn'?t|could\s*not|couldn'?t|never)\s*(?:reach|go\s+to|get\s+to)\b",
+        re.I),
+    "customer_called": re.compile(
+        r"(?:call|कॉल|phone|phon|fone|फोन|फ़ोन|baat|बात|try|ट्राई)\s*(?:bhi\s*|भी\s*)?"
+        r"(?:(?!laga|lag\b|लगा|लग)\S+\s+){0,1}?(?:nahi|nahin|नहीं|नही)\s*"
+        r"(?:kiya|kia|ki|diya|di|hua|hui|ho\s*(?:paya|saka)|kar\s*(?:paya|saka)"
+        r"|किया|की|दिया|दी|हुआ|हुई|हो\s*(?:पाया|सका)|कर\s*(?:पाया|सका))"
+        r"|(?:did\s*not|didn'?t|never)\s*(?:call|phone|ring)\b",
+        re.I),
+    "cx_support_called": re.compile(
+        r"(?:call|कॉल|phone|फोन|फ़ोन)\s*(?:bhi\s*|भी\s*)?(?:(?!laga|लगा)\S+\s+){0,2}?"
+        r"(?:nahi|nahin|नहीं|नही)\s*(?:aaya|aya|aayi|ayi|hua|hui|kiya|आया|आई|हुआ|हुई|किया)"
+        r"|(?:koi|कोई)\s*(?:call|कॉल|phone|फोन)\s*(?:bhi\s*|भी\s*)?(?:nahi|nahin|नहीं|नही)"
+        r"|(?:did\s*not|didn'?t|never|no)\s*(?:call|contact|phone)\b",
+        re.I),
+}
+_INDIC_NEGATION = re.compile(
+    r"नहीं|नही|नहि|मत|(?<![\wऀ-ॿ])ना(?![\wऀ-ॿ])"
+    r"|\b(?:nahi|nahin|nai|na|mat|no|not|never)\b|n['’]t\b", re.I)
+_INDIC_SUPPORT = re.compile(
+    r"\b(?:cx|c\s*x|support|company|team|zepto|helpline|customer\s*care)\b"
+    r"|सीएक्स|सी\s*एक्स|सपोर्ट|कंपनी|टीम|ज़ेप्टो|जेप्टो|कस्टमर\s*केयर|हेल्पलाइन", re.I)
+_INDIC_CUSTOMER = re.compile(r"\b(?:customer|client|grahak|kastamar)\b|कस्टमर|ग्राहक", re.I)
+_INDIC_CALL = re.compile(
+    r"\b(?:call\w*|phon\w*|fone|baat|try|ring\w*|dial\w*|number)\b|कॉल|फोन|फ़ोन|बात|ट्राई|नंबर",
+    re.I)
+_INDIC_ARRIVAL = re.compile(
+    r"\b(?:location|address|ghar|wahan|wahin|wahaan|jagah|society|building|flat|gate"
+    r"|door\w*|home|house|place|pahunch\w*|pahuch\w*|pohonch\w*|gaya|gayi|gaye|jaa?ka?r"
+    r"|reach\w*|went|arriv\w*)\b"
+    r"|लोकेशन|एड्रेस|घर|वहाँ|वहां|वहीं|जगह|सोसाइटी|बिल्डिंग|फ्लैट|गेट|दरवाज|पहुंच|पहुँच|पहुच|गया|गई|गए|जाकर",
+    re.I)
+
+
+def _ground_indic_evidence(result: MDNDExtraction,
+                           pending_fields: tuple[str, ...]) -> MDNDExtraction:
+    """Hindi/Hinglish counterpart of :func:`_ground_english_evidence`.
+
+    Measured 2026-09-30 (gpt-4o-mini, bot_59a84478f155): "location par bhi
+    gaya tha, customer ko nahi diya, guard ke paas chhoda" was read as
+    reached_location=no AND cx_support_called=no, quoting the handover
+    clause for both; "call bhi nahi uthaya" (the customer did not pick up)
+    became customer_called=no; the partner's own "call nahi kiya" became
+    cx_support_called=no. In a story turn a ``no`` survives only when its
+    quote denies THAT fact's verb; at the fact's own ask any negation in
+    the quote is the answer. A CX answer needs support named (unless the
+    CX ask is pending and the quote is not about the customer), a customer
+    call needs a call word, an arrival needs a place or movement word.
+    Dropped fields fall back to the authored keyword captures — the engine
+    shields only the fields the extractor decided.
+    """
+    from dataclasses import replace
+
+    patch, evidence = dict(result.patch), dict(result.evidence)
+    for name, denial in _INDIC_DENIALS.items():
+        value = patch.get(name)
+        if value not in {"yes", "no"}:
+            continue
+        quote = evidence.get(name, "")
+        pending = name in pending_fields
+        if pending and _BARE_YES_NO.fullmatch(quote):
+            continue  # contextual short answer to the pending ask
+        unsupported = value == "no" and not (
+            _INDIC_NEGATION.search(quote) if pending else denial.search(quote))
+        if name == "cx_support_called":
+            # The partner calling the customer never proves CX called them.
+            unsupported |= not _INDIC_SUPPORT.search(quote) and (
+                not pending or bool(_INDIC_CUSTOMER.search(quote)))
+        elif name == "customer_called":
+            unsupported |= not _INDIC_CALL.search(quote) and (
+                not pending or bool(_INDIC_SUPPORT.search(quote)))
+        elif value == "yes":  # reached_location
+            unsupported |= not _INDIC_ARRIVAL.search(quote)
+        if unsupported:
+            patch.pop(name, None)
+            evidence.pop(name, None)
+    return replace(result, patch=patch, evidence=evidence)
+
+
 async def extract_mdnd_slots(
     llm: LLMProvider,
     *,
@@ -342,6 +447,8 @@ async def extract_mdnd_slots(
         )
         if language.lower().startswith("en"):
             validated = _ground_english_evidence(validated, pending_fields)
+        else:
+            validated = _ground_indic_evidence(validated, pending_fields)
         # Each independent reader may supply ONLY its field. This prevents a
         # negative about a different call from becoming the pending answer.
         from dataclasses import replace

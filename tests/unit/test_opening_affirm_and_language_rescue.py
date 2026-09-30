@@ -395,3 +395,265 @@ class TestRepeatedUnsupportedLabel:
         assert brain._supported_language_names() == "हिंदी या अंग्रेज़ी"
         brain._conversation_language = "en-IN"
         assert brain._supported_language_names() == "Hindi or English"
+
+
+# ── rescue language: Indic-script mislabels re-transcribe in the bot's own
+# Indic language, never a blind mapping to Hindi ─────────────────────────────
+# Live bot_aba8f9101217 (Haier, default en-IN, languages en-IN + hi-IN,
+# 2026-09-30): Sarvam labelled short Hindi turns pa-IN/od-IN/ta-IN and the
+# rescue re-transcribed them pinned to the CONVERSATION language en-IN —
+# "ਨਹੀਂ ਮੈਂ ਰੋਹਨ ਨਹੀਂ ਮੈਂ" → "Name and one name". Evidence order under test:
+# Indic conversation language > caller's prior detected language > single
+# configured language of the same script family > sole Indic language for a
+# short cross-family interjection > conversation language (unchanged).
+
+GURMUKHI_MISLABEL = "ਨਹੀਂ ਮੈਂ ਰੋਹਨ ਨਹੀਂ ਮੈਂ।"
+GURMUKHI_LONG = "ਨਹੀਂ ਨਹੀਂ ਮੈਂ ਤਾਂ ਰੋਹਨ ਨਹੀਂ ਹਾਂ ਜੀ ਗਲਤ ਨੰਬਰ ਲੱਗ ਗਿਆ ਹੈ ਤੁਹਾਡਾ"
+TAMIL_SHORT = "ஆ."
+TAMIL_LONG = "ஆமாம் நான் ரோஹன் பேசுகிறேன் சார் நீங்கள் யார் பேசுறீங்க இப்போ"
+KANNADA_SHORT = "ಹೌದು ಹೌದು"
+HINDI_RESCUED = "नहीं मैं रोहन नहीं हूँ।"
+ENGLISH_RESCUED = "No, I am not Rohan."
+
+
+def make_brain_with_language(
+    *, language, languages, gate=None, batch_transcriber=None, stt_settings=None,
+):
+    config = ResolvedBotConfig(
+        tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
+        published=True, language=language, languages=languages,
+        stt={"provider": "sarvam", "settings": stt_settings or {}},
+        system_prompt="You are Test.", intents=[],
+    )
+    brain = ConversationBrain(
+        config=config, llm=None, recorder=_RecorderStub(),
+        finalize_grace=0.05, finalize_settle=0.02,
+        complete_endpoint=0.05, short_reply_endpoint=0.05,
+        audio_gate=gate, batch_transcriber=batch_transcriber,
+    )
+    brain._pushed = []
+    brain._notified = []
+
+    async def _push(frame, direction=None):
+        brain._pushed.append(frame)
+
+    async def _notify(payload):
+        brain._notified.append(payload)
+
+    brain.push_frame = _push
+    brain._notify_client = _notify
+    brain.create_task = lambda coro, name=None: asyncio.get_event_loop().create_task(coro)
+
+    async def _cancel_task(task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    brain.cancel_task = _cancel_task
+    return brain
+
+
+def _recording_batch(calls, reply):
+    async def _batch(pcm, rate, language):
+        calls.append(language)
+        return reply
+    return _batch
+
+
+class TestIndicScriptFamilies:
+    def test_script_family_detection(self):
+        from voice_runtime.transcript_gate import indic_script_family
+
+        assert indic_script_family(GURMUKHI_MISLABEL) == "northern"
+        assert indic_script_family("হ্যাঁ।") == "northern"          # Bengali
+        assert indic_script_family("ଆଖିରେ ଦେଖିଲେ।") == "northern"   # Odia
+        assert indic_script_family("हाँ ok") == "northern"          # Devanagari-dominant
+        assert indic_script_family(TAMIL_SHORT) == "dravidian"
+        assert indic_script_family(KANNADA_SHORT) == "dravidian"
+        assert indic_script_family("ఉమ్") == "dravidian"             # Telugu
+        assert indic_script_family("Yes I am Rohan") is None
+        assert indic_script_family("haan ji bol raha hoon") is None  # romanized
+        assert indic_script_family("") is None
+        assert indic_script_family("نہیں") is None                  # Urdu: no evidence
+
+    def test_language_families(self):
+        from voice_runtime.transcript_gate import indic_language, language_family
+
+        assert indic_language("hi-IN") and indic_language("ta-IN") and indic_language("mr")
+        assert not indic_language("en-IN") and not indic_language("ur-IN")
+        assert not indic_language(None)
+        assert language_family("hi-IN") == "northern"
+        assert language_family("bn-IN") == "northern"
+        assert language_family("ml-IN") == "dravidian"
+        assert language_family("en-IN") is None
+
+
+class TestRescueLanguage:
+    def test_hindi_english_bot(self):
+        bot = make_brain_with_language(language="en-IN", languages=["en-IN", "hi-IN"])
+        # Same script family as Hindi → the configured Hindi, any length.
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("hi-IN", "script_family")
+        assert bot._rescue_language(GURMUKHI_LONG) == ("hi-IN", "script_family")
+        # Cross-family: only a short interjection on the sole Indic language.
+        assert bot._rescue_language(TAMIL_SHORT) == ("hi-IN", "sole_indic_short")
+        assert bot._rescue_language(KANNADA_SHORT) == ("hi-IN", "sole_indic_short")
+        assert bot._rescue_language(TAMIL_LONG) == ("en-IN", "conversation")
+        # Latin text keeps the conversation language: nothing is guessed.
+        assert bot._rescue_language("hello there") == ("en-IN", "conversation")
+
+    def test_hindi_conversation_is_kept(self):
+        bot = make_brain_with_language(language="hi-IN", languages=["hi-IN", "en-IN"])
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("hi-IN", "conversation")
+        assert bot._rescue_language(TAMIL_LONG) == ("hi-IN", "conversation")
+
+    def test_english_only_bot_is_unchanged(self):
+        bot = make_brain_with_language(language="en-IN", languages=["en-IN"])
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("en-IN", "conversation")
+        assert bot._rescue_language(TAMIL_SHORT) == ("en-IN", "conversation")
+
+    def test_multilingual_bot_never_forces_hindi(self):
+        # Tamil established by the caller (conversation switched): kept.
+        tamil_call = make_brain_with_language(
+            language="ta-IN", languages=["en-IN", "hi-IN", "ta-IN"],
+        )
+        assert tamil_call._rescue_language(KANNADA_SHORT) == ("ta-IN", "conversation")
+        assert tamil_call._rescue_language(GURMUKHI_MISLABEL) == ("ta-IN", "conversation")
+        # Malayalam bot: Malayalam conversation kept, Tamil-script mislabel of
+        # a Malayalam caller goes to Malayalam (same family), never Hindi.
+        ml_bot = make_brain_with_language(language="ml-IN", languages=["ml-IN", "en-IN"])
+        assert ml_bot._rescue_language(TAMIL_LONG) == ("ml-IN", "conversation")
+        ml_bot_en = make_brain_with_language(language="en-IN", languages=["en-IN", "ml-IN"])
+        assert ml_bot_en._rescue_language(TAMIL_LONG) == ("ml-IN", "script_family")
+        assert ml_bot_en._rescue_language(GURMUKHI_MISLABEL) == ("ml-IN", "sole_indic_short")
+        assert ml_bot_en._rescue_language(GURMUKHI_LONG) == ("en-IN", "conversation")
+        # Marathi bot: a Gurmukhi mislabel goes to Marathi, not Hindi.
+        mr_bot = make_brain_with_language(language="en-IN", languages=["en-IN", "mr-IN"])
+        assert mr_bot._rescue_language(GURMUKHI_MISLABEL) == ("mr-IN", "script_family")
+
+    def test_trilingual_bot_uses_family_then_prior_turn(self):
+        bot = make_brain_with_language(
+            language="en-IN", languages=["en-IN", "hi-IN", "ta-IN"],
+        )
+        # Northern script → Hindi is the only northern language configured.
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("hi-IN", "script_family")
+        # Dravidian script → Tamil is the only Dravidian language configured.
+        assert bot._rescue_language(KANNADA_SHORT) == ("ta-IN", "script_family")
+        # The caller's last dispatched turn was detected as Tamil: that wins.
+        bot._last_turn_detected_language = "ta-IN"
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("ta-IN", "prior_turn")
+        bot._last_turn_detected_language = "hi-IN"
+        assert bot._rescue_language(KANNADA_SHORT) == ("hi-IN", "prior_turn")
+
+    def test_ambiguous_family_keeps_the_conversation_language(self):
+        # Hindi AND Bengali configured: a Gurmukhi mislabel fits both.
+        bot = make_brain_with_language(
+            language="en-IN", languages=["en-IN", "hi-IN", "bn-IN"],
+        )
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("en-IN", "conversation")
+        bot._last_turn_detected_language = "bn-IN"
+        assert bot._rescue_language(GURMUKHI_MISLABEL) == ("bn-IN", "prior_turn")
+
+    @pytest.mark.asyncio
+    async def test_english_default_bot_rescues_gurmukhi_in_hindi(self):
+        calls = []
+        gate = _GateStub()
+        brain = make_brain_with_language(
+            language="en-IN", languages=["en-IN", "hi-IN"], gate=gate,
+            batch_transcriber=_recording_batch(calls, HINDI_RESCUED),
+        )
+        handled = stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)  # 1 s of telephony audio
+
+        await _frame_in(brain, transcript(
+            GURMUKHI_MISLABEL, language="pa-IN", language_code="pa-IN",
+            language_probability=0.59,
+        ))
+
+        assert calls == ["hi-IN"]
+        assert handled == [HINDI_RESCUED]
+        attempted = brain._recorder.events_of("unsupported_language_retranscribe_attempted")[0]
+        assert attempted["language"] == "hi-IN"
+        assert attempted["basis"] == "script_family"
+        rescued = brain._recorder.events_of("unsupported_language_retranscribed")[0]
+        assert rescued["language"] == "hi-IN"
+        assert rescued["recovered"] == HINDI_RESCUED
+        assert "stt_segment_rejected" not in brain._recorder.event_kinds()
+
+    @pytest.mark.asyncio
+    async def test_long_tamil_on_a_hindi_bot_keeps_the_old_path(self):
+        calls = []
+        gate = _GateStub()
+        brain = make_brain_with_language(
+            language="en-IN", languages=["en-IN", "hi-IN"], gate=gate,
+            batch_transcriber=_recording_batch(calls, ENGLISH_RESCUED),
+        )
+        stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+
+        await _frame_in(brain, transcript(
+            TAMIL_LONG, language="ta-IN", language_code="ta-IN",
+            language_probability=0.9,
+        ))
+
+        assert calls == ["en-IN"]
+        attempted = brain._recorder.events_of("unsupported_language_retranscribe_attempted")[0]
+        assert attempted["basis"] == "conversation"
+
+    @pytest.mark.asyncio
+    async def test_english_only_bot_keeps_the_conversation_language(self):
+        calls = []
+        gate = _GateStub()
+        brain = make_brain_with_language(
+            language="en-IN", languages=["en-IN"], gate=gate,
+            batch_transcriber=_recording_batch(calls, ENGLISH_RESCUED),
+        )
+        handled = stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+
+        await _frame_in(brain, transcript(
+            GURMUKHI_MISLABEL, language="pa-IN", language_code="pa-IN",
+            language_probability=0.59,
+        ))
+
+        assert calls == ["en-IN"]
+        assert handled == [ENGLISH_RESCUED]
+
+    @pytest.mark.asyncio
+    async def test_tamil_conversation_on_multilingual_bot_is_rescued_in_tamil(self):
+        calls = []
+        gate = _GateStub()
+        brain = make_brain_with_language(
+            language="ta-IN", languages=["en-IN", "hi-IN", "ta-IN"], gate=gate,
+            batch_transcriber=_recording_batch(calls, "ஆமாம் நான் தான் பேசுறேன்"),
+        )
+        handled = stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+
+        await _frame_in(brain, transcript(
+            KANNADA_SHORT, language="kn-IN", language_code="kn-IN",
+            language_probability=0.7,
+        ))
+
+        assert calls == ["ta-IN"]
+        assert handled == ["ஆமாம் நான் தான் பேசுறேன்"]
+
+    @pytest.mark.asyncio
+    async def test_hindi_conversation_is_unchanged(self):
+        calls = []
+        gate = _GateStub()
+        brain = make_brain_with_language(
+            language="hi-IN", languages=["hi-IN", "en-IN"], gate=gate,
+            batch_transcriber=_recording_batch(calls, HINDI_RESCUED),
+        )
+        handled = stub_turn_handler(brain)
+        gate.retained = (b"\x00\x01" * 8000, 8000)
+
+        await _frame_in(brain, transcript(
+            GURMUKHI_MISLABEL, language="pa-IN", language_code="pa-IN",
+            language_probability=0.59,
+        ))
+
+        assert calls == ["hi-IN"]
+        assert handled == [HINDI_RESCUED]

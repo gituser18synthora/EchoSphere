@@ -214,6 +214,9 @@ from voice_runtime.silence_policy import (
 from voice_runtime.transcript_gate import (
     assess_transcript,
     base_language,
+    indic_language,
+    indic_script_family,
+    language_family,
     resolve_allowed_languages,
     romanized_language_leaning,
     script_supports_language,  # noqa: F401 — re-exported (tests, language following)
@@ -414,6 +417,11 @@ _IDENTIFIER_RECOVERY_TIMEOUT = 6.0
 _LANGUAGE_RESCUE_RETENTION_SECONDS = 12.0
 _LANGUAGE_RESCUE_TIMEOUT = 4.0
 _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS = 0.3
+# Cross-script-family rescue (Tamil-script text on a Hindi-only bot) is
+# limited to short utterances: the live mislabels of Hindi into Dravidian
+# scripts are interjections, while a long confident Dravidian sentence is
+# far more likely a genuine speaker (same bound as the gate's transliteration).
+_RESCUE_CROSS_FAMILY_MAX_WORDS = 6
 # Longest segment (meaningful words) the short-segment re-transcription may
 # re-read in the caller's ESTABLISHED language when the auto-detector labelled
 # it as another configured Indic language. Sarvam's mislabels are short
@@ -2451,8 +2459,10 @@ class ConversationBrain(FrameProcessor):
         rejection, outside identifier mode, when no other segment of the same
         utterance is already buffered (so the retained audio is exactly this
         utterance) and bounded post-gate audio was retained. One batch
-        transcription in the conversation language; the result must pass the
-        SAME transcript gate. Returns ``(text, quality, verdict)`` for the
+        transcription in the language ``_rescue_language`` picks (the
+        conversation language unless the text is Indic script the bot's own
+        configured Indic language explains); the result must pass the SAME
+        transcript gate. Returns ``(text, quality, verdict)`` for the
         rescued segment, or None so the caller rejects the original.
         """
         base_reason = (verdict.reason or "").split(":")[0]
@@ -2491,11 +2501,12 @@ class ConversationBrain(FrameProcessor):
         seconds = len(audio) / (rate * 2) if rate else 0.0
         if seconds < _LANGUAGE_RESCUE_MIN_AUDIO_SECONDS:
             return None
-        language = self._conversation_language
+        language, basis = self._rescue_language(text)
         self._recorder.add_event(
             "unsupported_language_retranscribe_attempted",
             detected=quality.language,
             language=language,
+            basis=basis,
             audio_seconds=round(seconds, 2),
         )
         try:
@@ -2538,6 +2549,62 @@ class ConversationBrain(FrameProcessor):
             recovered=recovered[:200],
         )
         return recovered, rescued_quality, rescued_verdict
+
+    def _rescue_language(self, text: str) -> tuple[str, str]:
+        """Locale for the unsupported-language re-transcription, with why.
+
+        The conversation language is the default (unchanged behaviour). It is
+        only overridden when the conversation still sits in a NON-Indic
+        language (the English greeting default) and the rejected text was
+        written in an Indic script — the auto-detector heard an Indian
+        language and picked a label the bot does not support. Pinning en-IN
+        cannot recover such speech (live vs_UR-84wTQpZeceqo6CFZgW9C3,
+        2026-09-30: "ਨਹੀਂ ਮੈਂ ਰੋਹਨ ਨਹੀਂ ਮੈਂ" → "Name and one name"), so the
+        bot's OWN configured Indic language is used instead — never an
+        arbitrary mapping to Hindi. Evidence, strongest first:
+
+        1. an Indic conversation language (Tamil already established on a
+           multilingual bot) is kept — rescues never switch it;
+        2. the language the caller's last dispatched turn was detected in,
+           when the bot is configured for it;
+        3. the single configured language of the same script family as the
+           text (Gurmukhi/Bengali/Odia/Gujarati ↔ Hindi/Marathi/…; Tamil/
+           Telugu/Kannada ↔ Malayalam/…) — Sarvam's confusions stay inside a
+           family;
+        4. across families only for a short utterance and only when the bot
+           has exactly one Indic language (a "ஆ."/"ఉమ్" interjection on a
+           Hindi+English bot); a long cross-family sentence keeps the
+           conversation language as before.
+        A bot with no configured Indic language, Latin text, or an ambiguous
+        multilingual configuration keeps the conversation language.
+        """
+        current = self._conversation_language
+        if indic_language(current):
+            return current, "conversation"
+        family = indic_script_family(text)
+        if family is None:
+            return current, "conversation"
+        configured = [
+            locale for locale in self._supported_languages() if indic_language(locale)
+        ]
+        if not configured:
+            return current, "conversation"
+        prior = self._last_turn_detected_language
+        if prior and indic_language(prior):
+            matched = self._match_supported(prior)
+            if matched and matched in configured:
+                return matched, "prior_turn"
+        same_family = [
+            locale for locale in configured if language_family(locale) == family
+        ]
+        if len(same_family) == 1:
+            return same_family[0], "script_family"
+        if (
+            len(configured) == 1
+            and len(text.split()) <= _RESCUE_CROSS_FAMILY_MAX_WORDS
+        ):
+            return configured[0], "sole_indic_short"
+        return current, "conversation"
 
     @staticmethod
     def _recognizable_reply(text: str) -> bool:

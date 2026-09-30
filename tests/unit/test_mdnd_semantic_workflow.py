@@ -167,7 +167,10 @@ async def test_extractor_not_called_for_unflagged_workflow(collector):
 
 
 async def test_no_handover_is_preserved_in_legacy_reporting(collector):
-    r = await turn(collector, "किसी को नहीं दिया, order मेरे पास है", {**ALL, "delivery_handoff": "other"},
+    # The mocked evidence is the whole utterance, so it must name every fact
+    # it claims (the Hindi grounding guard drops a yes without its topic).
+    r = await turn(collector, "customer को call किया, location पर पहुँचा, CX से call आया, लेकिन किसी को नहीं दिया, order मेरे पास है",
+                   {**ALL, "delivery_handoff": "other"},
                    handoff_type="not_handed_over", recipient_detail="किसी को नहीं दिया")
     assert r["slots"]["m_handover_recipient"] == "not handed over"
     assert "किसी को सौंपा या कहीं छोड़ा नहीं था" in r["reply"]
