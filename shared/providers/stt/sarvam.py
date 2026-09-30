@@ -19,6 +19,11 @@ from shared.providers.languages import (
     sarvam_stt_language_code,
     to_platform_language,
 )
+from shared.providers.stt.sarvam_keyterms import (
+    KEYTERMS_SETTING,
+    normalize_keyterms,
+    supports_keyterms,
+)
 from shared.audio.pcm import pcm_to_wav_bytes
 
 logger = logging.getLogger("providers.stt.sarvam")
@@ -79,6 +84,20 @@ class SarvamSTT(STTProvider):
         self._model = config.model or "saaras:v3"
         self._language = config.language or "en"
         self._timeout = config.timeout_seconds
+        # Key-term biasing (``extra.keyterms``): forwarded on the REST call
+        # only for a model that supports it (saaras:v4) — never for v3.
+        configured = normalize_keyterms((config.extra or {}).get(KEYTERMS_SETTING))
+        if configured and not supports_keyterms(self._model):
+            logger.warning(
+                "sarvam-stt: %d keyterm(s) configured but model %r does not "
+                "support key-term biasing; not sent", len(configured), self._model,
+            )
+            configured = []
+        self._keyterms: list[str] = configured
+
+    @property
+    def keyterms(self) -> list[str]:
+        return list(self._keyterms)
 
     async def transcribe(
         self, audio: bytes, *, sample_rate: int = 16000, language: str | None = None
@@ -95,13 +114,16 @@ class SarvamSTT(STTProvider):
                 "sarvam-stt: language '%s' cannot be pinned — transcribing with "
                 "auto-detect instead", requested,
             )
+        request_kwargs: dict = {
+            "file": ("audio.wav", wav, "audio/wav"),
+            "model": self._model,
+            "language_code": wire,
+        }
+        if self._keyterms:
+            request_kwargs["keyterms"] = list(self._keyterms)
         try:
             response = await asyncio.wait_for(
-                self._client.speech_to_text.transcribe(
-                    file=("audio.wav", wav, "audio/wav"),
-                    model=self._model,
-                    language_code=wire,
-                ),
+                self._client.speech_to_text.transcribe(**request_kwargs),
                 timeout=self._timeout,
             )
         except TimeoutError as exc:

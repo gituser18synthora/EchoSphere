@@ -65,6 +65,11 @@ from shared.turn_detection import (
 from shared.orchestration.naturalness import SpeechNaturalnessPlanner
 from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
+from shared.providers.stt.sarvam_keyterms import (
+    KEYTERMS_SETTING,
+    normalize_keyterms,
+    supports_keyterms,
+)
 from shared.providers.stt_language_policy import (
     resolve_auto_detect_language,
     stt_language_mode,
@@ -274,6 +279,39 @@ def _flux_language_hints(stt_conf: dict, config: ResolvedBotConfig) -> list:
     return [h for h in hints if not (h in seen or seen.add(h))]
 
 
+def _sarvam_keyterms_for_model(
+    model: str, configured: object, *, recorder: SessionRecorder | None = None,
+) -> list[str]:
+    """Key terms to hand the Sarvam recognizer for this call, if any.
+
+    ``stt_settings.keyterms`` is only meaningful on ``saaras:v4``; the API
+    rejects it for other models at save time, but a configuration can
+    predate a model switch or arrive through a cached snapshot, so the
+    runtime decides again here and records what it did. Nothing is sent for
+    an absent/empty list, and NOTHING is ever sent for an unsupported model.
+    """
+    terms = normalize_keyterms(configured)
+    if not terms:
+        return []
+    if not supports_keyterms(model):
+        logger.warning(
+            "sarvam-stt: %d keyterm(s) configured but model %r does not support "
+            "key-term biasing (saaras:v4 only); not sent", len(terms), model,
+        )
+        if recorder is not None:
+            recorder.add_event(
+                "stt_keyterms", model=model, sent=False,
+                reason="unsupported_model", count=len(terms),
+            )
+        return []
+    if recorder is not None:
+        recorder.add_event(
+            "stt_keyterms", model=model, sent=True, count=len(terms),
+            terms=terms,
+        )
+    return terms
+
+
 def build_stt_service(
     config: ResolvedBotConfig,
     *,
@@ -438,6 +476,9 @@ def build_stt_service(
                 "audio frames; using 'pcm_s16le'", codec,
             )
             codec = "pcm_s16le"
+        keyterms = _sarvam_keyterms_for_model(
+            model, settings_kwargs.get(KEYTERMS_SETTING), recorder=recorder,
+        )
         return EndpointedSarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
@@ -446,6 +487,7 @@ def build_stt_service(
             settings=service_settings,
             keepalive_timeout=8.0,
             recorder=recorder,
+            keyterms=keyterms or None,
             # Measured on this deployment (2026-09-24, 216 turns): the final
             # lands 260 ms (p50) / 452 ms (p90) after speech end, tail to
             # 1.5 s. The turn-stop strategy waits for it at most this long
@@ -550,6 +592,15 @@ def build_batch_transcriber(config: ResolvedBotConfig):
     stt_conf = dict(config.stt or {})
     provider = stt_conf.get("provider") or "sarvam"
     holder: list = []
+    extra = dict(stt_conf.get("extra") or {})
+    if provider == "sarvam":
+        # Same key-term biasing as the realtime socket, same v4-only rule:
+        # the REST adapter only forwards it for a supporting model.
+        batch_keyterms = _sarvam_keyterms_for_model(
+            stt_conf.get("model") or "", (stt_conf.get("settings") or {}).get(KEYTERMS_SETTING),
+        )
+        if batch_keyterms:
+            extra[KEYTERMS_SETTING] = batch_keyterms
 
     async def _transcribe(pcm: bytes, sample_rate: int, language: str) -> str:
         if not holder:
@@ -559,7 +610,7 @@ def build_batch_transcriber(config: ResolvedBotConfig):
                     model=stt_conf.get("model", ""),
                     language=stt_conf.get("language") or config.language,
                     api_key_reference=stt_conf.get("api_key_reference", ""),
-                    extra=stt_conf.get("extra", {}),
+                    extra=extra,
                 )
             ))
         result = await holder[0].transcribe(

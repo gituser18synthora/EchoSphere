@@ -287,6 +287,8 @@ export interface ParamSpec {
   optional?: boolean;
   max_items?: number;
   max_length?: number;
+  /** string_list only: render a multi-line editor (one entry per line) instead of a one-line comma list. */
+  multiline?: boolean;
 }
 
 export interface ProviderModelInfo {

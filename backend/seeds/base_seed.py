@@ -506,6 +506,9 @@ PROVIDER_PRICING = [
     # ── STT ──────────────────────────────────────────────────────────────
     ("sarvam", "stt", "saarika:v2.5", "audio_seconds", "per_hour", "30", "INR"),
     ("sarvam", "stt", "saaras:v3", "audio_seconds", "per_hour", "30", "INR"),
+    # saaras:v4: Sarvam lists one STT price for every variant (₹30/hour
+    # real-time/streaming/batch; sarvam.ai/api-pricing, verified 2026-10-01).
+    ("sarvam", "stt", "saaras:v4", "audio_seconds", "per_hour", "30", "INR"),
     ("openai", "stt", "whisper-1", "audio_seconds", "per_minute", "0.006", "USD"),
     ("openai", "stt", "gpt-transcribe", "audio_seconds", "per_minute", "0.0045", "USD"),
     ("openai", "stt", "gpt-4o-transcribe", "audio_seconds", "per_minute", "0.006", "USD"),

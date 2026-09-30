@@ -317,12 +317,21 @@ function IntListParam({ spec, value, onChange }: {
   );
 }
 
+/** Split a string-list editor's text into entries. Multi-line editors take
+    one entry per line (phrases keep their spaces); commas split too, so a
+    pasted "a, b, c" still works and a single entry can never smuggle a
+    comma-joined list to the provider. */
+export function splitStringListText(raw: string): string[] {
+  return raw.split(/[\n,]/).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
 function StringListParam({ spec, value, onChange }: {
   spec: ParamSpec; value: ProviderSettingValue | undefined;
   onChange: (v: ProviderSettingValue | undefined) => void;
 }) {
   const list = Array.isArray(value) ? value : Array.isArray(spec.default) ? spec.default : [];
-  const joined = list.join(", ");
+  const multiline = Boolean(spec.multiline);
+  const joined = list.join(multiline ? "\n" : ", ");
   const [text, setText] = useState(joined);
   const [focused, setFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -331,10 +340,17 @@ function StringListParam({ spec, value, onChange }: {
   const allowed = (spec.values ?? []).map(String);
   const handle = (raw: string) => {
     setText(raw);
-    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const parts = splitStringListText(raw);
     if (spec.max_items !== undefined && parts.length > spec.max_items) {
-      setError(`At most ${spec.max_items} entries allowed`);
+      setError(`At most ${spec.max_items} entries allowed (${parts.length} entered)`);
       return;
+    }
+    if (spec.max_length !== undefined) {
+      const long = parts.find((p) => p.length > spec.max_length!);
+      if (long !== undefined) {
+        setError(`"${long.slice(0, 24)}…" is longer than ${spec.max_length} characters`);
+        return;
+      }
     }
     if (allowed.length > 0) {
       const bad = parts.find((p) => !allowed.includes(p));
@@ -347,19 +363,32 @@ function StringListParam({ spec, value, onChange }: {
     onChange(parts.length === 0 ? undefined : parts);
   };
 
+  const count = splitStringListText(text).length;
+  const counter = spec.max_items !== undefined ? `${count} / ${spec.max_items}` : `${count}`;
+  const hint = error
+    ? undefined
+    : [spec.help ?? (multiline ? "One entry per line" : "Comma-separated values"), `(${counter} entries)`].join(" ");
+
   return (
-    <Field
-      label={spec.label}
-      hint={error ? undefined : (spec.help ?? "Comma-separated values")}
-      error={error ?? undefined}
-    >
-      <input
-        className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
-        placeholder={allowed.length > 0 ? `e.g. ${allowed.slice(0, 2).join(", ")}` : "e.g. a, b"}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onChange={(e) => handle(e.target.value)}
-      />
+    <Field label={spec.label} hint={hint} error={error ?? undefined}>
+      {multiline ? (
+        <textarea
+          className="textarea" value={text} rows={4} aria-label={spec.label}
+          aria-invalid={error ? true : undefined}
+          placeholder={"One term or phrase per line\ne.g. Zepto\nNew Delhi"}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onChange={(e) => handle(e.target.value)}
+        />
+      ) : (
+        <input
+          className="input" value={text} aria-label={spec.label} aria-invalid={error ? true : undefined}
+          placeholder={allowed.length > 0 ? `e.g. ${allowed.slice(0, 2).join(", ")}` : "e.g. a, b"}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onChange={(e) => handle(e.target.value)}
+        />
+      )}
     </Field>
   );
 }

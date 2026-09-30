@@ -25,6 +25,7 @@ from shared.models import (
     VoiceProfile,
 )
 from shared.providers.languages import matches_model_language
+from shared.providers.stt.sarvam_keyterms import KEYTERMS_SETTING, keyterm_problems
 from shared.turn_detection import validate_noise_gate, validate_turn_detection
 
 CAPABILITIES = ("stt", "tts", "llm", "embedding")
@@ -267,6 +268,8 @@ def validate_params(schema: dict | None, params: dict | None, *, prefix: str) ->
                     errors.append(f"{prefix}: '{key}' has too many entries.")
                 if any(len(v) > int(spec.get("max_length", 50)) for v in value):
                     errors.append(f"{prefix}: a '{key}' entry is too long.")
+                if any(not v.strip() for v in value):
+                    errors.append(f"{prefix}: '{key}' entries must not be blank.")
                 allowed = spec.get("values")
                 if allowed and any(v not in allowed for v in value):
                     errors.append(
@@ -372,6 +375,7 @@ def validate_stt_settings(
     validation.
     """
     params = params or {}
+    schema = schema or {}
     errors = validate_turn_detection(
         params.get("turn_detection"), prefix=f"{prefix} turn detection"
     )
@@ -383,6 +387,14 @@ def validate_stt_settings(
         for key, value in params.items()
         if key not in ("turn_detection", "noise_gate")
     }
+    # Sarvam key-term biasing: the model's schema says WHETHER the parameter
+    # exists (saaras:v4 only — any other model fails below as an unknown
+    # parameter), while the documented Sarvam contract (count, length, one
+    # term per entry) is checked by the shared rule set the runtime uses.
+    if KEYTERMS_SETTING in provider_params and KEYTERMS_SETTING in schema:
+        errors.extend(
+            keyterm_problems(provider_params.pop(KEYTERMS_SETTING), prefix=prefix)
+        )
     errors.extend(validate_params(schema, provider_params, prefix=prefix))
     return errors
 

@@ -36,6 +36,7 @@ it merges naturally-split finals.
 
 import asyncio
 import base64
+import dataclasses
 import logging
 
 from pipecat.frames.frames import (
@@ -47,10 +48,28 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
-from pipecat.services.sarvam.stt import SarvamSTTService
+from pipecat.services.sarvam.stt import MODEL_CONFIGS, SarvamSTTService
 from websockets.exceptions import ConnectionClosed
 
+from shared.providers.stt.sarvam_keyterms import (
+    encode_keyterms_query,
+    normalize_keyterms,
+    supports_keyterms,
+)
+
 logger = logging.getLogger(__name__)
+
+# Pipecat (1.5 and 1.6) ships a closed model table — ``saaras:v3`` is its
+# newest Sarvam entry and any other code fails construction with
+# "Unsupported model". Sarvam's ``saaras:v4`` (same ``/speech-to-text/ws``
+# endpoint, same ``language_code``/``mode``/VAD parameters, plus key-term
+# biasing handled below) is registered here as a copy of the v3 capability
+# row. ``setdefault`` keeps an upstream definition when a newer Pipecat adds
+# one itself.
+SAARAS_V4_MODEL = "saaras:v4"
+MODEL_CONFIGS.setdefault(
+    SAARAS_V4_MODEL, dataclasses.replace(MODEL_CONFIGS["saaras:v3"]),
+)
 
 # How often to force a segment final while the caller talks over the bot.
 # Long enough that a flush usually carries ≥2 confident words (the barge-in
@@ -80,25 +99,40 @@ _RAW_PCM_CODECS = frozenset({"pcm_s16le"})
 _SDK_AUDIO_MESSAGE_ENCODING = "audio/wav"
 
 
-class _CodecAwareStreamingClient:
-    """Inject the raw input codec into the Sarvam WebSocket handshake.
+class _ConnectDefaultsStreamingClient:
+    """Inject handshake parameters Pipecat does not forward into the Sarvam
+    WebSocket ``connect`` call.
 
-    Pipecat 1.5/1.6 stores ``input_audio_codec`` but does not forward it to the
-    SDK's ``connect`` call.  Keeping this as a tiny proxy avoids copying the
-    much larger upstream reconnect/connect implementation and stays harmless
-    once a newer Pipecat starts forwarding the value itself.
+    Pipecat 1.5/1.6 stores ``input_audio_codec`` but does not pass it to the
+    SDK's ``connect``, and knows nothing about ``keyterms``. Keeping this as a
+    tiny proxy avoids copying the much larger upstream reconnect/connect
+    implementation and stays harmless once a newer Pipecat forwards the
+    values itself: every default here only applies when the caller did not
+    set the key.
     """
 
-    def __init__(self, client, codec: str) -> None:
+    def __init__(self, client, defaults: dict[str, str]) -> None:
         self._client = client
-        self._codec = codec
+        self._defaults = dict(defaults)
+
+    @property
+    def connect_defaults(self) -> dict[str, str]:
+        return dict(self._defaults)
 
     def connect(self, **kwargs):
-        kwargs.setdefault("input_audio_codec", self._codec)
+        for key, value in self._defaults.items():
+            kwargs.setdefault(key, value)
         return self._client.connect(**kwargs)
 
     def __getattr__(self, name):
         return getattr(self._client, name)
+
+
+class _CodecAwareStreamingClient(_ConnectDefaultsStreamingClient):
+    """Codec-only proxy (the earlier shape), kept for direct constructors."""
+
+    def __init__(self, client, codec: str) -> None:
+        super().__init__(client, {"input_audio_codec": codec})
 
 
 class EndpointedSarvamSTTService(SarvamSTTService):
@@ -110,9 +144,32 @@ class EndpointedSarvamSTTService(SarvamSTTService):
     controller needs; transcription itself is unchanged.
     """
 
-    def __init__(self, *args, recorder=None, **kwargs) -> None:
+    def __init__(
+        self, *args, recorder=None, keyterms: list[str] | None = None, **kwargs
+    ) -> None:
         super().__init__(*args, **kwargs)
+        # Handshake parameters the upstream service does not forward. They
+        # are applied through a connect proxy on the SDK client so the
+        # upstream reconnect/connect code stays untouched.
+        connect_defaults: dict[str, str] = {}
         if self._input_audio_codec in _RAW_PCM_CODECS:
+            connect_defaults["input_audio_codec"] = self._input_audio_codec
+        # Key-term biasing: saaras:v4 only. The pipeline already filters by
+        # model, but this adapter is the last gate before the wire, so an
+        # unsupported model never gets the parameter even when called
+        # directly — Sarvam silently accepts it at handshake time and the
+        # documented contract says v4 only.
+        self._keyterms: list[str] = normalize_keyterms(keyterms)
+        if self._keyterms and not supports_keyterms(self._settings.model):
+            logger.warning(
+                "sarvam-stt: %d keyterm(s) configured but model %r does not "
+                "support key-term biasing; not sent",
+                len(self._keyterms), self._settings.model,
+            )
+            self._keyterms = []
+        if self._keyterms:
+            connect_defaults["keyterms"] = encode_keyterms_query(self._keyterms)
+        if connect_defaults:
             endpoint_name = (
                 "speech_to_text_translate_streaming"
                 if self._config.use_translate_endpoint
@@ -122,7 +179,7 @@ class EndpointedSarvamSTTService(SarvamSTTService):
             setattr(
                 self._sarvam_client,
                 f"_{endpoint_name}",
-                _CodecAwareStreamingClient(streaming_client, self._input_audio_codec),
+                _ConnectDefaultsStreamingClient(streaming_client, connect_defaults),
             )
         self._bot_speaking = False
         self._barge_in_flush_task: asyncio.Task | None = None
@@ -139,6 +196,11 @@ class EndpointedSarvamSTTService(SarvamSTTService):
         self._stt_stopping = False
         self._reconnect_attempts = 0
         self._socket_send_failed = False
+
+    @property
+    def keyterms(self) -> list[str]:
+        """Key terms that WILL be sent on the Sarvam handshake (v4 only)."""
+        return list(getattr(self, "_keyterms", []) or [])
 
     async def stop(self, frame):
         self._stt_stopping = True
