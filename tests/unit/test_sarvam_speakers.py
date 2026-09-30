@@ -235,25 +235,25 @@ class TestStreamingWsLanguage:
 
     def test_bare_iso_code_expands_to_full_locale(self):
         config = SarvamWebSocketTTSProvider(self._settings(language="en"))._build_config()
-        assert config["target_language_code"] == "en-IN"
+        assert config["language_code"] == "en-IN"
 
     def test_full_supported_locale_passes_through(self):
         config = SarvamWebSocketTTSProvider(self._settings(language="hi-IN"))._build_config()
-        assert config["target_language_code"] == "hi-IN"
+        assert config["language_code"] == "hi-IN"
 
     def test_odia_platform_code_maps_to_wire_alias(self):
         config = SarvamWebSocketTTSProvider(self._settings(language="or-IN"))._build_config()
-        assert config["target_language_code"] == "od-IN"
+        assert config["language_code"] == "od-IN"
 
     def test_unsupported_locale_normalized_to_en_in_with_warning(self, caplog):
         with caplog.at_level("WARNING"):
             config = SarvamWebSocketTTSProvider(self._settings(language="en-US"))._build_config()
-        assert config["target_language_code"] == "en-IN"
+        assert config["language_code"] == "en-IN"
         assert any("not supported" in r.message for r in caplog.records)
 
     def test_empty_language_defaults_to_en_in(self):
         config = SarvamWebSocketTTSProvider(self._settings(language=""))._build_config()
-        assert config["target_language_code"] == "en-IN"
+        assert config["language_code"] == "en-IN"
 
 
 class TestCanonicalLanguageMapping:

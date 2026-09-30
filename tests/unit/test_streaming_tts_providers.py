@@ -77,7 +77,7 @@ class TestSarvamProvider:
         assert audio == [PCM_CHUNK] * 3
         # Config translation: wire language code, lowercase speaker, v3 params.
         config = server.configs[0]
-        assert config["target_language_code"] == "hi-IN"
+        assert config["language_code"] == "hi-IN"
         assert config["speaker"] == "shubh"
         assert config["model"] == "bulbul:v3"
         assert config["temperature"] == 0.6
@@ -129,7 +129,7 @@ class TestSarvamProvider:
             provider = SarvamWebSocketTTSProvider(sarvam_settings(language="or-IN"))
             await provider.connect()
             await provider.close()
-        assert server.configs[0]["target_language_code"] == "od-IN"
+        assert server.configs[0]["language_code"] == "od-IN"
 
     async def test_invalid_json_and_b64_are_skipped(self, monkeypatch):
         for behavior in ("invalid_json", "invalid_b64"):
@@ -247,7 +247,7 @@ class TestSarvamProvider:
             await provider.close()
         assert server.connections == 1  # no reconnect — config resent instead
         assert server.configs[-1]["speaker"] == "ritu"
-        assert server.configs[-1]["target_language_code"] == "en-IN"
+        assert server.configs[-1]["language_code"] == "en-IN"
 
     async def test_keepalive_ping(self, monkeypatch):
         monkeypatch.setattr(sarvam_ws, "_KEEPALIVE_SECONDS", 0.1)

@@ -227,7 +227,7 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         # Canonical language mapping shared with the REST implementation: bare
         # ISO codes expand to full locales ("en" → "en-IN") and the platform
         # Odia alias is applied. Sarvam 422-rejects the whole config message on
-        # an unsupported target_language_code (no audio at all), so anything
+        # an unsupported language_code (no audio at all), so anything
         # outside the supported set is normalized to en-IN — loudly, never
         # silently — mirroring the REST implementation's Latin-text fallback.
         language = to_provider_language("sarvam", s.language) or "en-IN"
@@ -251,7 +251,7 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             )
         config = {
             "model": model,
-            "target_language_code": language,
+            "language_code": language,
             "speaker": speaker,
             "speech_sample_rate": str(s.sample_rate),
             "output_audio_codec": codec,
