@@ -173,6 +173,15 @@ class HybridIntentPipeline:
 
     # ── public API ────────────────────────────────────────────────────────
 
+    @property
+    def llm_enabled(self) -> bool:
+        """Whether a classification may spend a model call.
+
+        False when no LLM is bound or the bot opted out: the phrase/regex
+        paths are instantaneous and never worth speculating ahead of time.
+        """
+        return self._enabled
+
     async def classify(
         self,
         text: str,

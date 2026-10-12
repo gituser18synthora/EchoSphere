@@ -992,6 +992,9 @@ class ConversationBrain(FrameProcessor):
         # while the endpoint timer runs (dead time) — (text, task). Consumed
         # by the dispatched turn only when the text still matches exactly.
         self._decision_prefetch: tuple[str, asyncio.Task] | None = None
+        # Engine-off bots: the hybrid classifier's LLM call, speculated on the
+        # same text/consume/discard contract as the decision prefetch.
+        self._classify_prefetch: tuple[str, asyncio.Task] | None = None
         # Speculative knowledge retrieval for the turn being decided.
         self._kb_prefetch: tuple[str, asyncio.Task] | None = None
         # Monotonic time of the newest accepted final, used to tell "stragglers
@@ -2906,13 +2909,24 @@ class ConversationBrain(FrameProcessor):
         self._start_decision_prefetch()
 
     def _start_decision_prefetch(self, text_override: str | None = None) -> None:
-        """Start (or keep) a speculative Goal Engine decision.
+        """Start (or keep) the speculative understanding call for the buffer.
+
+        Goal Engine bots speculate the decision; engine-off bots speculate
+        the hybrid classifier's LLM call instead (2026-10-07 live audit: that
+        call ran fully serial at dispatch on 39 % of telephony turns while
+        the endpoint wait sat idle in front of it). Both follow the same
+        contract — consumed only on an exact text match at dispatch, discarded
+        the moment the buffered text changes — so a stale interpretation can
+        never claim a turn.
 
         ``text_override`` is the eager-end-of-turn path: the provider supplied
         the likely-final transcript before any final was buffered, and the
         decision overlaps the provider's own confirmation window.
         """
-        if not self._goal_engine.enabled or self._closing:
+        if self._closing:
+            return
+        engine_on = self._goal_engine.enabled
+        if not engine_on and not self._intent_pipeline.llm_enabled:
             return
         if self._generation is not None and not self._generation.done():
             # A reply is still generating; this buffer may yet merge into the
@@ -2930,14 +2944,65 @@ class ConversationBrain(FrameProcessor):
             # This utterance resolves without a decision call; speculating
             # would only spend tokens the dispatched turn will never consume.
             return
-        prefetch = self._decision_prefetch
+        if engine_on:
+            prefetch = self._decision_prefetch
+            if prefetch is not None:
+                if prefetch[0] == text and self._prefetch_reusable(prefetch[1]):
+                    return  # running, or already answered, for exactly this text
+                prefetch[1].cancel()
+            self._decision_prefetch = (
+                text, self.create_task(self._decide_turn(text, mark=False)),
+            )
+            return
+        if self._policy is not None and self._policy.preempts_turn(text):
+            # Dispatch answers this turn from the policy's own deterministic
+            # rules (pending identity / transaction answers) — see
+            # _handle_turn; no classifier call is spent on it.
+            return
+        prefetch = self._classify_prefetch
         if prefetch is not None:
-            if prefetch[0] == text and not prefetch[1].done():
-                return  # already running for exactly this utterance
+            if prefetch[0] == text and self._prefetch_reusable(prefetch[1]):
+                return
             prefetch[1].cancel()
-        self._decision_prefetch = (
-            text, self.create_task(self._decide_turn(text, mark=False)),
+        self._classify_prefetch = (
+            text, self.create_task(self._speculative_classification(text)),
         )
+
+    @staticmethod
+    def _prefetch_reusable(task: asyncio.Task) -> bool:
+        """Whether a speculative task still answers for its text.
+
+        A finished prefetch is kept, not re-run: the endpoint timer re-arms
+        on every final and on the VAD stop, and before this check a decision
+        that had already COMPLETED for the unchanged text was discarded and
+        requested again on each re-arm — the dispatch then waited a full
+        model round-trip it already had. Only a cancelled or crashed task
+        is replaced.
+
+        A speculation that finished WITHOUT a verdict (decision timeout or
+        provider error → None; classifier degraded to its regex signals) is
+        kept as well: dispatch then takes the deterministic fallback at once
+        — the same rule a failure after dispatch follows — instead of putting
+        a second full model round-trip behind the caller's pause.
+        """
+        if task.cancelled():
+            return False
+        return not (task.done() and task.exception() is not None)
+
+    async def _speculative_classification(
+        self, text: str,
+    ) -> tuple[IntentClassification, tuple[int, int] | None]:
+        """The classifier's verdict for ``text`` plus the tokens it cost.
+
+        Usage is captured here, by the task that spent it, so a prefetch
+        consumed turns later (or never) can neither lose its tokens nor have
+        them billed to a different turn's classification.
+        """
+        classification = await self._intent_pipeline.classify(
+            text, self._history, active_workflow=self._active_workflow,
+        )
+        usage, self._intent_pipeline.last_usage = self._intent_pipeline.last_usage, None
+        return classification, usage
 
     async def _take_decision(self, text: str) -> ConversationDecision | None:
         """The turn's Goal Engine decision — from the prefetch when it matches.
@@ -2972,13 +3037,21 @@ class ConversationBrain(FrameProcessor):
         return await self._decide_turn(text)
 
     def _discard_decision_prefetch(self, reason: str = "") -> None:
-        """Cancel speculative decision work (the prediction did not hold)."""
-        prefetch, self._decision_prefetch = self._decision_prefetch, None
-        if prefetch is None:
-            return
-        if not prefetch[1].done():
-            prefetch[1].cancel()
-        if reason:
+        """Cancel speculative understanding work (the prediction did not hold).
+
+        Covers both the decision and the classifier prefetch — at most one of
+        them exists for a given bot, so one event describes the discard.
+        """
+        discarded = False
+        for slot in ("_decision_prefetch", "_classify_prefetch"):
+            prefetch = getattr(self, slot)
+            setattr(self, slot, None)
+            if prefetch is None:
+                continue
+            discarded = True
+            if not prefetch[1].done():
+                prefetch[1].cancel()
+        if discarded and reason:
             self._recorder.add_event(
                 "decision_prefetch_discarded", reason=reason
             )
@@ -4489,9 +4562,11 @@ class ConversationBrain(FrameProcessor):
         await self._stop_backchannel_monitor()
         self._end_backchannel_window()
         await self._cancel_finalize()
-        prefetch, self._decision_prefetch = self._decision_prefetch, None
-        if prefetch is not None:
-            prefetch[1].cancel()
+        for slot in ("_decision_prefetch", "_classify_prefetch"):
+            prefetch = getattr(self, slot)
+            setattr(self, slot, None)
+            if prefetch is not None:
+                prefetch[1].cancel()
         await self._cancel_generation("cleanup")
         release = getattr(self._naturalness, "clear_call_history", None)
         if callable(release):
@@ -5685,12 +5760,33 @@ class ConversationBrain(FrameProcessor):
         Runs BEFORE the turn is appended to history, so the history passed in
         is the conversation context and ``text`` is the new utterance. The
         extra model call's tokens are folded into the call's LLM counters.
+
+        The speculative classification started while the endpoint timer ran
+        (see _start_decision_prefetch) is consumed when its text is exactly
+        the dispatched turn; a prefetch for different text (a straggler
+        merged in) is discarded and the pipeline runs fresh. The pipeline's
+        own degradation — LLM timeout/failure → phrase/regex signals — is
+        unchanged on both paths.
         """
-        classification = await self._intent_pipeline.classify(
-            text, self._history, active_workflow=self._active_workflow,
-        )
+        prefetch, self._classify_prefetch = self._classify_prefetch, None
+        classification: IntentClassification | None = None
+        usage: tuple[int, int] | None = None
+        if prefetch is not None and prefetch[0] == text:
+            if prefetch[1].done():
+                self._latency.count("classification_prefetched")
+            try:
+                classification, usage = await prefetch[1]
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise  # the generation itself was cancelled (see _take_decision)
+            except Exception:  # noqa: BLE001 — a fresh run below keeps the turn answerable
+                logger.exception("speculative intent classification failed")
+                classification = None
+        elif prefetch is not None:
+            prefetch[1].cancel()
+        if classification is None:
+            classification, usage = await self._speculative_classification(text)
         self._latency.mark_classified()
-        usage, self._intent_pipeline.last_usage = self._intent_pipeline.last_usage, None
         if usage is not None:
             counters = self._recorder.usage
             counters["llm_requests"] = counters.get("llm_requests", 0) + 1
