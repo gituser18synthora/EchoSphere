@@ -218,6 +218,16 @@ class ConversationDecision(BaseModel):
         # Recorded first and unconditionally: the model cannot supply it, and
         # every rewrite below leaves it untouched.
         self.requested_action = self.next_action
+        if self.signal == "wrong_person" and self.decision == "confirmed":
+            # The model contradicted itself. A wrong-number / "not me" signal
+            # negates the identity gate, and the decision rules give negation
+            # priority ("any negation means denied even if affirmative words
+            # also appear"). Reproduced with live wording ("Actually main
+            # customer nahi hoon" → wrong_person + confirmed): the generic
+            # goal session would have CONFIRMED the identity and the
+            # collections policy marked the caller verified before its own
+            # wrong-party handling ran. Resolved here, before any consumer.
+            self.decision = "denied"
         self.context_question = bool(
             self.context_question and self.scope == SCOPE_IN
             and self.signal == "question" and self.confidence >= 0.6
@@ -327,6 +337,24 @@ def parse_decision(
             if value is not None and not isinstance(value, (dict, list))
         }
 
+    if (
+        str(data.get("scope") or "").strip() == "out_of_scope"
+        and str(data.get("signal") or "").strip() == "wrong_person"
+        and str(data.get("decision") or "").strip() != "confirmed"
+    ):
+        # A wrong-number / "not me" reply answers the bot's own identity
+        # question and is in scope by the rulebook. Out of scope would strip
+        # the wrong_person signal (from_decision), rewrite the gate outcome
+        # to 'unrelated' (scope rules below) and redirect a non-customer to
+        # the goal instead of closing — seen on live survey calls ("Actually
+        # main customer nahi hoon" → out_of_scope + end_call). Decided on the
+        # raw payload: the scope validator would already have erased the
+        # evidence. Deliberately narrow (2026-10-09 audit of 678 payloads):
+        # only the demonstrated combination, and never when the model also
+        # claims the identity gate 'confirmed' — on an identity-gated bot
+        # that would confirm a non-customer; those payloads keep today's
+        # redirect. injection_attempt is never touched.
+        data["scope"] = SCOPE_IN
     try:
         decision = ConversationDecision.model_validate(data)
     except Exception:  # noqa: BLE001 — malformed output falls back, never raises

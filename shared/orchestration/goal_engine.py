@@ -88,6 +88,34 @@ TIMEOUT_BOUNDS = (0.5, 5.0)
 MAX_TOKENS_BOUNDS = (64, 340)
 _MAX_PROMPT_EXCERPT_CHARS = 1200
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
+# Decision rules added 2026-10-09 from a 120-turn labeled live benchmark (four
+# generic bots, adjudicated against this rulebook). The model labelled
+# statements as 'question' (MDND "maine deliver kar diya phir bhi MDND
+# marked", ZEE5 "mujhe plan purchase karna hai"), negative survey answers as
+# 'complaint' (which the rulebook reserves for objections to the bot), left
+# 'signal' empty on a yes it had already judged 'confirmed', labelled
+# "repeat that" as 'hold' (the brain then waits in silence), and marked
+# "Actually main customer nahi hoon" out_of_scope — which strips the
+# wrong_person signal and redirects a non-customer to the goal. (A rule
+# preferring configured intents over identity_confirmation was tried and
+# dropped: no measurable effect on 187 labeled turns.)
+_SIGNAL_SCOPE_RULES = (
+    "- signal: null is the normal value for an answer to the bot's question "
+    "or a statement a configured intent already describes; a bare yes, "
+    "agreement or go-ahead ('haan', 'haan boliye', 'ji bolo') is 'affirm'. "
+    "'question' ONLY when the caller asks the bot for information "
+    "(a wh-word, a '?', 'can you tell/explain', 'which plans are there'); a "
+    "narrative, an answer, an opinion, or a request to buy/upgrade/do "
+    "something is NOT a question. 'complaint' ONLY when the caller objects "
+    "to this call or the bot itself (not listening, repeating, calling again "
+    "and again); negative feedback about a product, service or experience "
+    "and a dispute about a deduction are the configured intent (or null), "
+    "never 'complaint'. 'hold' ONLY for 'wait a moment / stay on the line'; "
+    "'repeat that' or 'say it again' is 'clarify'.",
+    "- scope: a caller saying they are not the named person, 'wrong number' "
+    "or 'I never raised this' is answering the bot's own question: in_scope "
+    "with signal wrong_person and decision denied — never out_of_scope.",
+)
 
 # The reserved intent name for "the caller answered the pending identity
 # question". Domain-neutral: WHO must be confirmed comes from the policy.
@@ -702,6 +730,7 @@ class GoalEngine:
             "asking you to wait a moment or not to disconnect is 'hold' even "
             "when a duration is named ('paanch minute ruko'); choose "
             "'callback' only for calling at another time.",
+            *_SIGNAL_SCOPE_RULES,
             "- decision: judge ONLY the pending question stated in the live "
             "state. Any negation ('नहीं', 'no', 'जी नहीं', 'not me') means "
             "denied even if affirmative words also appear. Partial, noisy or "

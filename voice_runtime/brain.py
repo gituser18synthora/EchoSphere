@@ -4913,6 +4913,25 @@ class ConversationBrain(FrameProcessor):
                 or decision.signal
                 or classify_user_signal(text)
             )
+        if signal == "hold" and classify_user_signal(text) != "hold":
+            # A model 'hold' the deterministic hold lexicon does not
+            # corroborate is dropped. Honouring it makes the bot acknowledge
+            # and then WAIT in silence: on live MDND calls "Koi nahi hai sir"
+            # (an answer to "whom did you hand the order to?") and "haan
+            # bataiye kya bol rahe ho sir" (spoken right after the first
+            # hold acknowledgement — a hold loop) were both labelled hold.
+            # The lexicon covers ruko / hold on / line par raho / kat mat
+            # karo … in Hindi, Hinglish and English; a genuine hold phrased
+            # outside it merely continues the turn, which costs far less
+            # than a false wait. Same double-check the workflow engine
+            # applies to 'question' labels with looks_like_question().
+            self._recorder.add_event(
+                "hold_label_rejected",
+                source="decision" if orchestrated is not None else "classifier",
+            )
+            signal = None
+            if classification is not None:
+                classification.signal = None
         # Opening fallback must see the semantic understanding, even when
         # classification found no configured business intent to upgrade.
         decision = replace(decision, signal=signal)
