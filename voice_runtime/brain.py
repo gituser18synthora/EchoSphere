@@ -4558,7 +4558,16 @@ class ConversationBrain(FrameProcessor):
         await self.push_frame(LLMFullResponseEndFrame())
 
     async def cleanup(self):
-        self._disarm_silence_timer()
+        # Awaited cancellation (pipecat's task manager unregisters the task),
+        # not the fire-and-forget disarm: a bare ``task.cancel()`` at teardown
+        # left ``_silence_watch`` registered and the 1.12 runner reported it
+        # as a dangling task when a client dropped mid-generation.
+        silence_task, self._silence_task = self._silence_task, None
+        if silence_task is not None and not silence_task.done():
+            try:
+                await self.cancel_task(silence_task)
+            except Exception:  # noqa: BLE001 — teardown must never raise
+                silence_task.cancel()
         await self._stop_backchannel_monitor()
         self._end_backchannel_window()
         await self._cancel_finalize()

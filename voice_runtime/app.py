@@ -263,7 +263,7 @@ async def _run_call(
         await _close_websocket(websocket, code=4403, reason="forbidden")
         return
 
-    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.workers.runner import WorkerRunner
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
     )
@@ -671,13 +671,17 @@ async def _run_call(
         except Exception:  # noqa: BLE001 — evidence must never fail teardown
             logger.debug("inbound media stats unavailable", exc_info=True)
 
-    runner = PipelineRunner(handle_sigint=False)
+    # pipecat >= 1.3: register the pipeline worker, then run; with the default
+    # auto_end the runner returns once this single root worker has finished
+    # (PipelineRunner and run(worker) are deprecated, removed in 2.0).
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
     # The session was already claimed in _active_sessions at connection time.
     max_duration_handle = asyncio.get_running_loop().call_later(
         config.max_call_duration, lambda: asyncio.ensure_future(worker.cancel())
     )
     try:
-        await runner.run(worker)
+        await runner.run()
         _record_inbound_media_stats()
         await recorder.finalize(reason=_final_end_reason("completed"))
     except asyncio.CancelledError:

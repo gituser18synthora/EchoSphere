@@ -36,7 +36,6 @@ it merges naturally-split finals.
 
 import asyncio
 import base64
-import dataclasses
 import logging
 
 from pipecat.frames.frames import (
@@ -59,17 +58,15 @@ from shared.providers.stt.sarvam_keyterms import (
 
 logger = logging.getLogger(__name__)
 
-# Pipecat (1.5 and 1.6) ships a closed model table — ``saaras:v3`` is its
-# newest Sarvam entry and any other code fails construction with
-# "Unsupported model". Sarvam's ``saaras:v4`` (same ``/speech-to-text/ws``
-# endpoint, same ``language_code``/``mode``/VAD parameters, plus key-term
-# biasing handled below) is registered here as a copy of the v3 capability
-# row. ``setdefault`` keeps an upstream definition when a newer Pipecat adds
-# one itself.
+# Pipecat >= 1.11 ships ``saaras:v4`` in its own Sarvam model table (and
+# dropped saarika:v2.5 / saaras:v2.5). Nothing is patched here any more; the
+# assertion documents the requirement so a downgrade fails at import rather
+# than at the first v4 call.
 SAARAS_V4_MODEL = "saaras:v4"
-MODEL_CONFIGS.setdefault(
-    SAARAS_V4_MODEL, dataclasses.replace(MODEL_CONFIGS["saaras:v3"]),
-)
+if SAARAS_V4_MODEL not in MODEL_CONFIGS:  # pragma: no cover — version guard
+    raise ImportError(
+        "pipecat's Sarvam STT model table lacks saaras:v4; pipecat-ai >= 1.11 is required"
+    )
 
 # How often to force a segment final while the caller talks over the bot.
 # Long enough that a flush usually carries ≥2 confident words (the barge-in
@@ -170,11 +167,10 @@ class EndpointedSarvamSTTService(SarvamSTTService):
         if self._keyterms:
             connect_defaults["keyterms"] = encode_keyterms_query(self._keyterms)
         if connect_defaults:
-            endpoint_name = (
-                "speech_to_text_translate_streaming"
-                if self._config.use_translate_endpoint
-                else "speech_to_text_streaming"
-            )
+            # Every supported model (saaras:v3 / saaras:v4) streams on the
+            # ``/speech-to-text/ws`` endpoint; the SDK client exposes it as a
+            # lazily-built property backed by this private slot.
+            endpoint_name = "speech_to_text_streaming"
             streaming_client = getattr(self._sarvam_client, endpoint_name)
             setattr(
                 self._sarvam_client,

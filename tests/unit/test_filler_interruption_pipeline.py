@@ -28,6 +28,15 @@ from voice_runtime.serializer import RawPCMSerializer
 from voice_runtime.telephony import FreeSwitchAudioForkSerializer, VaaniFrameSerializer
 
 
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 async def until(predicate, timeout=2):
     async with asyncio.timeout(timeout):
         while not predicate():
@@ -189,7 +198,7 @@ async def run_interruption_scenarios(kind, acknowledgements):
                 ))
             await asyncio.sleep(0.005)
             assert not any(o in retired for at, _, o in client.wire if at > wire_interrupt)
-            assert output._media_senders[None]._audio_buffer == b""
+            assert output._media_senders[None]._buffered_audio_bytes == 0  # pipecat >= 1.8 internals
             assert output._audio_send_buffer == b""
             if hasattr(serializer, "_pending_audio"):
                 assert serializer._pending_audio == b""
@@ -213,7 +222,7 @@ async def run_interruption_scenarios(kind, acknowledgements):
         await worker.queue_frame(EndFrame())
 
     feeder = asyncio.create_task(feed())
-    runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(worker))
+    runner = asyncio.create_task(_run_worker(worker))
     try:
         await asyncio.wait_for(asyncio.gather(feeder, runner), 20)
     finally:
@@ -317,7 +326,7 @@ async def test_real_brain_and_tts_router_process_new_speech_after_interruption(d
         await worker.queue_frame(EndFrame())
 
     feeder = asyncio.create_task(feed())
-    runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(worker))
+    runner = asyncio.create_task(_run_worker(worker))
     try:
         await asyncio.wait_for(asyncio.gather(feeder, runner), 12)
     finally:

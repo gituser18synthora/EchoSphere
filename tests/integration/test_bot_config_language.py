@@ -15,7 +15,7 @@ import pytest
 from shared.bot_config import _load_config_sync
 from shared.db.mysql import get_sessionmaker
 from shared.ids import new_id
-from shared.models import BotLanguage, VoiceBot, VoiceBotSetting
+from shared.models import BotLanguage, TenantSetting, VoiceBot, VoiceBotSetting
 
 pytestmark = pytest.mark.integration
 
@@ -75,8 +75,25 @@ class TestDefaultLanguageResolution:
         bot_id, session = sarvam_bot
         session.query(BotLanguage).filter(BotLanguage.bot_id == bot_id).delete()
         session.commit()
-        config = _load_config_sync(bot_id, require_published=False)
-        assert config.language == "en"  # normalized to en-IN by the provider layer
+        tenant = session.query(TenantSetting).filter(
+            TenantSetting.tenant_id == "tn-001"
+        ).one()
+        saved = list(tenant.default_languages or [])
+        try:
+            if saved:
+                # A bot with no languages of its own inherits the tenant's
+                # defaults first (seeded ["en-US"] for tn-001).
+                config = _load_config_sync(bot_id, require_published=False)
+                assert config.language == saved[0]
+            # Only with no tenant defaults either does the legacy bare "en"
+            # remain (normalized to en-IN by the provider layer).
+            tenant.default_languages = None
+            session.commit()
+            config = _load_config_sync(bot_id, require_published=False)
+            assert config.language == "en"
+        finally:
+            tenant.default_languages = saved or None
+            session.commit()
 
 
 class TestPerLanguageVoiceResolution:

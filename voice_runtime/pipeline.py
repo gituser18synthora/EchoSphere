@@ -1137,6 +1137,11 @@ def build_voice_pipeline(
         recorder.recording_writer = recording_writer
         processors.append(audiobuffer)
 
+    # pipecat's own user-to-bot latency attribution (VAD silence, turn
+    # detection, aggregation, per-service TTFB) stored on the call as
+    # ``turn_latency_breakdown`` beside the brain's ``turn_latency`` spans.
+    from voice_runtime.latency_breakdown import TurnLatencyBreakdownObserver
+
     worker = PipelineWorker(
         Pipeline(processors),
         params=PipelineParams(
@@ -1148,5 +1153,6 @@ def build_voice_pipeline(
         idle_timeout_secs=idle_timeout_secs,
         cancel_on_idle_timeout=False,
         enable_rtvi=False,
+        observers=[TurnLatencyBreakdownObserver(recorder)],
     )
     return worker, brain

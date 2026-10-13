@@ -1053,7 +1053,15 @@ class TestApiConnections:
         _created.append(("api_connections", created["id"]))
         return created
 
-    def test_ssrf_private_target_blocked(self, client, tenant_admin):
+    def test_ssrf_private_target_blocked(self, client, tenant_admin, monkeypatch):
+        from shared.config import get_settings
+
+        # The dev .env allow-lists 127.0.0.1/localhost (for the local test
+        # server below); this test checks the policy itself, so run it with
+        # an empty allowlist — otherwise it only passed while nothing was
+        # listening on localhost:9001.
+        monkeypatch.setattr(get_settings(), "api_connect_allowed_hosts", "")
+        monkeypatch.setattr(get_settings(), "api_connect_allow_private", False)
         created = _data(client.post(f"{API}/api-connections", headers=tenant_admin, json={
             "name": f"SSRF {_SUFFIX}", "url": "http://169.254.169.254/latest/meta-data/",
         }))

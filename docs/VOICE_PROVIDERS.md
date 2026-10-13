@@ -123,10 +123,51 @@ codes, modes and VAD controls as v3 and adds **key-term biasing**:
   `keyterms=<JSON array>` to the Sarvam handshake — only for v4; a stale v3
   configuration logs a warning and records `stt_keyterms sent=false`. The
   identifier-recovery REST transcriber forwards the same list (v4 only).
-- Pipecat ≤ 1.6 does not know `saaras:v4`; `voice_runtime/sarvam_stt.py`
-  registers it as a copy of the v3 capability row, so a deployment whose code
-  predates that module must keep the catalog row `inactive` (the staging
-  script's `--status inactive`; the migration activates it on upgrade).
+- pipecat ≥ 1.11 ships `saaras:v4` in its own Sarvam model table (the project
+  pins `pipecat-ai==1.12.0`; `voice_runtime/sarvam_stt.py` refuses to import
+  on an older pipecat). A deployment still running pipecat ≤ 1.6 cannot run
+  v4 and must keep the catalog row `inactive` (the staging script's
+  `--status inactive`; the migration activates it on upgrade).
+- pipecat 1.12 notes for this stack: Silero VAD is a core dependency (no
+  `[silero]` extra); the `[sarvam]` extra is not used because it pins
+  `sarvamai==0.1.28` (no streaming `keyterms`); Deepgram Flux now *proposes*
+  turn boundaries (`ProposedUserStoppedSpeakingFrame`) that the pipeline's
+  `ExternalUserTurnStrategies` resolve into the `UserStoppedSpeakingFrame`
+  the brain gates on. Output-transport contract: `_write_frame`
+  / `write_audio_frame` MUST return whether the frame was taken — a falsy
+  result now skips the realtime pacing sleep and the downstream push
+  (recorder, echo reference), so a bare `return` in an override turns paced
+  playback into a burst. The media sender's partial PCM lives in
+  `_audio_runs` + the resampler tail (`_clear_audio_buffer()`), and a reply's
+  last partial chunk is flushed padded with silence instead of dropped.
+
+### Dependency pins (2026-10-01)
+
+`requirements.txt` is fully `==`-pinned to the set that passed the suites.
+Deliberately held back, with the cap that holds them: `protobuf` 6.x
+(pipecat `<7`), `multidict` 6.x (aiohttp `<7`), `uuid-utils` 0.x
+(langchain-core / langsmith `<1`), `websockets` 16.1 (langgraph-sdk `<17`),
+`onnxruntime` 1.24.x, `soxr` 1.0.x, `soundfile` 0.13.x and `sentencex`
+1.0.31 (all pinned by pipecat 1.12.0). `mcp` is on 2.x: `FastMCP` became
+`mcp.server.mcpserver.MCPServer` and `stateless_http` moved to
+`streamable_http_app(...)` (`backend/mcp_server/server.py`).
+
+### openai 3 (SDK) and TLS
+
+The project pins `openai==3.22.1`. The only breaking change in the 3.x line
+is the HTTP stack: the SDK uses `httpx2` and no longer installs `httpx`
+itself (our own adapters still use `httpx`, which stays in requirements).
+`httpx2` verifies TLS against the operating-system trust store through
+`truststore`, not `certifi`; `SSL_CERT_FILE` / `SSL_CERT_DIR`, when set,
+override it. Both local and live validate `api.openai.com` with the stock
+Ubuntu bundle (`/etc/ssl/certs/ca-certificates.crt`) and neither host has a
+proxy configured for the EchoSphere units, so no certificate variables are
+needed. Our adapters pass plain-float timeouts and never a custom
+`http_client`, so no call-site change was required; all four adapters (chat
+completions incl. streaming and tool calls, embeddings, Whisper, TTS) were
+exercised against the live API on 3.22.1. The dormant Anthropic adapter is
+not installed (`anthropic` is governance-inactive); if it is ever enabled on
+anthropic ≥ 1.0, `temperature`/`top_k`/`top_p` must move to `extra_body`.
 
 ## Runtime data flow
 

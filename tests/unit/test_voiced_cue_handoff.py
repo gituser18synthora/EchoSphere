@@ -12,6 +12,15 @@ from tests.unit.test_latency_filler import (
 )
 
 
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 def smooth_filler(*, clip_ms=280, ack=False, missing=False):
     cues = _AcknowledgementCueStub(clip_ms=clip_ms) if ack else _CueStub(clip_ms=clip_ms, missing=('hmm',) if missing else ())
     return make_filler(
@@ -232,7 +241,7 @@ async def test_socket_playback_preserves_word_gap_and_interrupt_recovery(transpo
         await worker.queue_frame(EndFrame())
 
     feeder = asyncio.create_task(feed())
-    runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(worker))
+    runner = asyncio.create_task(_run_worker(worker))
     try:
         await asyncio.wait_for(asyncio.gather(feeder, runner), 8)
     finally:

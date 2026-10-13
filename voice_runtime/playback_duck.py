@@ -65,7 +65,7 @@ from pipecat.frames.frames import (
     StartFrame,
     SystemFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor, FrameProcessorSetup
 
 logger = logging.getLogger(__name__)
 
@@ -214,12 +214,17 @@ class PlaybackDuck(FrameProcessor):
         self._suppress_next_start = False
         await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
+    async def setup(self, setup: FrameProcessorSetup):
+        await super().setup(setup)
+        # pipecat >= 1.8: the pipeline's rates live on the setup object; the
+        # StartFrame attributes are deprecated and removed in 2.0.
+        self._sample_rate = setup.audio_out_sample_rate or self._sample_rate
+
     # ── frame handling ───────────────────────────────────────────────────
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, StartFrame):
-            self._sample_rate = frame.audio_out_sample_rate or self._sample_rate
             await self.push_frame(frame, direction)
             return
 

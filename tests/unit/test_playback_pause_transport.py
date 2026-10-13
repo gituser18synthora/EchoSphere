@@ -25,6 +25,12 @@ from voice_runtime.serializer import RawPCMSerializer
 from voice_runtime.telephony import FreeSwitchAudioForkSerializer
 
 
+async def _run_worker(worker):
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 async def until(predicate, timeout=4.0):
     async with asyncio.timeout(timeout):
         while not predicate():
@@ -102,7 +108,8 @@ class Session:
         self._runner = None
 
     async def __aenter__(self):
-        self._runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(self.worker))
+        # pipecat >= 1.3: register the worker, then run (run(worker) is deprecated).
+        self._runner = asyncio.create_task(_run_worker(self.worker))
         await until(lambda: bool(self.output._media_senders))
         return self
 

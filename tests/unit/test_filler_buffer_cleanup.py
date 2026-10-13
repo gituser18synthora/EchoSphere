@@ -188,9 +188,10 @@ async def test_interruption_clears_partial_pcm_before_bot_speaking(monkeypatch, 
     end = EndFrame()
     if uninterruptible:
         sender._audio_queue.put_nowait(end)
-    assert not sender._bot_speaking and sender._audio_buffer
+    # pipecat >= 1.8: partial PCM waits in ``_audio_runs`` (was ``_audio_buffer``).
+    assert not sender._bot_speaking and sender._buffered_audio_bytes > 0
     await sender.handle_interruptions(InterruptionFrame())
-    assert sender._audio_buffer == b""
+    assert sender._buffered_audio_bytes == 0
     await sender.handle_audio_frame(response(ms=40))
     frames = queued(sender)
     if uninterruptible:

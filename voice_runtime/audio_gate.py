@@ -54,7 +54,7 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
     StartFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor, FrameProcessorSetup
 
 logger = logging.getLogger(__name__)
 
@@ -354,12 +354,17 @@ class CallerAudioGate(FrameProcessor):
                if self._echo_ref is not None else {}),
         }
 
+    async def setup(self, setup: FrameProcessorSetup):
+        await super().setup(setup)
+        # pipecat >= 1.8: input rate comes from the setup object (the
+        # StartFrame attribute is deprecated and removed in 2.0).
+        self._sample_rate = setup.audio_in_sample_rate or self._sample_rate
+
     # ── frame handling ───────────────────────────────────────────────────
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, StartFrame):
-            self._sample_rate = frame.audio_in_sample_rate or self._sample_rate
             await self.push_frame(frame, direction)
             return
 
