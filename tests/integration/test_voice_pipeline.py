@@ -23,6 +23,12 @@ from voice_runtime.brain import ConversationBrain
 from voice_runtime.services import EchoTTSService
 from voice_runtime.recording import SessionRecorder
 
+
+async def _run_added(runner, worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    await runner.add_workers(worker)
+    await runner.run()
+
 pytestmark = pytest.mark.integration
 
 
@@ -96,7 +102,7 @@ async def run_call(brain, tts, collector, feeder):
     )
     runner = WorkerRunner(handle_sigint=False)
     feed_task = asyncio.create_task(feeder(worker, brain))
-    await asyncio.wait_for(runner.run(worker), timeout=30)
+    await asyncio.wait_for(_run_added(runner, worker), timeout=30)
     await feed_task
 
 

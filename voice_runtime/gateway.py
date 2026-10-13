@@ -26,7 +26,7 @@ def _preload_call_runtime() -> None:
     provider factories and the transport stack lazily on the first call can
     block the event loop for several seconds and make that socket disconnect.
     """
-    from pipecat.pipeline.runner import PipelineRunner  # noqa: F401
+    from pipecat.workers.runner import WorkerRunner  # noqa: F401
     from pipecat.transports.websocket.fastapi import (  # noqa: F401
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,

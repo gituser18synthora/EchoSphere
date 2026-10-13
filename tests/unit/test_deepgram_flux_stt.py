@@ -211,7 +211,12 @@ class TestTurnInfoNormalization:
         assert finals[0].finalized is True
         assert finals[0].language == Language.EN
         assert finals[0].result is data
-        assert "UserStoppedSpeakingFrame" in service._broadcasts
+        # pipecat >= 1.12: the service PROPOSES the stop; the pipeline's
+        # ExternalUserTurnStopStrategy (ExternalUserTurnStrategies in
+        # build_voice_pipeline) resolves it into the UserStoppedSpeakingFrame
+        # the brain gates on. The committed frame no longer leaves the service.
+        assert "ProposedUserStoppedSpeakingFrame" in service._broadcasts
+        assert "UserStoppedSpeakingFrame" not in service._broadcasts
 
     async def test_hindi_turn_reports_hindi(self):
         service = make_service()
@@ -231,9 +236,14 @@ class TestTurnInfoNormalization:
         assert len(eager) == 1
         assert eager[0].text == "Yes, I am speaking."
         assert eager[0].language == "en"
-        # Interim for UI parity — but never a finalized transcription.
-        assert any(isinstance(f, InterimTranscriptionFrame) for f in service._pushed)
+        # Never a finalized transcription. pipecat >= 1.9 no longer mirrors
+        # the eager transcript as an InterimTranscriptionFrame, and its own
+        # EagerTranscriptionFrame only exists with enable_eager_end_of_turn,
+        # which this adapter does not turn on (the brain's prefetch runs off
+        # STTEagerEndOfTurnFrame instead).
         assert not any(isinstance(f, TranscriptionFrame) for f in service._pushed)
+        assert not any(isinstance(f, InterimTranscriptionFrame) for f in service._pushed)
+        assert not any(type(f).__name__ == "EagerTranscriptionFrame" for f in service._pushed)
 
     async def test_turn_resumed_emits_cancellation_frame(self):
         service = make_service()

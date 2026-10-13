@@ -43,6 +43,12 @@ from voice_runtime.frames import AUDIO_FLUSH_MESSAGE_TYPE, FillerAudioOwner, Fil
 from voice_runtime.serializer import RawPCMSerializer
 from voice_runtime.telephony import FreeSwitchAudioForkSerializer, VaaniFrameSerializer
 
+
+async def _run_worker(worker):
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
 REPO = Path(__file__).resolve().parents[2]
 SPEECH = 12000          # reply samples in these tests: far above any room sample
 ROOM_MAX = 2000         # the -54 dBFS loop peaks near -30 dBFS (~1000)
@@ -720,7 +726,8 @@ class Call:
         )
 
     async def __aenter__(self):
-        self._runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(self.worker))
+        # pipecat >= 1.3: register the worker, then run (run(worker) is deprecated).
+        self._runner = asyncio.create_task(_run_worker(self.worker))
         await until(lambda: bool(self.output._media_senders))
         return self
 
@@ -879,7 +886,10 @@ class TestTransportOn:
             sizes.append((len(pcm), speech))
         speech_packets = [n for n, s in sizes if s]
         assert speech_packets[:3] == [640, 1280, 2560]
-        assert sum(speech_packets) == 330 * 16 - (330 * 16) % 640  # every full 40 ms chunk
+        # pipecat >= 1.8 flushes the reply's last partial chunk padded with
+        # silence instead of dropping it (the final 10 ms of 330 ms become a
+        # full 40 ms packet), so every byte of speech reaches the wire.
+        assert sum(speech_packets) == -(-(330 * 16) // 640) * 640  # whole chunks, tail padded
         assert all(n == 320 for n, s in sizes if not s)
         assert call.mixer.stats()["remnant_flushes"] == 1
         # no room packet between the first and the last reply packet

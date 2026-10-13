@@ -62,7 +62,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     UserStartedSpeakingFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor, FrameProcessorSetup
 
 from shared.audio.pcm import apply_fade_in, apply_fade_out, resample_pcm, wav_to_pcm
 from voice_runtime.audio_gate import frame_dbfs
@@ -1342,15 +1342,18 @@ class LatencyFillerProcessor(FrameProcessor):
             self._notice_reply_audio()
         await super().queue_frame(frame, direction, callback)
 
+    async def setup(self, setup: FrameProcessorSetup):
+        await super().setup(setup)
+        # pipecat >= 1.8: output rate from the setup object (StartFrame's
+        # attribute is deprecated and removed in 2.0).
+        if setup.audio_out_sample_rate:
+            self._sample_rate = int(setup.audio_out_sample_rate)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, CancelFrame)):
             self._retire_output_owners()
         await super().process_frame(frame, direction)
-        if isinstance(frame, StartFrame):
-            rate = getattr(frame, "audio_out_sample_rate", 0)
-            if rate:
-                self._sample_rate = int(rate)
-        elif isinstance(frame, TTSAudioRawFrame):
+        if isinstance(frame, TTSAudioRawFrame):
             # Readiness means at least one complete PCM sample frame. An
             # empty packet or TTSStartedFrame (synthesis requested) leaves
             # the configured filler deadline intact while the provider waits.

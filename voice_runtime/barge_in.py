@@ -169,14 +169,15 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
     def _sustain_window(self) -> float:
         return self._commit_secs if self._provisional_duck else self._vad_fallback_secs
 
-    async def reset(self):
-        """Reset on turn start. ``_bot_speaking`` deliberately survives:
-        it mirrors frame-derived transport state, not per-turn state — a
-        barge-in turn starts precisely while the bot is still speaking."""
+    async def handle_user_turn_started(self):
+        """Per-turn reset (pipecat >= 1.6 hook; ``reset`` is deprecated).
+        ``_bot_speaking`` deliberately survives: it mirrors frame-derived
+        transport state, not per-turn state — a barge-in turn starts
+        precisely while the bot is still speaking."""
         self._vad_speech_since = None
         self._last_suppressed_at = None
         self._provisional = False
-        await super().reset()
+        await super().handle_user_turn_started()
 
     def _sustained(self) -> float | None:
         if self._vad_speech_since is None:

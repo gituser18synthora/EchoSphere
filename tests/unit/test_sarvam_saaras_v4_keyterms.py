@@ -160,11 +160,15 @@ def _handshake_defaults(service) -> dict:
 
 
 class TestRealtimeAdapter:
-    def test_saaras_v4_is_registered_with_pipecat_as_a_v3_capability_copy(self):
+    def test_saaras_v4_is_native_in_pipecats_model_table(self):
+        # pipecat >= 1.11 ships saaras:v4 itself; our module no longer patches
+        # the table (it only guards the version at import).
         assert "saaras:v4" in MODEL_CONFIGS
         v3, v4 = MODEL_CONFIGS["saaras:v3"], MODEL_CONFIGS["saaras:v4"]
-        assert v4.supports_mode and v4.supports_language and v4.supports_vad_params
-        assert v4.use_translate_endpoint == v3.use_translate_endpoint is False
+        assert v4.supports_mode and v4.supports_language
+        assert v4.default_mode == v3.default_mode == "transcribe"
+        assert v4.default_language == v3.default_language == "unknown"
+        assert "saarika:v2.5" not in MODEL_CONFIGS  # removed upstream in 1.12
 
     async def test_default_model_is_still_saaras_v3(self, monkeypatch):
         monkeypatch.setenv("TEST_SARVAM_API_KEY", "k")

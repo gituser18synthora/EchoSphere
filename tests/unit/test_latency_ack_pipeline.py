@@ -32,6 +32,15 @@ from tests.unit.test_tts_router_flush_finals import FakeProvider
 from tests.unit.test_turn_endpointing import transcript
 
 
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 class Recorder(_RecorderStub):
     def __init__(self):
         super().__init__()
@@ -180,7 +189,7 @@ async def test_six_turns_never_queue_ack_tts_ahead_of_the_answer(acknowledgement
 
     feeder = asyncio.create_task(feed())
     try:
-        await asyncio.wait_for(WorkerRunner(handle_sigint=False).run(worker), timeout=20)
+        await asyncio.wait_for(_run_worker(worker), timeout=20)
         await feeder
     finally:
         if not feeder.done():

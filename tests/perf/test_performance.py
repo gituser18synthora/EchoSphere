@@ -15,6 +15,12 @@ import pytest
 
 from shared.knowledge.schemas import ChunkPayload
 
+
+async def _run_added(runner, worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    await runner.add_workers(worker)
+    await runner.run()
+
 pytestmark = [pytest.mark.perf, pytest.mark.integration]
 
 CORPUS_CHUNKS = 5000
@@ -246,7 +252,7 @@ class TestVoiceLatency:
 
         runner = WorkerRunner(handle_sigint=False)
         feed = asyncio.create_task(feeder())
-        await asyncio.wait_for(runner.run(worker), timeout=20)
+        await asyncio.wait_for(_run_added(runner, worker), timeout=20)
         await feed
 
         ttfa = (marks["first_audio"] - marks["turn_start"]) * 1000

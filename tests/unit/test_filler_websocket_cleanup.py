@@ -25,6 +25,15 @@ from tests.unit.test_latency_filler import _AcknowledgementCueStub, _ShortLibrar
 from tests.unit.test_latency_filler_readiness import AudioProbe, TimedRecorder
 
 
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 class SocketPlayback:
     is_connected = True
     is_closing = False
@@ -198,7 +207,7 @@ async def run_websocket_cleanup(transport_kind, acknowledgements):
 
     feeder = asyncio.create_task(feed())
     try:
-        await asyncio.wait_for(WorkerRunner(handle_sigint=False).run(worker), timeout=30)
+        await asyncio.wait_for(_run_worker(worker), timeout=30)
         await feeder
     finally:
         if not feeder.done():

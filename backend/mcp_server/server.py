@@ -21,7 +21,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -42,13 +42,16 @@ _current_auth: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 _TOOL_TIMEOUT_SECONDS = 20.0
 _RATE_LIMIT_PER_MINUTE = 60
 
-mcp = FastMCP(
+# mcp 2.x: FastMCP became MCPServer, transport settings (stateless HTTP,
+# host/port, JSON responses) moved from the constructor to run() and the ASGI
+# app factories — see streamable_http_app(stateless_http=True) below. Only
+# keyword arguments here: v2 reordered the positional parameters.
+mcp = MCPServer(
     name="echosphere-knowledge",
     instructions=(
         "Tenant-scoped knowledge retrieval for EchoSphere voice bots. "
         "All results are limited to knowledge bases the authenticated tenant owns."
     ),
-    stateless_http=True,
 )
 
 
@@ -300,7 +303,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 
 
 def build_app():
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(stateless_http=True)
     app.add_middleware(JWTAuthMiddleware)
 
     async def health(request):

@@ -188,7 +188,10 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
         self._user_is_speaking = True
         if self._latency is not None:
             self._latency.mark_speech_started()
-        await self.start_metrics()
+        # pipecat >= 1.7 removed the combined ``start_metrics()``; the TTFB
+        # timer is the one that matters for an STT turn (processing metrics
+        # are no longer emitted by streaming STT services).
+        await self.start_ttfb_metrics()
         await self._call_event_handler("on_start_of_turn", transcript)
         if self._bot_audible and self._barge_in_min_words > 0:
             # Bot is audibly speaking: hold the turn start until the
@@ -226,7 +229,9 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
         await self._maybe_confirm_barge_in(transcript)
         if self._latency is not None:
             self._latency.mark_eager_eot()
-        # Base behaviour first (InterimTranscriptionFrame for UI parity)…
+        # Base behaviour first (pipecat >= 1.9 pushes nothing here unless
+        # enable_eager_end_of_turn is on; it only records the prediction and
+        # fires the on_eager_end_of_turn handler)…
         await super()._handle_eager_end_of_turn(transcript, data)
         # …then the normalized speculative-work signal for the brain.
         language = self._primary_detected_language(data)
@@ -291,14 +296,17 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
             )
         await super()._handle_fatal_error(data)
 
-    async def _report_error(self, error):
+    async def _report_error(self, error, force_treat_as_permanent: bool = False):
+        # pipecat >= 1.10 passes ``force_treat_as_permanent`` so a fatal
+        # provider error is not retried; keep the keyword flowing through.
         if self._recorder is not None:
             self._recorder.add_event(
                 "stt_provider_error",
                 provider="deepgram",
                 error=str(getattr(error, "error", error))[:200],
+                permanent=bool(force_treat_as_permanent),
             )
-        await super()._report_error(error)
+        await super()._report_error(error, force_treat_as_permanent=force_treat_as_permanent)
 
     async def _disconnect(self):
         self._flush_stt_usage()

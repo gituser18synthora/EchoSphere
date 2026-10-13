@@ -44,6 +44,15 @@ from tests.unit.test_naturalness_runtime import _RecorderStub
 from tests.unit.test_tts_router_flush_finals import FakeProvider
 from tests.unit.test_turn_endpointing import transcript
 
+
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
 # Sample values that label each sound family on the written timeline.
 REPLY, ACK, HMM, WAIT, BREATH = 12000, 7000, 4000, 5000, 2000   # breath = _ShortLibrary female
 LABELS = {REPLY: "reply", ACK: "ack", HMM: "hmm", WAIT: "wait", BREATH: "breath"}
@@ -298,7 +307,7 @@ async def run_conversation(*, breathing: bool, words: bool, monkeypatch):
 
     feeder = asyncio.create_task(feed())
     try:
-        await asyncio.wait_for(WorkerRunner(handle_sigint=False).run(worker), timeout=40)
+        await asyncio.wait_for(_run_worker(worker), timeout=40)
         await feeder
     finally:
         if not feeder.done():

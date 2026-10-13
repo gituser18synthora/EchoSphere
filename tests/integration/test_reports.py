@@ -2,6 +2,7 @@
 
 import csv
 import io
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -162,6 +163,11 @@ def test_tenant_scope_is_server_enforced(client, tenant_admin):
     assert own.status_code == 200
     exported_calls = sum(int(row[1]) for row in _csv_rows(own)[1:])
 
+    # Same window the export uses (``date.today()`` in the router). Do NOT
+    # write ``func.current_date() - 6``: MySQL evaluates that as integer
+    # arithmetic (20261006 - 6 = 20261000), which silently drops the days
+    # before the 1st of the month.
+    today = date.today()
     db = get_sessionmaker()()
     try:
         expected_calls = int(
@@ -169,8 +175,8 @@ def test_tenant_scope_is_server_enforced(client, tenant_admin):
                 select(func.coalesce(func.sum(UsageRecord.calls), 0)).where(
                     UsageRecord.tenant_id == "tn-001",
                     UsageRecord.bot_id.is_(None),
-                    UsageRecord.date >= func.current_date() - 6,
-                    UsageRecord.date <= func.current_date(),
+                    UsageRecord.date >= today - timedelta(days=6),
+                    UsageRecord.date <= today,
                 )
             )
             or 0

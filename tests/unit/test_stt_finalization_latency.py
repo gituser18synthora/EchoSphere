@@ -31,6 +31,8 @@ from pipecat.services.stt_latency import SARVAM_TTFS_P99
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
+from pipecat.clocks.system_clock import SystemClock
+from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
 from shared.bot_config import ResolvedBotConfig
@@ -45,6 +47,13 @@ STOP_SECS = TURN_DETECTION_DEFAULTS["telephony"]["stop_secs"]
 UST = TURN_DETECTION_DEFAULTS["telephony"]["user_speech_timeout"]
 # What the un-finalized safety net costs after every utterance.
 STT_NET_SECS = SARVAM_TTFS_P99 - STOP_SECS
+
+
+def _processor_setup(task_manager: TaskManager) -> FrameProcessorSetup:
+    """pipecat >= 1.7 hands strategies the processor's setup object (clock,
+    task manager, worker) instead of a bare TaskManager. ``TaskManager()``
+    binds the running loop itself (``setup(loop)`` is deprecated)."""
+    return FrameProcessorSetup(clock=SystemClock(), task_manager=task_manager, pipeline_worker=None)
 
 
 class TestFinalizedFlag:
@@ -232,7 +241,7 @@ async def close_turn(*, finalized: bool, stt_lag: float,
     strategy = SpeechTimeoutUserTurnStopStrategy(
         user_speech_timeout=user_speech_timeout, wait_for_transcript=False
     )
-    await strategy.setup(manager)
+    await strategy.setup(_processor_setup(manager))
     stopped = asyncio.Event()
     strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.set())
 
@@ -324,8 +333,7 @@ class TestMeasuredFinalLatencyWiring:
         strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
         strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
         tm = TaskManager()
-        tm.setup(asyncio.get_running_loop())
-        await strategy.setup(tm)
+        await strategy.setup(_processor_setup(tm))
         await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         t0 = time.monotonic()
@@ -342,8 +350,7 @@ class TestMeasuredFinalLatencyWiring:
         strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
         strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
         tm = TaskManager()
-        tm.setup(asyncio.get_running_loop())
-        await strategy.setup(tm)
+        await strategy.setup(_processor_setup(tm))
         await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         t0 = time.monotonic()
@@ -364,8 +371,7 @@ class TestMeasuredFinalLatencyWiring:
         strategy = FinalBoundedTurnStopStrategy(user_speech_timeout=0.4, wait_for_transcript=True)
         strategy.add_event_handler("on_user_turn_stopped", lambda *a, **k: stopped.append(time.monotonic()))
         tm = TaskManager()
-        tm.setup(asyncio.get_running_loop())
-        await strategy.setup(tm)
+        await strategy.setup(_processor_setup(tm))
         await strategy.process_frame(STTMetadataFrame(service_name="sarvam", ttfs_p99_latency=0.8))
         await strategy.process_frame(VADUserStartedSpeakingFrame())
         t0 = time.monotonic()

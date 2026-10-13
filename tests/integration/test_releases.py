@@ -209,13 +209,18 @@ def test_super_admin_override_publishes_and_is_audited(client, super_admin, tena
 
     session = get_sessionmaker()()
     try:
-        row = session.scalar(
-            select(AuditLog)
-            .where(AuditLog.entity_id == rel["id"])
-            .order_by(AuditLog.created_at.desc())
-        )
-        assert row is not None
-        assert row.action == "Published release with checklist override"
+        # created_at is a whole-second DateTime, so the approve and publish
+        # rows often tie; select the override row by action instead of
+        # relying on "latest" ordering.
+        rows = session.scalars(
+            select(AuditLog).where(AuditLog.entity_id == rel["id"])
+        ).all()
+        actions = [r.action for r in rows]
+        assert "Approved release" in actions
+        assert "Published release with checklist override" in actions
+        assert "Published release" not in actions  # the override label replaces it
+        row = next(r for r in rows
+                   if r.action == "Published release with checklist override")
         assert row.new_value["override"]["reason"].startswith("Imported tenant")
         assert "All regression tests passing" in row.new_value["override"]["failedChecks"]
     finally:

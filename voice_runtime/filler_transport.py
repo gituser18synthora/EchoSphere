@@ -82,7 +82,17 @@ class FillerOutputTransportMixin:
             # Base cleanup clears partial PCM only if bot-speaking began.
             # A sub-chunk packet can exist before that event (plain audio,
             # or synthesis interrupted before its first full output chunk).
-            self._audio_buffer.clear()
+            # pipecat >= 1.8 keeps that partial audio in ``_audio_runs`` plus
+            # the stream resampler's filter tail (``_clear_audio_buffer`` +
+            # ``_resampler.reset``); earlier builds kept one ``_audio_buffer``.
+            clear_runs = getattr(self, "_clear_audio_buffer", None)
+            if callable(clear_runs):
+                clear_runs()
+                resampler = getattr(self, "_resampler", None)
+                if resampler is not None and hasattr(resampler, "reset"):
+                    await resampler.reset()
+            else:  # pragma: no cover — pipecat < 1.8
+                self._audio_buffer.clear()
             if self._playback_paused:
                 # A committed barge-in ends the pause: the frame parked on the
                 # gate belongs to the interrupted reply, so the audio task is
@@ -458,7 +468,12 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
             await super()._write_frame(FillerClearFrame(owner))
             self._cleared_fillers.add(owner.token)
 
-    async def _write_frame(self, frame):
+    async def _write_frame(self, frame) -> bool:
+        # Returns whether the transport took the frame. pipecat >= 1.7 reads
+        # this in ``write_audio_frame``: a falsy result skips the realtime
+        # pacing sleep AND tells the media sender not to push the frame
+        # downstream — so a bare ``return`` here silently turned paced
+        # playback into a burst and starved the recorder / echo reference.
         async with self._filler_send_lock:
             ambience = self._ambience
             if ambience is not None:
@@ -467,7 +482,7 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                 ambience.arm()
             if isinstance(frame, FillerAudioRawFrame):
                 if frame.owner is None or frame.owner.cancelled:
-                    return
+                    return False
                 if ambience is not None and ambience.idle_since_audio and frame.audio:
                     await self._ambience_handoff(ambience)
                 # Tagged filler bypasses optional fixed-size PCM buffering:
@@ -488,17 +503,16 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
                     self._cleared_fillers.add(owner.token)
             self._note_wire_audio(frame)
             if ambience is None:
-                await super()._write_frame(frame)
-                return
-            await self._write_with_ambience(frame, ambience)
+                return bool(await super()._write_frame(frame))
+            return await self._write_with_ambience(frame, ambience)
 
-    async def _write_with_ambience(self, frame, ambience) -> None:
+    async def _write_with_ambience(self, frame, ambience) -> bool:
         serializer = self._params.serializer
         if ambience.idle_since_audio and isinstance(frame, OutputAudioRawFrame) and frame.audio:
             await self._ambience_handoff(ambience)
         backlog = self._packet_backlog()
         dropped = getattr(serializer, "stale_audio_dropped", 0)
-        await super()._write_frame(self._with_ambience(frame))
+        taken = bool(await super()._write_frame(self._with_ambience(frame)))
         if isinstance(frame, OutputAudioRawFrame) and frame.audio:
             seconds = self._audio_seconds(frame)
             if backlog is not None:
@@ -513,6 +527,7 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
             ambience.note_interruption()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             ambience.stop("end" if isinstance(frame, EndFrame) else "cancel")
+        return taken
 
     async def write_audio_frame(self, frame):
         if isinstance(frame, AmbienceAudioRawFrame):

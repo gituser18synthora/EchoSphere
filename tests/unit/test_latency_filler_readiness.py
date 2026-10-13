@@ -30,6 +30,15 @@ from tests.unit.test_latency_filler import _AcknowledgementCueStub
 from tests.unit.test_turn_endpointing import transcript
 
 
+async def _run_worker(worker):
+    """pipecat >= 1.3: register the worker, then run (run(worker) is deprecated)."""
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    await runner.run()
+
+
 class TimedRecorder(Recorder):
     def __init__(self):
         super().__init__()
@@ -205,7 +214,7 @@ async def run_readiness_scenarios(acknowledgements, *, threshold_ms=500, adaptiv
 
     feeder = asyncio.create_task(feed())
     try:
-        await asyncio.wait_for(WorkerRunner(handle_sigint=False).run(worker), timeout=90)
+        await asyncio.wait_for(_run_worker(worker), timeout=90)
         await feeder
     finally:
         if not feeder.done():

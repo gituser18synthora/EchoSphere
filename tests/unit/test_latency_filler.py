@@ -546,10 +546,20 @@ class TestLatencyFillerProcessor:
             {"turn": 1, "rung": "breath", "reason": "no_clip", "gender": "male"},
         ]
 
-    async def test_start_frame_sets_the_output_rate(self):
+    async def test_pipeline_setup_sets_the_output_rate(self):
+        # pipecat >= 1.8: the pipeline's output rate arrives through
+        # FrameProcessorSetup (StartFrame.audio_out_sample_rate is deprecated).
+        from pipecat.clocks.system_clock import SystemClock
+        from pipecat.processors.frame_processor import FrameProcessorSetup
+        from pipecat.utils.asyncio.task_manager import TaskManager
+
         library = _ShortLibrary(clip_ms=40)
         filler = make_filler(delay_ms=10, library=library, rate=24000)
-        await filler.process_frame(StartFrame(audio_out_sample_rate=8000), DOWN)
+        await filler.setup(FrameProcessorSetup(
+            clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=None,
+            audio_out_sample_rate=8000,
+        ))
+        await filler.process_frame(StartFrame(), DOWN)
         await filler.arm(turn_id=1, gender="male")
         await wait(0.1)
         assert library.requests == [("male", 8000)]
