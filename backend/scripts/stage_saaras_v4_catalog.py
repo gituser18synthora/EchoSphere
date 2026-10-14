@@ -48,7 +48,7 @@ V3_DESCRIPTION = (
     "auto-detect, output modes (transcribe/verbatim/translit/codemix/"
     "translate). Platform default."
 )
-PRICE_INR_PER_HOUR = "30"
+PRICE_INR_PER_HOUR = "9"  # negotiated Sarvam STT rate (2026-10-06)
 
 LANGS = [
     "unknown", "hi-IN", "en-IN", "bn-IN", "mr-IN", "gu-IN", "ta-IN", "te-IN",

@@ -1,0 +1,4823 @@
+{
+ "name": "Haier rejected work order follow-up",
+ "nodes": [
+  {
+   "id": "n_start",
+   "kind": "start",
+   "label": "Call starts",
+   "config": {
+    "behavior": {
+     "version": 3
+    }
+   },
+   "x": 300,
+   "y": 40
+  },
+  {
+   "id": "n_set_reached",
+   "kind": "message",
+   "label": "customer reached",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "customer_reached": "yes"
+    }
+   },
+   "x": 560,
+   "y": 40
+  },
+  {
+   "id": "n_pf_wo_number",
+   "kind": "ask",
+   "label": "prefill wo_number",
+   "config": {
+    "variable": "wo_number",
+    "prefillFromContext": "wo_number",
+    "prefillOnly": true
+   },
+   "x": 820,
+   "y": 40
+  },
+  {
+   "id": "n_pf_product_name",
+   "kind": "ask",
+   "label": "prefill product_name",
+   "config": {
+    "variable": "product_name",
+    "prefillFromContext": "product_name",
+    "prefillOnly": true
+   },
+   "x": 1080,
+   "y": 40
+  },
+  {
+   "id": "n_pf_l3_tagging",
+   "kind": "ask",
+   "label": "prefill l3_tagging",
+   "config": {
+    "variable": "l3_tagging",
+    "prefillFromContext": "l3_tagging",
+    "prefillOnly": true
+   },
+   "x": 1340,
+   "y": 40
+  },
+  {
+   "id": "n_pf_reject_reason",
+   "kind": "ask",
+   "label": "prefill reject_reason",
+   "config": {
+    "variable": "reject_reason",
+    "prefillFromContext": "reject_reason",
+    "prefillOnly": true
+   },
+   "x": 40,
+   "y": 180
+  },
+  {
+   "id": "n_pf_request_date",
+   "kind": "ask",
+   "label": "prefill request_date",
+   "config": {
+    "variable": "request_date",
+    "prefillFromContext": "request_date",
+    "prefillOnly": true
+   },
+   "x": 300,
+   "y": 180
+  },
+  {
+   "id": "n_pf_helpline_number",
+   "kind": "ask",
+   "label": "prefill helpline_number",
+   "config": {
+    "variable": "helpline_number",
+    "prefillFromContext": "helpline_number",
+    "prefillOnly": true
+   },
+   "x": 560,
+   "y": 180
+  },
+  {
+   "id": "n_pf_customer_gender",
+   "kind": "ask",
+   "label": "prefill customer_gender",
+   "config": {
+    "variable": "customer_gender",
+    "prefillFromContext": "customer_gender",
+    "prefillOnly": true
+   },
+   "x": 820,
+   "y": 180
+  },
+  {
+   "id": "n_hub_purpose",
+   "kind": "intent",
+   "label": "Purpose + technician check",
+   "config": {
+    "prompt": "Ye call aapke {{product_name}} ki {{l3_tagging}} request ke regarding ki gayi hai, jo hamari Service Center ki taraf se reject hokar aayi hai, {{reject_reason}} ke reason mein. Kya main jaan sakta hoon, aapke paas Haier ke technician ki taraf se koi call aaya tha ya koi visit hui thi?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1080,
+   "y": 180
+  },
+  {
+   "id": "n_cond_later_tech_yes",
+   "kind": "condition",
+   "label": "technician_contacted equals yes",
+   "config": {
+    "variable": "technician_contacted",
+    "operator": "equals",
+    "value": "yes"
+   },
+   "x": 1340,
+   "y": 180
+  },
+  {
+   "id": "n_cond_later_tech_no",
+   "kind": "condition",
+   "label": "technician_contacted equals no",
+   "config": {
+    "variable": "technician_contacted",
+    "operator": "equals",
+    "value": "no"
+   },
+   "x": 40,
+   "y": 320
+  },
+  {
+   "id": "n_msg_ack_later",
+   "kind": "message",
+   "label": "Okay (noted the later plan)",
+   "config": {
+    "text": "Theek hai.",
+    "responseMode": "exact"
+   },
+   "x": 300,
+   "y": 320
+  },
+  {
+   "id": "n_blk_tech_only",
+   "kind": "message",
+   "label": "→ technician re-ask",
+   "config": {
+    "silent": true,
+    "setSlots": {}
+   },
+   "x": 560,
+   "y": 320
+  },
+  {
+   "id": "n_hub_tech_only",
+   "kind": "intent",
+   "label": "Technician check (short)",
+   "config": {
+    "prompt": "Kya aapke paas Haier ke technician ki taraf se koi call aaya tha ya koi visit hui thi?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 820,
+   "y": 320
+  },
+  {
+   "id": "n_set_tech_unknown",
+   "kind": "message",
+   "label": "technician unknown",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "technician_contacted": "unknown"
+    }
+   },
+   "x": 1080,
+   "y": 320
+  },
+  {
+   "id": "n_set_tech_yes",
+   "kind": "message",
+   "label": "technician contacted = yes",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "technician_contacted": "yes"
+    }
+   },
+   "x": 1340,
+   "y": 320
+  },
+  {
+   "id": "n_msg_tech_ack",
+   "kind": "message",
+   "label": "Thanks for confirming",
+   "config": {
+    "text": "Confirm karne ke liye dhanyavad.",
+    "responseMode": "exact"
+   },
+   "x": 40,
+   "y": 460
+  },
+  {
+   "id": "n_set_tech_no",
+   "kind": "message",
+   "label": "technician contacted = no",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "technician_contacted": "no"
+    }
+   },
+   "x": 300,
+   "y": 460
+  },
+  {
+   "id": "n_msg_apology_no_contact",
+   "kind": "message",
+   "label": "Apology — no technician contact",
+   "config": {
+    "text": "Maafi chahunga ki aapko Haier ke technician ki taraf se koi bhi call ya visit nahi hui.",
+    "responseMode": "exact"
+   },
+   "x": 560,
+   "y": 460
+  },
+  {
+   "id": "n_cond_r_bill",
+   "kind": "condition",
+   "label": "reject_reason contains bill",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "bill"
+   },
+   "x": 820,
+   "y": 460
+  },
+  {
+   "id": "n_cond_r_cwcb",
+   "kind": "condition",
+   "label": "reject_reason contains call back",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "call back"
+   },
+   "x": 1080,
+   "y": 460
+  },
+  {
+   "id": "n_cond_r_cwcb2",
+   "kind": "condition",
+   "label": "reject_reason contains callback",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "callback"
+   },
+   "x": 1340,
+   "y": 460
+  },
+  {
+   "id": "n_cond_r_noresp",
+   "kind": "condition",
+   "label": "reject_reason contains no response",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "no response"
+   },
+   "x": 40,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_pnd",
+   "kind": "condition",
+   "label": "reject_reason contains not delivered",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "not delivered"
+   },
+   "x": 300,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_doa",
+   "kind": "condition",
+   "label": "reject_reason contains doa",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "doa"
+   },
+   "x": 560,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_doa2",
+   "kind": "condition",
+   "label": "reject_reason contains damage",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "damage"
+   },
+   "x": 820,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_rtp",
+   "kind": "condition",
+   "label": "reject_reason contains refuse",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "refuse"
+   },
+   "x": 1080,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_unitok",
+   "kind": "condition",
+   "label": "reject_reason contains unit ok",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "unit ok"
+   },
+   "x": 1340,
+   "y": 600
+  },
+  {
+   "id": "n_cond_r_unitok2",
+   "kind": "condition",
+   "label": "reject_reason contains no defect",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "no defect"
+   },
+   "x": 40,
+   "y": 740
+  },
+  {
+   "id": "n_cond_r_nhp",
+   "kind": "condition",
+   "label": "reject_reason contains not haier",
+   "config": {
+    "variable": "reject_reason",
+    "operator": "contains",
+    "value": "not haier"
+   },
+   "x": 300,
+   "y": 740
+  },
+  {
+   "id": "n_hub_r_bill",
+   "kind": "intent",
+   "label": "Reason: Bill not available",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapke paas bill available tha technician ke visit ke time pe?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 740
+  },
+  {
+   "id": "n_msg_r_apology_bill",
+   "kind": "message",
+   "label": "Apology (bill)",
+   "config": {
+    "text": "Maafi chahunga ki aapki request is reason ki wajah se reject hui.",
+    "responseMode": "exact"
+   },
+   "x": 820,
+   "y": 740
+  },
+  {
+   "id": "n_hub_charges",
+   "kind": "intent",
+   "label": "Ready to pay charges?",
+   "config": {
+    "prompt": "Kya aap charges dene ke liye ready hain?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1080,
+   "y": 740
+  },
+  {
+   "id": "n_set_charges_yes",
+   "kind": "message",
+   "label": "charges accepted",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "charges_accepted": "yes",
+     "service_required": "yes"
+    }
+   },
+   "x": 1340,
+   "y": 740
+  },
+  {
+   "id": "n_set_cancel_rtp",
+   "kind": "message",
+   "label": "cancel: refuse to pay",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "refuse_to_pay",
+     "charges_accepted": "no",
+     "service_required": "no"
+    }
+   },
+   "x": 40,
+   "y": 880
+  },
+  {
+   "id": "n_hub_r_cwcb",
+   "kind": "intent",
+   "label": "Reason: Consumer Will Call Back",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, jab hamare technician ne call kiya tha tab aapne service ke liye mana kiya tha?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 300,
+   "y": 880
+  },
+  {
+   "id": "n_cond_cwcb_date_known",
+   "kind": "condition",
+   "label": "date_bucket exists ",
+   "config": {
+    "variable": "date_bucket",
+    "operator": "exists",
+    "value": ""
+   },
+   "x": 560,
+   "y": 880
+  },
+  {
+   "id": "n_set_service_later_cwcb",
+   "kind": "message",
+   "label": "consumer postponed",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "service_required": "later"
+    }
+   },
+   "x": 820,
+   "y": 880
+  },
+  {
+   "id": "n_msg_r_apology_cwcb",
+   "kind": "message",
+   "label": "Apology (call back)",
+   "config": {
+    "text": "Maafi chahunga ki aapki request is reason ki wajah se reject hui.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 880
+  },
+  {
+   "id": "n_hub_r_noresp",
+   "kind": "intent",
+   "label": "Reason: No Response",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapko call receive hui thi service center ya technician ki taraf se?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1340,
+   "y": 880
+  },
+  {
+   "id": "n_ask_tech_talk",
+   "kind": "ask",
+   "label": "What did the technician say?",
+   "config": {
+    "question": "Aapki technician se kya baat hui thi?",
+    "variable": "technician_conversation",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 40,
+   "y": 1020
+  },
+  {
+   "id": "n_msg_r_apology_noresp",
+   "kind": "message",
+   "label": "Apology (no response)",
+   "config": {
+    "text": "Maafi chahunga ki aapki request is reason ki wajah se reject hui.",
+    "responseMode": "exact"
+   },
+   "x": 300,
+   "y": 1020
+  },
+  {
+   "id": "n_hub_r_pnd",
+   "kind": "intent",
+   "label": "Reason: Product Not Delivered",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya ab aapka product deliver ho gaya hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 1020
+  },
+  {
+   "id": "n_ask_delivery_when",
+   "kind": "ask",
+   "label": "When delivered?",
+   "config": {
+    "question": "Aapka product kab deliver hua tha?",
+    "variable": "delivery_date_text",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 820,
+   "y": 1020
+  },
+  {
+   "id": "n_ask_expected_delivery",
+   "kind": "ask",
+   "label": "Expected delivery?",
+   "config": {
+    "question": "Aapka product kab tak deliver hoga?",
+    "variable": "expected_delivery_text",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1080,
+   "y": 1020
+  },
+  {
+   "id": "n_set_cancel_pnd",
+   "kind": "message",
+   "label": "cancel: product not delivered",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "product_not_delivered",
+     "service_required": "later"
+    }
+   },
+   "x": 1340,
+   "y": 1020
+  },
+  {
+   "id": "n_msg_pnd_cancel",
+   "kind": "message",
+   "label": "Cancel — product not delivered",
+   "config": {
+    "text": "Theek hai. Jab aapka product deliver ho jaye, tab aap Haier ke helpline number {{helpline_number}} par call karke ek nayi request raise karwa dijiyega. Abhi main ye request cancel kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 40,
+   "y": 1160
+  },
+  {
+   "id": "n_hub_r_doa",
+   "kind": "intent",
+   "label": "Reason: E-Com DOA",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapko E-com site se product damaged deliver hua hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 300,
+   "y": 1160
+  },
+  {
+   "id": "n_set_cancel_doa",
+   "kind": "message",
+   "label": "cancel: e-com DOA",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "ecom_doa",
+     "service_required": "no"
+    }
+   },
+   "x": 560,
+   "y": 1160
+  },
+  {
+   "id": "n_msg_doa_cancel",
+   "kind": "message",
+   "label": "Cancel — DOA, replace via e-com",
+   "config": {
+    "text": "Confirmation ke liye dhanyavad. Jaise ki aapne confirm kiya ki product damage receive hua hai, main ye call cancel kar raha hoon. Aap E-com site se product replace karwa ke hamare helpline number {{helpline_number}} pe call karke ek new request raise karwa dijiyega.",
+    "responseMode": "exact"
+   },
+   "x": 820,
+   "y": 1160
+  },
+  {
+   "id": "n_hub_r_rtp",
+   "kind": "intent",
+   "label": "Reason: Refuse to Pay",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapne technician ke visit ke time pe payment karne se mana kar diya tha?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1080,
+   "y": 1160
+  },
+  {
+   "id": "n_msg_rtp_warn",
+   "kind": "message",
+   "label": "Payment warning",
+   "config": {
+    "text": "Main aapko batana chahunga, agar aap payment nahi karte hain to aapki request cancel kar di jayegi.",
+    "responseMode": "exact"
+   },
+   "x": 1340,
+   "y": 1160
+  },
+  {
+   "id": "n_hub_r_unitok",
+   "kind": "intent",
+   "label": "Reason: Unit OK / No Defect",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapke product mein abhi koi problem hai, ya problem Haier ke technician ke dwara resolve ho chuki hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 40,
+   "y": 1300
+  },
+  {
+   "id": "n_msg_r_apology_unitok",
+   "kind": "message",
+   "label": "Apology (problem persists)",
+   "config": {
+    "text": "Maafi chahunga ki aapki request is reason ki wajah se reject hui.",
+    "responseMode": "exact"
+   },
+   "x": 300,
+   "y": 1300
+  },
+  {
+   "id": "n_hub_done_who",
+   "kind": "intent",
+   "label": "Resolved by Haier technician?",
+   "config": {
+    "prompt": "Kya ye kaam Haier ke technician ne kiya tha?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 1300
+  },
+  {
+   "id": "n_msg_done_thanks",
+   "kind": "message",
+   "label": "Thanks — forward for completion",
+   "config": {
+    "text": "Feedback ke liye dhanyavad. Main is request ko completion ke liye aage forward kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 820,
+   "y": 1300
+  },
+  {
+   "id": "n_set_redispatch_completion",
+   "kind": "message",
+   "label": "re-dispatch for completion",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "RE_DISPATCH",
+     "resolution": "tech_completed",
+     "service_required": "no"
+    }
+   },
+   "x": 1080,
+   "y": 1300
+  },
+  {
+   "id": "n_set_cancel_unitok",
+   "kind": "message",
+   "label": "cancel: unit OK",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "unit_ok",
+     "service_required": "no"
+    }
+   },
+   "x": 1340,
+   "y": 1300
+  },
+  {
+   "id": "n_msg_unitok_cancel",
+   "kind": "message",
+   "label": "Cancel — unit OK",
+   "config": {
+    "text": "Jaisa ki aapne confirm kiya ki product OK hai, is request ko cancel kiya ja raha hai.",
+    "responseMode": "exact"
+   },
+   "x": 40,
+   "y": 1440
+  },
+  {
+   "id": "n_hub_r_nhp",
+   "kind": "intent",
+   "label": "Reason: Not Haier Product",
+   "config": {
+    "prompt": "Jaise ki main check kar pa raha hoon, yahan pe aapki call {{reject_reason}} ke reason ki wajah se reject hui hai. Kya main jaan sakta hoon, kya aapke paas koi Haier ka product hai jiski aapne request raise karwai thi?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 300,
+   "y": 1440
+  },
+  {
+   "id": "n_msg_r_apology_nhp",
+   "kind": "message",
+   "label": "Apology (is a Haier product)",
+   "config": {
+    "text": "Maafi chahunga ki aapki request is reason ki wajah se reject hui.",
+    "responseMode": "exact"
+   },
+   "x": 560,
+   "y": 1440
+  },
+  {
+   "id": "n_set_cancel_nhp",
+   "kind": "message",
+   "label": "cancel: not Haier product",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "not_haier",
+     "service_required": "no"
+    }
+   },
+   "x": 820,
+   "y": 1440
+  },
+  {
+   "id": "n_msg_nhp_cancel",
+   "kind": "message",
+   "label": "Cancel — not a Haier product",
+   "config": {
+    "text": "Confirmation ke liye dhanyavad. Aap jis company ka product use kar rahe hain, us company ke helpline number pe sampark kar sakte hain. Aapki ye request cancel ki ja rahi hai.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 1440
+  },
+  {
+   "id": "n_hub_nhp_verify",
+   "kind": "intent",
+   "label": "Verify: any Haier product?",
+   "config": {
+    "prompt": "Kya aapke paas Haier ka koi product hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1340,
+   "y": 1440
+  },
+  {
+   "id": "n_hub_nhp_verify2",
+   "kind": "intent",
+   "label": "Verify again: any Haier product?",
+   "config": {
+    "prompt": "Koi bhi Haier ka product, jaise fridge, AC ya washing machine, jiske liye request ki gayi ho?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 40,
+   "y": 1580
+  },
+  {
+   "id": "n_msg_nhp_verify_ok",
+   "kind": "message",
+   "label": "Okay",
+   "config": {
+    "text": "Theek hai.",
+    "responseMode": "exact"
+   },
+   "x": 300,
+   "y": 1580
+  },
+  {
+   "id": "n_set_cancel_wrong",
+   "kind": "message",
+   "label": "cancel: wrong contact",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "wrong_number",
+     "service_required": "no",
+     "customer_reached": "no"
+    }
+   },
+   "x": 560,
+   "y": 1580
+  },
+  {
+   "id": "n_msg_nhp_wrong_cancel",
+   "kind": "message",
+   "label": "Cancel — wrong contact",
+   "config": {
+    "text": "Maafi chahunga asuvidha ke liye. Jaisa ki aap bata rahe hain, aapke paas koi Haier ka product nahi hai. Main yahan se ye request cancel kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 820,
+   "y": 1580
+  },
+  {
+   "id": "n_hub_gift",
+   "kind": "intent",
+   "label": "Gift?",
+   "config": {
+    "prompt": "Kya aap ye product kisi aur ko gift kar rahe hain?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1080,
+   "y": 1580
+  },
+  {
+   "id": "n_ask_gift_date",
+   "kind": "ask",
+   "label": "When is installation needed?",
+   "config": {
+    "question": "Theek hai. Installation ki requirement kab hogi?",
+    "variable": "required_date_text",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ],
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 1340,
+   "y": 1580
+  },
+  {
+   "id": "n_set_cancel_gift",
+   "kind": "message",
+   "label": "cancel: gift",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "gift",
+     "service_required": "later"
+    }
+   },
+   "x": 40,
+   "y": 1720
+  },
+  {
+   "id": "n_msg_gift_advice",
+   "kind": "message",
+   "label": "Gift — recipient raises request",
+   "config": {
+    "text": "Jab bhi installation ki requirement ho, aap jinhe gift kar rahe hain unhe inform kar dijiyega ki woh apne number se Haier ke helpline number {{helpline_number}} par call karke request raise karwa lein. Abhi main ye request cancel kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 300,
+   "y": 1720
+  },
+  {
+   "id": "n_hub_resale",
+   "kind": "intent",
+   "label": "Resale?",
+   "config": {
+    "prompt": "Kya aapne ye product aage sale karne ke liye liya hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "technician_contacted",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "no": [
+         "(?<![a-z])(?:koi|kisi ne|kuch)?\\s*(?:call|phone|visit|contact)\\s*(?:bhi\\s*)?nahi\\s*(?:aaya|aayi|hua|hui|kiya|ki)",
+         "(?<![a-z])(?:koi|kuch)\\s*nahi\\s*aaya",
+         "(?<![a-z])nahi\\s*aaya\\s*(?:koi|abhi)?",
+         "(?<![a-z])nobody\\s*called"
+        ],
+        "yes": [
+         "(?<![a-z])(?:call|phone|visit)\\s*(?:aaya|aayi|aya|hui|hua|kiya|kiya gaya|mila|mili)",
+         "(?<![a-z])(?:aaya|aayi|aya)\\s*(?:tha|thi)(?:\\s*call)?",
+         "(?<![a-z])(?:kiya|ki)\\s*gaya\\s*tha",
+         "(?<![a-z])technician\\s*(?:aaya|aaye|ne\\s*call)",
+         "(?<![a-z])baat\\s*hui\\s*thi"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 1720
+  },
+  {
+   "id": "n_set_cancel_resale",
+   "kind": "message",
+   "label": "cancel: dealer/resale",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "resale",
+     "service_required": "no"
+    }
+   },
+   "x": 820,
+   "y": 1720
+  },
+  {
+   "id": "n_msg_resale_cancel",
+   "kind": "message",
+   "label": "Cancel — resale",
+   "config": {
+    "text": "Theek hai. Jaisa ki aap bata rahe hain, aapne ye product sale karne ke liye liya hai, main yahan se request cancel kar raha hoon. Aapko is request ke liye dobara call nahi aayega.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 1720
+  },
+  {
+   "id": "n_blk_service",
+   "kind": "message",
+   "label": "→ service requirement",
+   "config": {
+    "silent": true,
+    "setSlots": {}
+   },
+   "x": 1340,
+   "y": 1720
+  },
+  {
+   "id": "n_hub_service",
+   "kind": "intent",
+   "label": "Service requirement?",
+   "config": {
+    "prompt": "Kya aapko Haier ki taraf se service ki requirement hai?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ],
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 40,
+   "y": 1860
+  },
+  {
+   "id": "n_blk_service_simple",
+   "kind": "message",
+   "label": "→ simple yes/no",
+   "config": {
+    "silent": true,
+    "setSlots": {}
+   },
+   "x": 300,
+   "y": 1860
+  },
+  {
+   "id": "n_hub_service_simple",
+   "kind": "intent",
+   "label": "Service requirement? (simple)",
+   "config": {
+    "prompt": "Kya aapko abhi Haier ki taraf se service chahiye, haan ya nahi?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ],
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 1860
+  },
+  {
+   "id": "n_set_service_yes",
+   "kind": "message",
+   "label": "service required = yes",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "service_required": "yes"
+    }
+   },
+   "x": 820,
+   "y": 1860
+  },
+  {
+   "id": "n_set_service_no",
+   "kind": "message",
+   "label": "cancel: no requirement",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "no_requirement",
+     "service_required": "no"
+    }
+   },
+   "x": 1080,
+   "y": 1860
+  },
+  {
+   "id": "n_msg_no_req_cancel",
+   "kind": "message",
+   "label": "Cancel — no requirement",
+   "config": {
+    "text": "Jaise ki aapko service ki requirement nahi hai, main aapki request ko cancel kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 1340,
+   "y": 1860
+  },
+  {
+   "id": "n_set_service_later",
+   "kind": "message",
+   "label": "service required = later",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "service_required": "later"
+    }
+   },
+   "x": 40,
+   "y": 2000
+  },
+  {
+   "id": "n_set_service_unknown",
+   "kind": "message",
+   "label": "cancel: unclear requirement",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CANCEL",
+     "cancel_sub_reason": "unclear",
+     "service_required": "unknown"
+    }
+   },
+   "x": 300,
+   "y": 2000
+  },
+  {
+   "id": "n_msg_unclear_cancel",
+   "kind": "message",
+   "label": "Close — unclear",
+   "config": {
+    "text": "Theek hai. Abhi main yahan se request ko close kar raha hoon.",
+    "responseMode": "exact"
+   },
+   "x": 560,
+   "y": 2000
+  },
+  {
+   "id": "n_ask_date",
+   "kind": "ask",
+   "label": "Which date for the visit?",
+   "config": {
+    "question": "Kis date ko aap technician ki visit chahte hain?",
+    "variable": "required_date_text",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      }
+     },
+     {
+      "variable": "date_bucket",
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ],
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 820,
+   "y": 2000
+  },
+  {
+   "id": "n_cond_date_later",
+   "kind": "condition",
+   "label": "date_bucket equals later",
+   "config": {
+    "variable": "date_bucket",
+    "operator": "equals",
+    "value": "later"
+   },
+   "x": 1080,
+   "y": 2000
+  },
+  {
+   "id": "n_cond_date_within",
+   "kind": "condition",
+   "label": "date_bucket equals within",
+   "config": {
+    "variable": "date_bucket",
+    "operator": "equals",
+    "value": "within"
+   },
+   "x": 1340,
+   "y": 2000
+  },
+  {
+   "id": "n_hub_date_clarify",
+   "kind": "intent",
+   "label": "Within 5 days?",
+   "config": {
+    "prompt": "Kya aap agle paanch din ke andar technician ki visit karwana chahenge?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      },
+      "overwrite": true
+     },
+     {
+      "variable": "date_bucket",
+      "overwrite": true,
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ],
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 40,
+   "y": 2140
+  },
+  {
+   "id": "n_hub_future_confirm",
+   "kind": "intent",
+   "label": "Confirm: later, not now",
+   "config": {
+    "prompt": "Matlab aapko service abhi nahi, baad mein chahiye. Kya main sahi samajh raha hoon?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "required_date_text",
+      "entity": {
+       "dataType": "text",
+       "regexPatterns": [
+        "(?i)((?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|week|weeks|saal)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\\s*\\d{4})?)",
+        "(?i)((?<![a-z])(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\s*\\d{1,2}(?![0-9]))",
+        "(?i)((?<![a-z])\\d{1,2}\\s*(?:tareekh|tarikh))",
+        "(?i)((?<![0-9])\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?(?![0-9]))",
+        "(?i)((?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month))",
+        "(?i)((?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?:\\s*(?:hoon|hu|hain|hai|tha|thi))?)",
+        "(?i)((?<![a-z])shift(?:ing)?(?:\\s*(?:ke\\s*baad|hone\\s*ke\\s*baad))?)",
+        "(?i)((?<![a-z])(?:shaadi|shadi|wedding)\\s*ke\\s*baad)",
+        "(?i)((?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?:\\s*(?:ke\\s*)?(?:baad|bad|me|mein|tak))?)",
+        "(?i)((?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week))",
+        "(?i)((?<![a-z])(?:aaj|today|kal|tomorrow|parso|parson)(?:\\s*(?:hi|ko|subah|shaam|tak))?)",
+        "(?i)((?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye))",
+        "(?i)((?<![a-z])available\\s*(?:hoon|hu|hain|hai))",
+        "(?i)((?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant))",
+        "(?i)((?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|karwana|karvana|karana|karna|chahiye|karenge|karwayenge))",
+        "(?i)((?<![a-z])baad\\s*me(?:in)?(?!\\s*call))"
+       ]
+      },
+      "overwrite": true
+     },
+     {
+      "variable": "date_bucket",
+      "overwrite": true,
+      "entity": {
+       "dataType": "text",
+       "synonymPatterns": {
+        "within": [
+         "(?<![a-z])abhi\\s*(?:hi|available|karwa|karva|kar\\s*do|chahiye|bhej|aa\\s*jao|aa\\s*jaye|karo|kar\\s*sakte)(?![a-z])",
+         "(?<![a-z])(?:aaj|aj|today|kal|kalko|tomorrow|parso|parson)(?![a-z])",
+         "(?<![a-z])(?:ek|1|do|2|teen|3|chaar|char|4|paanch|panch|5)\\s*(?:-\\s*)?(?:ya\\s*)?(?:do|teen|chaar|char|paanch|panch|\\d)?\\s*(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:is|this)\\s*(?:hafte|hafta|week)(?![a-z])",
+         "(?<![a-z])(?:jaldi|jald\\s*se\\s*jald|turant|urgent)(?![a-z])",
+         "(?<![a-z])available\\s*(?:hoon|hu|hain|hai)(?![a-z])"
+        ],
+        "later": [
+         "(?<![a-z])(?:\\d+|ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:mahine|mahina|month|months|hafte|hafta|haftey|week|weeks|saal)(?![a-z])",
+         "(?<![a-z])(?:[6-9]|[1-9]\\d+|chhe|che|saat|aath|nau|das|dus|pandrah|bees|tees)\\s*(?:-\\s*)?(?:din|dino|days?)(?![a-z])",
+         "(?<![a-z])(?:agle|agla|next)\\s*(?:hafte|hafta|mahine|mahina|week|month)(?![a-z])",
+         "(?<![a-z])out\\s*of\\s*(?:station|state|town|city)(?![a-z])",
+         "(?<![a-z])(?:bahar|baahar)\\s*(?:hoon|hu|hain|hai|gaya|gayi|gaye)(?![a-z])",
+         "(?<![a-z])shift(?:ing)?(?![a-z])",
+         "(?<![a-z])(?:wapas|wapis)\\s*aa",
+         "(?<![a-z])baad\\s*me(?:in)?(?!\\s*call)(?![a-z])",
+         "(?<![a-z])abhi\\s*nahi\\s*(?:hogi|hoga|hogaa|karwana|karvana|karana|karna|chahiye|chaahiye|karenge|karwayenge|karvayenge)(?![a-z])",
+         "(?<![a-z])(?:abhi\\s*)?rakh(?:a|i)\\s*(?:hua|hui)(?![a-z])",
+         "(?<![a-z])(?:shaadi|shadi|wedding|function)\\s*ke\\s*baad(?![a-z])",
+         "(?<![a-z])later(?![a-z])"
+        ]
+       },
+       "matchCanonicalValues": false
+      }
+     },
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 300,
+   "y": 2140
+  },
+  {
+   "id": "n_cond_confirm_no",
+   "kind": "condition",
+   "label": "date_bucket equals within",
+   "config": {
+    "variable": "date_bucket",
+    "operator": "equals",
+    "value": "within"
+   },
+   "x": 560,
+   "y": 2140
+  },
+  {
+   "id": "n_set_within",
+   "kind": "message",
+   "label": "within 5 days",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "within_5_days": "yes",
+     "service_required": "yes"
+    }
+   },
+   "x": 820,
+   "y": 2140
+  },
+  {
+   "id": "n_set_future",
+   "kind": "message",
+   "label": "cancel: future date (5-day rule)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "within_5_days": "no",
+     "service_required": "later",
+     "action": "CANCEL",
+     "cancel_sub_reason": "future_date"
+    }
+   },
+   "x": 1080,
+   "y": 2140
+  },
+  {
+   "id": "n_msg_future_deny",
+   "kind": "message",
+   "label": "5-day rule — soft deny",
+   "config": {
+    "text": "{{customer_name}} ji, abhi main yahan se request ko close kar raha hoon. Jab aapko requirement ho, tab aap helpline number {{helpline_number}} par call karke ek nayi request raise karwa sakte hain.",
+    "responseMode": "exact"
+   },
+   "x": 1340,
+   "y": 2140
+  },
+  {
+   "id": "n_set_action_redispatch",
+   "kind": "message",
+   "label": "action = RE_DISPATCH",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "RE_DISPATCH"
+    }
+   },
+   "x": 40,
+   "y": 2280
+  },
+  {
+   "id": "n_api_redispatch",
+   "kind": "api",
+   "label": "CRM: re-dispatch WO",
+   "config": {
+    "connection": "Haier Re-dispatch Work Order",
+    "contextArgs": [
+     "wo_number",
+     "customer_name",
+     "product_name",
+     "l3_tagging",
+     "reject_reason",
+     "request_date"
+    ],
+    "includeMetadata": true
+   },
+   "x": 300,
+   "y": 2280
+  },
+  {
+   "id": "n_set_hook_ok_r",
+   "kind": "message",
+   "label": "hook ok",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "hook_status": "ok"
+    }
+   },
+   "x": 560,
+   "y": 2280
+  },
+  {
+   "id": "n_set_hook_failed_r",
+   "kind": "message",
+   "label": "hook failed",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "hook_status": "failed"
+    }
+   },
+   "x": 820,
+   "y": 2280
+  },
+  {
+   "id": "n_msg_redispatch",
+   "kind": "message",
+   "label": "Action 1 — re-dispatch line",
+   "config": {
+    "text": "Main aapki request ko re-dispatch kar raha hoon taki aapke concern ke liye technician visit kar sake. Technician call karke aapke place par jald se jald visit karenge.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 2280
+  },
+  {
+   "id": "n_msg_action2_helpline",
+   "kind": "message",
+   "label": "Action 2 — helpline advice",
+   "config": {
+    "text": "Jab bhi aapko requirement ho, aap Haier ke helpline number {{helpline_number}} par call karke ek nayi request raise karwa sakte hain.",
+    "responseMode": "exact"
+   },
+   "x": 1340,
+   "y": 2280
+  },
+  {
+   "id": "n_api_cancel",
+   "kind": "api",
+   "label": "CRM: cancel WO",
+   "config": {
+    "connection": "Haier Cancel Work Order",
+    "contextArgs": [
+     "wo_number",
+     "customer_name",
+     "product_name",
+     "l3_tagging",
+     "reject_reason",
+     "request_date"
+    ],
+    "includeMetadata": true
+   },
+   "x": 40,
+   "y": 2420
+  },
+  {
+   "id": "n_set_hook_ok_c",
+   "kind": "message",
+   "label": "hook ok",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "hook_status": "ok"
+    }
+   },
+   "x": 300,
+   "y": 2420
+  },
+  {
+   "id": "n_set_hook_failed_c",
+   "kind": "message",
+   "label": "hook failed",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "hook_status": "failed"
+    }
+   },
+   "x": 560,
+   "y": 2420
+  },
+  {
+   "id": "n_set_dnc",
+   "kind": "message",
+   "label": "DNC requested",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "dnc_requested": "yes"
+    }
+   },
+   "x": 820,
+   "y": 2420
+  },
+  {
+   "id": "n_msg_dnc_assure",
+   "kind": "message",
+   "label": "DNC assurance",
+   "config": {
+    "text": "Maafi chahunga asuvidha ke liye. Abhi aapke paas dobara call nahi aayega.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 2420
+  },
+  {
+   "id": "n_api_dnc",
+   "kind": "api",
+   "label": "CRM: set do-not-call",
+   "config": {
+    "connection": "Haier Set Do Not Call",
+    "contextArgs": [
+     "wo_number",
+     "customer_name",
+     "product_name",
+     "l3_tagging",
+     "reject_reason",
+     "request_date"
+    ],
+    "includeMetadata": true
+   },
+   "x": 1340,
+   "y": 2420
+  },
+  {
+   "id": "n_set_hook_dnc_ok",
+   "kind": "message",
+   "label": "dnc hook ok",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "dnc_hook_status": "ok"
+    }
+   },
+   "x": 40,
+   "y": 2560
+  },
+  {
+   "id": "n_set_hook_dnc_failed",
+   "kind": "message",
+   "label": "dnc hook failed",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "dnc_hook_status": "failed"
+    }
+   },
+   "x": 300,
+   "y": 2560
+  },
+  {
+   "id": "n_cond_tech_known",
+   "kind": "condition",
+   "label": "technician_contacted exists ",
+   "config": {
+    "variable": "technician_contacted",
+    "operator": "exists",
+    "value": ""
+   },
+   "x": 560,
+   "y": 2560
+  },
+  {
+   "id": "n_msg_escalate",
+   "kind": "message",
+   "label": "Escalate — senior team callback",
+   "config": {
+    "text": "Maafi chahunga asuvidha ke liye. Main aapki request hamari senior team ko note kar raha hoon, woh aapko jald hi call karenge.",
+    "responseMode": "exact"
+   },
+   "x": 820,
+   "y": 2560
+  },
+  {
+   "id": "n_set_escalate",
+   "kind": "message",
+   "label": "action = ESCALATE",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "ESCALATE"
+    }
+   },
+   "x": 1080,
+   "y": 2560
+  },
+  {
+   "id": "n_set_callback_busy",
+   "kind": "message",
+   "label": "action = CALLBACK (busy)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CALLBACK"
+    }
+   },
+   "x": 1340,
+   "y": 2560
+  },
+  {
+   "id": "n_msg_callback_close",
+   "kind": "message",
+   "label": "Callback close",
+   "config": {
+    "text": "Theek hai, hum baad mein call karenge.",
+    "responseMode": "exact"
+   },
+   "x": 40,
+   "y": 2700
+  },
+  {
+   "id": "n_hub_wrong_person",
+   "kind": "intent",
+   "label": "Wrong person — customer available?",
+   "config": {
+    "prompt": "Maaf kijiye. Kya {{customer_name}} ji abhi available hain?",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 300,
+   "y": 2700
+  },
+  {
+   "id": "n_hub_handover_wait",
+   "kind": "intent",
+   "label": "Waiting for the customer",
+   "config": {
+    "prompt": "Theek hai, main line par hoon.",
+    "responseMode": "exact",
+    "alsoCapture": [
+     {
+      "variable": "dnc_requested",
+      "entity": {
+       "dataType": "text",
+       "matchCanonicalValues": false,
+       "synonymPatterns": {
+        "yes": [
+         "(?<![a-z])(?:\\d+\\s*)?baar\\s*(?:phone|call)",
+         "(?<![a-z])(?:phone|call)\\s*(?:mat|nahi|na)\\s*(?:karo|karna|kariye|kijiye|mariyega|marna|maro)",
+         "(?<![a-z])(?:dobara|dubara|phir se|fir se)\\s*(?:call|phone)\\s*(?:mat|nahi|na)",
+         "(?<![a-z])(?:itne|itna|kitne|kitna|bahut)\\s*(?:call|phone)",
+         "(?<![a-z])stop\\s*calling",
+         "(?<![a-z])don'?t\\s*call",
+         "(?<![a-z])(?:call|phone)\\s*(?:karna|karne)\\s*band",
+         "(?<![a-z])pareshan\\s*(?:mat|na)"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "x": 560,
+   "y": 2700
+  },
+  {
+   "id": "n_set_wrong_person",
+   "kind": "message",
+   "label": "action = CALLBACK (not reached)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "action": "CALLBACK",
+     "customer_reached": "no"
+    }
+   },
+   "x": 820,
+   "y": 2700
+  },
+  {
+   "id": "n_end_closing",
+   "kind": "end",
+   "label": "Closing",
+   "config": {
+    "text": "Thank you {{customer_name}} ji, Haier mein apna keemti samay dene ke liye dhanyavad. Aapka din shubh rahe.",
+    "responseMode": "exact"
+   },
+   "x": 1080,
+   "y": 2700
+  },
+  {
+   "id": "n_end_callback",
+   "kind": "end",
+   "label": "Closing (neutral)",
+   "config": {
+    "text": "Haier mein apna keemti samay dene ke liye dhanyavad. Aapka din shubh rahe.",
+    "responseMode": "exact"
+   },
+   "x": 1340,
+   "y": 2700
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_n_start__n_set_reached__1000",
+   "from": "n_start",
+   "to": "n_set_reached"
+  },
+  {
+   "id": "e_n_set_reached__n_pf_wo_number__1001",
+   "from": "n_set_reached",
+   "to": "n_pf_wo_number"
+  },
+  {
+   "id": "e_n_pf_wo_number__n_pf_product_name__1002",
+   "from": "n_pf_wo_number",
+   "to": "n_pf_product_name"
+  },
+  {
+   "id": "e_n_pf_product_name__n_pf_l3_tagging__1003",
+   "from": "n_pf_product_name",
+   "to": "n_pf_l3_tagging"
+  },
+  {
+   "id": "e_n_pf_l3_tagging__n_pf_reject_reason__1004",
+   "from": "n_pf_l3_tagging",
+   "to": "n_pf_reject_reason"
+  },
+  {
+   "id": "e_n_pf_reject_reason__n_pf_request_date__1005",
+   "from": "n_pf_reject_reason",
+   "to": "n_pf_request_date"
+  },
+  {
+   "id": "e_n_pf_request_date__n_pf_helpline_number__1006",
+   "from": "n_pf_request_date",
+   "to": "n_pf_helpline_number"
+  },
+  {
+   "id": "e_n_pf_helpline_number__n_pf_customer_gender__1007",
+   "from": "n_pf_helpline_number",
+   "to": "n_pf_customer_gender"
+  },
+  {
+   "id": "e_n_pf_customer_gender__n_hub_purpose__1008",
+   "from": "n_pf_customer_gender",
+   "to": "n_hub_purpose"
+  },
+  {
+   "id": "e_n_hub_purpose__n_set_tech_yes__1009",
+   "from": "n_hub_purpose",
+   "to": "n_set_tech_yes",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/aaya tha/aayi thi/aaye the/call aaya/call aayi/call kiya/kiya gaya/visit hui/visit hua/visit kiya/baat hui/phone aaya/phone aya/call aya/haan aaya/aaya hai/mila tha/milne aaye/aaye the/bola tha/bol rahe the/kaha tha"
+  },
+  {
+   "id": "e_n_hub_purpose__n_set_tech_no__1010",
+   "from": "n_hub_purpose",
+   "to": "n_set_tech_no",
+   "label": "nahi/nhi/no/koi call nahi/call nahi aaya/nahi aaya/nahi aayi/nahi aaye/koi nahi aaya/kisi ne call nahi/contact nahi/abhi tak nahi/nahi hua/nahi hui/koi visit nahi/no call/nobody called/koi call nhi/nhi aaya/koi nahi/kuch nahi aaya"
+  },
+  {
+   "id": "e_n_hub_purpose__n_hub_nhp_verify__1011",
+   "from": "n_hub_purpose",
+   "to": "n_hub_nhp_verify",
+   "label": "koi complaint nahi/complaint nahi ki/complaint nahi hai/request nahi ki/koi request nahi/kuchh bhi nahi/kuch bhi nahi/haier ka product nahi/koi product nahi/humne to koi/maine koi request/aisi koi complaint/aisi to complaint/koi aisi/maine nahi ki/humne nahi ki/kabhi complaint nahi/haier ka kuch nahi"
+  },
+  {
+   "id": "e_n_hub_purpose__n_hub_done_who__1012",
+   "from": "n_hub_purpose",
+   "to": "n_hub_done_who",
+   "label": "ho gaya/ho chuka/kar diya/lag gaya/theek ho gaya/resolve ho/install ho gaya/installation ho gayi/installation ho gaya/already done/ho gayi/laga diya/kar gaye/complete ho/ho gaya hai/karwa liya"
+  },
+  {
+   "id": "e_n_hub_purpose__n_cond_later_tech_yes__1013",
+   "from": "n_hub_purpose",
+   "to": "n_cond_later_tech_yes",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_hub_purpose__n_hub_resale__1014",
+   "from": "n_hub_purpose",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_purpose__n_hub_gift__1015",
+   "from": "n_hub_purpose",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_purpose__n_set_dnc__1016",
+   "from": "n_hub_purpose",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_purpose__n_msg_escalate__1017",
+   "from": "n_hub_purpose",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_purpose__n_set_callback_busy__1018",
+   "from": "n_hub_purpose",
+   "to": "n_set_callback_busy",
+   "label": "baad mein call/baad me call/phir se call/call back/callback/thodi der baad call/baad mein baat karte/abhi busy hoon/busy hoon abhi/meeting mein hoon/gaadi chala raha/driving/abhi baat nahi kar/shaam ko call/kal call karna"
+  },
+  {
+   "id": "e_n_hub_purpose__n_hub_wrong_person__1019",
+   "from": "n_hub_purpose",
+   "to": "n_hub_wrong_person",
+   "label": "wrong number/galat number/main nahi hoon/woh nahi hoon/mai nahi hoon/ye main nahi/unka number nahi/wrong person/woh nahi hain/ghar pe nahi hain/unki wife/unke papa/unki mummy/unka beta/unki beti/galat lag gaya/number galat/kaun vinay/kaun hai ye"
+  },
+  {
+   "id": "e_n_hub_purpose__n_blk_tech_only__1020",
+   "from": "n_hub_purpose",
+   "to": "n_blk_tech_only",
+   "label": "else"
+  },
+  {
+   "id": "e_n_cond_later_tech_yes__n_msg_tech_ack__1021",
+   "from": "n_cond_later_tech_yes",
+   "to": "n_msg_tech_ack",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_later_tech_yes__n_cond_later_tech_no__1022",
+   "from": "n_cond_later_tech_yes",
+   "to": "n_cond_later_tech_no",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_later_tech_no__n_msg_apology_no_contact__1023",
+   "from": "n_cond_later_tech_no",
+   "to": "n_msg_apology_no_contact",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_later_tech_no__n_msg_ack_later__1024",
+   "from": "n_cond_later_tech_no",
+   "to": "n_msg_ack_later",
+   "label": "false"
+  },
+  {
+   "id": "e_n_msg_ack_later__n_hub_tech_only__1025",
+   "from": "n_msg_ack_later",
+   "to": "n_hub_tech_only"
+  },
+  {
+   "id": "e_n_blk_tech_only__n_hub_tech_only__1026",
+   "from": "n_blk_tech_only",
+   "to": "n_hub_tech_only"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_tech_yes__1027",
+   "from": "n_hub_tech_only",
+   "to": "n_set_tech_yes",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/aaya tha/aayi thi/aaye the/call aaya/call aayi/call kiya/kiya gaya/visit hui/visit hua/visit kiya/baat hui/phone aaya/phone aya/call aya/haan aaya/aaya hai/mila tha/milne aaye/aaye the/bola tha/bol rahe the/kaha tha"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_tech_no__1028",
+   "from": "n_hub_tech_only",
+   "to": "n_set_tech_no",
+   "label": "nahi/nhi/no/koi call nahi/call nahi aaya/nahi aaya/nahi aayi/nahi aaye/koi nahi aaya/kisi ne call nahi/contact nahi/abhi tak nahi/nahi hua/nahi hui/koi visit nahi/no call/nobody called/koi call nhi/nhi aaya/koi nahi/kuch nahi aaya"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_hub_nhp_verify__1029",
+   "from": "n_hub_tech_only",
+   "to": "n_hub_nhp_verify",
+   "label": "koi complaint nahi/complaint nahi ki/complaint nahi hai/request nahi ki/koi request nahi/kuchh bhi nahi/kuch bhi nahi/haier ka product nahi/koi product nahi/humne to koi/maine koi request/aisi koi complaint/aisi to complaint/koi aisi/maine nahi ki/humne nahi ki/kabhi complaint nahi/haier ka kuch nahi"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_hub_done_who__1030",
+   "from": "n_hub_tech_only",
+   "to": "n_hub_done_who",
+   "label": "ho gaya/ho chuka/kar diya/lag gaya/theek ho gaya/resolve ho/install ho gaya/installation ho gayi/installation ho gaya/already done/ho gayi/laga diya/kar gaye/complete ho/ho gaya hai/karwa liya"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_tech_unknown__1031",
+   "from": "n_hub_tech_only",
+   "to": "n_set_tech_unknown",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_hub_resale__1032",
+   "from": "n_hub_tech_only",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_hub_gift__1033",
+   "from": "n_hub_tech_only",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_dnc__1034",
+   "from": "n_hub_tech_only",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_msg_escalate__1035",
+   "from": "n_hub_tech_only",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_callback_busy__1036",
+   "from": "n_hub_tech_only",
+   "to": "n_set_callback_busy",
+   "label": "baad mein call/baad me call/phir se call/call back/callback/thodi der baad call/baad mein baat karte/abhi busy hoon/busy hoon abhi/meeting mein hoon/gaadi chala raha/driving/abhi baat nahi kar/shaam ko call/kal call karna"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_hub_wrong_person__1037",
+   "from": "n_hub_tech_only",
+   "to": "n_hub_wrong_person",
+   "label": "wrong number/galat number/main nahi hoon/woh nahi hoon/mai nahi hoon/ye main nahi/unka number nahi/wrong person/woh nahi hain/ghar pe nahi hain/unki wife/unke papa/unki mummy/unka beta/unki beti/galat lag gaya/number galat/kaun vinay/kaun hai ye"
+  },
+  {
+   "id": "e_n_hub_tech_only__n_set_tech_unknown__1038",
+   "from": "n_hub_tech_only",
+   "to": "n_set_tech_unknown",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_tech_unknown__n_hub_service__1039",
+   "from": "n_set_tech_unknown",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_set_tech_yes__n_msg_tech_ack__1040",
+   "from": "n_set_tech_yes",
+   "to": "n_msg_tech_ack"
+  },
+  {
+   "id": "e_n_msg_tech_ack__n_cond_r_bill__1041",
+   "from": "n_msg_tech_ack",
+   "to": "n_cond_r_bill"
+  },
+  {
+   "id": "e_n_set_tech_no__n_msg_apology_no_contact__1042",
+   "from": "n_set_tech_no",
+   "to": "n_msg_apology_no_contact"
+  },
+  {
+   "id": "e_n_msg_apology_no_contact__n_hub_service__1043",
+   "from": "n_msg_apology_no_contact",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_cond_r_bill__n_hub_r_bill__1044",
+   "from": "n_cond_r_bill",
+   "to": "n_hub_r_bill",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_bill__n_cond_r_cwcb__1045",
+   "from": "n_cond_r_bill",
+   "to": "n_cond_r_cwcb",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_cwcb__n_hub_r_cwcb__1046",
+   "from": "n_cond_r_cwcb",
+   "to": "n_hub_r_cwcb",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_cwcb__n_cond_r_cwcb2__1047",
+   "from": "n_cond_r_cwcb",
+   "to": "n_cond_r_cwcb2",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_cwcb2__n_hub_r_cwcb__1048",
+   "from": "n_cond_r_cwcb2",
+   "to": "n_hub_r_cwcb",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_cwcb2__n_cond_r_noresp__1049",
+   "from": "n_cond_r_cwcb2",
+   "to": "n_cond_r_noresp",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_noresp__n_hub_r_noresp__1050",
+   "from": "n_cond_r_noresp",
+   "to": "n_hub_r_noresp",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_noresp__n_cond_r_pnd__1051",
+   "from": "n_cond_r_noresp",
+   "to": "n_cond_r_pnd",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_pnd__n_hub_r_pnd__1052",
+   "from": "n_cond_r_pnd",
+   "to": "n_hub_r_pnd",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_pnd__n_cond_r_doa__1053",
+   "from": "n_cond_r_pnd",
+   "to": "n_cond_r_doa",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_doa__n_hub_r_doa__1054",
+   "from": "n_cond_r_doa",
+   "to": "n_hub_r_doa",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_doa__n_cond_r_doa2__1055",
+   "from": "n_cond_r_doa",
+   "to": "n_cond_r_doa2",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_doa2__n_hub_r_doa__1056",
+   "from": "n_cond_r_doa2",
+   "to": "n_hub_r_doa",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_doa2__n_cond_r_rtp__1057",
+   "from": "n_cond_r_doa2",
+   "to": "n_cond_r_rtp",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_rtp__n_hub_r_rtp__1058",
+   "from": "n_cond_r_rtp",
+   "to": "n_hub_r_rtp",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_rtp__n_cond_r_unitok__1059",
+   "from": "n_cond_r_rtp",
+   "to": "n_cond_r_unitok",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_unitok__n_hub_r_unitok__1060",
+   "from": "n_cond_r_unitok",
+   "to": "n_hub_r_unitok",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_unitok__n_cond_r_unitok2__1061",
+   "from": "n_cond_r_unitok",
+   "to": "n_cond_r_unitok2",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_unitok2__n_hub_r_unitok__1062",
+   "from": "n_cond_r_unitok2",
+   "to": "n_hub_r_unitok",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_unitok2__n_cond_r_nhp__1063",
+   "from": "n_cond_r_unitok2",
+   "to": "n_cond_r_nhp",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_r_nhp__n_hub_r_nhp__1064",
+   "from": "n_cond_r_nhp",
+   "to": "n_hub_r_nhp",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_r_nhp__n_hub_service__1065",
+   "from": "n_cond_r_nhp",
+   "to": "n_hub_service",
+   "label": "false"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_msg_r_apology_bill__1066",
+   "from": "n_hub_r_bill",
+   "to": "n_msg_r_apology_bill",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/tha/available tha/mere paas tha/bill tha/haan tha/dikhaya tha/bill hai/mere paas hai"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_hub_charges__1067",
+   "from": "n_hub_r_bill",
+   "to": "n_hub_charges",
+   "label": "nahi/nhi/no/nahi tha/available nahi/bill nahi/kho gaya/mil nahi raha/nahi mila/nahi hai/nahi dikha paya"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_hub_resale__1068",
+   "from": "n_hub_r_bill",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_hub_gift__1069",
+   "from": "n_hub_r_bill",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_set_dnc__1070",
+   "from": "n_hub_r_bill",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_msg_escalate__1071",
+   "from": "n_hub_r_bill",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_bill__n_blk_service__1072",
+   "from": "n_hub_r_bill",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_r_apology_bill__n_hub_service__1073",
+   "from": "n_msg_r_apology_bill",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_hub_charges__n_set_charges_yes__1074",
+   "from": "n_hub_charges",
+   "to": "n_set_charges_yes",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/ready/taiyaar/taiyar/de dunga/de dungi/de denge/dedenge/theek hai/ok/okay/pay kar/paise de/dene ko/de doonga/kar dunga/manzoor/koi problem nahi"
+  },
+  {
+   "id": "e_n_hub_charges__n_set_cancel_rtp__1075",
+   "from": "n_hub_charges",
+   "to": "n_set_cancel_rtp",
+   "label": "nahi/nhi/no/nahi dunga/nahi dungi/nahi denge/nahi dena/paise nahi/free/warranty mein/warranty me/nahi de sakta/nahi de sakti/paisa nahi/nahi paise/mufat/free mein"
+  },
+  {
+   "id": "e_n_hub_charges__n_hub_resale__1076",
+   "from": "n_hub_charges",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_charges__n_hub_gift__1077",
+   "from": "n_hub_charges",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_charges__n_set_dnc__1078",
+   "from": "n_hub_charges",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_charges__n_msg_escalate__1079",
+   "from": "n_hub_charges",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_charges__n_blk_service__1080",
+   "from": "n_hub_charges",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_charges_yes__n_set_action_redispatch__1081",
+   "from": "n_set_charges_yes",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_set_cancel_rtp__n_msg_action2_helpline__1082",
+   "from": "n_set_cancel_rtp",
+   "to": "n_msg_action2_helpline"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_cond_cwcb_date_known__1083",
+   "from": "n_hub_r_cwcb",
+   "to": "n_cond_cwcb_date_known",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/mana kiya/mana kar diya/kaha tha/bola tha/busy tha/time nahi tha/baad mein/baad me/haan mana/bol diya tha/ghar pe nahi tha/nahi tha ghar/mana kar diya tha/baad mein karwana"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_msg_r_apology_cwcb__1084",
+   "from": "n_hub_r_cwcb",
+   "to": "n_msg_r_apology_cwcb",
+   "label": "nahi/nhi/no/mana nahi/nahi kiya/maine nahi/koi mana nahi/nahi bola/kabhi mana nahi"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_hub_resale__1085",
+   "from": "n_hub_r_cwcb",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_hub_gift__1086",
+   "from": "n_hub_r_cwcb",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_set_dnc__1087",
+   "from": "n_hub_r_cwcb",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_msg_escalate__1088",
+   "from": "n_hub_r_cwcb",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_cwcb__n_blk_service__1089",
+   "from": "n_hub_r_cwcb",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_cond_cwcb_date_known__n_set_service_later_cwcb__1090",
+   "from": "n_cond_cwcb_date_known",
+   "to": "n_set_service_later_cwcb",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_cwcb_date_known__n_hub_service__1091",
+   "from": "n_cond_cwcb_date_known",
+   "to": "n_hub_service",
+   "label": "false"
+  },
+  {
+   "id": "e_n_set_service_later_cwcb__n_ask_date__1092",
+   "from": "n_set_service_later_cwcb",
+   "to": "n_ask_date"
+  },
+  {
+   "id": "e_n_msg_r_apology_cwcb__n_set_action_redispatch__1093",
+   "from": "n_msg_r_apology_cwcb",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_ask_tech_talk__1094",
+   "from": "n_hub_r_noresp",
+   "to": "n_ask_tech_talk",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/aayi thi/aaya tha/receive hui/mili thi/baat hui/call aaya/call aayi/haan aayi"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_msg_r_apology_noresp__1095",
+   "from": "n_hub_r_noresp",
+   "to": "n_msg_r_apology_noresp",
+   "label": "nahi/nhi/no/nahi aayi/nahi aaya/koi call nahi/receive nahi/nahi mili/koi nahi aaya/nahi hui"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_hub_resale__1096",
+   "from": "n_hub_r_noresp",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_hub_gift__1097",
+   "from": "n_hub_r_noresp",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_set_dnc__1098",
+   "from": "n_hub_r_noresp",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_msg_escalate__1099",
+   "from": "n_hub_r_noresp",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_noresp__n_blk_service__1100",
+   "from": "n_hub_r_noresp",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_tech_talk__n_hub_service__1101",
+   "from": "n_ask_tech_talk",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_msg_r_apology_noresp__n_set_action_redispatch__1102",
+   "from": "n_msg_r_apology_noresp",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_ask_delivery_when__1103",
+   "from": "n_hub_r_pnd",
+   "to": "n_ask_delivery_when",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/ho gaya/aa gaya/mil gaya/deliver ho/aaya tha/mil chuka/aa chuka/ho chuka/receive ho gaya/mil gaya hai/deliver hua"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_ask_expected_delivery__1104",
+   "from": "n_hub_r_pnd",
+   "to": "n_ask_expected_delivery",
+   "label": "nahi/nhi/no/abhi tak nahi/nahi aaya/nahi mila/pending/nahi hua/deliver nahi/aana baki/abhi nahi aaya/nahi pahuncha"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_hub_resale__1105",
+   "from": "n_hub_r_pnd",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_hub_gift__1106",
+   "from": "n_hub_r_pnd",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_set_dnc__1107",
+   "from": "n_hub_r_pnd",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_msg_escalate__1108",
+   "from": "n_hub_r_pnd",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_pnd__n_blk_service__1109",
+   "from": "n_hub_r_pnd",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_delivery_when__n_hub_service__1110",
+   "from": "n_ask_delivery_when",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_ask_expected_delivery__n_set_cancel_pnd__1111",
+   "from": "n_ask_expected_delivery",
+   "to": "n_set_cancel_pnd"
+  },
+  {
+   "id": "e_n_set_cancel_pnd__n_msg_pnd_cancel__1112",
+   "from": "n_set_cancel_pnd",
+   "to": "n_msg_pnd_cancel"
+  },
+  {
+   "id": "e_n_msg_pnd_cancel__n_api_cancel__1113",
+   "from": "n_msg_pnd_cancel",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_set_cancel_doa__1114",
+   "from": "n_hub_r_doa",
+   "to": "n_set_cancel_doa",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/damaged/damage/toota/tuta/kharab aaya/broken/dent/tuta hua/kharab tha/damage tha/toot gaya"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_hub_service__1115",
+   "from": "n_hub_r_doa",
+   "to": "n_hub_service",
+   "label": "nahi/nhi/no/theek tha/sahi tha/damage nahi/damaged nahi/thik tha/sahi salamat/sahi aaya"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_hub_resale__1116",
+   "from": "n_hub_r_doa",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_hub_gift__1117",
+   "from": "n_hub_r_doa",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_set_dnc__1118",
+   "from": "n_hub_r_doa",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_msg_escalate__1119",
+   "from": "n_hub_r_doa",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_doa__n_blk_service__1120",
+   "from": "n_hub_r_doa",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_cancel_doa__n_msg_doa_cancel__1121",
+   "from": "n_set_cancel_doa",
+   "to": "n_msg_doa_cancel"
+  },
+  {
+   "id": "e_n_msg_doa_cancel__n_api_cancel__1122",
+   "from": "n_msg_doa_cancel",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_msg_rtp_warn__1123",
+   "from": "n_hub_r_rtp",
+   "to": "n_msg_rtp_warn",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/mana kiya/mana kar diya/nahi diye the/nahi diya tha/paise nahi diye/payment nahi ki/refuse kiya/mana kar diya tha/nahi diye"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_hub_service__1124",
+   "from": "n_hub_r_rtp",
+   "to": "n_hub_service",
+   "label": "nahi/nhi/no/mana nahi/nahi kiya/maine nahi/payment ki thi/de diye the/koi mana nahi/de diya tha"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_hub_resale__1125",
+   "from": "n_hub_r_rtp",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_hub_gift__1126",
+   "from": "n_hub_r_rtp",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_set_dnc__1127",
+   "from": "n_hub_r_rtp",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_msg_escalate__1128",
+   "from": "n_hub_r_rtp",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_rtp__n_blk_service__1129",
+   "from": "n_hub_r_rtp",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_rtp_warn__n_hub_charges__1130",
+   "from": "n_msg_rtp_warn",
+   "to": "n_hub_charges"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_msg_r_apology_unitok__1131",
+   "from": "n_hub_r_unitok",
+   "to": "n_msg_r_apology_unitok",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/problem hai/abhi bhi/hai abhi/kharab/chal nahi/nahi chal/dikkat/issue/kaam nahi kar/theek nahi/thik nahi/problem abhi/awaaz/leak/cooling nahi/garam/band hai/nahi ho raha"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_hub_done_who__1132",
+   "from": "n_hub_r_unitok",
+   "to": "n_hub_done_who",
+   "label": "nahi/nhi/no/resolve/ho gaya/ho gayi/theek ho/thik ho/sahi ho/koi problem nahi/problem nahi/ok hai/theek hai ab/thik hai ab/chal raha hai/kaam kar raha/sahi chal/solve ho/theek hai abhi/koi problem nahi hai"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_hub_resale__1133",
+   "from": "n_hub_r_unitok",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_hub_gift__1134",
+   "from": "n_hub_r_unitok",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_set_dnc__1135",
+   "from": "n_hub_r_unitok",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_msg_escalate__1136",
+   "from": "n_hub_r_unitok",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_unitok__n_blk_service__1137",
+   "from": "n_hub_r_unitok",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_r_apology_unitok__n_set_action_redispatch__1138",
+   "from": "n_msg_r_apology_unitok",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_hub_done_who__n_msg_done_thanks__1139",
+   "from": "n_hub_done_who",
+   "to": "n_msg_done_thanks",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/technician ne/haier ne/unhone/aaye the/haier wale/company wale/haan unhone/haier ke technician/technician aaya"
+  },
+  {
+   "id": "e_n_hub_done_who__n_set_cancel_unitok__1140",
+   "from": "n_hub_done_who",
+   "to": "n_set_cancel_unitok",
+   "label": "nahi/nhi/no/khud/maine/apne aap/kisi aur ne/local/bahar se/dusre/dusra/humne/hum ne/khud kar/apne se/electrician/khud hi/apne aap se/mistri/koi nahi aaya"
+  },
+  {
+   "id": "e_n_hub_done_who__n_hub_resale__1141",
+   "from": "n_hub_done_who",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_done_who__n_hub_gift__1142",
+   "from": "n_hub_done_who",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_done_who__n_set_dnc__1143",
+   "from": "n_hub_done_who",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_done_who__n_msg_escalate__1144",
+   "from": "n_hub_done_who",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_done_who__n_blk_service__1145",
+   "from": "n_hub_done_who",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_done_thanks__n_set_redispatch_completion__1146",
+   "from": "n_msg_done_thanks",
+   "to": "n_set_redispatch_completion"
+  },
+  {
+   "id": "e_n_set_redispatch_completion__n_api_redispatch__1147",
+   "from": "n_set_redispatch_completion",
+   "to": "n_api_redispatch"
+  },
+  {
+   "id": "e_n_set_cancel_unitok__n_msg_unitok_cancel__1148",
+   "from": "n_set_cancel_unitok",
+   "to": "n_msg_unitok_cancel"
+  },
+  {
+   "id": "e_n_msg_unitok_cancel__n_msg_action2_helpline__1149",
+   "from": "n_msg_unitok_cancel",
+   "to": "n_msg_action2_helpline"
+  },
+  {
+   "id": "e_n_hub_r_nhp__n_msg_r_apology_nhp__1150",
+   "from": "n_hub_r_nhp",
+   "to": "n_msg_r_apology_nhp",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/hai/haier ka hai/mere paas hai/fridge hai/ac hai/machine hai/tv hai/haan hai/haier ka hi hai/haier ka hai"
+  },
+  {
+   "id": "e_n_hub_r_nhp__n_set_cancel_nhp__1151",
+   "from": "n_hub_r_nhp",
+   "to": "n_set_cancel_nhp",
+   "label": "nahi/nhi/no/nahi hai/koi nahi/kuch nahi/kuchh nahi/haier ka nahi/dusri company/other brand/samsung/lg ka/whirlpool/voltas/godrej/nahi hai haier/koi product nahi/kuch bhi nahi"
+  },
+  {
+   "id": "e_n_hub_r_nhp__n_set_dnc__1152",
+   "from": "n_hub_r_nhp",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_r_nhp__n_msg_escalate__1153",
+   "from": "n_hub_r_nhp",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_r_nhp__n_blk_service__1154",
+   "from": "n_hub_r_nhp",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_r_apology_nhp__n_set_action_redispatch__1155",
+   "from": "n_msg_r_apology_nhp",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_set_cancel_nhp__n_msg_nhp_cancel__1156",
+   "from": "n_set_cancel_nhp",
+   "to": "n_msg_nhp_cancel"
+  },
+  {
+   "id": "e_n_msg_nhp_cancel__n_api_cancel__1157",
+   "from": "n_msg_nhp_cancel",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_hub_nhp_verify__n_msg_nhp_verify_ok__1158",
+   "from": "n_hub_nhp_verify",
+   "to": "n_msg_nhp_verify_ok",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/hai/haier ka hai/mere paas hai/fridge hai/ac hai/machine hai/tv hai/haan hai/haier ka hi hai/haier ka hai"
+  },
+  {
+   "id": "e_n_hub_nhp_verify__n_hub_nhp_verify2__1159",
+   "from": "n_hub_nhp_verify",
+   "to": "n_hub_nhp_verify2",
+   "label": "nahi/nhi/no/nahi hai/koi nahi/kuch nahi/kuchh nahi/haier ka nahi/dusri company/other brand/samsung/lg ka/whirlpool/voltas/godrej/nahi hai haier/koi product nahi/kuch bhi nahi"
+  },
+  {
+   "id": "e_n_hub_nhp_verify__n_set_dnc__1160",
+   "from": "n_hub_nhp_verify",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_nhp_verify__n_msg_escalate__1161",
+   "from": "n_hub_nhp_verify",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_nhp_verify__n_hub_nhp_verify2__1162",
+   "from": "n_hub_nhp_verify",
+   "to": "n_hub_nhp_verify2",
+   "label": "else"
+  },
+  {
+   "id": "e_n_hub_nhp_verify2__n_msg_nhp_verify_ok__1163",
+   "from": "n_hub_nhp_verify2",
+   "to": "n_msg_nhp_verify_ok",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/hai/haier ka hai/mere paas hai/fridge hai/ac hai/machine hai/tv hai/haan hai/haier ka hi hai/haier ka hai"
+  },
+  {
+   "id": "e_n_hub_nhp_verify2__n_set_cancel_wrong__1164",
+   "from": "n_hub_nhp_verify2",
+   "to": "n_set_cancel_wrong",
+   "label": "nahi/nhi/no/nahi hai/koi nahi/kuch nahi/kuchh nahi/haier ka nahi/dusri company/other brand/samsung/lg ka/whirlpool/voltas/godrej/nahi hai haier/koi product nahi/kuch bhi nahi"
+  },
+  {
+   "id": "e_n_hub_nhp_verify2__n_set_dnc__1165",
+   "from": "n_hub_nhp_verify2",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_nhp_verify2__n_msg_escalate__1166",
+   "from": "n_hub_nhp_verify2",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_nhp_verify2__n_set_cancel_wrong__1167",
+   "from": "n_hub_nhp_verify2",
+   "to": "n_set_cancel_wrong",
+   "label": "else"
+  },
+  {
+   "id": "e_n_msg_nhp_verify_ok__n_hub_tech_only__1168",
+   "from": "n_msg_nhp_verify_ok",
+   "to": "n_hub_tech_only"
+  },
+  {
+   "id": "e_n_set_cancel_wrong__n_msg_nhp_wrong_cancel__1169",
+   "from": "n_set_cancel_wrong",
+   "to": "n_msg_nhp_wrong_cancel"
+  },
+  {
+   "id": "e_n_msg_nhp_wrong_cancel__n_api_cancel__1170",
+   "from": "n_msg_nhp_wrong_cancel",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_hub_gift__n_ask_gift_date__1171",
+   "from": "n_hub_gift",
+   "to": "n_ask_gift_date",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/gift/shaadi/shadi/dena hai/kisi aur ko/wedding/denge/dena/de denge/dunga"
+  },
+  {
+   "id": "e_n_hub_gift__n_hub_service__1172",
+   "from": "n_hub_gift",
+   "to": "n_hub_service",
+   "label": "nahi/nhi/no/mera hai/mere liye/khud ke liye/apne liye/nahi gift/mere ghar"
+  },
+  {
+   "id": "e_n_hub_gift__n_set_dnc__1173",
+   "from": "n_hub_gift",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_gift__n_msg_escalate__1174",
+   "from": "n_hub_gift",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_gift__n_blk_service__1175",
+   "from": "n_hub_gift",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_gift_date__n_set_cancel_gift__1176",
+   "from": "n_ask_gift_date",
+   "to": "n_set_cancel_gift"
+  },
+  {
+   "id": "e_n_set_cancel_gift__n_msg_gift_advice__1177",
+   "from": "n_set_cancel_gift",
+   "to": "n_msg_gift_advice"
+  },
+  {
+   "id": "e_n_msg_gift_advice__n_api_cancel__1178",
+   "from": "n_msg_gift_advice",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_hub_resale__n_set_cancel_resale__1179",
+   "from": "n_hub_resale",
+   "to": "n_set_cancel_resale",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/dukaan/dukan/sale/bechne/dealer/shop"
+  },
+  {
+   "id": "e_n_hub_resale__n_hub_service__1180",
+   "from": "n_hub_resale",
+   "to": "n_hub_service",
+   "label": "nahi/nhi/no/apne liye/ghar ke liye/khud use/mere liye/nahi bechna/ghar mein"
+  },
+  {
+   "id": "e_n_hub_resale__n_set_dnc__1181",
+   "from": "n_hub_resale",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_resale__n_msg_escalate__1182",
+   "from": "n_hub_resale",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_resale__n_blk_service__1183",
+   "from": "n_hub_resale",
+   "to": "n_blk_service",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_cancel_resale__n_msg_resale_cancel__1184",
+   "from": "n_set_cancel_resale",
+   "to": "n_msg_resale_cancel"
+  },
+  {
+   "id": "e_n_msg_resale_cancel__n_api_cancel__1185",
+   "from": "n_msg_resale_cancel",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_blk_service__n_hub_service__1186",
+   "from": "n_blk_service",
+   "to": "n_hub_service"
+  },
+  {
+   "id": "e_n_hub_service__n_set_service_yes__1187",
+   "from": "n_hub_service",
+   "to": "n_set_service_yes",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/chahiye/karwa do/karva do/karwa dijiye/kar do/kar dijiye/bhej do/bhej dijiye/requirement hai/karwana hai/karana hai/zaroorat hai/zarurat hai/service chahiye/karwani hai/karani hai/forward kar/aa jaye/bhejo"
+  },
+  {
+   "id": "e_n_hub_service__n_set_service_no__1188",
+   "from": "n_hub_service",
+   "to": "n_set_service_no",
+   "label": "nahi/nhi/no/nahi chahiye/requirement nahi/nahi karwana/nahi karana/zarurat nahi/zaroorat nahi/need nahi/nahi karni/mat bhejo/cancel kar do/close kar do/band kar do/rehne do/rahne do/nahi karwani/koi zarurat nahi/nahi chahiye abhi"
+  },
+  {
+   "id": "e_n_hub_service__n_set_service_later__1189",
+   "from": "n_hub_service",
+   "to": "n_set_service_later",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_hub_service__n_hub_resale__1190",
+   "from": "n_hub_service",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_service__n_hub_gift__1191",
+   "from": "n_hub_service",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_service__n_set_dnc__1192",
+   "from": "n_hub_service",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_service__n_msg_escalate__1193",
+   "from": "n_hub_service",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_service__n_set_callback_busy__1194",
+   "from": "n_hub_service",
+   "to": "n_set_callback_busy",
+   "label": "baad mein call/baad me call/phir se call/call back/callback/thodi der baad call/baad mein baat karte/abhi busy hoon/busy hoon abhi/meeting mein hoon/gaadi chala raha/driving/abhi baat nahi kar/shaam ko call/kal call karna"
+  },
+  {
+   "id": "e_n_hub_service__n_blk_service_simple__1195",
+   "from": "n_hub_service",
+   "to": "n_blk_service_simple",
+   "label": "else"
+  },
+  {
+   "id": "e_n_blk_service_simple__n_hub_service_simple__1196",
+   "from": "n_blk_service_simple",
+   "to": "n_hub_service_simple"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_service_yes__1197",
+   "from": "n_hub_service_simple",
+   "to": "n_set_service_yes",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/chahiye/karwa do/karva do/karwa dijiye/kar do/kar dijiye/bhej do/bhej dijiye/requirement hai/karwana hai/karana hai/zaroorat hai/zarurat hai/service chahiye/karwani hai/karani hai/forward kar/aa jaye/bhejo"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_service_no__1198",
+   "from": "n_hub_service_simple",
+   "to": "n_set_service_no",
+   "label": "nahi/nhi/no/nahi chahiye/requirement nahi/nahi karwana/nahi karana/zarurat nahi/zaroorat nahi/need nahi/nahi karni/mat bhejo/cancel kar do/close kar do/band kar do/rehne do/rahne do/nahi karwani/koi zarurat nahi/nahi chahiye abhi"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_service_later__1199",
+   "from": "n_hub_service_simple",
+   "to": "n_set_service_later",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_hub_resale__1200",
+   "from": "n_hub_service_simple",
+   "to": "n_hub_resale",
+   "label": "dukaan/dukan/shop ke liye/sale karne/bechne/dealer/resale/business ke liye/dukaan mein/becha/bech diya/aage sale/sale ke liye/shop hai/dukaan hai/dukaan ke liye/dukan ke liye/sale karne ke liye/bechne ke liye/dukaan mein sale/dukaan pe/shop pe"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_hub_gift__1201",
+   "from": "n_hub_service_simple",
+   "to": "n_hub_gift",
+   "label": "shaadi/shadi/gift/dena hai/kisi aur ko/wedding/dahej/dena tha/gift kar"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_dnc__1202",
+   "from": "n_hub_service_simple",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_msg_escalate__1203",
+   "from": "n_hub_service_simple",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_callback_busy__1204",
+   "from": "n_hub_service_simple",
+   "to": "n_set_callback_busy",
+   "label": "baad mein call/baad me call/phir se call/call back/callback/thodi der baad call/baad mein baat karte/abhi busy hoon/busy hoon abhi/meeting mein hoon/gaadi chala raha/driving/abhi baat nahi kar/shaam ko call/kal call karna"
+  },
+  {
+   "id": "e_n_hub_service_simple__n_set_service_unknown__1205",
+   "from": "n_hub_service_simple",
+   "to": "n_set_service_unknown",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_service_yes__n_ask_date__1206",
+   "from": "n_set_service_yes",
+   "to": "n_ask_date"
+  },
+  {
+   "id": "e_n_set_service_no__n_msg_no_req_cancel__1207",
+   "from": "n_set_service_no",
+   "to": "n_msg_no_req_cancel"
+  },
+  {
+   "id": "e_n_msg_no_req_cancel__n_msg_action2_helpline__1208",
+   "from": "n_msg_no_req_cancel",
+   "to": "n_msg_action2_helpline"
+  },
+  {
+   "id": "e_n_set_service_later__n_ask_date__1209",
+   "from": "n_set_service_later",
+   "to": "n_ask_date"
+  },
+  {
+   "id": "e_n_set_service_unknown__n_msg_unclear_cancel__1210",
+   "from": "n_set_service_unknown",
+   "to": "n_msg_unclear_cancel"
+  },
+  {
+   "id": "e_n_msg_unclear_cancel__n_msg_action2_helpline__1211",
+   "from": "n_msg_unclear_cancel",
+   "to": "n_msg_action2_helpline"
+  },
+  {
+   "id": "e_n_ask_date__n_cond_date_later__1212",
+   "from": "n_ask_date",
+   "to": "n_cond_date_later"
+  },
+  {
+   "id": "e_n_ask_date__n_hub_date_clarify__1213",
+   "from": "n_ask_date",
+   "to": "n_hub_date_clarify",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_cond_date_later__n_hub_future_confirm__1214",
+   "from": "n_cond_date_later",
+   "to": "n_hub_future_confirm",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_date_later__n_cond_date_within__1215",
+   "from": "n_cond_date_later",
+   "to": "n_cond_date_within",
+   "label": "false"
+  },
+  {
+   "id": "e_n_cond_date_within__n_set_within__1216",
+   "from": "n_cond_date_within",
+   "to": "n_set_within",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_date_within__n_hub_date_clarify__1217",
+   "from": "n_cond_date_within",
+   "to": "n_hub_date_clarify",
+   "label": "false"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_within__1218",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_within",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/theek hai/ok/okay/chalega/haan chahiye/kar do/bhej do/karwa do/bilkul/haan ji"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_future__1219",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_future",
+   "label": "nahi/nhi/no/baad mein/nahi abhi/mahine/hafte/not now/later/abhi nahi/nahi ho payega/nahi ho paega"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_within__1220",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_within",
+   "label": "abhi/aaj/kal/parso/do din/teen din/char din/chaar din/paanch din/is hafte/jaldi/jald se jald/available hoon/available hain/turant/haan abhi/abhi hi/abhi available/today/tomorrow/ek do din/do teen din/2 din/3 din/4 din/5 din"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_future__1221",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_future",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_dnc__1222",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_msg_escalate__1223",
+   "from": "n_hub_date_clarify",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_date_clarify__n_set_within__1224",
+   "from": "n_hub_date_clarify",
+   "to": "n_set_within",
+   "label": "else"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_set_future__1225",
+   "from": "n_hub_future_confirm",
+   "to": "n_set_future",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/sahi/sahi hai/correct/right/haan baad mein/theek/ok/okay/bilkul/haan baad me/sahi samjhe"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_cond_confirm_no__1226",
+   "from": "n_hub_future_confirm",
+   "to": "n_cond_confirm_no",
+   "label": "nahi/nhi/no/galat/galat samjhe/aisa nahi/nahi nahi"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_set_within__1227",
+   "from": "n_hub_future_confirm",
+   "to": "n_set_within",
+   "label": "abhi/aaj/kal/parso/do din/teen din/char din/chaar din/paanch din/is hafte/jaldi/jald se jald/available hoon/available hain/turant/haan abhi/abhi hi/abhi available/today/tomorrow/ek do din/do teen din/2 din/3 din/4 din/5 din"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_set_future__1228",
+   "from": "n_hub_future_confirm",
+   "to": "n_set_future",
+   "label": "baad mein/baad me/mahine/mahina/month/hafte baad/week baad/weeks/din baad/out of station/out of state/out of town/bahar hoon/bahar hu/bahar hain/shift/wapas aaunga/wapas aayenge/aaunga/abhi nahi hogi/abhi nahi hoga/abhi nahi karwana/abhi nahi karana/abhi nahi chahiye/abhi nahi karna/agle hafte/agle mahine/next month/next week/later/rakha hua/abhi nahi/ek month/do month/das din/10 din/15 din/pandrah din/20 din/bees din"
+  },
+  {
+   "id": "e_n_cond_confirm_no__n_set_within__1229",
+   "from": "n_cond_confirm_no",
+   "to": "n_set_within",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_confirm_no__n_hub_date_clarify__1230",
+   "from": "n_cond_confirm_no",
+   "to": "n_hub_date_clarify",
+   "label": "false"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_set_dnc__1231",
+   "from": "n_hub_future_confirm",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_msg_escalate__1232",
+   "from": "n_hub_future_confirm",
+   "to": "n_msg_escalate",
+   "label": "supervisor/senior se baat/manager se/human se/agent se baat/insaan se baat/kisi aur se baat/aadmi se baat/officer se baat/upar baat/complaint karni hai/shikayat karni hai/legal/consumer court/consumer forum/aap log kuch nahi"
+  },
+  {
+   "id": "e_n_hub_future_confirm__n_set_future__1233",
+   "from": "n_hub_future_confirm",
+   "to": "n_set_future",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_within__n_set_action_redispatch__1234",
+   "from": "n_set_within",
+   "to": "n_set_action_redispatch"
+  },
+  {
+   "id": "e_n_set_future__n_msg_future_deny__1235",
+   "from": "n_set_future",
+   "to": "n_msg_future_deny"
+  },
+  {
+   "id": "e_n_msg_future_deny__n_api_cancel__1236",
+   "from": "n_msg_future_deny",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_set_action_redispatch__n_api_redispatch__1237",
+   "from": "n_set_action_redispatch",
+   "to": "n_api_redispatch"
+  },
+  {
+   "id": "e_n_api_redispatch__n_set_hook_ok_r__1238",
+   "from": "n_api_redispatch",
+   "to": "n_set_hook_ok_r",
+   "label": "success"
+  },
+  {
+   "id": "e_n_api_redispatch__n_set_hook_failed_r__1239",
+   "from": "n_api_redispatch",
+   "to": "n_set_hook_failed_r",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_set_hook_ok_r__n_msg_redispatch__1240",
+   "from": "n_set_hook_ok_r",
+   "to": "n_msg_redispatch"
+  },
+  {
+   "id": "e_n_set_hook_failed_r__n_msg_redispatch__1241",
+   "from": "n_set_hook_failed_r",
+   "to": "n_msg_redispatch"
+  },
+  {
+   "id": "e_n_msg_redispatch__n_end_closing__1242",
+   "from": "n_msg_redispatch",
+   "to": "n_end_closing"
+  },
+  {
+   "id": "e_n_msg_action2_helpline__n_api_cancel__1243",
+   "from": "n_msg_action2_helpline",
+   "to": "n_api_cancel"
+  },
+  {
+   "id": "e_n_api_cancel__n_set_hook_ok_c__1244",
+   "from": "n_api_cancel",
+   "to": "n_set_hook_ok_c",
+   "label": "success"
+  },
+  {
+   "id": "e_n_api_cancel__n_set_hook_failed_c__1245",
+   "from": "n_api_cancel",
+   "to": "n_set_hook_failed_c",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_set_hook_ok_c__n_end_closing__1246",
+   "from": "n_set_hook_ok_c",
+   "to": "n_end_closing"
+  },
+  {
+   "id": "e_n_set_hook_failed_c__n_end_closing__1247",
+   "from": "n_set_hook_failed_c",
+   "to": "n_end_closing"
+  },
+  {
+   "id": "e_n_set_dnc__n_msg_dnc_assure__1248",
+   "from": "n_set_dnc",
+   "to": "n_msg_dnc_assure"
+  },
+  {
+   "id": "e_n_msg_dnc_assure__n_api_dnc__1249",
+   "from": "n_msg_dnc_assure",
+   "to": "n_api_dnc"
+  },
+  {
+   "id": "e_n_api_dnc__n_set_hook_dnc_ok__1250",
+   "from": "n_api_dnc",
+   "to": "n_set_hook_dnc_ok",
+   "label": "success"
+  },
+  {
+   "id": "e_n_api_dnc__n_set_hook_dnc_failed__1251",
+   "from": "n_api_dnc",
+   "to": "n_set_hook_dnc_failed",
+   "label": "failure"
+  },
+  {
+   "id": "e_n_set_hook_dnc_ok__n_cond_tech_known__1252",
+   "from": "n_set_hook_dnc_ok",
+   "to": "n_cond_tech_known"
+  },
+  {
+   "id": "e_n_set_hook_dnc_failed__n_cond_tech_known__1253",
+   "from": "n_set_hook_dnc_failed",
+   "to": "n_cond_tech_known"
+  },
+  {
+   "id": "e_n_cond_tech_known__n_hub_service__1254",
+   "from": "n_cond_tech_known",
+   "to": "n_hub_service",
+   "label": "true"
+  },
+  {
+   "id": "e_n_cond_tech_known__n_hub_tech_only__1255",
+   "from": "n_cond_tech_known",
+   "to": "n_hub_tech_only",
+   "label": "false"
+  },
+  {
+   "id": "e_n_msg_escalate__n_set_escalate__1256",
+   "from": "n_msg_escalate",
+   "to": "n_set_escalate"
+  },
+  {
+   "id": "e_n_set_escalate__n_end_closing__1257",
+   "from": "n_set_escalate",
+   "to": "n_end_closing"
+  },
+  {
+   "id": "e_n_set_callback_busy__n_msg_callback_close__1258",
+   "from": "n_set_callback_busy",
+   "to": "n_msg_callback_close"
+  },
+  {
+   "id": "e_n_msg_callback_close__n_end_callback__1259",
+   "from": "n_msg_callback_close",
+   "to": "n_end_callback"
+  },
+  {
+   "id": "e_n_hub_wrong_person__n_hub_handover_wait__1260",
+   "from": "n_hub_wrong_person",
+   "to": "n_hub_handover_wait",
+   "label": "haan/ji haan/haan ji/han/hanji/hmm/yes/ek minute/ruko/rukiye/de raha hoon/de rahi hoon/bulata hoon/bulati hoon/available hain/hold/deta hoon/deti hoon/baat karo/hold karo/deti hu/deta hu"
+  },
+  {
+   "id": "e_n_hub_wrong_person__n_set_wrong_person__1261",
+   "from": "n_hub_wrong_person",
+   "to": "n_set_wrong_person",
+   "label": "nahi/nhi/no/nahi hain/bahar/baad mein/available nahi/busy/so rahe/office/ghar pe nahi/nahi hai abhi/bahar gaye"
+  },
+  {
+   "id": "e_n_hub_wrong_person__n_set_dnc__1262",
+   "from": "n_hub_wrong_person",
+   "to": "n_set_dnc",
+   "label": "phone mat/call mat/phone nahi mariyega/phone nahi marna/dobara call nahi/dobara phone nahi/baar phone aaya/baar call aaya/baar phone aa/baar call aa/baar phone kiya/baar call kiya/call nahi karna/baar phone/baar call/bahut call/itne call/itne phone/bahut phone/stop calling/dont call/don't call/pareshan mat/phone band karo/call band karo"
+  },
+  {
+   "id": "e_n_hub_wrong_person__n_set_wrong_person__1263",
+   "from": "n_hub_wrong_person",
+   "to": "n_set_wrong_person",
+   "label": "else"
+  },
+  {
+   "id": "e_n_hub_handover_wait__n_hub_purpose__1264",
+   "from": "n_hub_handover_wait",
+   "to": "n_hub_purpose",
+   "label": "haan/hello/ji/boliye/bol raha/bol rahi/haan ji/kahiye/bataiye/yes/hanji/han/bolo/batao"
+  },
+  {
+   "id": "e_n_hub_handover_wait__n_set_wrong_person__1265",
+   "from": "n_hub_handover_wait",
+   "to": "n_set_wrong_person",
+   "label": "nahi/nhi/no/nahi hain/bahar/baad mein/available nahi/busy/so rahe/office/ghar pe nahi/nahi hai abhi/bahar gaye"
+  },
+  {
+   "id": "e_n_hub_handover_wait__n_hub_purpose__1266",
+   "from": "n_hub_handover_wait",
+   "to": "n_hub_purpose",
+   "label": "else"
+  },
+  {
+   "id": "e_n_set_wrong_person__n_msg_callback_close__1267",
+   "from": "n_set_wrong_person",
+   "to": "n_msg_callback_close"
+  }
+ ],
+ "status": "approved"
+}

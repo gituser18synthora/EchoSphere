@@ -15,7 +15,7 @@ Adds Sarvam's ``saaras:v4`` realtime STT model as a SELECTABLE option:
    stage_saaras_v4_catalog.py`` (the recipe for a database whose code cannot
    run v4 yet) is activated — only when it still has no operator edit
    (``updated_by IS NULL``). An operator-managed row keeps its status.
-3. ``provider_pricing`` ``sarvam/stt/saaras:v4`` ₹30/hour (insert-if-missing;
+3. ``provider_pricing`` ``sarvam/stt/saaras:v4`` ₹9/hour (insert-if-missing;
    skipped on a fresh database where the seed writes it after currencies).
 4. Description backfill for the saaras:v3 row when empty.
 
@@ -49,7 +49,7 @@ _V3_DESCRIPTION = (
     "auto-detect, output modes (transcribe/verbatim/translit/codemix/"
     "translate). Platform default."
 )
-_PRICE_INR_PER_HOUR = "30"
+_PRICE_INR_PER_HOUR = "9"  # negotiated Sarvam STT rate (2026-10-06)
 
 # Inlined on purpose: a migration keeps describing the world as it was when
 # it ran, even after the seed constants move on.

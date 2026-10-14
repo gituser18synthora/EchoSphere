@@ -158,6 +158,19 @@ class Settings(BaseSettings):
     stt_provider: str = "sarvam"
     stt_api_key_reference: str = "env:SARVAM_API_KEY"
     stt_model: str = "saaras:v3"
+    # Sarvam realtime STT (voice_runtime.sarvam_realtime_stt): route Sarvam
+    # STT over ``/speech-to-text-realtime/ws`` (true partial transcripts,
+    # client- or server-side endpointing) instead of the legacy streaming
+    # socket. Evaluation flag, OFF by default — see docs/VOICE_PROVIDERS.md.
+    sarvam_realtime_stt: bool = False
+    # "manual": our VAD + turn policy set the boundaries (speech_start /
+    # speech_end); "vad": Sarvam's server VAD proposes them and the user
+    # aggregator runs ExternalUserTurnStrategies (no word-confirmed barge-in).
+    sarvam_realtime_endpointing: str = "manual"
+    # Server cadence for partials: "balanced" (Sarvam's default, first partial
+    # ~1.1 s into speech) or "fast" (~0.6 s; same final latency, measured
+    # 2026-10-06).
+    sarvam_realtime_stream_type: str = "balanced"
     tts_provider: str = "sarvam"
     tts_api_key_reference: str = "env:SARVAM_API_KEY"
     tts_model: str = "bulbul:v3"

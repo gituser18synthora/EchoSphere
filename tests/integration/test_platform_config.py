@@ -943,10 +943,12 @@ class TestProviderPricingValidation:
                 for r in rows
             )
 
-        # Official rates verified 2026-07-27 (see base_seed.PROVIDER_PRICING).
-        assert has("sarvam", "stt", "saarika:v2.5", "per_hour", 30.0, "INR")
-        assert has("sarvam", "stt", "saaras:v3", "per_hour", 30.0, "INR")
-        assert has("sarvam", "tts", "bulbul:v3", "per_1k_characters", 3.0, "INR")
+        # Sarvam rows are our negotiated rates (2026-10-06); the rest are the
+        # official rates verified 2026-07-27 (see base_seed.PROVIDER_PRICING).
+        assert has("sarvam", "stt", "saarika:v2.5", "per_hour", 9.0, "INR")
+        assert has("sarvam", "stt", "saaras:v3", "per_hour", 9.0, "INR")
+        assert has("sarvam", "stt", "saaras:v4", "per_hour", 9.0, "INR")
+        assert has("sarvam", "tts", "bulbul:v3", "per_1k_characters", 1.5, "INR")
         assert has("openai", "stt", "whisper-1", "per_minute", 0.006, "USD")
         assert has("deepgram", "stt", "nova-3", "per_minute", 0.0058, "USD")
         assert has("deepgram", "stt", "nova-2", "per_hour", 0.35, "USD")

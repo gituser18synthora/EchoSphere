@@ -106,3 +106,6 @@ storage/filler_audio/cache/
 
 # Local model assets (speaker-consistency prototype); never commit binaries
 storage/models/
+
+# Windows / WSL download markers (NTFS alternate data streams)
+*:Zone.Identifier

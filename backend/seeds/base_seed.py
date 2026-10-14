@@ -440,10 +440,11 @@ CURRENCIES = [
 # Provider prices. LLM/embedding rows are carried over from the existing
 # approved-model registry (MODELS above). STT/TTS rows were verified against
 # the providers' official pricing pages on 2026-07-27:
-# - Sarvam (sarvam.ai/api-pricing, INR only, no official USD price):
-#   STT (saarika:v2.5) and STT-Translate (saaras:v3) ₹30/hour of audio,
-#   charged per second rounded up; TTS bulbul:v3 ₹30 per 10K characters
-#   ("beta pricing") = ₹3 per 1K; bulbul:v2 ₹15/10K = ₹1.5 per 1K.
+# - Sarvam (INR only, no official USD price): the rows below are OUR
+#   NEGOTIATED rates (confirmed 2026-10-06), not the public list prices —
+#   STT (saarika:v2.5, saaras:v3, saaras:v4) ₹9/hour of audio, charged per
+#   second; TTS bulbul:v3 and bulbul:v2 ₹1.5 per 1K characters. (Public list
+#   on sarvam.ai/api-pricing: STT ₹30/hour, bulbul:v3 ₹3/1K, bulbul:v2 ₹1.5/1K.)
 #   INR prices convert to USD via the Super-Admin-managed exchange rate at
 #   usage time — rates are never hardcoded here.
 # - OpenAI (developers.openai.com/api/docs/pricing, re-verified 2026-07-31):
@@ -504,11 +505,11 @@ PROVIDER_PRICING = [
     ("openai", "embedding", "text-embedding-3-small", "tokens", "per_1m_tokens", "0.02", "USD"),
     ("openai", "embedding", "text-embedding-3-large", "tokens", "per_1m_tokens", "0.13", "USD"),
     # ── STT ──────────────────────────────────────────────────────────────
-    ("sarvam", "stt", "saarika:v2.5", "audio_seconds", "per_hour", "30", "INR"),
-    ("sarvam", "stt", "saaras:v3", "audio_seconds", "per_hour", "30", "INR"),
-    # saaras:v4: Sarvam lists one STT price for every variant (₹30/hour
-    # real-time/streaming/batch; sarvam.ai/api-pricing, verified 2026-10-01).
-    ("sarvam", "stt", "saaras:v4", "audio_seconds", "per_hour", "30", "INR"),
+    ("sarvam", "stt", "saarika:v2.5", "audio_seconds", "per_hour", "9", "INR"),
+    ("sarvam", "stt", "saaras:v3", "audio_seconds", "per_hour", "9", "INR"),
+    # saaras:v4: one STT rate for every variant (realtime/streaming/batch);
+    # same negotiated ₹9/hour as the other Sarvam STT models (2026-10-06).
+    ("sarvam", "stt", "saaras:v4", "audio_seconds", "per_hour", "9", "INR"),
     ("openai", "stt", "whisper-1", "audio_seconds", "per_minute", "0.006", "USD"),
     ("openai", "stt", "gpt-transcribe", "audio_seconds", "per_minute", "0.0045", "USD"),
     ("openai", "stt", "gpt-4o-transcribe", "audio_seconds", "per_minute", "0.006", "USD"),
@@ -518,7 +519,7 @@ PROVIDER_PRICING = [
     ("deepgram", "stt", "nova-3", "audio_seconds", "per_minute", "0.0058", "USD"),
     ("deepgram", "stt", "nova-2", "audio_seconds", "per_hour", "0.35", "USD"),
     # ── TTS ──────────────────────────────────────────────────────────────
-    ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "3", "INR"),
+    ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "1.5", "INR"),
     ("sarvam", "tts", "bulbul:v2", "characters", "per_1k_characters", "1.5", "INR"),
     ("deepgram", "tts", "aura-2", "characters", "per_1k_characters", "0.030", "USD"),
     ("deepgram", "tts", "aura", "characters", "per_1k_characters", "0.0150", "USD"),

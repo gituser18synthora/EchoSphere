@@ -226,6 +226,20 @@ from voice_runtime.turn_metrics import TurnLatencyTracker
 
 logger = logging.getLogger(__name__)
 
+
+def interim_is_stability_reference(frame) -> bool:
+    """Whether a partial transcript may serve as the quality gate's
+    transcript-stability reference.
+
+    Providers whose partials are comparable to the final (Deepgram) leave the
+    marker unset. Sarvam's realtime socket decodes partials before language
+    and script normalisation (Roman-script or English-translated running text
+    for a Devanagari final), so its adapter marks them ``False``: they still
+    reach the client UI and the barge-in word gate, but a zero token overlap
+    with the final is not evidence of an unstable transcript.
+    """
+    return bool(getattr(frame, "_echosphere_stability_reference", True))
+
 # Answerability gate for retrieval on a turn a tenant-configured KNOWLEDGE
 # intent already identified as a knowledge question (the intent is the gate;
 # retrieval only ranks passages). The platform default applies elsewhere.
@@ -1195,6 +1209,7 @@ class ConversationBrain(FrameProcessor):
                 model=orchestration.get("model", ""),
                 api_key_reference=orchestration.get("api_key_reference", ""),
                 timeout_seconds=float(orchestration.get("timeout_seconds", 10.0)),
+                extra=dict(orchestration.get("extra") or {}),
             ))
         except Exception:  # noqa: BLE001 — misconfig degrades to the call LLM
             logger.exception("orchestration LLM unavailable; using the call LLM")
@@ -1224,8 +1239,9 @@ class ConversationBrain(FrameProcessor):
             # transcript-stability reference for the quality gate.
             text = (frame.text or "").strip()
             if not self._closing and text:
-                self._interim_texts.append(text)
-                del self._interim_texts[:-8]
+                if interim_is_stability_reference(frame):
+                    self._interim_texts.append(text)
+                    del self._interim_texts[:-8]
                 await self._notify_client(
                     {"type": "partial_transcript", "text": text}
                 )
