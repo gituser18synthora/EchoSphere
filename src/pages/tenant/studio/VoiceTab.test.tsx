@@ -29,7 +29,7 @@ vi.mock("@/services/api", () => ({
   setGoalPolicyEndCall: vi.fn(),
 }));
 /* Permissions are switchable per test (default: everything granted). */
-const perms = vi.hoisted(() => ({ has: (_code: string) => true }));
+const perms = vi.hoisted(() => ({ has: (_code: string): boolean => true }));
 vi.mock("@/state/AppContext", () => ({
   useApp: () => ({ toast: vi.fn(), hasPermission: (code: string) => perms.has(code) }),
 }));
@@ -361,6 +361,8 @@ describe("VoiceTab — ElevenLabs model selection", () => {
   it("offers both ElevenLabs models in the default engine dropdown", async () => {
     render(<VoiceTab bot={BOT} />);
     await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    // The option list fills from an async catalog fetch after the value is set.
+    await within(ttsModelSelect()).findByRole("option", { name: "Eleven Flash v2.5 (default)" });
     const labels = within(ttsModelSelect()).getAllByRole("option").map((o) => o.textContent);
     expect(labels).toContain("Eleven Flash v2.5 (default)");
     expect(labels).toContain("Eleven v3 (expressive)");
@@ -373,13 +375,16 @@ describe("VoiceTab — ElevenLabs model selection", () => {
     // Delivery tuning owns speed — the provider duplicate never renders on
     // the bot page, even for models that support it (flash).
     expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Stability")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Stability")).toBeInTheDocument();
 
+    // Model lists load asynchronously; React 19 schedules the fetch result
+    // later than React 18 did, so wait for the option before selecting.
+    await within(ttsModelSelect()).findByRole("option", { name: /Eleven v3 \(expressive\)/ });
     await user.selectOptions(ttsModelSelect(), ["eleven_v3"]);
     expect(ttsModelSelect()).toHaveValue("eleven_v3");
     // Unsupported params disappear; still-valid values are preserved.
     await waitFor(() => expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument());
-    const stability = screen.getByLabelText("Stability") as HTMLSelectElement;
+    const stability = await screen.findByLabelText("Stability") as HTMLSelectElement;
     expect(stability.tagName).toBe("SELECT"); // enum, not a slider
     const labels = within(stability).getAllByRole("option").map((o) => o.textContent);
     expect(labels).toEqual(["Creative (0)", "Natural (0.5)", "Robust (1)"]);
@@ -693,6 +698,7 @@ describe("VoiceTab — LLM output length", () => {
 
     // max_output_characters is platform-owned (not in the provider schema);
     // the model-change reconcile must not silently reset it to the default.
+    await within(llmModelSelect()).findByRole("option", { name: /GPT-4.1 mini/ });
     await user.selectOptions(llmModelSelect(), ["gpt-4.1-mini"]);
     expect(llmModelSelect()).toHaveValue("gpt-4.1-mini");
     expect(maxChars()).toHaveValue(500);

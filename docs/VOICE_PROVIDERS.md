@@ -141,6 +141,81 @@ codes, modes and VAD controls as v3 and adds **key-term biasing**:
   `_audio_runs` + the resampler tail (`_clear_audio_buffer()`), and a reply's
   last partial chunk is flushed padded with silence instead of dropped.
 
+### Sarvam realtime STT (`SARVAM_REALTIME_STT`, evaluation flag, OFF)
+
+Pipecat 1.12 ships `SarvamRealtimeSTTService` for Sarvam's newer
+`/speech-to-text-realtime/ws` socket. `voice_runtime/sarvam_realtime_stt.py`
+wraps it; `SARVAM_REALTIME_STT=true` on the voice worker routes Sarvam STT
+over it instead of the legacy `/speech-to-text/ws` adapter
+(`EndpointedSarvamSTTService`). Settings (all `shared.config.Settings`):
+
+| Env var | Default | Values |
+|---|---|---|
+| `SARVAM_REALTIME_STT` | `false` | `true` routes `saaras:v3` (as `saaras:v3-realtime`) and `saaras:v4`; any other model keeps the legacy socket |
+| `SARVAM_REALTIME_ENDPOINTING` | `manual` | `manual`: our VAD + turn policy send `speech_start`/`speech_end`; `vad`: Sarvam's server VAD proposes the boundaries (ExternalUserTurnStrategies, like Flux) |
+| `SARVAM_REALTIME_STREAM_TYPE` | `balanced` | `fast` gives the first partial ~0.6 s into speech instead of ~1.1 s; finals are equally fast |
+
+What the endpoint does differently (probed directly 2026-10-06, 16 kHz,
+real-time paced audio, `scratchpad/realtime_probe.py`):
+
+- `keyterms` is a JSON array query parameter, `saaras:v4` only, and the
+  realtime socket ENFORCES the contract at the handshake (close code 4000
+  for keyterms on `saaras:v3-realtime`, for 51 terms, for a 65-character
+  term); the legacy socket silently accepted all three. Our shared rule set
+  already enforces the same limits, so nothing changes for operators.
+- True `transcript.partial` events during speech (the legacy socket only
+  emits segment finals). Partials are decoded BEFORE language/script
+  normalisation: Roman-script or English running text for a Devanagari
+  final. The adapter therefore tags them display-only (client UI + barge-in
+  word gate); the brain's interim-agreement stability score ignores them.
+  Without that tag every barge-in segment was rejected as
+  `weak_signal:bot_audio_overlap+unstable_transcript`.
+- `endpointing=manual` only hears audio from `speech_start` on (a few
+  hundred ms of server pre-roll at most). Pipecat sends `speech_start` on
+  `VADUserStartedSpeakingFrame`, which lands late enough during a barge-in
+  to lose the first word(s). The adapter keeps an utterance open at all
+  times (`speech_start` after `session.begin` and again right after every
+  `speech_end`); duplicates are harmless, 8 s of open silence is fine, and
+  back-to-back utterances each get their own final.
+- `endpointing=vad`: `vad.speech_end` arrives ~1.0 s after the audio ends
+  (500 ms server silence window + processing) and the final ~1.3 s after;
+  the mode bypasses our pause policy, the word-confirmed barge-in gate and
+  the brain's user-speech timing (no local VAD), so `turn_latency` has no
+  `stt_final`/`endpoint` fields. Functional smoke only; not recommended.
+- Final after `speech_end`: 180–290 ms (n=10). Legacy socket flush → final:
+  350 ms (v4, n=1; two of four probes finalised early on the server's own
+  VAD, which is the same mechanism that splits sentences in calls).
+
+Call-level comparison, local browser transport, Sarvam v4 + 3 keyterms,
+same 2.5 s Hindi caller clip spoken over the greeting (barge-in), pipecat
+1.12, `scratchpad/e2e_v4_session.py`, 2026-10-06 (ms, per user turn):
+
+| Path | stt_final | endpoint | llm_ttft | tts_ttfb | response | transcript |
+|---|---|---|---|---|---|---|
+| legacy streaming #1 | 55 | 407 | 1293 | 238 | 3669* | "…अभी तक। तक नहीं…" (word doubled) |
+| legacy streaming #2 | 73 | 424 | 924 | 241 | 1854 | exact |
+| legacy streaming #3 | 378 | 730 | 1198 | 249 | 2485 | "…ऑर्डर। अभी तक…" (split in two) |
+| realtime manual/balanced #1 | 235 | 588 | 1089 | 251 | 3040* | exact |
+| realtime manual/balanced #2 | 235 | 589 | 1425 | 245 | 2966 | exact |
+| realtime manual/balanced #3 | 299 | 650 | 1032 | 239 | 2161 | exact |
+| realtime manual/fast #1 | 288 | 640 | 1218 | 332 | 3244* | exact |
+| realtime manual/fast #2 | 249 | 600 | 1178 | 281 | 2352 | exact |
+| realtime manual/fast #3 | 213 | 564 | 849 | 231 | 1816 | exact |
+
+`*` = an orchestration `classify` outlier (0.8–1.7 s) inflated the response.
+`stt_final` = VAD stop → final; `endpoint` = VAD stop → turn closed. The
+legacy socket's 55–73 ms is its server VAD finalising on the clip's natural
+pause BEFORE our flush, the same behaviour that produced the doubled/split
+transcripts; realtime finals cost ~+170 ms on the endpoint here and were
+exact 6/6. Barge-in during the greeting was confirmed by the partials'
+word count in 0.13–0.16 s on the realtime path versus ≥1.0 s of sustained
+VAD on the legacy path. LLM TTFT (0.85–1.4 s) dominates both.
+
+Recommendation (2026-10-06): keep the flag OFF on live. Evidence is n=3
+per arm, one clip, browser transport. Candidate to become the default
+after a telephony (8 kHz) run and a multi-turn soak, with
+`SARVAM_REALTIME_STREAM_TYPE=fast`; leave `vad` endpointing alone.
+
 ### Dependency pins (2026-10-01)
 
 `requirements.txt` is fully `==`-pinned to the set that passed the suites.
@@ -150,7 +225,14 @@ Deliberately held back, with the cap that holds them: `protobuf` 6.x
 `onnxruntime` 1.24.x, `soxr` 1.0.x, `soundfile` 0.13.x and `sentencex`
 1.0.31 (all pinned by pipecat 1.12.0). `mcp` is on 2.x: `FastMCP` became
 `mcp.server.mcpserver.MCPServer` and `stateless_http` moved to
-`streamable_http_app(...)` (`backend/mcp_server/server.py`).
+`streamable_http_app(...)` (`backend/mcp_server/server.py`). Frontend: pnpm
+(`pnpm-lock.yaml` is authoritative; `package-lock.json` is a stale npm
+artifact, now deleted), Vite 8 (Rolldown), Vitest 5, React 19, React Router 7,
+TypeScript 7 (`baseUrl` removed; `paths` are relative). Node ≥ 22.12 is
+required by Vite 8 / Vitest 5 and jsdom 30 wants 22.22+; install the
+frontend with `pnpm install --frozen-lockfile` (pnpm 10.32, declared in
+`package.json` `packageManager`; `corepack prepare pnpm@10.32.0 --activate`
+or `npx pnpm@10.32.0`), never with `npm install`.
 
 ### openai 3 (SDK) and TLS
 

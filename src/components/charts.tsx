@@ -20,7 +20,7 @@ export function fmtNum(v: number): string {
   return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(1);
 }
 
-function useWidth(): [React.RefObject<HTMLDivElement>, number] {
+function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {  // @types/react 19: useRef(null) is RefObject<T | null>
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(600);
   useLayoutEffect(() => {

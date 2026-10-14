@@ -732,6 +732,15 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
             orchestration_engine = {
                 "provider": candidate_provider,
                 "model": candidate_model,
+                # Optional request options for the decision call (OpenAI
+                # service_tier, e.g. "priority").
+                "extra": {
+                    k: v for k, v in {
+                        "service_tier": str(
+                            llm_settings_blob.get("orchestration_service_tier") or ""
+                        ).strip(),
+                    }.items() if v
+                },
                 "api_key_reference": _secret_ref_for(
                     session, "llm", candidate_provider
                 ),

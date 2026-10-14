@@ -373,8 +373,8 @@ def test_historical_costs_survive_price_change(tenants, super_admin, client, cat
 
 
 def test_stt_per_hour_inr_price_converts_via_exchange_rate(tenants, super_admin, client):
-    """Sarvam quotes ₹30/hour; the event costs in USD through the configured
-    USD→INR rate in force when the usage occurred."""
+    """Sarvam STT is priced at our negotiated ₹9/hour; the event costs in USD
+    through the configured USD→INR rate in force when the usage occurred."""
     from shared.billing.metering import record_usage_event
 
     rate = _data(client.post(f"{API}/master/exchange-rates", headers=super_admin, json={
@@ -390,12 +390,12 @@ def test_stt_per_hour_inr_price_converts_via_exchange_rate(tenants, super_admin,
             provider_code="sarvam", model_code="saarika:v2.5",
             audio_seconds=90, request_id=f"test:{_SUFFIX}:stt-inr",
         )
-        # 90s = 0.025h × ₹30 = ₹0.75; ₹0.75 / 96.00 = $0.0078125 → $0.007813.
+        # 90s = 0.025h × ₹9 = ₹0.225; ₹0.225 / 96.00 = $0.00234375 → $0.002344.
         assert event.pricing_status == "priced"
-        assert Decimal(str(event.cost_usd)) == Decimal("0.007813")
+        assert Decimal(str(event.cost_usd)) == Decimal("0.002344")
         snapshot = event.pricing_snapshot["audio_seconds"]
         assert snapshot["unit"] == "per_hour"
-        assert Decimal(snapshot["unitPrice"]) == Decimal("30")
+        assert Decimal(snapshot["unitPrice"]) == Decimal("9")
         assert snapshot["currency"] == "INR"
         assert Decimal(snapshot["fxRate"]) == Decimal("96")
         assert snapshot["priceId"]  # exact price row pinned for audit
@@ -661,9 +661,9 @@ def test_cached_tokens_billed_once_at_cached_rate(tenants):
 
 
 def test_sarvam_tts_costed_per_1k_characters_in_inr(tenants, super_admin, client):
-    """Sarvam bulbul:v3 bills characters at ₹30/10K (₹3/1K) — the INR-native
-    price converts through the configured USD→INR rate, never through
-    another provider's formula."""
+    """Sarvam bulbul:v3 bills characters at our negotiated ₹1.5/1K — the
+    INR-native price converts through the configured USD→INR rate, never
+    through another provider's formula."""
     from shared.billing.metering import record_usage_event
 
     _own_inr_rate(client, super_admin, seconds_extra=17)
@@ -675,12 +675,12 @@ def test_sarvam_tts_costed_per_1k_characters_in_inr(tenants, super_admin, client
             voice_code="anushka", characters=1000,
             request_id=f"test:{_SUFFIX}:tts-sarvam-inr",
         )
-        # 1000 chars × ₹3/1K = ₹3.00 → ₹3.00 / 96.00 = $0.031250.
+        # 1000 chars × ₹1.5/1K = ₹1.50 → ₹1.50 / 96.00 = $0.015625.
         assert event.pricing_status == "priced"
-        assert Decimal(str(event.cost_usd)) == Decimal("0.03125")
+        assert Decimal(str(event.cost_usd)) == Decimal("0.015625")
         snapshot = event.pricing_snapshot["characters"]
         assert snapshot["unit"] == "per_1k_characters"
-        assert Decimal(snapshot["unitPrice"]) == Decimal("3")
+        assert Decimal(snapshot["unitPrice"]) == Decimal("1.5")
         assert snapshot["currency"] == "INR"
         assert Decimal(snapshot["fxRate"]) == Decimal("96")
     finally:
@@ -690,8 +690,8 @@ def test_sarvam_tts_costed_per_1k_characters_in_inr(tenants, super_admin, client
 
 def test_stt_subsecond_duration_decimal_precision(tenants, super_admin, client):
     """A 1.1 s Sarvam final (metrics.audio_duration) is stored with its raw
-    precision and costed with Decimal arithmetic: ₹30/h × 1.1 s / 96 INR/USD
-    = $0.0000954861… → $0.000095 at the 6-decimal event quantum."""
+    precision and costed with Decimal arithmetic: ₹9/h × 1.1 s / 96 INR/USD
+    = $0.0000286458… → $0.000029 at the 6-decimal event quantum."""
     from shared.billing.metering import record_usage_event
 
     _own_inr_rate(client, super_admin, seconds_extra=31)
@@ -706,7 +706,7 @@ def test_stt_subsecond_duration_decimal_precision(tenants, super_admin, client):
         )
         assert event.pricing_status == "priced"
         assert Decimal(str(event.audio_seconds)) == Decimal("1.100")
-        assert Decimal(str(event.cost_usd)) == Decimal("0.000095")
+        assert Decimal(str(event.cost_usd)) == Decimal("0.000029")
         assert event.usage_metadata == {"basis": "provider_metrics"}
     finally:
         session.close()

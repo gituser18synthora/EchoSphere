@@ -68,6 +68,14 @@ class OpenAILLM(LLMProvider):
             api_key=key, timeout=config.timeout_seconds, max_retries=0
         )
         self._model = config.model or settings.llm_model or "gpt-4o-mini"
+        # Optional per-engine request options (ProviderConfig.extra). Only
+        # OpenAI "service_tier" is forwarded today — e.g. "priority" for the
+        # hard-deadline Goal Engine decision call (measured 2026-10-07 on the
+        # Zepto MDND prompt: full decision 1.70 s → 1.50 s p50).
+        self._request_extra = {
+            k: v for k, v in (config.extra or {}).items()
+            if k == "service_tier" and v
+        }
 
     def _build_messages(self, messages: list[dict], system: str | None) -> list[dict]:
         out: list[dict] = []
@@ -96,6 +104,7 @@ class OpenAILLM(LLMProvider):
             temperature=temperature,
             max_tokens=max_tokens,
         ))
+        kwargs.update(getattr(self, "_request_extra", {}))
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,

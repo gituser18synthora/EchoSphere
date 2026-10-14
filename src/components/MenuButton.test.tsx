@@ -29,7 +29,9 @@ describe("MenuButton", () => {
   });
 
   it("opens upward when there is not enough room below the trigger", async () => {
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    // Vitest 5 wires DOM globals differently: spy on the jsdom window's constructor,
+    // which is what document-created elements actually inherit from.
+    vi.spyOn(window.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       return this.classList.contains("menu")
         ? rect({ width: 180, height: 150 })
         : rect({});
@@ -40,9 +42,13 @@ describe("MenuButton", () => {
     const user = userEvent.setup();
     render(<MenuButton actions={[{ label: "Archive", onClick: vi.fn() }]} />);
     const button = screen.getByRole("button", { name: "More actions" });
-    vi.spyOn(button, "getBoundingClientRect").mockReturnValue(rect({
-      top: 700, bottom: 732, left: 960, right: 1000, width: 40, height: 32,
-    }));
+    // Vitest 5: vi.spyOn on an instance whose method is already spied at the
+    // prototype returns THAT spy, so a second mockReturnValue would re-target
+    // the menu's rect as well. Give the trigger its own plain implementation.
+    Object.defineProperty(button, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect({ top: 700, bottom: 732, left: 960, right: 1000, width: 40, height: 32 }),
+    });
 
     await user.click(button);
     await waitFor(() => expect(screen.getByRole("menu")).toHaveStyle({

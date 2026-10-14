@@ -111,8 +111,29 @@ def slugify_workflow_name(name: str) -> str:
 # control-plane query. Staleness is bounded by the TTL only (a saved edit
 # shows up within 30 s); no cross-process invalidation by design.
 _DEFINITION_CACHE_TTL_SECONDS = 30.0
-_definition_cache: dict[tuple[str, str, str], tuple[float, dict | None]] = {}
+_definition_cache: dict[tuple, tuple[float, dict | None]] = {}
 _definition_cache_lock = threading.Lock()
+
+
+def invalidate_workflow_definitions(
+    tenant_id: str | None = None, bot_id: str | None = None,
+) -> int:
+    """Drop cached definitions for a bot (or a tenant, or everything).
+
+    Same-process only: the control-plane API calls this after a workflow
+    save so its own chat tester runs the new definition on the next turn
+    instead of up to 30 s later. Other processes (the voice runtime) still
+    rely on the TTL. Returns the number of entries removed.
+    """
+    with _definition_cache_lock:
+        doomed = [
+            key for key in _definition_cache
+            if (tenant_id is None or key[0] == tenant_id)
+            and (bot_id is None or key[1] == bot_id)
+        ]
+        for key in doomed:
+            del _definition_cache[key]
+    return len(doomed)
 
 
 def pinned_version_for(

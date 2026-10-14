@@ -256,4 +256,10 @@ def save_bot_workflow(
         request=request,
     )
     db.commit()
+    # The engine caches definitions in-process for 30 s; drop this bot's
+    # entries so the Studio chat tester (same process) runs the save
+    # immediately. Lazy import: the engine module is heavy.
+    from shared.orchestration.workflow_engine import invalidate_workflow_definitions
+
+    invalidate_workflow_definitions(tenant_id=bot.tenant_id, bot_id=bot.id)
     return ok(serialize_workflow(w, updated_by_name=user.name))

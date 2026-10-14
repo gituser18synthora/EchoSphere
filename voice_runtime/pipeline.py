@@ -479,6 +479,59 @@ def build_stt_service(
         keyterms = _sarvam_keyterms_for_model(
             model, settings_kwargs.get(KEYTERMS_SETTING), recorder=recorder,
         )
+        runtime_settings = get_settings()
+        if runtime_settings.sarvam_realtime_stt:
+            # Evaluation path (SARVAM_REALTIME_STT=true): Sarvam's realtime
+            # socket — true partials, client- or server-side endpointing. The
+            # endpoint serves saaras:v3-realtime and saaras:v4 only; any other
+            # model keeps the legacy streaming adapter below.
+            from voice_runtime.sarvam_realtime_stt import (
+                RealtimeSarvamSTTService,
+                normalize_endpointing,
+                normalize_stream_type,
+                realtime_model_for,
+            )
+
+            realtime_model = realtime_model_for(model)
+            if realtime_model is None:
+                logger.warning(
+                    "sarvam-stt: SARVAM_REALTIME_STT is on but model %r is not "
+                    "served by the realtime endpoint; using the streaming socket",
+                    model,
+                )
+            else:
+                endpointing = normalize_endpointing(runtime_settings.sarvam_realtime_endpointing)
+                stream_type = normalize_stream_type(runtime_settings.sarvam_realtime_stream_type)
+                realtime_settings = RealtimeSarvamSTTService.Settings(
+                    model=realtime_model,
+                    language=language,
+                    # Pipecat derives language_code from ``language``; with no
+                    # pinned language the recognizer must auto-detect (its own
+                    # default would silently pin en-IN).
+                    language_code=(
+                        RealtimeSarvamSTTService.Settings().language_code
+                        if language is not None else "auto"
+                    ),
+                    stream_type=stream_type,
+                    mode=mode or "transcribe",
+                )
+                if recorder is not None:
+                    recorder.add_event(
+                        "stt_realtime", model=realtime_model, configured_model=model,
+                        endpointing=endpointing, stream_type=stream_type,
+                    )
+                return RealtimeSarvamSTTService(
+                    api_key=api_key,
+                    endpointing=endpointing,
+                    sample_rate=sample_rate,
+                    settings=realtime_settings,
+                    keepalive_timeout=8.0,
+                    recorder=recorder,
+                    keyterms=keyterms or None,
+                    # Same bound as the streaming adapter so the turn-stop wait
+                    # is identical and the comparison isolates the socket.
+                    ttfs_p99_latency=SARVAM_TTFS_P99_S,
+                )
         return EndpointedSarvamSTTService(
             api_key=api_key,
             mode=mode if model.startswith("saaras") else None,
@@ -786,6 +839,17 @@ def build_voice_pipeline(
     # not built at all — running both would double every start/stop signal.
     stt_provider_code = (config.stt or {}).get("provider") or "sarvam"
     provider_owns_turns = stt_provider_code == "deepgram"
+    if stt_provider_code == "sarvam" and get_settings().sarvam_realtime_stt:
+        # Sarvam realtime with server-side endpointing (SARVAM_REALTIME_
+        # ENDPOINTING=vad) proposes the boundaries itself, like Flux; under
+        # the default "manual" mode our VAD and turn policy stay in charge.
+        from voice_runtime.sarvam_realtime_stt import normalize_endpointing, realtime_model_for
+
+        if (
+            realtime_model_for((config.stt or {}).get("model") or "saaras:v3") is not None
+            and normalize_endpointing(get_settings().sarvam_realtime_endpointing) == "vad"
+        ):
+            provider_owns_turns = True
 
     turn = resolve_turn_detection(config, transport_kind)
     gate_conf = resolve_noise_gate(config, transport_kind)
@@ -1061,10 +1125,15 @@ def build_voice_pipeline(
         # re-queued text of a merge was dispatched alone, and the final that
         # followed ran as a second turn (2026-09-24 runtime test). Providers
         # that never set ``finalized`` keep the transcript-free close.
+        from voice_runtime.sarvam_realtime_stt import RealtimeSarvamSTTService
         from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
         from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
 
-        wait_for_final = isinstance(stt, EndpointedSarvamSTTService)
+        # Both Sarvam adapters mark every final ``finalized`` (the realtime
+        # socket does so natively), so the bounded wait applies to both.
+        wait_for_final = isinstance(
+            stt, (EndpointedSarvamSTTService, RealtimeSarvamSTTService)
+        )
         user_turn_strategies = UserTurnStrategies(
             start=[start_strategy],
             # The brain gates the LLM on the resulting UserStoppedSpeakingFrame,

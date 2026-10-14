@@ -297,6 +297,9 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,
     "orchestration_model": 80,
+    # OpenAI request option for the decision call ("priority" buys lower
+    # generation latency on the hard-deadline Goal Engine call).
+    "orchestration_service_tier": 20,
 }
 _PLATFORM_LLM_NUMBER_BOUNDS = {
     "orchestration_timeout_seconds": (0.5, 5.0),

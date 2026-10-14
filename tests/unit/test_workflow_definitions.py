@@ -907,6 +907,29 @@ class TestDefinitionLookupCache:
         wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
         assert counters["sessions"] == 2
 
+    def test_invalidation_for_the_bot_forces_a_requery(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        wfe.load_workflow_definition("tn_x", "bot_x", "other_flow")
+        wfe.load_workflow_definition("tn_x", "bot_y", "payment_plan")
+        assert counters["sessions"] == 3
+        # Only bot_x's entries go (both names, any pin key); bot_y stays warm.
+        assert wfe.invalidate_workflow_definitions("tn_x", "bot_x") == 2
+        wfe.load_workflow_definition("tn_x", "bot_y", "payment_plan")
+        assert counters["sessions"] == 3
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        assert counters["sessions"] == 4
+
+    def test_invalidation_scopes_tenant_and_everything(self, monkeypatch):
+        counters = self._patch_db(monkeypatch)
+        wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
+        wfe.load_workflow_definition("tn_z", "bot_z", "payment_plan")
+        assert wfe.invalidate_workflow_definitions("tn_nobody", "bot_x") == 0
+        assert wfe.invalidate_workflow_definitions(tenant_id="tn_x") == 1
+        assert wfe.invalidate_workflow_definitions() == 1
+        assert wfe._definition_cache == {}
+        assert counters["sessions"] == 2
+
     def test_only_the_matching_row_loads_its_definition(self, monkeypatch):
         counters = self._patch_db(monkeypatch)
         wfe.load_workflow_definition("tn_x", "bot_x", "payment_plan")
