@@ -4,12 +4,24 @@ Safe to run any number of times: every insert is guarded by a natural-key
 lookup; existing rows are never modified or deleted. No fake dashboard values
 or dummy business records are created here (see demo_seed for the explicit
 opt-in development dataset).
+
+Two profiles, chosen by ``APP_ENV`` (or the ``production`` argument):
+
+* development (the historical behaviour) — everything below, including the
+  ``mock`` pseudo-providers and the sample catalog entries that exist so the
+  UI has something to show on a fresh checkout.
+* production — genuine platform master data only. Left out: sample plans,
+  the eight engine-less "platform" voices, the approved-model registry with
+  illustrative cost/latency figures, the integration catalog, the platform
+  templates and every ``mock`` provider/model row. Those are
+  ``DEV_CATALOG_ONLY`` below; operators add real plans/voices through the
+  master-data UI.
 """
 
 import logging
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from shared.config import get_settings
@@ -565,8 +577,70 @@ TEMPLATES = [
 ]
 
 
-def run_base_seed(db: Session | None = None) -> dict:
-    """Returns a summary of what was created (counts)."""
+# Production never seeds the sample "platform" voices, so the default-voice
+# template points at the Sarvam default speaker there instead of vp-01.
+PRODUCTION_DEFAULT_VOICE_SETTING = {
+    "provider": "sarvam", "voice_id": "vp-sv-shubh", "speed": 1.0, "pitch": 1.0,
+}
+
+# Seed groups that only exist for development/demo installs (see module doc).
+DEV_CATALOG_ONLY = ("plans", "voices", "models", "integrations", "templates", "mock providers")
+
+
+def ensure_super_admin(
+    db: Session, *, role: Role, email: str, name: str, password: str,
+    allow_additional: bool = True,
+) -> int:
+    """Create the initial super admin once; returns 1 when created, else 0.
+
+    An existing account is never updated or deleted. With
+    ``allow_additional=False`` (production) nothing is created while any
+    super-admin account exists, so changing ``SUPERADMIN_EMAIL`` later cannot
+    silently add a second platform owner — further admins are invited through
+    the UI.
+    """
+    email = email.lower()
+    if db.scalar(select(User).where(User.email == email)) is not None:
+        return 0
+    if not allow_additional:
+        existing = db.scalar(
+            select(func.count()).select_from(User).where(
+                User.role_id == role.id, User.is_deleted.is_(False),
+            )
+        )
+        if existing:
+            logger.info("A super admin already exists — not creating %s", email)
+            return 0
+    if not password:
+        logger.warning("SUPERADMIN_PASSWORD is not set — skipping super admin creation.")
+        return 0
+    db.add(User(
+        id=new_id("usr"),
+        email=email,
+        name=name,
+        password_hash=hash_password(password),
+        role_id=role.id,
+        tenant_id=None,
+        status="active",
+    ))
+    return 1
+
+
+def run_base_seed(db: Session | None = None, *, production: bool | None = None) -> dict:
+    """Returns a summary of what was created (counts).
+
+    ``production`` defaults to ``APP_ENV == "production"``; see the module
+    docstring for what the production profile leaves out.
+    """
+    if production is None:
+        production = get_settings().is_production
+    include_dev_catalog = not production
+    plans = PLANS if include_dev_catalog else []
+    platform_voices = VOICES if include_dev_catalog else []
+    registry_models = MODELS if include_dev_catalog else []
+    integrations = INTEGRATIONS if include_dev_catalog else []
+    templates = TEMPLATES if include_dev_catalog else []
+    providers = PROVIDERS if include_dev_catalog else [p for p in PROVIDERS if p[1] != "mock"]
     own_session = db is None
     if own_session:
         db = get_sessionmaker()()
@@ -611,7 +685,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                 if exists is None:
                     db.add(RolePermission(role_id=role.id, permission_id=perm.id))
 
-        for i, (code, name, price, bots, minutes, seats, recommended, desc) in enumerate(PLANS):
+        for i, (code, name, price, bots, minutes, seats, recommended, desc) in enumerate(plans):
             row = db.scalar(select(Plan).where(Plan.code == code))
             if row is None:
                 db.add(Plan(
@@ -707,7 +781,7 @@ def run_base_seed(db: Session | None = None) -> dict:
                 db.add(profile)
                 created["ai_profiles"] += 1
 
-        for i, (kind, code, name, needs_key, desc, provider_status) in enumerate(PROVIDERS):
+        for i, (kind, code, name, needs_key, desc, provider_status) in enumerate(providers):
             exists = db.scalar(
                 select(ProviderDef).where(ProviderDef.kind == kind, ProviderDef.code == code)
             )
@@ -729,7 +803,7 @@ def run_base_seed(db: Session | None = None) -> dict:
         if mock_tts is not None and "voice_cloning" not in (mock_tts.config or {}):
             mock_tts.config = {**(mock_tts.config or {}), "voice_cloning": True}
 
-        for vid, name, gender, langs, accent, styles, latency, premium, sample in VOICES:
+        for vid, name, gender, langs, accent, styles, latency, premium, sample in platform_voices:
             if db.get(VoiceProfile, vid) is None:
                 db.add(VoiceProfile(
                     id=vid, name=name, gender=gender, languages=langs, accent=accent,
@@ -744,7 +818,7 @@ def run_base_seed(db: Session | None = None) -> dict:
             seed_provider_catalog,
         )
 
-        created.update(seed_provider_catalog(db))
+        created.update(seed_provider_catalog(db, include_dev_providers=include_dev_catalog))
         # Converge provider/model activation to the governed matrix on every
         # bootstrap so long-lived databases pick up governance changes too.
         created.update(reconcile_provider_governance(db))
@@ -805,7 +879,7 @@ def run_base_seed(db: Session | None = None) -> dict:
             if profile_ids.get(profile_code):
                 industry.default_guardrail_profile_id = profile_ids[profile_code]
 
-        for name, provider, purpose, status, cost, latency in MODELS:
+        for name, provider, purpose, status, cost, latency in registry_models:
             exists = db.scalar(
                 select(ApprovedModel).where(
                     ApprovedModel.name == name, ApprovedModel.purpose == purpose
@@ -844,17 +918,19 @@ def run_base_seed(db: Session | None = None) -> dict:
                 ))
                 created["provider_pricing"] += 1
 
-        for name, category, desc in INTEGRATIONS:
+        for name, category, desc in integrations:
             if db.scalar(select(Integration).where(Integration.name == name)) is None:
                 db.add(Integration(id=new_id("ig"), name=name, category=category, description=desc))
                 created["integrations"] += 1
 
         for key, value, desc in SYSTEM_SETTINGS:
+            if production and key == "voice.default_provider":
+                value = PRODUCTION_DEFAULT_VOICE_SETTING
             if db.scalar(select(SystemSetting).where(SystemSetting.key == key)) is None:
                 db.add(SystemSetting(id=new_id("sys"), key=key, value=value, description=desc))
                 created["settings"] += 1
 
-        for i, (kind, name, desc, payload) in enumerate(TEMPLATES):
+        for i, (kind, name, desc, payload) in enumerate(templates):
             exists = db.scalar(
                 select(PlatformTemplate).where(
                     PlatformTemplate.kind == kind, PlatformTemplate.name == name
@@ -869,23 +945,12 @@ def run_base_seed(db: Session | None = None) -> dict:
 
         # Super Admin account — created once, never overwritten, never deleted.
         settings = get_settings()
-        email = settings.superadmin_email.lower()
-        if db.scalar(select(User).where(User.email == email)) is None:
-            if not settings.superadmin_password:
-                logger.warning(
-                    "SUPERADMIN_PASSWORD is not set — skipping super admin creation."
-                )
-            else:
-                db.add(User(
-                    id=new_id("usr"),
-                    email=email,
-                    name=settings.superadmin_name,
-                    password_hash=hash_password(settings.superadmin_password),
-                    role_id=role_map["super_admin"].id,
-                    tenant_id=None,
-                    status="active",
-                ))
-                created["users"] += 1
+        created["users"] += ensure_super_admin(
+            db, role=role_map["super_admin"],
+            email=settings.superadmin_email, name=settings.superadmin_name,
+            password=settings.superadmin_password,
+            allow_additional=include_dev_catalog,
+        )
 
         db.commit()
         logger.info("Base seed complete: %s", {k: v for k, v in created.items() if v})

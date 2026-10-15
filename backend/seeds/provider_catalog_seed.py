@@ -842,12 +842,19 @@ SARVAM_SPEAKERS = [
 _SAMPLE_TEXT = "Hello! I can help you book your next appointment in just a minute."
 
 
-def seed_provider_catalog(db: Session) -> dict:
-    """Idempotent catalog seed; never overwrites operator edits."""
+def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) -> dict:
+    """Idempotent catalog seed; never overwrites operator edits.
+
+    ``include_dev_providers=False`` (production) leaves out the ``mock``
+    pseudo-provider's model rows entirely instead of relying on governance to
+    deactivate them later.
+    """
     created = {"provider_models": 0, "provider_voices": 0}
 
     for (provider, capability, code, display, langs, codecs, rates, streaming,
          schema, is_default, status, sort) in PROVIDER_MODELS:
+        if not include_dev_providers and provider in _DEV_PSEUDO_PROVIDERS:
+            continue
         description = MODEL_DESCRIPTIONS.get((provider, capability, code))
         # Both v3 rows carry the same 74-language coverage, so both derive
         # their offered locales from the languages table.

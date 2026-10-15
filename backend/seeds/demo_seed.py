@@ -274,6 +274,10 @@ def _series(seed: int, n: int, base: float, spread: float, trend: float = 0.0) -
 
 
 def run_demo_seed(db: Session | None = None, days: int = 90) -> dict:
+    if get_settings().is_production:
+        raise RuntimeError(
+            "The demo dataset is development-only and is refused when APP_ENV=production."
+        )
     own = db is None
     if own:
         db = get_sessionmaker()()

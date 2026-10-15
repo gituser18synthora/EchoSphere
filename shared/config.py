@@ -300,6 +300,19 @@ class Settings(BaseSettings):
         return reference
 
     @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+    @property
+    def startup_seed_enabled(self) -> bool:
+        """Whether the Platform API seeds the database at startup.
+
+        Never in production: there the database is initialised once,
+        explicitly, with ``python -m backend.cli init-production``.
+        """
+        return self.enable_database_seed and not self.is_production
+
+    @property
     def mysql_url(self) -> str:
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
@@ -348,9 +361,11 @@ def validate_settings(service: str) -> None:
     if service == "api":
         require(settings.jwt_secret, "JWT_SECRET",
                 'generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"')
-        if settings.enable_database_seed:
+        if settings.startup_seed_enabled:
             require(settings.superadmin_password, "SUPERADMIN_PASSWORD",
-                    "initial super-admin password (required while ENABLE_DATABASE_SEED=true)")
+                    "initial super-admin password (required while ENABLE_DATABASE_SEED=true "
+                    "outside production; production creates the account once with "
+                    "`python -m backend.cli init-production`)")
 
     if service in ("api", "ingestion-worker"):
         # The knowledge plane (pgvector) backs knowledge APIs and ingestion.

@@ -50,11 +50,16 @@ async def lifespan(app: FastAPI):
         _run_migrations()
     await Mongo.connect()
     await create_indexes()
-    if settings.enable_database_seed:
+    if settings.startup_seed_enabled:
         # Idempotent base seed only (roles, permissions, super admin, catalogs).
         from backend.seeds.base_seed import run_base_seed
 
         run_base_seed()
+    elif settings.enable_database_seed:
+        logger.info(
+            "ENABLE_DATABASE_SEED is ignored in production — initialise the database "
+            "explicitly with `python -m backend.cli init-production`"
+        )
 
     # Knowledge ingestion is a Postgres poll queue — without a running worker
     # every upload stays "queued" forever. Embed the worker here unless a
