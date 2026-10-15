@@ -1240,3 +1240,178 @@ class TestNaturalConversationTransfer:
         assert _canonical(settings["humanSpeech"]) == _canonical(legacy_bot_hs)
         assert settings["humanSpeechEffective"]["latency_filler_kind"] == "breath"
         assert settings["humanSpeechEffective"]["filler_audio_selection"] == {}
+
+
+# ── Orphan bot-scoped rows (soft-deleted bots) ────────────────────────────────
+# Regression for the production import that failed with "knowledge source
+# references bot which is not in the package": the exporter kept bot-scoped
+# knowledge sources (and API connections) whose bot had been soft-deleted,
+# while bots themselves are exported live-only.
+
+
+async def _orphan_workspace():
+    """A tenant with one live bot and one soft-deleted bot. Each bot owns a
+    knowledge source (with a PostgreSQL document) and an API connection; one
+    knowledge source and one connection are tenant-wide."""
+    suffix = uuid.uuid4().hex[:10]
+    session = _db()
+    try:
+        tenant = Tenant(
+            id=new_id("tn"), name=f"Orphan Source {suffix}", code=f"or_{suffix}",
+            domain=f"orphan-{suffix}.example.test", status="active",
+            admin_email=f"ops.orphan.{suffix}@example.test",
+        )
+        session.add(tenant)
+        session.flush()
+        live_bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"Live Bot {suffix}",
+            status="published", version="v1.0.0",
+        )
+        dead_bot = VoiceBot(
+            id=new_id("bot"), tenant_id=tenant.id, name=f"Deleted Bot {suffix}",
+            status="archived", version="v1.0.0", is_deleted=True,
+            deleted_at=datetime(2026, 9, 1, 6, 33, 6),
+        )
+        session.add_all([live_bot, dead_bot])
+        session.flush()
+        rows = {
+            "tenant_id": tenant.id, "live_bot": live_bot.id, "dead_bot": dead_bot.id,
+            "kb_live": new_id("ks"), "kb_dead": new_id("ks"), "kb_tenant": new_id("ks"),
+            "api_live": new_id("api"), "api_dead": new_id("api"), "api_tenant": new_id("api"),
+        }
+        for key, bot_id, scope in (("kb_live", live_bot.id, "bot"),
+                                   ("kb_dead", dead_bot.id, "bot"),
+                                   ("kb_tenant", None, "tenant")):
+            session.add(KnowledgeSource(
+                id=rows[key], tenant_id=tenant.id, bot_id=bot_id, scope=scope,
+                type="document", name=f"{key} {suffix}", status="indexed",
+                chunks=1, size_kb=1,
+            ))
+        for key, bot_id in (("api_live", live_bot.id), ("api_dead", dead_bot.id),
+                            ("api_tenant", None)):
+            session.add(ApiConnection(
+                id=rows[key], tenant_id=tenant.id, bot_id=bot_id,
+                name=f"{key} {suffix}", method="GET",
+                url=f"https://{key}.example.test/{{{{id}}}}",
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+    from shared.db.postgres import get_pg_sessionmaker
+    from shared.knowledge.models import KnowledgeChunk, KnowledgeDocument
+
+    rows["docs"] = {}
+    async with get_pg_sessionmaker()() as pg:
+        for key in ("kb_live", "kb_dead", "kb_tenant"):
+            doc_id, chunk_id = new_id("kdoc"), new_id("kch")
+            rows["docs"][key] = doc_id
+            pg.add(KnowledgeDocument(
+                id=doc_id, tenant_id=rows["tenant_id"], kb_id=rows[key],
+                file_name=f"{key}.txt", file_ext="txt", mime_type="text/plain",
+                size_bytes=16, content_hash="h" * 64, status="completed", chunk_count=1,
+            ))
+            await pg.flush()
+            pg.add(KnowledgeChunk(
+                id=chunk_id, tenant_id=rows["tenant_id"], kb_id=rows[key],
+                document_id=doc_id, chunk_index=0, content=f"{key} content",
+                content_hash="c" * 64, embedding=[0.5] * 1536,
+                embedding_model="mock", embedding_dimension=1536,
+            ))
+        await pg.commit()
+    return rows
+
+
+async def _purge_orphan_workspace(rows: dict) -> None:
+    await _purge_knowledge_plane([rows["kb_live"], rows["kb_dead"], rows["kb_tenant"]])
+    _purge_tenant_graph([rows["tenant_id"]])
+
+
+@pytest.fixture()
+async def orphan_rows():
+    rows = await _orphan_workspace()
+    try:
+        yield rows
+    finally:
+        await _purge_orphan_workspace(rows)
+
+
+class TestOrphanBotScopedRows:
+    def _export(self, rows):
+        from backend.core.tenant_transfer import export_tenant
+
+        session = _db()
+        try:
+            tenant = session.get(Tenant, rows["tenant_id"])
+            return export_tenant(session, tenant)
+        finally:
+            session.close()
+
+    async def test_export_leaves_out_rows_of_soft_deleted_bots(self, orphan_rows):
+        from backend.core.tenant_transfer import import_tenant, validate_package
+
+        rows = orphan_rows
+        package = self._export(rows)
+        res = package["resources"]
+        assert [b["id"] for b in res["bots"]] == [rows["live_bot"]]
+        assert {k["id"] for k in res["knowledge_sources"]} == {rows["kb_live"], rows["kb_tenant"]}
+        assert {a["id"] for a in res["api_connections"]} == {rows["api_live"], rows["api_tenant"]}
+        assert package["source"]["excluded"] == {
+            "api_connections": [{"id": rows["api_dead"], "bot_id": rows["dead_bot"]}],
+            "knowledge_sources": [{"id": rows["kb_dead"], "bot_id": rows["dead_bot"]}],
+        }
+        # The exported package is importable as-is (dry run, rolled back).
+        validate_package(copy.deepcopy(package))
+        session = _db()
+        try:
+            admin = session.execute(
+                select(User).where(User.email == "admin@aurexion.com")).scalar_one()
+            report, kb_plane = import_tenant(session, copy.deepcopy(package), admin)
+            assert report["updated"].get("knowledge_source") == 2
+            assert report["updated"].get("api_connection") == 2
+        finally:
+            session.rollback()
+            session.close()
+
+    async def test_knowledge_plane_follows_the_exported_sources(
+        self, orphan_rows, client, super_admin,
+    ):
+        rows = orphan_rows
+        package = _data(client.get(
+            f"{API}/tenants/{rows['tenant_id']}/export?includeKnowledge=true",
+            headers=super_admin,
+        ))
+        documents = package["knowledge_plane"]["documents"]
+        assert {d["kb_id"] for d in documents} == {rows["kb_live"], rows["kb_tenant"]}
+        assert {d["id"] for d in documents} == {rows["docs"]["kb_live"], rows["docs"]["kb_tenant"]}
+        assert all(len(d["chunks"]) == 1 for d in documents)
+        assert package["source"]["excluded"]["knowledge_sources"][0]["id"] == rows["kb_dead"]
+
+    async def test_package_with_orphans_is_rejected_naming_all_of_them(
+        self, orphan_rows, client, super_admin,
+    ):
+        from backend.core.tenant_transfer import InvalidPackage, validate_package
+
+        rows = orphan_rows
+        package = self._export(rows)
+        # A package from an older exporter: orphan rows still present.
+        package["resources"]["knowledge_sources"].append({
+            "id": rows["kb_dead"], "tenant_id": rows["tenant_id"], "bot_id": rows["dead_bot"],
+            "scope": "bot", "type": "document", "name": "orphan kb", "status": "indexed",
+        })
+        package["resources"]["api_connections"].append({
+            "id": rows["api_dead"], "tenant_id": rows["tenant_id"], "bot_id": rows["dead_bot"],
+            "name": "orphan api", "method": "GET", "url": "https://x.example.test",
+        })
+        with pytest.raises(InvalidPackage) as exc:
+            validate_package(copy.deepcopy(package))
+        message = str(exc.value)
+        assert rows["kb_dead"] in message and rows["api_dead"] in message
+        assert rows["dead_bot"] in message and "soft-deleted" in message
+
+        # Through the API: 422 with the same message and nothing changed.
+        before = {k["id"] for k in self._export(rows)["resources"]["knowledge_sources"]}
+        response = client.post(f"{API}/tenants/import", json=package, headers=super_admin)
+        assert response.status_code == 422, response.text
+        assert rows["kb_dead"] in response.json()["message"]
+        assert {k["id"] for k in self._export(rows)["resources"]["knowledge_sources"]} == before

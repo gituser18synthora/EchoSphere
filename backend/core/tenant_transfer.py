@@ -15,6 +15,15 @@ intents, test-scenario definitions, runtime-context schemas, channel
 configurations, and — optionally — the PostgreSQL knowledge plane (documents +
 chunks with embeddings copied verbatim).
 
+Only live (not soft-deleted) bots travel. Tenant-owned rows that may also be
+bot-scoped — API connections and knowledge sources — are exported only when
+they are tenant-wide (``bot_id`` NULL) or belong to an exported bot; a
+bot-scoped row whose bot was soft-deleted is left out, listed under
+``source.excluded`` for the operator, and its knowledge documents are not
+exported either (the knowledge plane follows the exported sources). The
+importer rejects any package that still carries such orphans, naming all of
+them at once.
+
 Shared platform resources the tenant references (guardrails, guardrail
 profiles, platform voice profiles) are exported in a separate ``shared``
 section. On import they are RESOLVED, never overwritten: an existing row with
@@ -284,17 +293,30 @@ def export_tenant(db: Session, tenant: Tenant) -> dict:
         if v.tenant_id is None and v.id not in tenant_voice_ids
     ]
 
-    knowledge_sources = db.scalars(
-        select(KnowledgeSource).where(
-            KnowledgeSource.tenant_id == tid, KnowledgeSource.is_deleted.is_(False)
-        )
-    ).all()
+    def tenant_rows_for_live_bots(model):
+        """Tenant-owned rows that may also be bot-scoped: keep tenant-wide rows
+        and rows of exported bots. A bot-scoped row whose bot is gone (soft-
+        deleted) must not travel — the importer rejects it — so it is set
+        aside and reported under ``source.excluded`` instead."""
+        kept, orphans = [], []
+        for row in owned(model):
+            bot_id = getattr(row, "bot_id", None)
+            (kept if bot_id is None or bot_id in bot_id_set else orphans).append(row)
+        return kept, orphans
+
+    bot_id_set = set(bot_ids)
+    api_connections, orphan_connections = tenant_rows_for_live_bots(ApiConnection)
+    knowledge_sources, orphan_knowledge = tenant_rows_for_live_bots(KnowledgeSource)
+    excluded = {
+        "api_connections": [{"id": a.id, "bot_id": a.bot_id} for a in orphan_connections],
+        "knowledge_sources": [{"id": k.id, "bot_id": k.bot_id} for k in orphan_knowledge],
+    }
 
     return {
         "kind": PACKAGE_KIND,
         "schema_version": SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "source": {"tenant_id": tid, "name": tenant.name},
+        "source": {"tenant_id": tid, "name": tenant.name, "excluded": excluded},
         "shared": {
             "guardrails": [dump_row(g) for g in guardrails],
             "guardrail_profiles": profiles_payload,
@@ -311,7 +333,7 @@ def export_tenant(db: Session, tenant: Tenant) -> dict:
             "pronunciation_dictionaries": [dump_row(d) for d in owned(PronunciationDictionary)],
             "entity_defs": [dump_row(e) for e in owned(EntityDef)],
             "compliance_policies": policies_payload,
-            "api_connections": [dump_row(a) for a in owned(ApiConnection)],
+            "api_connections": [dump_row(a) for a in api_connections],
             "knowledge_sources": [dump_row(k) for k in knowledge_sources],
             "bots": bots_payload,
             "voice_bot_settings": [dump_row(s) for s in settings_rows],
@@ -385,6 +407,26 @@ def _validate_secret_references(resources: dict) -> None:
                 )
 
 
+# Tenant-owned sections whose rows may also be bot-scoped (``bot_id`` NULL =
+# tenant-wide). A row pointing at a bot that is not in the package is an
+# orphan — typically a bot soft-deleted on the source environment.
+_OPTIONALLY_BOT_SCOPED = (("api_connections", "api connection"),
+                          ("knowledge_sources", "knowledge source"))
+
+
+def _orphan_bot_references(resources: dict, bot_ids: set[str]) -> list[str]:
+    problems = []
+    for section, label in _OPTIONALLY_BOT_SCOPED:
+        for row in resources.get(section) or []:
+            bot_id = row.get("bot_id")
+            if bot_id is not None and bot_id not in bot_ids:
+                problems.append(
+                    f"{label} '{row.get('id')}' references bot '{bot_id}' "
+                    "which is not in the package"
+                )
+    return problems
+
+
 def validate_package(package: dict) -> dict:
     if not isinstance(package, dict):
         raise InvalidPackage("expected a JSON object.")
@@ -434,6 +476,13 @@ def validate_package(package: dict) -> dict:
                     f"resources.{section} row '{row['id']}' references bot "
                     f"'{row.get('bot_id')}' which is not in the package."
                 )
+    orphans = _orphan_bot_references(resources, bot_ids)
+    if orphans:
+        raise InvalidPackage(
+            "; ".join(orphans) + " (the bot was probably soft-deleted on the "
+            "source — re-export with a current exporter, which leaves such rows "
+            "out, or remove them from the package)."
+        )
     _validate_secret_references(resources)
     return resources
 
@@ -832,13 +881,8 @@ def import_tenant(db: Session, package: dict, user: User) -> tuple[dict, dict]:
                 report.count(report.created, "compliance_wording")
 
     # Tenant-wide connections first: bots and their children may reference them.
-    bot_ids = {b["id"] for b in resources.get("bots") or []}
+    # (Rows pointing at bots outside the package were rejected by validate_package.)
     for raw in resources.get("api_connections") or []:
-        if raw.get("bot_id") not in (None, *bot_ids):
-            raise InvalidPackage(
-                f"api connection '{raw['id']}' references bot "
-                f"'{raw.get('bot_id')}' which is not in the package."
-            )
         if raw.get("bot_id") is None:
             _upsert(db, ApiConnection, raw, tenant_id=tid, user=user,
                     report=report, label="api_connection")
@@ -881,11 +925,6 @@ def import_tenant(db: Session, package: dict, user: User) -> tuple[dict, dict]:
             _upsert(db, ApiConnection, raw, tenant_id=tid, user=user,
                     report=report, label="api_connection")
     for raw in resources.get("knowledge_sources") or []:
-        if raw.get("bot_id") not in (None, *bot_ids):
-            raise InvalidPackage(
-                f"knowledge source '{raw['id']}' references bot "
-                f"'{raw.get('bot_id')}' which is not in the package."
-            )
         _upsert(db, KnowledgeSource, raw, tenant_id=tid, user=user,
                 report=report, label="knowledge_source")
     for raw in resources.get("workflows") or []:
