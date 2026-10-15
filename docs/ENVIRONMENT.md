@@ -50,10 +50,10 @@ requests in development and Vite proxies them to `API_PORT`.
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `720` | Access-token lifetime. |
 | `ALLOW_HARD_DELETE` | `false` | Gate checked by `?hard=true`; current delete handlers still soft-delete. |
 | `AUTO_RUN_MIGRATIONS` | `false` | Run application migrations automatically at startup when enabled. |
-| `ENABLE_DATABASE_SEED` | `true` | Run idempotent seed logic. When true, Platform API requires `SUPERADMIN_PASSWORD`. |
+| `ENABLE_DATABASE_SEED` | `true` | Run the idempotent base seed at Platform API startup — ignored when `APP_ENV=production`, where the database is initialised once with `backend.cli init-production`. When it applies, Platform API requires `SUPERADMIN_PASSWORD`. |
 | `SUPERADMIN_EMAIL` | code-owned bootstrap default | Initial super-admin email; set per deployment. |
 | `SUPERADMIN_NAME` | `Platform Admin` | Initial super-admin display name. |
-| `SUPERADMIN_PASSWORD` | empty | Required by Platform API while database seed is enabled. Never reuse or document the deployed value. |
+| `SUPERADMIN_PASSWORD` | empty | Required by Platform API while startup seeding applies (non-production). In production it is only used by `init-production` while no super admin exists and may be supplied on stdin instead. Never reuse or document the deployed value. |
 
 ## Databases and cache
 

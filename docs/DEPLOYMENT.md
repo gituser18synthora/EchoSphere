@@ -79,7 +79,31 @@ The CLI wraps Alembic; the raw equivalents are
 With `AUTO_RUN_MIGRATIONS=true` the API applies the **MySQL** migrations at
 startup (default `false`; the PostgreSQL knowledge plane still needs
 `pg-migrate`). While `ENABLE_DATABASE_SEED=true` (the default) the API also
-runs the idempotent base seed at startup.
+runs the idempotent base seed at startup — **outside production only**.
+
+#### Production initialisation (`APP_ENV=production`)
+
+Production never seeds at startup and never loads the demo dataset
+(`seed --demo` is refused). The base seed switches to its production profile:
+genuine master data only — no sample plans, no engine-less "platform" voices,
+no approved-model registry figures, no integration catalog, no platform
+templates and no `mock` provider rows. Real plans and voices are added by the
+Super Admin through the master-data pages.
+
+Initialise an empty production database once, explicitly:
+
+```bash
+APP_ENV=production env/bin/python -m backend.cli init-production
+```
+
+It runs `migrate`, `pg-migrate`, the production base seed, creates the single
+initial super admin (`SUPERADMIN_EMAIL`) and prints a row summary plus any
+development/demo rows found (exit code 1 if there are any). The initial
+password is read from `SUPERADMIN_PASSWORD` when set, otherwise from the
+prompt or `--password-stdin`; it is only needed while no super admin exists,
+so it does not have to stay in the environment. Re-running is a no-op.
+`verify-production` repeats the read-only check at any time. Later catalog
+updates are applied with a manual `seed` in a deploy window.
 
 ### 1.6 Run the services
 
