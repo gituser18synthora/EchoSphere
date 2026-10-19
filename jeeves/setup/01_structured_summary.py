@@ -33,6 +33,14 @@ What this stage does (dry-run by default, idempotent):
      baje", "साढ़े चार बजे", "half past four" are captured whole instead of
      collapsing to the period word; a bare hour is clarified ("सुबह या शाम?")
      and the answer is composed with the hour it clarifies.
+     The connector between a period word and the hour accepts को/के
+     (ko/ke): "शाम के 5 बजे".
+  5. Confirmation wording (fourth workflow upgrade): the two readback nodes
+     say the booking the way a person would ("हमारे engineer कल शाम के 5 बजे
+     आपके registered address … पर … के लिए आएँगे। क्या ये आपके लिए ठीक रहेगा?"),
+     state that the engineer confirms the exact time when only a day was
+     given, and their yes/no edges accept the natural answers to that
+     question (ठीक रहेगा, चलेगा, सही है …). Outcome logic is untouched.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -91,7 +99,7 @@ SUMMARY_FIELDS = [
     },
     {
         "name": "appointment_booked",
-        "label": "Appointment confirmed",
+        "label": "Pickup confirmed",
         "type": "yes_no",
         "source": "visit_status",
         "values": {"booked": "Yes", "*": "No"},
@@ -104,7 +112,7 @@ SUMMARY_FIELDS = [
     },
     {
         "name": "appointment_date",
-        "label": "Appointment date",
+        "label": "Pickup date",
         "type": "text",
         "source": "visit_day",
         "allowLlm": False,
@@ -117,7 +125,7 @@ SUMMARY_FIELDS = [
     },
     {
         "name": "appointment_time",
-        "label": "Appointment time",
+        "label": "Pickup time",
         "type": "text",
         "source": "visit_time",
         "allowLlm": False,
@@ -446,7 +454,7 @@ def build_time_regex() -> str:
     ampm = r"(?:\s*(?<![a-z])[ap]\.?\s?m\.?(?![a-z]))"
     suffix = rf"(?:\s*(?:बजे|बजकर|baje|bje|o'?\s?clock|hrs)){ampm}?|{ampm}"
     trail = rf"(?:\s+(?:in\s+the\s+)?{period}{ko})?"
-    lead = rf"{period}\s+(?:ko\s+|को\s+)?"
+    lead = rf"{period}\s+(?:ko\s+|को\s+|ke\s+|के\s+)?"
     alternatives = [
         rf"{lead}(?:{frac}\s+)?{hour}{min_en}(?:{suffix})?{trail}",     # सुबह नौ बजे / subah 10
         rf"{frac}\s+{hour}{min_en}(?:{suffix})?{trail}",                # साढ़े चार बजे / half past four
@@ -456,7 +464,7 @@ def build_time_regex() -> str:
         rf"(?<=\bat ){hour}{min_en}(?:{suffix})?{trail}",                 # (at) four
         rf"{_guarded(_vd.HOUR_WORDS_EN)}\s+(?:thirty|fifteen|forty[\s-]?five)\b",  # four thirty
         r"(?<![\d:.])(?:1[3-9]|2[0-3])[:.][0-5]\d(?![\d])",            # 16:30
-        rf"{period}(?!\s+(?:ko\s+|को\s+)?(?:{frac}|{hour}|{special}))|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])",  # bare period / PM
+        rf"{period}(?!\s+(?:ko\s+|को\s+|ke\s+|के\s+)?(?:{frac}|{hour}|{special}))|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])",  # bare period / PM
     ]
     return "(?i)(" + "|".join(alternatives) + ")"
 
@@ -508,21 +516,150 @@ def has_time_capture(nodes: list[dict]) -> bool:
     )
 
 
+# ── confirmation wording (stage 4) ───────────────────────────────────────────
+#
+# What the caller heard on live call cv_37ce8d991411: "… और हमारे engineer
+# आपके यहाँ 17 अक्टूबर शाम आएँगे। क्या हम आगे बढ़ें?" — stilted, and silent
+# about the fact that the engineer still confirms the exact time. The
+# templates below keep every placeholder the renderer fills ({locality},
+# {new_address}, the day/time slots) and the group rules (a group applies
+# only when its ``requires`` slots are filled and its ``absent`` slots are
+# empty), so a day-only booking never invents a time.
+
+CONFIRM_NODES = {"n_final_confirm": ("visit_day", "visit_time"),
+                 "n_final_confirm_2": ("visit_day_2", "visit_time_2")}
+CONFIRM_PROMPT = "Let me confirm the details. Does that work for you?"
+YES_TOKENS_EXTRA = ["ठीक रहेगा", "हाँ ठीक रहेगा", "ठीक है जी", "चलेगा", "हाँ चलेगा", "सही है", "हाँ सही है",
+                    "theek rahega", "thik rahega", "haan theek rahega", "chalega", "haan chalega",
+                    "sahi hai", "haan sahi hai", "that works", "works for me", "that's fine", "fine"]
+NO_TOKENS_EXTRA = ["ठीक नहीं रहेगा", "नहीं चलेगा", "theek nahi rahega", "nahi chalega",
+                   "doesn't work", "does not work", "not fine"]
+
+
+def build_readback(day: str, time: str) -> dict:
+    hi_at = "आपके registered address {locality} पर"
+    hi_new = "आपके बताए हुए पते {new_address} पर"
+    en_at = "to your registered address in {locality}"
+    en_new = "to {new_address}"
+    hi_time_note = "visit का exact समय engineer आपको call करके बताएँगे।"
+    en_time_note = "The engineer will call you to confirm the exact time."
+
+    def hi(where, with_time):
+        when = f"{{{day}}} {{{time}}}" if with_time else f"{{{day}}}"
+        line = f"हमारे engineer {when} {where} Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+        return line if with_time else f"{line} {hi_time_note}"
+
+    def en(where, with_time):
+        when = f"{{{day}}} at {{{time}}}" if with_time else f"{{{day}}}"
+        line = f"Our engineer will come {where} {when} for the Airtel Broadband device uninstallation and pickup."
+        return line if with_time else f"{line} {en_time_note}"
+
+    def groups(render):
+        return [
+            {"absent": [], "requires": ["new_address", day, time], "template": render(True, True)},
+            {"absent": [time], "requires": ["new_address", day], "template": render(True, False)},
+            {"absent": ["new_address"], "requires": [day, time], "template": render(False, True)},
+            {"absent": ["new_address", time], "requires": [day], "template": render(False, False)},
+        ]
+    return {
+        "en": {"intro": "Let me confirm the details.",
+               "groups": groups(lambda new, t: en(en_new if new else en_at, t)),
+               "question": "Does that work for you?"},
+        "hi": {"intro": "ठीक है, एक बार confirm कर लेते हैं।",
+               "groups": groups(lambda new, t: hi(hi_new if new else hi_at, t)),
+               "question": "क्या ये आपके लिए ठीक रहेगा?"},
+    }
+
+
+def _extend_label(label: str, extra: list[str]) -> str:
+    tokens = [t.strip() for t in str(label or "").split("/") if t.strip()]
+    for t in extra:
+        if t not in tokens:
+            tokens.append(t)
+    return "/".join(tokens)
+
+
+def refine_confirmation_wording(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 4: natural confirmation readback on both confirm nodes and the
+    natural answers to it on their yes/no edges. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_time_capture(nodes):
+        raise ValueError("stage 3 (time capture) must be applied first")
+    for node_id, (day, time) in CONFIRM_NODES.items():
+        node = by_id.get(node_id)
+        if node is None:
+            raise ValueError(f"baseline node {node_id!r} missing — not the expected workflow")
+        node.setdefault("config", {})["readback"] = build_readback(day, time)
+        node["config"]["prompt"] = CONFIRM_PROMPT
+    for e in edges:
+        if e.get("from") not in CONFIRM_NODES:
+            continue
+        if e.get("to") == "n_mark_booked":
+            e["label"] = _extend_label(e.get("label"), YES_TOKENS_EXTRA)
+        elif e.get("to") in (RESET_MARKER, "n_mark_date_pending"):
+            e["label"] = _extend_label(e.get("label"), NO_TOKENS_EXTRA)
+    return nodes, edges
+
+
+def has_confirmation_wording(nodes: list[dict]) -> bool:
+    return all(
+        (n.get("config") or {}).get("readback") == build_readback(*CONFIRM_NODES[n["id"]])
+        for n in nodes if n.get("id") in CONFIRM_NODES
+    )
+
+
+def normalise_to_stage1(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Undo everything stages 2-4 may have written (validation, retry prompt
+    text, capture regexes, pending slots, readback/prompt, edge tokens) by
+    restoring those keys from the stage-1 output. A saved workflow from any
+    earlier stage then equals the stage-1 output; anything else differs."""
+    base = load_baseline()
+    s1_nodes, s1_edges = upgrade_workflow(base["nodes"], base["edges"])
+    ref_nodes = {n["id"]: n for n in s1_nodes}
+    ref_labels = {(e["from"], e["to"]): e.get("label") for e in s1_edges}
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    for n in nodes:
+        ref = ref_nodes.get(n.get("id"))
+        if ref is None:
+            continue
+        cfg = n.setdefault("config", {})
+        rcfg = ref.get("config") or {}
+        cfg.pop("validation", None)
+        for key in ("unmatchedReply", "unmatchedReplyByLanguage", "entity", "alsoCapture",
+                    "readback", "prompt"):
+            if key in rcfg:
+                cfg[key] = copy.deepcopy(rcfg[key])
+        if n.get("id") == RESET_MARKER and "setSlots" in rcfg:
+            cfg["setSlots"] = copy.deepcopy(rcfg["setSlots"])
+    for e in edges:
+        if e.get("from") in CONFIRM_NODES and (e.get("from"), e.get("to")) in ref_labels:
+            e["label"] = ref_labels[(e["from"], e["to"])]
+    return nodes, edges
+
+
 def load_baseline() -> dict:
     with open(BASELINE_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
-def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = 1) -> dict:
+TARGET_STAGE = 4
+
+
+def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TARGET_STAGE) -> dict:
     """The upgraded definition in the engine's shape (tests + --dump):
     stage 1 = summary markers (v13), stage 2 = + day/time validation (v14/v15),
-    stage 3 = + spoken-number time capture (v16)."""
+    stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation wording."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
         nodes, edges = add_datetime_validation(nodes, edges)
     if stage >= 3:
         nodes, edges = improve_time_capture(nodes, edges)
+    if stage >= 4:
+        nodes, edges = refine_confirmation_wording(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -549,10 +686,16 @@ def describe(old_nodes, old_edges, new_nodes, new_edges) -> list[str]:
                 lines.append(f"  ~ {n['id']}: text changed in {other}")
     old_e = {(e["from"], e["to"], e.get("label")) for e in old_edges}
     new_e = {(e["from"], e["to"], e.get("label")) for e in new_edges}
+    old_pairs = {(e[0], e[1]) for e in old_e}
+    new_pairs = {(e[0], e[1]) for e in new_e}
     for e in sorted(old_e - new_e, key=str):
-        lines.append(f"  - edge {e[0]} → {e[1]}" + (f" [{str(e[2])[:30]}…]" if e[2] else ""))
+        if (e[0], e[1]) in new_pairs:
+            lines.append(f"  ~ edge {e[0]} → {e[1]}: label tokens extended")
+        else:
+            lines.append(f"  - edge {e[0]} → {e[1]}" + (f" [{str(e[2])[:30]}…]" if e[2] else ""))
     for e in sorted(new_e - old_e, key=str):
-        lines.append(f"  + edge {e[0]} → {e[1]}" + (f" [{str(e[2])[:30]}…]" if e[2] else ""))
+        if (e[0], e[1]) not in old_pairs:
+            lines.append(f"  + edge {e[0]} → {e[1]}" + (f" [{str(e[2])[:30]}…]" if e[2] else ""))
     return lines
 
 
@@ -604,19 +747,16 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"unexpected workflow id {wf.get('id')!r}")
     baseline = load_baseline()
     stage1 = upgraded_definition(stage=1)
-    stage2 = upgraded_definition(stage=2)
-    stage3 = upgraded_definition(stage=3)
+    target = upgraded_definition(stage=TARGET_STAGE)
     at_baseline = nodes == baseline["nodes"] and edges == baseline["edges"]
-    at_stage1 = nodes == stage1["nodes"] and edges == stage1["edges"]
-    at_stage2 = nodes == stage2["nodes"] and edges == stage2["edges"]
-    at_stage3 = nodes == stage3["nodes"] and edges == stage3["edges"]
-    # An earlier stage-2 save (older validation replies / example text) is
-    # stage-1 content once its stage-2 additions are stripped.
-    at_old_stage2 = (not (at_stage2 or at_stage3) and has_validation(nodes)
-                     and strip_stage2(nodes) == stage1["nodes"] and edges == stage1["edges"])
-    if at_stage3:
-        print("     workflow already upgraded (markers + validation + time capture) — nothing to change")
-    elif not (at_baseline or at_stage1 or at_stage2 or at_old_stage2):
+    at_target = nodes == target["nodes"] and edges == target["edges"]
+    # Any earlier stage (or an older wording of one) normalises back to the
+    # stage-1 output; a workflow edited elsewhere does not, and is refused.
+    norm_nodes, norm_edges = normalise_to_stage1(nodes, edges)
+    at_known_stage = norm_nodes == stage1["nodes"] and norm_edges == stage1["edges"]
+    if at_target:
+        print(f"     workflow already at stage {TARGET_STAGE} — nothing to change")
+    elif not (at_baseline or at_known_stage):
         sys.exit("workflow content matches neither the committed v12 baseline nor a known "
                  "upgrade stage — refusing to upgrade blindly")
     else:
@@ -625,10 +765,9 @@ def main(argv: list[str] | None = None) -> None:
             if wf.get("version") not in expected:
                 sys.exit(f"workflow is v{wf.get('version')}, baseline is v{BASELINE_VERSION}; "
                          "re-export the baseline (or pass --allow-version) before upgrading")
-        new_nodes, new_edges = stage3["nodes"], stage3["edges"]
-        print("     applying:", "stages 1-3 (markers + validation + time capture)" if at_baseline
-              else "stages 2-3 (validation + time capture) on top of the saved markers"
-              if at_stage1 else "stage 3 (spoken-number time capture, validation replies)")
+        new_nodes, new_edges = target["nodes"], target["edges"]
+        print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording)"
+              if at_baseline else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)
         if args.apply:
