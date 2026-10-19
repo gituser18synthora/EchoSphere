@@ -1409,7 +1409,15 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         _apply_also_capture(node, offered, slots, audit,
                                             current)
                         entry_text = hub_text = ""
-                        current = _next_of(current)
+                        if _ask.reject_invalid_answer(node, current, slots, audit, lang,
+                                                      replies, node_retries):
+                            # The consumed utterance carried an impossible or
+                            # past day/time (node config ``validation``): the
+                            # rejection reply is spoken and the ask stays open
+                            # for a corrected answer.
+                            awaiting, current = current, None
+                        else:
+                            current = _next_of(current)
                     else:
                         from shared.orchestration.spoken_numbers import (
                             digits_dominant,

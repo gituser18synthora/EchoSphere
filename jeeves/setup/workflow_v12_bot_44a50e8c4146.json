@@ -1,0 +1,1018 @@
+{
+ "id": "wf_9685ed07e312",
+ "bot_id": "bot_44a50e8c4146",
+ "name": "Airtel broadband uninstallation journey",
+ "version": 12,
+ "status": "approved",
+ "exported_from": "local dev DB 2026-10-19 (identical to live by MD5)",
+ "nodes": [
+  {
+   "x": 40,
+   "y": 40,
+   "id": "n_start",
+   "kind": "start",
+   "label": "Call starts",
+   "config": {}
+  },
+  {
+   "x": 300,
+   "y": 40,
+   "id": "n_identity_gate",
+   "kind": "ask",
+   "label": "Greeting answer — wrong person? (silent)",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "synonymPatterns": {
+      "no": [
+       "^\\W*(?:(?:ji|jee)\\s+|जी\\s+)?(?:(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$))(?:[\\s,.!]+(?:ji\\b|jee\\b|sir\\b|madam\\b|mam\\b|जी|(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$)))*\\W*$",
+       "^\\W*(?:(?:no+|nope|nah|nahi+n?|nai|nhi|na)\\b|(?:नहीं|नही|ना|नो)(?=[\\s,.!?।]|$))[\\s,.!]*(?:ji\\b|जी)?[\\s,.!]*(?:(?:main|mai|mein|i am|i'm|im|this is|it's|its|ye|yeh|wo|woh|vo)\\b|(?:मैं|मै|ये|यह|वो|वह)(?=[\\s,.!?।]|$))",
+       "wrong\\s*(?:number|person|no\\b)|galat\\s*(?:number|insaan|insan|aadmi|bande|vyakti)|(?:गलत|ग़लत)\\s*(?:नंबर|इंसान|आदमी|व्यक्ति)|(?:रॉन्ग|रोंग)\\s*(?:नंबर|पर्सन)",
+       "\\bnot\\s+me\\b|someone\\s+else|not\\s+(?:that|the\\s+same|the\\s+right)\\s+person|\\bi\\s*(?:am|'m)\\s+not\\b|\\bkoi\\s+aur\\b|कोई\\s+और",
+       "\\b(?:main|mai|mein)\\s+(?:\\S+\\s+){0,2}(?:nahi|nahin|nhi)\\s+(?:hoon|hun|hu|hai)\\b|(?:मैं|मै)\\s+(?:\\S+\\s+){0,2}(?:नहीं|नही)\\s+(?:हूँ|हूं|हु|है)",
+       "(?:ye|yeh|this|यह|ये)\\s+(?:mera|my|मेरा)\\s+(?:number|नंबर)\\s+(?:nahi|nahin|is\\s+not|isn't|नहीं)",
+       "\\b(?:his|her)\\s+(?:wife|husband|brother|sister|son|daughter|father|mother|friend)\\b|\\b(?:he|she)\\s+is\\s+not\\b|\\b(?:he|she)'s\\s+not\\b|\\bnot\\s+(?:available|at\\s+home)\\b|\\b(?:unka|unki|unke)\\s+(?:\\w+\\s+)?(?:bhai|behen|bahan|wife|biwi|beta|beti|papa|mummy|dost|pati)\\b|\\b(?:wo|woh|vo)\\s+(?:\\w+\\s+){0,2}(?:nahi|nahin)\\s+(?:hain|hai|he)\\b|(?:उनका|उनकी|उनके)\\s+(?:\\S+\\s+)?(?:भाई|बहन|पत्नी|wife|बेटा|बेटी|पिता|पापा|माँ|मम्मी|दोस्त|पति)|(?:वो|वह)\\s+(?:\\S+\\s+){0,2}(?:नहीं|नही)\\s+(?:हैं|है)"
+      ],
+      "yes": [
+       "\\S"
+      ]
+     }
+    },
+    "question": "May I speak with [customer_name]?",
+    "variable": "identity_answer",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "May I speak with [customer_name]?",
+     "hi": "क्या मेरी बात [customer_name] जी से हो रही है?"
+    },
+    "responseDirective": "Silent step: reads the caller's answer to the greeting (the answer that started the workflow). No / wrong number / not me is 'no', anything else is 'yes'. Spoken only if the workflow ever starts without a caller answer. Spoken as fixed text: Hindi or Hinglish callers hear textByLanguage.hi, English callers hear textByLanguage.en."
+   }
+  },
+  {
+   "x": 560,
+   "y": 40,
+   "id": "n_is_identity_denied",
+   "kind": "condition",
+   "label": "Wrong person?",
+   "config": {
+    "value": "no",
+    "operator": "equals",
+    "variable": "identity_answer"
+   }
+  },
+  {
+   "x": 820,
+   "y": 40,
+   "id": "n_end_wrong_person",
+   "kind": "end",
+   "label": "End call (wrong person)",
+   "config": {
+    "text": "I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.",
+     "hi": "परेशानी के लिए माफ़ी। ये call किसी और के लिए थी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: I'm sorry for the inconvenience. This call was meant for a different person. Thank you for your time. Have a great day.\nHINDI: परेशानी के लिए माफ़ी। ये call किसी और के लिए थी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 300,
+   "y": 200,
+   "id": "n_good_time",
+   "kind": "intent",
+   "label": "Call purpose — is this a good time?",
+   "config": {
+    "prompt": "Thank you. I'm calling regarding your Airtel Broadband connection at [locality]. Your broadband connection has already been disconnected, and an engineer visit needs to be scheduled for device uninstallation and pickup. I can help you schedule the visit now. Is this a good time?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you. I'm calling regarding your Airtel Broadband connection at [locality]. Your broadband connection has already been disconnected, and an engineer visit needs to be scheduled for device uninstallation and pickup. I can help you schedule the visit now. Is this a good time?",
+     "hi": "धन्यवाद। हम आपके {locality} वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है। अब device uninstall करने और pickup करने के लिए engineer visit schedule करनी है। क्या मैं आपके device के uninstallation और pickup के लिए engineer visit अभी schedule कर दूँ?"
+    },
+    "responseDirective": "ENGLISH: Thank you. I'm calling regarding your Airtel Broadband connection at [locality]. Your broadband connection has already been disconnected, and an engineer visit needs to be scheduled for device uninstallation and pickup. I can help you schedule the visit now. Is this a good time?\nHINDI: धन्यवाद। हम आपके [locality] वाले Airtel Broadband connection के बारे में call कर रहे हैं। आपका broadband connection पहले ही disconnect हो चुका है, और device uninstallation और pickup के लिए engineer visit schedule करनी है। हम अभी visit schedule कर सकते हैं। क्या अभी बात करने का सही समय है?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 560,
+   "y": 200,
+   "id": "n_ask_callback",
+   "kind": "ask",
+   "label": "Busy — preferred callback date & time",
+   "config": {
+    "question": "No problem. When would you prefer us to call you back?",
+    "variable": "callback_preference",
+    "entityType": "text",
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)(\\b(?:day after tomorrow|today|tomorrow|aaj|kal|parso|parson|monday|tuesday|wednesday|thursday|friday|saturday|sunday|somvar|mangalvar|budhvar|guruvar|shukravar|shanivar|ravivar)\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+[a-z]+\\b|परसों|आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार)"
+      },
+      "variable": "callback_date"
+     },
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)(\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|baje|o'clock)\\b|\\b(?:morning|afternoon|evening|night|subah|dopahar|shaam|sham|raat)\\b|\\d{1,2}\\s*बजे|सुबह|दोपहर|शाम|रात)"
+      },
+      "variable": "callback_time"
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. When would you prefer us to call you back?",
+     "hi": "कोई बात नहीं। आप बताइए, हम आपको किस दिन और किस समय call back करें?"
+    },
+    "responseDirective": "ENGLISH: No problem. When would you prefer us to call you back?\nHINDI: कोई बात नहीं। आप बताइए, हम आपको किस दिन और किस समय call back करें?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Please tell me the day and time we should call you back.",
+     "hi": "ज़रूर। आप बताइए, हम आपको किस दिन और किस समय call करें?"
+    }
+   }
+  },
+  {
+   "x": 820,
+   "y": 200,
+   "id": "n_end_callback",
+   "kind": "end",
+   "label": "End call (callback noted)",
+   "config": {
+    "text": "Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.",
+     "hi": "ठीक है, हम आपको आपके बताए समय पर call back करेंगे। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: Sure, we will call you back at your preferred time. Thank you for your time. Have a great day.\nHINDI: ठीक है, हम आपको आपके बताए समय पर call back करेंगे। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 300,
+   "y": 360,
+   "id": "n_read_status",
+   "kind": "ask",
+   "label": "Read connection status from call data (silent)",
+   "config": {
+    "variable": "connection_status",
+    "prefillOnly": true,
+    "prefillFromContext": "connection_status"
+   }
+  },
+  {
+   "x": 430,
+   "y": 360,
+   "id": "n_read_locality",
+   "kind": "ask",
+   "label": "Read locality from call data (silent)",
+   "config": {
+    "variable": "locality",
+    "prefillOnly": true,
+    "prefillFromContext": "locality"
+   }
+  },
+  {
+   "x": 560,
+   "y": 360,
+   "id": "n_is_disconnected",
+   "kind": "condition",
+   "label": "Status = DISCONNECTED?",
+   "config": {
+    "value": "DISCONNECTED",
+    "operator": "equals",
+    "variable": "connection_status"
+   }
+  },
+  {
+   "x": 820,
+   "y": 360,
+   "id": "n_confirm_disconnected",
+   "kind": "message",
+   "label": "Connection disconnected — pending uninstallation",
+   "config": {
+    "text": "Thank you. I can confirm that your broadband connection is already disconnected. The pending activity is the physical uninstallation and pickup of the broadband equipment from your premises.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you. I can confirm that your broadband connection is already disconnected. The pending activity is the physical uninstallation and pickup of the broadband equipment from your premises.",
+     "hi": "धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है।"
+    },
+    "responseDirective": "ENGLISH: Thank you. I can confirm that your broadband connection is already disconnected. The pending activity is the physical uninstallation and pickup of the broadband equipment from your premises.\nHINDI: धन्यवाद। हम confirm कर सकते हैं कि आपका broadband connection पहले ही disconnect हो चुका है। अब सिर्फ़ आपके घर से broadband equipment का uninstallation और pickup बाकी है।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 820,
+   "y": 280,
+   "id": "n_end_not_disconnected",
+   "kind": "end",
+   "label": "End call (not disconnected)",
+   "config": {
+    "text": "I can see that your broadband connection is not yet marked as disconnected, so the uninstallation visit cannot be scheduled right now. Our team will get in touch with you. Thank you for your time. Have a great day.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "I can see that your broadband connection is not yet marked as disconnected, so the uninstallation visit cannot be scheduled right now. Our team will get in touch with you. Thank you for your time. Have a great day.",
+     "hi": "हम देख पा रहे हैं कि आपका broadband connection अभी disconnect के रूप में marked नहीं है, इसलिए अभी uninstallation visit schedule नहीं हो सकती। हमारी team आपसे बात करेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: I can see that your broadband connection is not yet marked as disconnected, so the uninstallation visit cannot be scheduled right now. Our team will get in touch with you. Thank you for your time. Have a great day.\nHINDI: हम देख पा रहे हैं कि आपका broadband connection अभी disconnect के रूप में marked नहीं है, इसलिए अभी uninstallation visit schedule नहीं हो सकती। हमारी team आपसे बात करेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1080,
+   "y": 360,
+   "id": "n_confirm_address",
+   "kind": "intent",
+   "label": "Registered address correct?",
+   "config": {
+    "prompt": "The uninstallation is required at your registered address in [locality]. Is this the correct location?",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "The uninstallation is required at your registered address in [locality]. Is this the correct location?",
+     "hi": "Uninstallation आपके registered address [locality] पर होना है। क्या ये location सही है?"
+    },
+    "responseDirective": "ENGLISH: The uninstallation is required at your registered address in [locality]. Is this the correct location?\nHINDI: Uninstallation आपके registered address [locality] पर होना है। क्या ये location सही है?\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1340,
+   "y": 360,
+   "id": "n_ask_visit_date",
+   "kind": "ask",
+   "label": "Preferred visit date",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?i)(?<!not )(?<!not on )(\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b|\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b|\\bday\\s+after\\s+tomorrow\\b|\\btoday\\b|\\btomorrow\\b|\\b(?:this|next|coming)\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\\b|\\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}\\s*(?:tarikh|taarikh|tareekh|tarik)\\b|\\b(?:agle|agla|aane\\s+wale)\\s+(?:somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hafte)\\b|\\b(?:aaj|kal|parso|parson|parsoon|somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar)\\b|\\d{1,2}\\s*(?:जनवरी|फरवरी|फ़रवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|अक्तूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)|\\d{1,2}\\s*तारीख|(?:अगले|आने\\s+वाले)\\s+(?:सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार|हफ्ते|हफ़्ते)|परसों|आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार)(?!\\s*,?\\s*(?:nahi|nahin|nhi|नहीं|नही)(?=[\\s,.!?।]|$))"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)((?:(?:subah|sham|shaam|dopahar|dopehar|raat|सुबह|शाम|दोपहर|रात)\\s+(?:ko\\s+|को\\s+)?)?\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje|बजे|o'?\\s?clock)(?:\\s+(?:subah|sham|shaam|dopahar|dopehar|raat|morning|afternoon|evening|night|सुबह|शाम|दोपहर|रात)(?:\\s+(?:ko|को|mein|में))?)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:a\\.?\\s?m|p\\.?\\s?m)\\b|\\b\\d{1,2}(?:[:.]\\d{2})?\\s+in\\s+the\\s+(?:morning|afternoon|evening|night)\\b|\\b(?:morning|afternoon|evening|subah|dopahar|shaam|sham)\\b|सुबह|दोपहर|शाम)"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+     "hi": "ठीक है। और visit आप किस दिन करवाना चाहेंगे? जैसे कल, या 10 अक्टूबर।"
+    },
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1600,
+   "y": 360,
+   "id": "n_final_confirm",
+   "kind": "intent",
+   "label": "Confirm details — proceed?",
+   "config": {
+    "prompt": "Let me quickly confirm the details. Shall I proceed?",
+    "readback": {
+     "en": {
+      "intro": "Let me quickly confirm the details.",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day",
+         "visit_time"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at {new_address}, and the engineer visit will be scheduled for {visit_day} at {visit_time} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "visit_time"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at {new_address}, and the engineer visit will be scheduled for {visit_day} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day",
+         "visit_time"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at your registered address in {locality}, and the engineer visit will be scheduled for {visit_day} at {visit_time} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time"
+        ],
+        "requires": [
+         "visit_day"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at your registered address in {locality}, and the engineer visit will be scheduled for {visit_day} for uninstallation and pickup."
+       }
+      ],
+      "question": "Shall I proceed?"
+     },
+     "hi": {
+      "intro": "हम जल्दी से एक बार details confirm कर लेते हैं।",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day",
+         "visit_time"
+        ],
+        "template": "आपके बताए हुए पते {new_address} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day} {visit_time} आएँगे।"
+       },
+       {
+        "absent": [
+         "visit_time"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day"
+        ],
+        "template": "आपके बताए हुए पते {new_address} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day} आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day",
+         "visit_time"
+        ],
+        "template": "आपके registered address {locality} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day} {visit_time} आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time"
+        ],
+        "requires": [
+         "visit_day"
+        ],
+        "template": "आपके registered address {locality} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day} आएँगे।"
+       }
+      ],
+      "question": "क्या हम आगे बढ़ें?"
+     }
+    },
+    "responseMode": "llm_grounded",
+    "responseDirective": "Confirm the booking exactly as in the script: device uninstallation and pickup, the address, and the visit day — and the time only if the script has one. Say the day and time naturally in the customer's language ('kal' -> 'tomorrow', '4 baje sham' -> '4 PM' in English; 'tomorrow' -> 'कल', '4 PM' -> 'शाम 4 बजे' in Hindi). Never add a time, slot or detail that is not in the script, and never repeat the customer's filler words. End with 'Shall I proceed?' / 'क्या हम आगे बढ़ें?'. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1600,
+   "y": 520,
+   "id": "n_final_confirm_2",
+   "kind": "intent",
+   "label": "Confirm details — proceed? (2nd)",
+   "config": {
+    "prompt": "Let me quickly confirm the details. Shall I proceed?",
+    "readback": {
+     "en": {
+      "intro": "Let me quickly confirm the details.",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_2",
+         "visit_time_2"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at {new_address}, and the engineer visit will be scheduled for {visit_day_2} at {visit_time_2} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "visit_time_2"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_2"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at {new_address}, and the engineer visit will be scheduled for {visit_day_2} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_2",
+         "visit_time_2"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at your registered address in {locality}, and the engineer visit will be scheduled for {visit_day_2} at {visit_time_2} for uninstallation and pickup."
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_2"
+        ],
+        "requires": [
+         "visit_day_2"
+        ],
+        "template": "The request is for Airtel Broadband device uninstallation at your registered address in {locality}, and the engineer visit will be scheduled for {visit_day_2} for uninstallation and pickup."
+       }
+      ],
+      "question": "Shall I proceed?"
+     },
+     "hi": {
+      "intro": "हम जल्दी से एक बार details confirm कर लेते हैं।",
+      "groups": [
+       {
+        "absent": [],
+        "requires": [
+         "new_address",
+         "visit_day_2",
+         "visit_time_2"
+        ],
+        "template": "आपके बताए हुए पते {new_address} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day_2} {visit_time_2} आएँगे।"
+       },
+       {
+        "absent": [
+         "visit_time_2"
+        ],
+        "requires": [
+         "new_address",
+         "visit_day_2"
+        ],
+        "template": "आपके बताए हुए पते {new_address} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day_2} आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address"
+        ],
+        "requires": [
+         "visit_day_2",
+         "visit_time_2"
+        ],
+        "template": "आपके registered address {locality} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day_2} {visit_time_2} आएँगे।"
+       },
+       {
+        "absent": [
+         "new_address",
+         "visit_time_2"
+        ],
+        "requires": [
+         "visit_day_2"
+        ],
+        "template": "आपके registered address {locality} पर Airtel Broadband device का uninstallation और pickup होगा, और हमारे engineer आपके यहाँ {visit_day_2} आएँगे।"
+       }
+      ],
+      "question": "क्या हम आगे बढ़ें?"
+     }
+    },
+    "responseMode": "llm_grounded",
+    "responseDirective": "Confirm the booking exactly as in the script: device uninstallation and pickup, the address, and the visit day — and the time only if the script has one. Say the day and time naturally in the customer's language ('kal' -> 'tomorrow', '4 baje sham' -> '4 PM' in English; 'tomorrow' -> 'कल', '4 PM' -> 'शाम 4 बजे' in Hindi). Never add a time, slot or detail that is not in the script, and never repeat the customer's filler words. End with 'Shall I proceed?' / 'क्या हम आगे बढ़ें?'. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1340,
+   "y": 520,
+   "id": "n_ask_visit_date_2",
+   "kind": "ask",
+   "label": "Visit date — asked once more",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?i)(?<!not )(?<!not on )(\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b|\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b|\\bday\\s+after\\s+tomorrow\\b|\\btoday\\b|\\btomorrow\\b|\\b(?:this|next|coming)\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\\b|\\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}\\s*(?:tarikh|taarikh|tareekh|tarik)\\b|\\b(?:agle|agla|aane\\s+wale)\\s+(?:somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hafte)\\b|\\b(?:aaj|kal|parso|parson|parsoon|somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar)\\b|\\d{1,2}\\s*(?:जनवरी|फरवरी|फ़रवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|अक्तूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)|\\d{1,2}\\s*तारीख|(?:अगले|आने\\s+वाले)\\s+(?:सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार|हफ्ते|हफ़्ते)|परसों|आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार)(?!\\s*,?\\s*(?:nahi|nahin|nhi|नहीं|नही)(?=[\\s,.!?।]|$))"
+    },
+    "question": "No problem. Please tell me the date you would prefer for the visit.",
+    "variable": "visit_day_2",
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)((?:(?:subah|sham|shaam|dopahar|dopehar|raat|सुबह|शाम|दोपहर|रात)\\s+(?:ko\\s+|को\\s+)?)?\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje|बजे|o'?\\s?clock)(?:\\s+(?:subah|sham|shaam|dopahar|dopehar|raat|morning|afternoon|evening|night|सुबह|शाम|दोपहर|रात)(?:\\s+(?:ko|को|mein|में))?)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:a\\.?\\s?m|p\\.?\\s?m)\\b|\\b\\d{1,2}(?:[:.]\\d{2})?\\s+in\\s+the\\s+(?:morning|afternoon|evening|night)\\b|\\b(?:morning|afternoon|evening|subah|dopahar|shaam|sham)\\b|सुबह|दोपहर|शाम)"
+      },
+      "variable": "visit_time_2",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. Please tell me the date you would prefer for the visit.",
+     "hi": "कोई बात नहीं। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+     "hi": "ठीक है। और visit आप किस दिन करवाना चाहेंगे? जैसे कल, या 10 अक्टूबर।"
+    },
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1860,
+   "y": 360,
+   "id": "n_end_booked",
+   "kind": "end",
+   "label": "End call (visit booked)",
+   "config": {
+    "text": "Thank you for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.",
+    "setSlots": {
+     "visit_status": "booked"
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for your time and for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.",
+     "hi": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: Thank you for your time and for allowing us to allocate an engineer for device uninstallation and pickup. Have a great day.\nHINDI: Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1860,
+   "y": 520,
+   "id": "n_end_team_callback",
+   "kind": "end",
+   "label": "End call (date to be fixed by the team)",
+   "config": {
+    "text": "No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.",
+    "setSlots": {
+     "visit_status": "date_pending"
+    },
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.",
+     "hi": "कोई बात नहीं। हमारी team आपको call करके visit के लिए सही date तय कर लेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।"
+    },
+    "responseDirective": "ENGLISH: No problem. Our team will call you to fix a convenient date for the visit. Thank you for your time. Have a great day.\nHINDI: कोई बात नहीं। हमारी team आपको call करके visit के लिए सही date तय कर लेगी। आपके समय के लिए धन्यवाद, आपका दिन शुभ रहे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 430,
+   "y": 360,
+   "id": "n_today_capture",
+   "kind": "ask",
+   "label": "Visit today — read the day / time from that sentence (silent)",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?i)(?<!not )(?<!not on )(\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b|\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b|\\bday\\s+after\\s+tomorrow\\b|\\btoday\\b|\\btomorrow\\b|\\b(?:this|next|coming)\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\\b|\\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}\\s*(?:tarikh|taarikh|tareekh|tarik)\\b|\\b(?:agle|agla|aane\\s+wale)\\s+(?:somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hafte)\\b|\\b(?:ajj|aaj|kal|parso|parson|parsoon|somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar)\\b|\\d{1,2}\\s*(?:जनवरी|फरवरी|फ़रवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|अक्तूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)|\\d{1,2}\\s*तारीख|(?:अगले|आने\\s+वाले)\\s+(?:सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार|हफ्ते|हफ़्ते)|परसों|आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार)(?!\\s*,?\\s*(?:nahi|nahin|nhi|नहीं|नही)(?=[\\s,.!?।]|$))"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)((?:(?:subah|sham|shaam|dopahar|dopehar|raat|सुबह|शाम|दोपहर|रात)\\s+(?:ko\\s+|को\\s+)?)?\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje|बजे|o'?\\s?clock)(?:\\s+(?:subah|sham|shaam|dopahar|dopehar|raat|morning|afternoon|evening|night|सुबह|शाम|दोपहर|रात)(?:\\s+(?:ko|को|mein|में))?)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:a\\.?\\s?m|p\\.?\\s?m)\\b|\\b\\d{1,2}(?:[:.]\\d{2})?\\s+in\\s+the\\s+(?:morning|afternoon|evening|night)\\b|\\b(?:morning|afternoon|evening|subah|dopahar|shaam|sham)\\b|सुबह|दोपहर|शाम)"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+     "hi": "ठीक है। और visit आप किस दिन करवाना चाहेंगे? जैसे कल, या 10 अक्टूबर।"
+    },
+    "consumePrecedingUtterance": true,
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 560,
+   "y": 360,
+   "id": "n_today_ack",
+   "kind": "intent",
+   "label": "Visit today — technician will contact before visiting",
+   "config": {
+    "prompt": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+     "hi": "ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।"
+    },
+    "responseDirective": "ENGLISH: Okay sir, we will align our technician. He will contact you before visiting your place.\nHINDI: ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 820,
+   "y": 360,
+   "id": "n_today_read_status",
+   "kind": "ask",
+   "label": "Read connection status from call data (silent)",
+   "config": {
+    "variable": "connection_status",
+    "prefillOnly": true,
+    "prefillFromContext": "connection_status"
+   }
+  },
+  {
+   "x": 950,
+   "y": 360,
+   "id": "n_today_read_locality",
+   "kind": "ask",
+   "label": "Read locality from call data (silent)",
+   "config": {
+    "variable": "locality",
+    "prefillOnly": true,
+    "prefillFromContext": "locality"
+   }
+  },
+  {
+   "x": 1080,
+   "y": 360,
+   "id": "n_today_is_disconnected",
+   "kind": "condition",
+   "label": "Status = DISCONNECTED?",
+   "config": {
+    "value": "DISCONNECTED",
+    "operator": "equals",
+    "variable": "connection_status"
+   }
+  },
+  {
+   "x": 1210,
+   "y": 520,
+   "id": "n_today_day_known",
+   "kind": "condition",
+   "label": "Visit day already known?",
+   "config": {
+    "operator": "exists",
+    "variable": "visit_day"
+   }
+  },
+  {
+   "x": 1340,
+   "y": 520,
+   "id": "n_today_capture_2",
+   "kind": "ask",
+   "label": "Visit today — read the day / time from that sentence (silent)",
+   "config": {
+    "entity": {
+     "dataType": "text",
+     "regexPattern": "(?i)(?<!not )(?<!not on )(\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b|\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b|\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b|\\bday\\s+after\\s+tomorrow\\b|\\btoday\\b|\\btomorrow\\b|\\b(?:this|next|coming)\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\\b|\\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b\\d{1,2}\\s*(?:tarikh|taarikh|tareekh|tarik)\\b|\\b(?:agle|agla|aane\\s+wale)\\s+(?:somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hafte)\\b|\\b(?:ajj|aaj|kal|parso|parson|parsoon|somvar|mangalvar|budhvar|guruvar|brihaspativar|shukravar|shanivar|ravivar)\\b|\\d{1,2}\\s*(?:जनवरी|फरवरी|फ़रवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|अक्तूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)|\\d{1,2}\\s*तारीख|(?:अगले|आने\\s+वाले)\\s+(?:सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार|हफ्ते|हफ़्ते)|परसों|आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|बृहस्पतिवार|शुक्रवार|शनिवार|रविवार)(?!\\s*,?\\s*(?:nahi|nahin|nhi|नहीं|नही)(?=[\\s,.!?।]|$))"
+    },
+    "question": "Please suggest the preferred date for the router uninstallation and pickup.",
+    "variable": "visit_day",
+    "alsoCapture": [
+     {
+      "entity": {
+       "dataType": "text",
+       "regexPattern": "(?i)((?:(?:subah|sham|shaam|dopahar|dopehar|raat|सुबह|शाम|दोपहर|रात)\\s+(?:ko\\s+|को\\s+)?)?\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:baje|bje|बजे|o'?\\s?clock)(?:\\s+(?:subah|sham|shaam|dopahar|dopehar|raat|morning|afternoon|evening|night|सुबह|शाम|दोपहर|रात)(?:\\s+(?:ko|को|mein|में))?)?|\\b\\d{1,2}(?:[:.]\\d{2})?\\s*(?:a\\.?\\s?m|p\\.?\\s?m)\\b|\\b\\d{1,2}(?:[:.]\\d{2})?\\s+in\\s+the\\s+(?:morning|afternoon|evening|night)\\b|\\b(?:morning|afternoon|evening|subah|dopahar|shaam|sham)\\b|सुबह|दोपहर|शाम)"
+      },
+      "variable": "visit_time",
+      "overwrite": true
+     }
+    ],
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Please suggest the preferred date for the router uninstallation and pickup.",
+     "hi": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+    },
+    "unmatchedReply": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+    "responseDirective": "Ask for the preferred day of the uninstallation and pickup visit. LANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two.",
+    "rejectAnswerPatterns": [
+     "^\\W*(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं)(?:[\\s,.!]+(?:yes|yeah|yep|ok|okay|sure|fine|right|haan|han|ha|haanji|ji|theek\\s+hai|thik\\s+hai|accha|achha|hmm+|no|nahi|nahin|हाँ|हां|जी|ठीक\\s+है|अच्छा|नहीं))*\\W*$"
+    ],
+    "unmatchedReplyByLanguage": {
+     "en": "Sure. And on which day would you like the visit? For example, tomorrow or 10 October.",
+     "hi": "ठीक है। और visit आप किस दिन करवाना चाहेंगे? जैसे कल, या 10 अक्टूबर।"
+    },
+    "consumePrecedingUtterance": true,
+    "rejectedAnswerReplyByLanguage": {
+     "en": "Sure. Which day would you prefer for the visit?",
+     "hi": "ज़रूर। आप बताइए, visit आप किस दिन करवाना चाहेंगे?"
+    }
+   }
+  },
+  {
+   "x": 1470,
+   "y": 520,
+   "id": "n_today_ack_2",
+   "kind": "intent",
+   "label": "Visit today — technician will contact before visiting",
+   "config": {
+    "prompt": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Okay sir, we will align our technician. He will contact you before visiting your place.",
+     "hi": "ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।"
+    },
+    "responseDirective": "ENGLISH: Okay sir, we will align our technician. He will contact you before visiting your place.\nHINDI: ठीक है sir, हम अपने technician को align कर देते हैं। वो आपके यहाँ आने से पहले आपको contact करेंगे।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  },
+  {
+   "x": 1280,
+   "y": 440,
+   "id": "n_mark_address_mismatch",
+   "kind": "message",
+   "label": "Sub-disposition: Address Mismatch (silent)",
+   "config": {
+    "silent": true,
+    "setSlots": {
+     "sub_disposition": "Address Mismatch"
+    }
+   }
+  },
+  {
+   "x": 1280,
+   "y": 520,
+   "id": "n_end_address_mismatch",
+   "kind": "end",
+   "label": "End call (address mismatch — support team will contact)",
+   "config": {
+    "text": "Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance.",
+    "responseMode": "fixed",
+    "textByLanguage": {
+     "en": "Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance.",
+     "hi": "{customer_name} ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी।"
+    },
+    "responseDirective": "ENGLISH: Thank you for letting me know. I'm unable to change the registered service address through this scheduling call. Our support team will contact for further assistance.\nHINDI: {customer_name} ji बताने के लिए धन्यवाद। मैं इस scheduling call के दौरान आपके registered service address को बदल नहीं सकता। हमारी support team आपसे जल्द ही संपर्क करेगी और आगे की सहायता provide करेगी।\nLANGUAGE: the customer's language decides the line — Hindi or Hinglish customers hear the HINDI line (textByLanguage.hi, Devanagari), English customers the ENGLISH line (textByLanguage.en). Never mix the two."
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_n_start__n_identity_gate",
+   "to": "n_identity_gate",
+   "from": "n_start"
+  },
+  {
+   "id": "e_n_identity_gate__n_is_identity_denied",
+   "to": "n_is_identity_denied",
+   "from": "n_identity_gate"
+  },
+  {
+   "id": "e_n_is_identity_denied__n_end_wrong_person__true",
+   "to": "n_end_wrong_person",
+   "from": "n_is_identity_denied",
+   "label": "true"
+  },
+  {
+   "id": "e_n_is_identity_denied__n_good_time__false",
+   "to": "n_good_time",
+   "from": "n_is_identity_denied",
+   "label": "false"
+  },
+  {
+   "id": "e_n_good_time__n_read_status",
+   "to": "n_read_status",
+   "from": "n_good_time",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes it's a good time/yes this is a good time/it's fine/go on/tell me/haan boliye/haan bataiye/haan bolo/boliye/bataiye/haan time hai/abhi kar lo/abhi kar dijiye/schedule kar do/haan schedule kar do/हाँ बोलिए/हाँ बताइए/बोलिए/बताइए/हाँ time है/अभी कर दीजिए/schedule कर दीजिए"
+  },
+  {
+   "id": "e_n_good_time__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_good_time",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/busy/i am busy/i'm busy/not now/not a good time/later/call me later/call back later/please call later/i'm driving/i am driving/in a meeting/abhi nahi/abhi busy hoon/busy hoon/baad mein/baad mein call karo/baad mein call kijiye/abhi time nahi hai/meeting mein hoon/drive kar raha hoon/अभी नहीं/बिज़ी हूँ/बिजी हूँ/अभी busy हूँ/बाद में/बाद में call कीजिए/अभी time नहीं है/meeting में हूँ"
+  },
+  {
+   "id": "e_n_good_time__n_read_status__else",
+   "to": "n_read_status",
+   "from": "n_good_time",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_callback__n_end_callback",
+   "to": "n_end_callback",
+   "from": "n_ask_callback"
+  },
+  {
+   "id": "e_n_ask_callback__n_end_callback__fallback",
+   "to": "n_end_callback",
+   "from": "n_ask_callback",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_read_status__n_read_locality",
+   "to": "n_read_locality",
+   "from": "n_read_status"
+  },
+  {
+   "id": "e_n_read_locality__n_is_disconnected",
+   "to": "n_is_disconnected",
+   "from": "n_read_locality"
+  },
+  {
+   "id": "e_n_is_disconnected__n_confirm_disconnected__true",
+   "to": "n_confirm_disconnected",
+   "from": "n_is_disconnected",
+   "label": "true"
+  },
+  {
+   "id": "e_n_is_disconnected__n_end_not_disconnected__false",
+   "to": "n_end_not_disconnected",
+   "from": "n_is_disconnected",
+   "label": "false"
+  },
+  {
+   "id": "e_n_confirm_disconnected__n_confirm_address",
+   "to": "n_confirm_address",
+   "from": "n_confirm_disconnected"
+  },
+  {
+   "id": "e_n_confirm_address__n_ask_visit_date",
+   "to": "n_ask_visit_date",
+   "from": "n_confirm_address",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes that's correct/yes it is correct/haan sahi hai/sahi hai/हाँ सही है/सही है"
+  },
+  {
+   "id": "e_n_confirm_address__n_ask_visit_date__else",
+   "to": "n_ask_visit_date",
+   "from": "n_confirm_address",
+   "label": "else"
+  },
+  {
+   "id": "e_n_ask_visit_date__n_final_confirm",
+   "to": "n_final_confirm",
+   "from": "n_ask_visit_date"
+  },
+  {
+   "id": "e_n_ask_visit_date__n_end_team_callback__fallback",
+   "to": "n_end_team_callback",
+   "from": "n_ask_visit_date",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_final_confirm__n_end_booked",
+   "to": "n_end_booked",
+   "from": "n_final_confirm",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes go ahead/haan kar do/haan book kar do/हाँ कर दीजिए"
+  },
+  {
+   "id": "e_n_final_confirm__n_ask_visit_date_2",
+   "to": "n_ask_visit_date_2",
+   "from": "n_final_confirm",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/don't proceed/do not proceed/wait/change the date/different date/date change/date badal do/date change karni hai/dusri date/abhi mat karo/रुकिए/date बदल दीजिए/दूसरी date"
+  },
+  {
+   "id": "e_n_ask_visit_date_2__n_final_confirm_2",
+   "to": "n_final_confirm_2",
+   "from": "n_ask_visit_date_2"
+  },
+  {
+   "id": "e_n_ask_visit_date_2__n_end_team_callback__fallback",
+   "to": "n_end_team_callback",
+   "from": "n_ask_visit_date_2",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_final_confirm_2__n_end_booked",
+   "to": "n_end_booked",
+   "from": "n_final_confirm_2",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/yes go ahead/haan kar do/हाँ कर दीजिए"
+  },
+  {
+   "id": "e_n_final_confirm_2__n_end_team_callback",
+   "to": "n_end_team_callback",
+   "from": "n_final_confirm_2",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/don't proceed/do not proceed/wait/change the date/different date/date change/date badal do/date change karni hai/dusri date/abhi mat karo/रुकिए/date बदल दीजिए/दूसरी date"
+  },
+  {
+   "id": "e_n_good_time__n_today_capture",
+   "to": "n_today_capture",
+   "from": "n_good_time",
+   "label": "आज/आज ही/हाँ आज/हां आज/जी आज/आज कर दो/आज कर दीजिए/आज ही कर दो/आज ही कर दीजिए/आज करवा दो/आज करवा दीजिए/आज भेज दो/आज भेज दीजिए/आज ही भेज दीजिए/आज आ जाओ/आज आ जाइए/आज चलेगा/आज ठीक है/आज सुबह/आज दोपहर/आज शाम/हाँ आज कर दो/हाँ आज भेज दो/आज भेज देना/हाँ सही है आज/सही है आज/aaj/ajj/aaj hi/ha aaj/haan aaj/han aaj/ji aaj/aaj kar do/aaj krdo/aaj kardo/aaj kr do/aaj kar dijiye/aaj hi kar do/aaj karwa do/aaj karva do/aaj bhej do/ajj bhej do/aaj bhej dijiye/aaj hi bhej do/aaj aa jao/aaj aa jaiye/aaj chalega/aaj theek hai/aaj thik hai/aaj subah/aaj dopahar/aaj shaam/aaj sham/ha aaj krdo/haan aaj kar do/ha ajj bhej do/haan aaj bhej do/aaj bhej dena/aaj hi kar dijiye/aaj hi bhej dijiye/aaj karwa dijiye/haan sahi hai aaj/sahi hai aaj/come today/today is fine/today works/today itself/do it today/schedule it today/schedule today/visit today/send today/send the engineer today/send someone today/yes today/today please/today evening/today morning/today afternoon"
+  },
+  {
+   "id": "e_n_today_capture__n_today_ack",
+   "to": "n_today_ack",
+   "from": "n_today_capture"
+  },
+  {
+   "id": "e_n_today_capture__n_end_team_callback__fallback",
+   "to": "n_end_team_callback",
+   "from": "n_today_capture",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_today_ack__n_today_read_status",
+   "to": "n_today_read_status",
+   "from": "n_today_ack",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/alright/fine/ok sir/okay sir/thank you/thanks/accha/achha/accha theek hai/chalega/ho jayega/thik hai ji/अच्छा/अच्छा ठीक है/चलेगा/हाँ ठीक है/धन्यवाद"
+  },
+  {
+   "id": "e_n_today_ack__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_today_ack",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/not today/aaj nahi/aaj nahin/aaj mat bhejo/mat bhejo/don't send/do not send/i am not available/i'm not available/not available/available nahi hoon/ghar pe nahi hoon/आज नहीं/मत भेजिए/मत भेजो/मैं available नहीं हूँ/घर पे नहीं हूँ"
+  },
+  {
+   "id": "e_n_today_ack__n_today_read_status__else",
+   "to": "n_today_read_status",
+   "from": "n_today_ack",
+   "label": "else"
+  },
+  {
+   "id": "e_n_today_read_status__n_today_read_locality",
+   "to": "n_today_read_locality",
+   "from": "n_today_read_status"
+  },
+  {
+   "id": "e_n_today_read_locality__n_today_is_disconnected",
+   "to": "n_today_is_disconnected",
+   "from": "n_today_read_locality"
+  },
+  {
+   "id": "e_n_today_is_disconnected__n_confirm_address__true",
+   "to": "n_confirm_address",
+   "from": "n_today_is_disconnected",
+   "label": "true"
+  },
+  {
+   "id": "e_n_today_is_disconnected__n_end_not_disconnected__false",
+   "to": "n_end_not_disconnected",
+   "from": "n_today_is_disconnected",
+   "label": "false"
+  },
+  {
+   "id": "e_n_confirm_address__n_today_day_known",
+   "to": "n_today_day_known",
+   "from": "n_confirm_address",
+   "label": "आज/आज ही/हाँ आज/हां आज/जी आज/आज कर दो/आज कर दीजिए/आज ही कर दो/आज ही कर दीजिए/आज करवा दो/आज करवा दीजिए/आज भेज दो/आज भेज दीजिए/आज ही भेज दीजिए/आज आ जाओ/आज आ जाइए/आज चलेगा/आज ठीक है/आज सुबह/आज दोपहर/आज शाम/हाँ आज कर दो/हाँ आज भेज दो/आज भेज देना/हाँ सही है आज/सही है आज/aaj/ajj/aaj hi/ha aaj/haan aaj/han aaj/ji aaj/aaj kar do/aaj krdo/aaj kardo/aaj kr do/aaj kar dijiye/aaj hi kar do/aaj karwa do/aaj karva do/aaj bhej do/ajj bhej do/aaj bhej dijiye/aaj hi bhej do/aaj aa jao/aaj aa jaiye/aaj chalega/aaj theek hai/aaj thik hai/aaj subah/aaj dopahar/aaj shaam/aaj sham/ha aaj krdo/haan aaj kar do/ha ajj bhej do/haan aaj bhej do/aaj bhej dena/aaj hi kar dijiye/aaj hi bhej dijiye/aaj karwa dijiye/haan sahi hai aaj/sahi hai aaj/come today/today is fine/today works/today itself/do it today/schedule it today/schedule today/visit today/send today/send the engineer today/send someone today/yes today/today please/today evening/today morning/today afternoon"
+  },
+  {
+   "id": "e_n_today_day_known__n_ask_visit_date__true",
+   "to": "n_ask_visit_date",
+   "from": "n_today_day_known",
+   "label": "true"
+  },
+  {
+   "id": "e_n_today_day_known__n_today_capture_2__false",
+   "to": "n_today_capture_2",
+   "from": "n_today_day_known",
+   "label": "false"
+  },
+  {
+   "id": "e_n_today_capture_2__n_today_ack_2",
+   "to": "n_today_ack_2",
+   "from": "n_today_capture_2"
+  },
+  {
+   "id": "e_n_today_capture_2__n_end_team_callback__fallback",
+   "to": "n_end_team_callback",
+   "from": "n_today_capture_2",
+   "label": "fallback"
+  },
+  {
+   "id": "e_n_today_ack_2__n_final_confirm",
+   "to": "n_final_confirm",
+   "from": "n_today_ack_2",
+   "label": "yes/yeah/yes please/sure/ok/okay/go ahead/proceed/yes proceed/please proceed/correct/right/haan/haan ji/ji haan/ji/theek hai/thik hai/haan theek hai/bilkul/haan bilkul/हाँ/हाँ जी/जी हाँ/जी/ठीक है/बिल्कुल/हां/जी हां/alright/fine/ok sir/okay sir/thank you/thanks/accha/achha/accha theek hai/chalega/ho jayega/thik hai ji/अच्छा/अच्छा ठीक है/चलेगा/हाँ ठीक है/धन्यवाद"
+  },
+  {
+   "id": "e_n_today_ack_2__n_ask_callback",
+   "to": "n_ask_callback",
+   "from": "n_today_ack_2",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/not today/aaj nahi/aaj nahin/aaj mat bhejo/mat bhejo/don't send/do not send/i am not available/i'm not available/not available/available nahi hoon/ghar pe nahi hoon/आज नहीं/मत भेजिए/मत भेजो/मैं available नहीं हूँ/घर पे नहीं हूँ"
+  },
+  {
+   "id": "e_n_today_ack_2__n_final_confirm__else",
+   "to": "n_final_confirm",
+   "from": "n_today_ack_2",
+   "label": "else"
+  },
+  {
+   "id": "e_n_confirm_address__n_mark_address_mismatch",
+   "to": "n_mark_address_mismatch",
+   "from": "n_confirm_address",
+   "label": "no/nope/no thanks/nahi/nahin/nahi ji/ji nahi/नहीं/नहीं जी/जी नहीं/wrong address/that's not correct/not correct/it's not correct/this is not my address/i have shifted/i shifted/address has changed/address changed/galat hai/galat address/ye address sahi nahi hai/address badal gaya/shift ho gaya/maine ghar badal liya/dusra address hai/गलत है/गलत address/ये address सही नहीं है/address बदल गया/shift हो गया/घर बदल लिया/incorrect/address is incorrect/address incorrect/the address is incorrect/address is wrong/wrong/galat/address galat hai/पता गलत है/address गलत है/गलत/ग़लत/ye mera address nahi hai/yeh mera address nahi hai/purana address hai/old address/पुराना address है/ये मेरा address नहीं है"
+  },
+  {
+   "id": "e_n_mark_address_mismatch__n_end_address_mismatch",
+   "to": "n_end_address_mismatch",
+   "from": "n_mark_address_mismatch"
+  }
+ ]
+}
