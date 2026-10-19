@@ -64,6 +64,19 @@ What this stage does (dry-run by default, idempotent):
      "दो शाम" (the "कर दो" particle + the period) out of "कल कर दो शाम के पाँच
      बजे" and booked 2 PM. RUNTIME DEPENDENCY: entity_extractor must know the
      two data types; on older code such an entity matches nothing.
+  8. Resolved-date confirmation (seventh workflow upgrade): the validated asks
+     also write spoken forms of the RESOLVED day and time per language
+     (``visit_day_spoken_hi/_en``, ``visit_time_spoken_hi/_en``: "शनिवार, 24
+     अक्टूबर को", "शाम साढ़े 4 बजे" / "on Saturday, 24 October", "at 4:30 PM";
+     कल/परसों/tomorrow stay as they are), and both confirmation readbacks say
+     those instead of echoing the capture — so a resolved month or a
+     misread number is heard by the customer (live call cv_5e67e44a2ffd:
+     "चौबीस तारीख" was not understood twice; the date vocabulary now reads
+     Hindi number words, STT spellings of तारीख, English ordinals, "24 को"
+     and this-/next-month modifiers). The four date asks' retry prompt first
+     says the date was not understood. RUNTIME DEPENDENCY: visit_datetime
+     must know ``spokenVariables``; on older code the readback groups find
+     no spoken slots and the confirmation would lose the day.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -640,6 +653,83 @@ SPOKEN_DAY = {"dataType": "spoken_day"}
 SPOKEN_TIME = {"dataType": "spoken_time"}
 DAY_CAPTURE_VARIABLES = {"visit_day", "visit_day_2", "callback_date"}
 
+# ── resolved-date confirmation (stage 7) ─────────────────────────────────────
+
+SPOKEN_SLOTS = {"day": "visit_day_spoken", "time": "visit_time_spoken", "languages": ["hi", "en"]}
+SPOKEN_SLOT_NAMES = [f"{SPOKEN_SLOTS[kind]}_{lang}" for kind in ("day", "time") for lang in SPOKEN_SLOTS["languages"]]
+RETRY_PROMPT = {
+    "hi": "माफ़ कीजिए, date मुझे ठीक से समझ नहीं आई। आप दिन बताइए, जैसे कल, परसों, या कोई तारीख।",
+    "en": "Sorry, I did not catch the date. Please tell me the day, for example tomorrow, the day after, or a date.",
+}
+
+
+def build_readback_spoken() -> dict:
+    """Readback templates on the spoken companions: the sentence is the one
+    stage 4 says, with the resolved day/time in place of the captured words."""
+    day_hi, time_hi = f"{SPOKEN_SLOTS['day']}_hi", f"{SPOKEN_SLOTS['time']}_hi"
+    day_en, time_en = f"{SPOKEN_SLOTS['day']}_en", f"{SPOKEN_SLOTS['time']}_en"
+    hi_at = "आपके registered address {locality} पर"
+    hi_new = "आपके बताए हुए पते {new_address} पर"
+    en_at = "to your registered address in {locality}"
+    en_new = "to {new_address}"
+    hi_time_note = "visit का exact समय engineer आपको call करके बताएँगे।"
+    en_time_note = "The engineer will call you to confirm the exact time."
+
+    def hi(where, with_time):
+        when = f"{{{day_hi}}} {{{time_hi}}}" if with_time else f"{{{day_hi}}}"
+        line = f"हमारे engineer {when} {where} Airtel Broadband device के uninstallation और pickup के लिए आएँगे।"
+        return line if with_time else f"{line} {hi_time_note}"
+
+    def en(where, with_time):
+        when = f"{{{day_en}}} {{{time_en}}}" if with_time else f"{{{day_en}}}"
+        line = f"Our engineer will come {where} {when} for the Airtel Broadband device uninstallation and pickup."
+        return line if with_time else f"{line} {en_time_note}"
+
+    def groups(render, day, time):
+        return [
+            {"absent": [], "requires": ["new_address", day, time], "template": render(True, True)},
+            {"absent": [time], "requires": ["new_address", day], "template": render(True, False)},
+            {"absent": ["new_address"], "requires": [day, time], "template": render(False, True)},
+            {"absent": ["new_address", time], "requires": [day], "template": render(False, False)},
+        ]
+    return {
+        "en": {"intro": "Let me confirm the details.",
+               "groups": groups(lambda new, t: en(en_new if new else en_at, t), day_en, time_en),
+               "question": "Does that work for you?"},
+        "hi": {"intro": "ठीक है, एक बार confirm कर लेते हैं।",
+               "groups": groups(lambda new, t: hi(hi_new if new else hi_at, t), day_hi, time_hi),
+               "question": "क्या ये आपके लिए ठीक रहेगा?"},
+    }
+
+
+def confirm_resolved_date(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 7: spoken companions, readback on them, acknowledging retry
+    prompt. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_spoken_capture(nodes):
+        raise ValueError("stage 6 (parser-chosen capture) must be applied first")
+    for node_id in VALIDATED_ASKS:
+        config = by_id[node_id]["config"]
+        config["validation"]["spokenVariables"] = copy.deepcopy(SPOKEN_SLOTS)
+        config["unmatchedReplyByLanguage"] = dict(RETRY_PROMPT)
+        config["unmatchedReply"] = RETRY_PROMPT["en"]
+    by_id[RESET_MARKER]["config"]["setSlots"].update({name: "" for name in SPOKEN_SLOT_NAMES})
+    for node_id in CONFIRM_NODES:
+        by_id[node_id]["config"]["readback"] = build_readback_spoken()
+    return nodes, edges
+
+
+def has_resolved_date_confirmation(nodes: list[dict]) -> bool:
+    return all(
+        (n.get("config") or {}).get("readback") == build_readback_spoken()
+        for n in nodes if n.get("id") in CONFIRM_NODES
+    ) and all(
+        ((n.get("config") or {}).get("validation") or {}).get("spokenVariables") == SPOKEN_SLOTS
+        for n in nodes if n.get("id") in VALIDATED_ASKS
+    )
+
 
 def use_spoken_capture(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
     """Stage 6: day/time captures become parser-chosen entities. Idempotent."""
@@ -719,6 +809,8 @@ def normalise_to_stage1(nodes: list[dict], edges: list[dict]) -> tuple[list[dict
                     "readback", "prompt"):
             if key in rcfg:
                 cfg[key] = copy.deepcopy(rcfg[key])
+            elif key == "unmatchedReply":
+                cfg.pop(key, None)   # stage 7 adds the plain key the baseline never had
         if n.get("id") == RESET_MARKER and "setSlots" in rcfg:
             cfg["setSlots"] = copy.deepcopy(rcfg["setSlots"])
     for e in edges:
@@ -732,7 +824,7 @@ def load_baseline() -> dict:
         return json.load(f)
 
 
-TARGET_STAGE = 6
+TARGET_STAGE = 7
 SUMMARY_FIELDS = summary_fields()
 
 
@@ -741,7 +833,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
     stage 1 = summary markers (v13), stage 2 = + day/time validation (v14/v15),
     stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation
     wording (v17), stage 5 = + normalized pickup date/time companions (v18),
-    stage 6 = + parser-chosen day/time capture."""
+    stage 6 = + parser-chosen day/time capture (v19), stage 7 = + resolved-date
+    confirmation and acknowledging retry prompt."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
@@ -754,6 +847,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
         nodes, edges = add_normalized_capture(nodes, edges)
     if stage >= 6:
         nodes, edges = use_spoken_capture(nodes, edges)
+    if stage >= 7:
+        nodes, edges = confirm_resolved_date(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -863,7 +958,7 @@ def main(argv: list[str] | None = None) -> None:
                          "re-export the baseline (or pass --allow-version) before upgrading")
         new_nodes, new_edges = target["nodes"], target["edges"]
         print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording, "
-              "normalized date/time, parser-chosen capture)" if at_baseline
+              "normalized date/time, parser-chosen capture, resolved-date confirmation)" if at_baseline
               else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)

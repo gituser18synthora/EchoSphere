@@ -325,7 +325,7 @@ class TestExtractTime:
         ("कल सुबह नौ बजे कर दो", "सुबह नौ बजे"),
         ("kal sham ke 5 baje", "sham ke 5 baje"),
         ("दोपहर ढाई बजे", "दोपहर ढाई बजे"),
-        ("कल साढ़े चार", "साढ़े चार"),                     # bare fraction hour → still ambiguous
+        ("कल साढ़े चार", "साढे चार"),                      # bare fraction hour → still ambiguous (nukta folded)
         ("25 October शाम 6 बजे", "शाम 6 बजे"),           # the date's number is not a time
         ("four thirty in the morning", "four thirty in the morning"),
         ("tomorrow at four", "four"),
@@ -468,3 +468,94 @@ class TestSentenceFinalDanda:
         assert vd.extract_time("कल 4 बजे 30") == "4 बजे 30"
         assert parse_time("4 बजे 30").kind == "unknown"
         assert vd.extract_time("5 बजे 2 लोग आएंगे") == "5 बजे"     # not a minute count
+
+
+class TestDayOfMonth:
+    """Day of month without a month name: Hindi/romanised number words, STT
+    spellings of तारीख, English ordinals, "24 को", this-/next-month."""
+
+    @pytest.mark.parametrize("text, iso", [
+        ("24 तारीख", "2026-10-24"), ("चौबीस तारीख", "2026-10-24"), ("चौवीस तारीख आहे.", "2026-10-24"),
+        ("हाँ। 24 तारिख कण?", "2026-10-24"),                 # live cv_5e67e44a2ffd, Odia transliteration
+        ("चौबीस तारीख़ को बोल तो रहा हूँ।", "2026-10-24"),   # live cv_5e67e44a2ffd, nukta
+        ("२४ तारीख", "2026-10-24"), ("24 tarikh", "2026-10-24"), ("chaubis tarikh", "2026-10-24"),
+        ("पच्चीस तारीख सुबह 10 बजे", "2026-10-25"), ("इकतीस तारीख", "2026-10-31"),
+        ("twenty fourth", "2026-10-24"), ("the 24th", "2026-10-24"), ("24th", "2026-10-24"),
+        ("on the twenty fourth of next month", "2026-11-24"), ("next month 24th", "2026-11-24"),
+        ("अगले महीने की 24 तारीख", "2026-11-24"), ("अगले महीने की 24", "2026-11-24"), ("agle mahine ki 24 tarikh", "2026-11-24"),
+        ("इस महीने की 24 तारीख", "2026-10-24"), ("24 को कर दो", "2026-10-24"), ("24 ko", "2026-10-24"),
+        ("10 तारीख", "2026-11-10"),                            # already past this month → next month
+        ("19 तारीख", "2026-10-19"),                            # today
+    ])
+    def test_resolves(self, text, iso):
+        span = vd.extract_day(text, TODAY)
+        assert span and str(parse_day(span, TODAY).value) == iso, (text, span)
+
+    def test_explicit_this_month_is_not_rolled_forward(self):
+        assert vd.extract_day("इस महीने की 10 तारीख", TODAY) == "इस महीने की 10 तारीख"
+        assert parse_day("इस महीने की 10 तारीख", TODAY) == vd.DayResult("past", date(2026, 10, 10))
+        assert validate_visit("इस महीने की 10 तारीख", "", NOW) == (False, "day_past")
+
+    @pytest.mark.parametrize("text", ["24 या 25 तारीख", "24 or 25 tarikh", "24 25 तारीख", "चौबीस पच्चीस तारीख"])
+    def test_two_days_are_not_one_date(self, text):
+        span = vd.extract_day(text, TODAY)
+        assert span == text and parse_day(span, TODAY).kind == "unknown"
+        assert validate_visit(span, "", NOW) == (False, "day_unclear")
+
+    def test_impossible_and_bare_numbers(self):
+        assert parse_day("32 तारीख", TODAY).kind == "invalid"
+        assert parse_day("31 तारीख", date(2026, 11, 5)).kind == "invalid"       # no 31 November: ask
+        assert vd.extract_day("24", TODAY) is None                              # a bare number is not a date
+        assert vd.extract_day("first tell me the date", TODAY) is None          # single-word ordinal needs "the"
+        assert vd.extract_day("wait a second, tomorrow", TODAY) == "tomorrow"
+        assert vd.extract_day("the second", TODAY) == "the second"
+
+    def test_a_number_inside_a_time_is_not_a_day(self):
+        assert vd.extract_day("शाम 5 को आ जाना", TODAY) is None
+        assert vd.extract_time("शाम 5 को आ जाना") == "शाम 5"
+        assert vd.extract_day("24 तारीख शाम 5 बजे", TODAY) == "24 तारीख"
+        assert vd.extract_time("24 तारीख शाम 5 बजे") == "शाम 5 बजे"
+
+    def test_corrections_still_win(self):
+        assert vd.extract_day("24 तारीख नहीं, 25 तारीख", TODAY) == "25 तारीख"
+        assert vd.extract_day("not the 24th, the 25th", TODAY) == "the 25th"
+
+    def test_nukta_is_folded_everywhere(self):
+        assert vd.fold_text("तारीख़ साढ़े ख़") == "तारीख साढे ख"
+        assert vd.extract_time("कल साढ़े चार बजे") == "साढे चार बजे"
+        assert parse_time("साढ़े चार बजे").candidates == (270, 990)
+
+
+class TestSpokenForms:
+    def test_days(self):
+        assert vd.spoken_day(date(2026, 10, 19), TODAY, "hi") == "आज"
+        assert vd.spoken_day(date(2026, 10, 20), TODAY, "hi") == "कल"
+        assert vd.spoken_day(date(2026, 10, 21), TODAY, "en") == "day after tomorrow"
+        assert vd.spoken_day(date(2026, 10, 24), TODAY, "hi") == "शनिवार, 24 अक्टूबर को"
+        assert vd.spoken_day(date(2026, 10, 24), TODAY, "en-IN") == "on Saturday, 24 October"
+        assert vd.spoken_day(date(2027, 1, 5), TODAY, "hi") == "मंगलवार, 5 जनवरी 2027 को"
+
+    def test_times(self):
+        hi = {x: vd.spoken_time(x, "hi") for x in ("17:00", "16:30", "13:30", "14:30", "10:15", "15:45", "10:20", "12:00", "00:00", "evening", "")}
+        assert hi == {"17:00": "शाम 5 बजे", "16:30": "शाम साढ़े 4 बजे", "13:30": "दोपहर डेढ़ बजे", "14:30": "दोपहर ढाई बजे",
+                      "10:15": "सुबह सवा 10 बजे", "15:45": "दोपहर पौने 4 बजे", "10:20": "सुबह 10 बजकर 20 मिनट",
+                      "12:00": "दोपहर 12 बजे", "00:00": "रात 12 बजे", "evening": "शाम", "": ""}
+        assert [vd.spoken_time(x, "en") for x in ("17:00", "16:30", "09:05", "morning")] == ["at 5 PM", "at 4:30 PM", "at 9:05 AM", "in the morning"]
+
+
+SPOKEN = {**NORMALIZED, "spokenVariables": {"day": "visit_day_spoken", "time": "visit_time_spoken", "languages": ["hi", "en"]}}
+
+
+class TestSpokenCompanions:
+    def test_written_per_language_and_cleared_on_rejection(self):
+        slots = {"visit_day": "चौबीस तारीख", "visit_time": "शाम 5 बजे"}
+        assert validate_ask(SPOKEN, slots, now=NOW).ok
+        assert slots["visit_day_spoken_hi"] == "शनिवार, 24 अक्टूबर को" and slots["visit_day_spoken_en"] == "on Saturday, 24 October"
+        assert slots["visit_time_spoken_hi"] == "शाम 5 बजे" and slots["visit_time_spoken_en"] == "at 5 PM"
+        verdict = validate_ask(SPOKEN, {"visit_day": "10 October"}, now=NOW)
+        assert set(verdict.clear) >= {"visit_day_spoken_hi", "visit_day_spoken_en", "visit_time_spoken_hi", "visit_time_spoken_en"}
+
+    def test_day_alone_leaves_empty_time_phrases(self):
+        slots = {"visit_day": "परसों"}
+        assert validate_ask(SPOKEN, slots, now=NOW).ok
+        assert (slots["visit_day_spoken_hi"], slots["visit_time_spoken_hi"], slots["visit_time_spoken_en"]) == ("परसों", "", "")

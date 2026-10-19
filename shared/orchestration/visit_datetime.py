@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import calendar
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -68,8 +69,19 @@ def now_in(timezone_name: str | None) -> datetime:
     return datetime.now(resolve_zone(timezone_name or DEFAULT_TIMEZONE))
 
 
+_NUKTA = "\u093c"
+
+
+def fold_text(text) -> str:
+    """Drop the Devanagari nukta (ख़ → ख, combining or precomposed): STT
+    writes it inconsistently ("तारीख़", "साढ़े") and no vocabulary word
+    depends on it."""
+    decomposed = unicodedata.normalize("NFD", str(text or ""))
+    return unicodedata.normalize("NFC", "".join(ch for ch in decomposed if ch != _NUKTA))
+
+
 def _norm(text) -> str:
-    return " ".join(str(text or "").translate(_DEV_DIGITS).lower().split())
+    return " ".join(fold_text(text).translate(_DEV_DIGITS).lower().split())
 
 
 # ── vocab ────────────────────────────────────────────────────────────────────
@@ -138,9 +150,92 @@ DAY_WORDS_ROMAN = {
     "pachees": 25, "pachchis": 25, "pachis": 25, "chhabbis": 26, "chabbis": 26, "sattais": 27,
     "satais": 27, "atthais": 28, "athais": 28, "untis": 29, "untees": 29, "ikattis": 31, "ektis": 31,
 }
-_DAY_WORD_ALT = "|".join(sorted((re.escape(w) for w in DAY_WORDS_ROMAN), key=len, reverse=True))
+# Devanagari day-of-month words (Sarvam writes numbers as words: "चौबीस
+# तारीख", live call cv_5e67e44a2ffd) with the common spellings.
+DAY_WORDS_HI = {
+    "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पाँच": 5, "पांच": 5, "पाच": 5, "छह": 6, "छः": 6, "छे": 6,
+    "सात": 7, "आठ": 8, "नौ": 9, "दस": 10, "ग्यारह": 11, "ग्यारा": 11, "बारह": 12, "बारा": 12,
+    "तेरह": 13, "तेरा": 13, "चौदह": 14, "चौदा": 14, "पंद्रह": 15, "पन्द्रह": 15, "पंद्रा": 15,
+    "सोलह": 16, "सोला": 16, "सत्रह": 17, "सत्रा": 17, "अठारह": 18, "अठारा": 18, "उन्नीस": 19, "उनीस": 19,
+    "बीस": 20, "इक्कीस": 21, "इकीस": 21, "बाईस": 22, "बाइस": 22, "तेईस": 23, "तेइस": 23,
+    "चौबीस": 24, "चौवीस": 24, "चोबीस": 24, "पच्चीस": 25, "पचीस": 25, "छब्बीस": 26, "छबीस": 26,
+    "सत्ताईस": 27, "सताईस": 27, "अट्ठाईस": 28, "अठाईस": 28, "उनतीस": 29, "उन्तीस": 29,
+    "तीस": 30, "इकतीस": 31, "इक्तीस": 31, "एकतीस": 31,
+}
+# English ordinal words ("the twenty fourth"); "24th" is read from digits.
+ORDINAL_WORDS_EN = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
+    "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13,
+    "fourteenth": 14, "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+    "nineteenth": 19, "twentieth": 20, "twenty first": 21, "twenty second": 22, "twenty third": 23,
+    "twenty fourth": 24, "twenty fifth": 25, "twenty sixth": 26, "twenty seventh": 27,
+    "twenty eighth": 28, "twenty ninth": 29, "thirtieth": 30, "thirty first": 31,
+}
+DAY_WORDS = {**DAY_WORDS_ROMAN, **DAY_WORDS_HI, **ORDINAL_WORDS_EN}
+# "तारीख" as STT writes it: long/short i, ख/क, a transliterated Odia "तारिख".
+_TARIKH = r"(?:tarikh|taarikh|tareekh|tareek|tarik|tarike|तार[ीि][खक]|तरीख)"
+_MONTH_NEXT_WORDS = ("अगले", "अगला", "आने वाले", "next", "agle", "agla", "aane wale", "coming")
+_MONTH_THIS_WORDS = ("इस", "इसी", "this", "is", "isi", "same")
+_MONTH_NOUN_WORDS = ("महीने", "महीना", "महिने", "month", "mahine", "mahina", "mahiney")
+_OF_WORDS = r"(?:\s+(?:की|के|का|ki|ke|ka|in))?"
+
+
+def _guarded(words) -> str:
+    """Alternation of whole words; Devanagari words get letter look-arounds
+    (no \b there), multi-word phrases accept any whitespace."""
+    parts = []
+    for w in sorted(words, key=len, reverse=True):
+        esc = re.escape(w).replace(r"\ ", r"\s+")
+        if re.search(r"[\u0900-\u097f]", w):
+            parts.append(rf"(?<![{_DEV}]){esc}(?![{_DEV}])")
+        else:
+            parts.append(rf"\b{esc}\b")
+    return "(?:" + "|".join(parts) + ")"
+
+
+_DAY_NUM = rf"(?:\d{{1,2}}|{_guarded(DAY_WORDS)})"
+_ORD_SINGLE = [w for w in ORDINAL_WORDS_EN if " " not in w]     # "second", "first": need "the …"
+_ORD_DOUBLE = [w for w in ORDINAL_WORDS_EN if " " in w]         # "twenty fourth": stands alone
+_ORDINAL = (rf"(?:the\s+(?:\d{{1,2}}(?:st|nd|rd|th)|{_guarded(ORDINAL_WORDS_EN)})"
+            rf"|(?<![\d])\d{{1,2}}(?:st|nd|rd|th)|{_guarded(_ORD_DOUBLE)})(?![\d])")
+_RANGE_JOIN = r"(?:\s*(?:या|ya|or|/|से|se|to)\s*|\s+)"   # "24 या 25", "24 25" (not "-": a DD-MM date)
+_NEXT_MONTH_RE = re.compile(
+    rf"{_guarded(_MONTH_NEXT_WORDS)}\s+{_guarded(_MONTH_NOUN_WORDS)}|\bnext\s+month\b", re.I)
+_THIS_MONTH_RE = re.compile(
+    rf"{_guarded(_MONTH_THIS_WORDS)}\s+{_guarded(_MONTH_NOUN_WORDS)}|\bthis\s+month\b", re.I)
+_MONTH_MOD_RE = re.compile(
+    rf"(?:{_guarded(_MONTH_NEXT_WORDS + _MONTH_THIS_WORDS)}\s+{_guarded(_MONTH_NOUN_WORDS)}{_OF_WORDS})", re.I)
+# Day of month without a month name: "24 तारीख", "chaubis tarikh", "24 को",
+# "24th" / "the twenty fourth", or a bare number next to a month modifier.
 _TARIKH_RE = re.compile(
-    rf"(?<![\d])(\d{{1,2}}|\b(?:{_DAY_WORD_ALT})\b)\s*(?:tarikh|taarikh|tareekh|tarik|तारीख)", re.I)
+    rf"(?<![\d])(?P<day>{_DAY_NUM})(?:st|nd|rd|th)?\s*(?:{_TARIKH}|(?=\s*(?:को|ko)(?![a-z{_DEV}])))", re.I)
+_ORDINAL_RE = re.compile(
+    rf"(?:the\s+(?P<day>\d{{1,2}}(?=st|nd|rd|th)|{_guarded(ORDINAL_WORDS_EN)})"
+    rf"|(?<![\d])(?P<day2>\d{{1,2}})(?=st|nd|rd|th)|(?P<day3>{_guarded(_ORD_DOUBLE)}))(?:st|nd|rd|th)?(?![\d])", re.I)
+_DAY_RANGE_RE = re.compile(rf"(?<![\d]){_DAY_NUM}{_RANGE_JOIN}{_DAY_NUM}(?:st|nd|rd|th)?\s*{_TARIKH}", re.I)
+_MOD_DAY_RE = re.compile(
+    rf"{_MONTH_MOD_RE.pattern}\s*(?P<day>{_DAY_NUM})(?![\d])|(?P<day2>{_DAY_NUM})(?![\d])\s+(?:of\s+)?(?:next|this)\s+month", re.I)
+
+
+def _day_number(token: str) -> int | None:
+    token = token.lower()
+    if token.isdigit():
+        return int(token)
+    return DAY_WORDS.get(token)
+
+
+def _day_of_month(t: str) -> int | None:
+    """The day-of-month a normalized text names without a month name; -1
+    when it names two ("24 या 25 तारीख"), which is not one day."""
+    if _DAY_RANGE_RE.search(t):
+        return -1
+    for pattern in (_TARIKH_RE, _ORDINAL_RE, _MOD_DAY_RE):
+        m = pattern.search(t)
+        if m:
+            raw = next((v for k, v in m.groupdict().items() if k.startswith("day") and v), None)
+            if raw:
+                return _day_number(raw)
+    return None
 _NUMERIC_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)")
 _ISO_RE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
 _PERIOD_RE = {name: _word(words) for name, words in _PERIODS.items()}
@@ -199,17 +294,24 @@ def parse_day(text, today: date) -> DayResult:
         if year:
             return _judge(_safe_date(int(year), month, day), today)
         return _judge_yearless(month, day, today)
-    m = _TARIKH_RE.search(t)
-    if m:
-        raw = m.group(1)
-        day = int(raw) if raw.isdigit() else DAY_WORDS_ROMAN[raw.lower()]
+    day = _day_of_month(t)
+    if day == -1:
+        return DayResult("unknown")           # "24 या 25 तारीख": two days, ask
+    if day is not None:
+        if not 1 <= day <= 31:
+            return DayResult("invalid")
         year, month = today.year, today.month
-        if day < today.day:  # "10 tarikh" on the 19th → next month's 10th
+        if _NEXT_MONTH_RE.search(t):          # "अगले महीने की 24 तारीख": said month wins
+            month = month % 12 + 1
+            year += month == 1
+        elif _THIS_MONTH_RE.search(t):        # "इस महीने की 10": this month even if past
+            pass
+        elif day < today.day:                 # "10 tarikh" on the 19th → next month's 10th
             month = month % 12 + 1
             year += month == 1
         if day > calendar.monthrange(year, month)[1]:
-            return DayResult("invalid")
-        return DayResult("ok", date(year, month, day))
+            return DayResult("invalid")       # "31 तारीख" in a 30-day month: ask
+        return _judge(date(year, month, day), today)
     for weekday, pattern in _WEEKDAY_RE.items():
         if pattern.search(t):
             delta = (weekday - today.weekday()) % 7 or 7
@@ -458,19 +560,6 @@ def compose_time(answer_text, pending_text) -> str | None:
 # the verb particle of "कर दो" plus the period word — read as 2 PM, while the
 # complete "शाम के पाँच बजे" started later in the sentence.
 
-def _guarded(words) -> str:
-    """Alternation of whole words; Devanagari words get letter look-arounds
-    (no \b there), multi-word phrases accept any whitespace."""
-    parts = []
-    for w in sorted(words, key=len, reverse=True):
-        esc = re.escape(w).replace(r"\ ", r"\s+")
-        if re.search(r"[\u0900-\u097f]", w):
-            parts.append(rf"(?<![{_DEV}]){esc}(?![{_DEV}])")
-        else:
-            parts.append(rf"\b{esc}\b")
-    return "(?:" + "|".join(parts) + ")"
-
-
 PERIOD_SURFACE = [w for words in PERIOD_WORDS.values() for w in words
                   if w != "noon"] + ["सवेरे", "savere", "subha"]
 
@@ -511,23 +600,30 @@ def time_capture_regex() -> str:
 
 _WEEK_WORDS = ("week", "hafte", "hafta", "हफ्ते", "हफ़्ते", "सप्ताह")
 _NEXT_WORDS = ("this", "next", "coming", "agle", "agla", "aane wale", "is", "अगले", "आने वाले", "इस")
-_TARIKH = r"(?:tarikh|taarikh|tareekh|tarik|तारीख)"
 
 
 def day_capture_regex() -> str:
     """Regex matching one spoken day expression: today/kal/परसों, weekdays
     (with next/agle/अगले), "next week"/"agle hafte" (captured so validation
-    can ask for a specific day), DD tarikh (digits or romanised day words),
-    DD Month / Month DD (en/hi months, optional year), DD/MM[/YYYY], ISO."""
+    can ask for a specific day), DD Month / Month DD (en/hi months, optional
+    year), DD/MM[/YYYY], ISO, and a day of month without a month name —
+    "24 तारीख" / "chaubis tarikh" / "चौबीस तारीख", "24th" / "the twenty
+    fourth", "24 को" — with an optional this-/next-month modifier before or
+    after ("अगले महीने की 24 तारीख", "24th of next month")."""
     months = _guarded(list(_MONTH_WORDS))
     weekdays = _guarded([w for ws in _WEEKDAYS.values() for w in ws])
     relative = _guarded([w for ws in _RELATIVE.values() for w in ws])
+    mod = rf"(?:{_MONTH_MOD_RE.pattern}\s*)?"
+    mod_after = r"(?:\s+(?:of\s+)?(?:next|this)\s+month)?"
     alternatives = [
         rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s*(?:of\s+)?{months}(?:,?\s*\d{{4}})?",
         rf"{months}\s+\d{{1,2}}(?:st|nd|rd|th)?(?!\d)(?:,?\s*\d{{4}})?",
         r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)",
         r"(?<!\d)\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)",
-        rf"(?<!\d)(?:\d{{1,2}}|{_guarded(list(DAY_WORDS_ROMAN))})\s*{_TARIKH}",
+        rf"{mod}(?<!\d){_DAY_NUM}(?:{_RANGE_JOIN}{_DAY_NUM})?(?:st|nd|rd|th)?\s*{_TARIKH}{mod_after}",
+        rf"{mod}{_ORDINAL}{mod_after}",
+        rf"{mod}(?<!\d){_DAY_NUM}\s*(?:को|ko)(?![a-z{_DEV}])",
+        rf"{_MONTH_MOD_RE.pattern}\s*{_DAY_NUM}(?![\d])",
         rf"(?:{_guarded(_NEXT_WORDS)}\s+)?(?:{weekdays}|{_guarded(_WEEK_WORDS)})",
         relative,
     ]
@@ -577,6 +673,16 @@ def _negated(text: str, start: int, end: int) -> bool:
     return bool(_NEG_AFTER_RE.search(text[end:]) or _NEG_BEFORE_RE.search(text[:start]))
 
 
+def _negated_ranges(text: str, candidates) -> list[tuple[int, int]]:
+    """Spans that are negated — a shorter reading inside one ("24th" inside
+    "not the 24th") is negated with it."""
+    return [(s, e) for s, e, _ in candidates if _negated(text, s, e)]
+
+
+def _inside(start: int, end: int, ranges) -> bool:
+    return any(start >= a and end <= b for a, b in ranges)
+
+
 def _hour_word_unanchored(span: str) -> bool:
     """A Hindi / romanised-Hindi hour WORD that is neither followed by a
     time marker nor preceded by a period or fraction word — "दो" in "कर दो
@@ -602,10 +708,12 @@ def extract_time(text) -> str | None:
     returned together, as said, which :func:`parse_time` cannot read — so
     validation asks for the time again instead of either reading being kept.
     """
-    raw = str(text or "")
+    raw = fold_text(text)
     spans: list[_Span] = []
-    for start, end, span in _candidate_spans(raw, _TIME_CAPTURE_RE):
-        if _hour_word_unanchored(span) or _negated(raw, start, end):
+    candidates = _candidate_spans(raw, _TIME_CAPTURE_RE)
+    negated = _negated_ranges(raw, candidates)
+    for start, end, span in candidates:
+        if _hour_word_unanchored(span) or _inside(start, end, negated):
             continue
         # A span the parser refuses ("रात 12 बजे") stays a candidate: as the
         # fullest reading of its mention it must not degrade into a shorter
@@ -694,24 +802,108 @@ def extract_day(text, today: date | None = None) -> str | None:
     for a specific day. Two different resolvable days ("कल या परसों") give
     None, so the flow asks instead of picking one.
     """
-    raw = str(text or "")
+    raw = fold_text(text)
     today = today or now_in(DEFAULT_TIMEZONE).date()
+    # A number that belongs to a time expression ("शाम 5 को") is not a day.
+    clock_spans = [(a, b) for a, b, span in _candidate_spans(raw, _TIME_CAPTURE_RE)
+                   if parse_time(span).kind in ("exact", "ambiguous")]
     spans: list[_Span] = []
-    for start, end, span in _candidate_spans(raw, _DAY_CAPTURE_RE):
-        if _negated(raw, start, end):
+    candidates = _candidate_spans(raw, _DAY_CAPTURE_RE)
+    negated = _negated_ranges(raw, candidates)
+    for start, end, span in candidates:
+        if _inside(start, end, negated):
+            continue
+        if any(start < b and a < end for a, b in clock_spans):
             continue
         spans.append(_Span(start, end, span, parse_day(span, today)))
     spans = _drop_corrected(raw, spans)
     if not spans:
         return None
     rank = {"ok": 3, "past": 2, "invalid": 2, "unknown": 1}
-    best, *others = _mentions(spans, lambda s: (rank[s.parsed.kind], len(s.text)))
+    mentions = _mentions(spans, lambda s: (len(s.text), rank[s.parsed.kind]))   # fullest reading per mention
+    best, *others = sorted(mentions, key=lambda s: (rank[s.parsed.kind], len(s.text)), reverse=True)
     for s in others:
         if s.parsed.kind == "unknown":
             continue   # "next week … Monday": the vague one is refined, not contradicted
         if (s.parsed.kind, s.parsed.value) != (best.parsed.kind, best.parsed.value):
             return None
     return best.text
+
+
+# ── spoken forms of resolved values ──────────────────────────────────────────
+#
+# A confirmation that repeats the caller's words cannot expose a wrong month
+# ("10 तारीख" said on the 19th is next month's 10th). These render the
+# RESOLVED date and time the way a person says them, so the readback states
+# the weekday and month ("शुक्रवार, 24 अक्टूबर को शाम 5 बजे") and a
+# misunderstanding is caught by the customer. Nothing is invented: the
+# weekday is computed from the resolved date, the time from the normalized
+# clock value.
+
+_WEEKDAYS_HI = ("सोमवार", "मंगलवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार", "रविवार")
+_WEEKDAYS_EN = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTHS_HI = ("जनवरी", "फरवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर")
+_MONTHS_EN = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+_WINDOW_HI = {"morning": "सुबह", "afternoon": "दोपहर", "evening": "शाम", "night": "रात"}
+
+
+def spoken_day(d: date, today: date, lang: str) -> str:
+    """"कल" / "परसों" for the next two days, else weekday + date (+ year when
+    it differs): "शुक्रवार, 24 अक्टूबर को" / "on Friday, 24 October"."""
+    delta = (d - today).days
+    hi = (lang or "hi").split("-")[0].lower() != "en"
+    if delta == 0:
+        return "आज" if hi else "today"
+    if delta == 1:
+        return "कल" if hi else "tomorrow"
+    if delta == 2:
+        return "परसों" if hi else "day after tomorrow"
+    year = f" {d.year}" if d.year != today.year else ""
+    if hi:
+        return f"{_WEEKDAYS_HI[d.weekday()]}, {d.day} {_MONTHS_HI[d.month - 1]}{year} को"
+    return f"on {_WEEKDAYS_EN[d.weekday()]}, {d.day} {_MONTHS_EN[d.month - 1]}{year}"
+
+
+def _period_of(hour: int) -> str:
+    if hour < 4:
+        return "night"
+    if hour < 12:
+        return "morning"
+    if hour < 16:
+        return "afternoon"
+    if hour < 20:
+        return "evening"
+    return "night"
+
+
+def spoken_time(normalized: str, lang: str) -> str:
+    """"शाम 5 बजे" / "शाम साढ़े 4 बजे" / "सुबह 10 बजकर 20 मिनट" / "शाम" (a
+    window); "at 5 PM" / "at 4:30 PM" / "in the evening". '' for no time."""
+    text = str(normalized or "").strip().lower()
+    hi = (lang or "hi").split("-")[0].lower() != "en"
+    if not text:
+        return ""
+    if text in PERIOD_WORDS:
+        return _WINDOW_HI[text] if hi else f"in the {text}"
+    hour, minute = (int(part) for part in text.split(":"))
+    h12 = hour % 12 or 12
+    if not hi:
+        suffix = "AM" if hour < 12 else "PM"
+        return f"at {h12} {suffix}" if minute == 0 else f"at {h12}:{minute:02d} {suffix}"
+    period = _WINDOW_HI[_period_of(hour)]
+    if minute == 0:
+        return f"{period} {h12} बजे"
+    if minute == 30:
+        if h12 == 1:
+            return f"{period} डेढ़ बजे"
+        if h12 == 2:
+            return f"{period} ढाई बजे"
+        return f"{period} साढ़े {h12} बजे"
+    if minute == 15:
+        return f"{period} सवा {h12} बजे"
+    if minute == 45:
+        return f"{period} पौने {h12 % 12 + 1} बजे"
+    return f"{period} {h12} बजकर {minute} मिनट"
 
 
 # ── verdict ──────────────────────────────────────────────────────────────────
@@ -824,7 +1016,11 @@ def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verd
     time instead of replacing it — and the optional normalized companions
     (``normalizedDayVariable`` / ``normalizedTimeVariable``): written from
     the resolution whenever a day is accepted ('' time for a day alone),
-    cleared on every rejection. The spoken slots are never rewritten.
+    cleared on every rejection. ``spokenVariables`` ({"day": name, "time":
+    name, "languages": ["hi", "en"]}) adds ``<name>_<lang>`` companions with
+    the resolved values as a person says them (:func:`spoken_day`,
+    :func:`spoken_time`) for the confirmation readback. The caller's own
+    slots are never rewritten.
     """
     if not isinstance(config, dict) or config.get("type") != VALIDATION_TYPE:
         return Verdict(True)
@@ -834,6 +1030,11 @@ def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verd
         str(config.get(key) or "").strip()
         for key in ("normalizedDayVariable", "normalizedTimeVariable")
     )
+    spoken = config.get("spokenVariables") if isinstance(config.get("spokenVariables"), dict) else {}
+    spoken_langs = [str(l) for l in (spoken.get("languages") or ["hi", "en"]) if str(l).strip()]
+    spoken_vars = [(str(spoken.get("day") or ""), str(spoken.get("time") or ""), lang) for lang in spoken_langs]
+    companions = tuple(n for n in normalized if n) + tuple(
+        f"{name}_{lang}" for day, time, lang in spoken_vars for name in (day, time) if name)
     pending_var = pending_time_variable(config)
     pending = str(slots.get(pending_var) or "").strip() if pending_var else ""
     time_text = _first_filled(slots, time_vars)
@@ -854,11 +1055,16 @@ def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verd
             for name, value in zip(normalized, (resolved.iso_date, resolved.normalized_time)):
                 if name:
                     slots[name] = value
+            for day_name, time_name, lang in spoken_vars:
+                if day_name:
+                    slots[f"{day_name}_{lang}"] = spoken_day(resolved.day.value, current.date(), lang)
+                if time_name:
+                    slots[f"{time_name}_{lang}"] = spoken_time(resolved.normalized_time, lang)
         return Verdict(True)
     reason = resolved.reason or "day_unclear"
     if reason == "time_ambiguous" and pending_var and time_text:
         slots[pending_var] = time_text
-    clear = tuple(day_vars if reason.startswith("day_") else time_vars) + tuple(n for n in normalized if n)
+    clear = tuple(day_vars if reason.startswith("day_") else time_vars) + companions
     return Verdict(False, reason, clear)
 
 
@@ -920,7 +1126,9 @@ __all__ = [
     "DEFAULT_TIMEZONE", "VALIDATION_TYPE", "DayResult", "TimeResult", "Verdict", "VisitResolution",
     "HOUR_WORDS", "HOUR_WORDS_HI", "HOUR_WORDS_ROMAN", "HOUR_WORDS_EN", "FRACTION_WORDS",
     "SPECIAL_TIMES", "MINUTE_WORDS_EN", "MINUTE_WORDS_HI", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
+    "DAY_WORDS_HI", "ORDINAL_WORDS_EN", "DAY_WORDS", "fold_text",
     "now_in", "parse_day", "parse_time", "normalize_time", "compose_time", "resolve_visit",
     "validate_visit", "validate_ask", "pending_time_variable", "rejection_reply",
     "time_capture_regex", "day_capture_regex", "extract_time", "extract_day",
+    "spoken_day", "spoken_time",
 ]
