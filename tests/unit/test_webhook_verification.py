@@ -142,3 +142,118 @@ class TestPublicWsBase:
     def test_empty_setting_derives_from_request(self):
         assert self._resolve("") == "ws://192.168.60.123:9011"
         assert self._resolve("   ") == "ws://192.168.60.123:9011"
+
+
+class TestDialedTargetRouting:
+    """``To`` carries either a DID or a bot id (``bot_…``). The resolver
+    anchors the tenant on whichever it is; the extractor shape-checks a bot
+    id before any lookup and leaves DIDs untouched (exact-match contract)."""
+
+    def test_is_bot_id(self):
+        from shared.bot_config import is_bot_id
+
+        assert is_bot_id("bot_33fa43aa0668")
+        assert is_bot_id("  bot_33fa43aa0668 ")
+        assert not is_bot_id("+918047133639")
+        assert not is_bot_id("+91 80 4522 1010")
+        assert not is_bot_id("")
+        assert not is_bot_id(None)
+        assert not is_bot_id("bot-101")  # legacy demo ids keep routing by number
+
+    @staticmethod
+    def _request(payload: dict):
+        import json
+
+        from starlette.requests import Request
+
+        body = json.dumps(payload).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "path": "/", "query_string": b"",
+                 "headers": [(b"content-type", b"application/json")]}
+        return Request(scope, receive)
+
+    async def test_extract_strips_and_validates_bot_id_in_to(self):
+        from shared.telephony_webhooks import _extract_call_details
+
+        called, caller, call_id, variables, bot_id, direction = await _extract_call_details(
+            "freeswitch", self._request({
+                "To": " bot_33fa43aa0668 ", "From": "+919812345678", "callId": "uuid-1",
+                "contextLine": "inbound-api-routing-phone", "city": "Pune",
+            }))
+        assert called == "bot_33fa43aa0668"
+        assert (caller, call_id, bot_id, direction) == ("+919812345678", "uuid-1", None, None)
+        assert variables == {}  # unknown top-level fields are ignored, never an error
+
+    async def test_extract_rejects_malformed_bot_id_in_to(self):
+        from shared.errors import ApiError
+        from shared.telephony_webhooks import _extract_call_details
+
+        with pytest.raises(ApiError) as excinfo:
+            await _extract_call_details(
+                "freeswitch", self._request({"To": "bot_../etc/passwd"}))
+        assert excinfo.value.status_code == 422
+
+    async def test_extract_leaves_a_did_untouched(self):
+        from shared.telephony_webhooks import _extract_call_details
+
+        called, *_ = await _extract_call_details(
+            "vaani", self._request({"To": "+91 80 4522 1010 "}))
+        assert called == "+91 80 4522 1010 "  # exact-match contract: no normalization
+
+    @pytest.fixture
+    def resolver(self, monkeypatch):
+        """resolve_bot_for_dialer with its DB helpers replaced: bot_a1/bot_a2
+        in tn_a, bot_b1 in tn_b, one DID assigned to bot_a1."""
+        import shared.bot_config as bc
+        from shared.errors import NotFoundError
+
+        tenants = {"bot_a1": "tn_a", "bot_a2": "tn_a", "bot_b1": "tn_b"}
+        lookups = []
+
+        def tenant_of(bot_id):
+            lookups.append(("bot", bot_id))
+            if bot_id not in tenants:
+                raise NotFoundError("Bot")
+            return tenants[bot_id]
+
+        def assignment(number):
+            lookups.append(("number", number))
+            if number != "+15550001111":
+                raise NotFoundError("A bot assignment for this number")
+            return "bot_a1", "tn_a"
+
+        async def resolve(bot_id, *, require_published, use_cache=True):
+            return ("config", bot_id, require_published)
+
+        monkeypatch.setattr(bc, "_bot_tenant_sync", tenant_of)
+        monkeypatch.setattr(bc, "_phone_assignment_sync", assignment)
+        monkeypatch.setattr(bc, "resolve_bot_config", resolve)
+        return bc, lookups
+
+    async def test_did_path_is_unchanged(self, resolver):
+        bc, lookups = resolver
+        assert await bc.resolve_bot_for_dialer("+15550001111") == ("config", "bot_a1", True)
+        assert lookups == [("number", "+15550001111")]
+
+    async def test_bot_id_in_to_resolves_without_number_lookup(self, resolver):
+        bc, lookups = resolver
+        assert await bc.resolve_bot_for_dialer("bot_a2") == ("config", "bot_a2", True)
+        assert lookups == [("bot", "bot_a2")]  # phone_numbers is never queried
+
+    async def test_bot_id_in_to_then_bot_id_selects_same_tenant_sibling(self, resolver):
+        from shared.errors import NotFoundError
+
+        bc, _ = resolver
+        assert await bc.resolve_bot_for_dialer("bot_a1", "bot_a2") == ("config", "bot_a2", True)
+        with pytest.raises(NotFoundError):  # cross-tenant: sanitized
+            await bc.resolve_bot_for_dialer("bot_a1", "bot_b1")
+
+    async def test_unknown_bot_id_in_to_is_not_found(self, resolver):
+        from shared.errors import NotFoundError
+
+        bc, _ = resolver
+        with pytest.raises(NotFoundError):
+            await bc.resolve_bot_for_dialer("bot_does_not_exist")

@@ -65,7 +65,28 @@ class TestLeadingAffirmation:
             assert not leading_affirmation(text), text
 
 
+    def test_sarvam_danda_terminated_confirmations(self):
+        """cv_8ed0e5c585bd (demo live, 2026-10-16): Sarvam spells a bare "जी"
+        as "जी।". The danda (U+0964) sits inside the Devanagari block the
+        word-end lookahead treats as letters, so the confirmation was read as
+        an unfinished word and the opening question was asked again."""
+        for text in ("जी।", "हाँ।", "जी हाँ।", "हाँ जी।", "जी॥", "ji.", "haan.", "जी। बोलिए"):
+            assert leading_affirmation(text), text
+        for text in ("नहीं।", "जी नहीं।", "जीवन।"):
+            assert not leading_affirmation(text), text
+
+
 class TestAffirmEntryRouting:
+    def test_sarvam_danda_transcript_starts_the_configured_workflow(self):
+        router = TurnRouter(intents=OPENING_INTENTS, has_knowledge_bases=False)
+        for text in ("जी।", "हाँ।"):
+            decision = router.decide(text)
+            assert decision.kind == RouteKind.WORKFLOW, text
+            assert decision.action == "wf_main"
+            assert decision.reason in ("affirm_entry_workflow", "intent_workflow")
+            assert decision.signal == "affirm"
+        assert router.decide("नहीं।").kind == RouteKind.CHAT
+
     def test_router_derives_the_opening_intent_from_bare_affirm_samples(self):
         router = TurnRouter(intents=OPENING_INTENTS, has_knowledge_bases=False)
         assert router.affirm_entry == ("start_enquiries", "wf_main")

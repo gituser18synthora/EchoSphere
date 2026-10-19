@@ -70,6 +70,17 @@ assigned bot. A bot id that does not exist, is archived, has no published
 release, or belongs to **another tenant** answers with a sanitized `404`
 (existence is never revealed); a malformed `botId` is `422`.
 
+**Direct bot routing (`To` = bot id).** A dialer may target a bot that has no
+DID assignment at all: when `To` starts with `bot_` it is treated as a bot id
+(pattern `^[A-Za-z0-9_-]{1,64}$`, otherwise `422`) and resolved directly —
+the `phone_numbers` table is not consulted. The signed webhook is the
+authorization to name a bot; the bot must exist, not be archived, have a
+published release and not have its voice channel disabled — the same gates a
+number's assigned bot passes — or the answer is a sanitized `404`/`403`. The
+bot's own tenant becomes the anchor, so `botId` may still pick a same-tenant
+sibling on top. `From`, `callId`, `variables`, the compliance gate and the
+voice session are handled identically on both routes.
+
 ## Connect payloads
 
 `connect_instructions()` returns what the webhook answers with, pointing the

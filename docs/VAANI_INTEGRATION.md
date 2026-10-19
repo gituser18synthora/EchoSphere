@@ -117,7 +117,7 @@ headers = {"X-Webhook-Signature": sig, "X-Webhook-Timestamp": ts,
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `To` | string | **yes** | The **EchoSphere-mapped phone number** (DID) registered for the tenant — for outbound campaign calls too, send the EchoSphere-mapped number here, **not** the customer's number. It must match the registered number **character-for-character** (including spaces, e.g. `+91 80 4522 1010`). Aliases accepted: `to`, `CallTo`, `called_number`. |
+| `To` | string | **yes** | The **EchoSphere-mapped phone number** (DID) registered for the tenant — for outbound campaign calls too, send the EchoSphere-mapped number here, **not** the customer's number. It must match the registered number **character-for-character** (including spaces, e.g. `+91 80 4522 1010`). Aliases accepted: `to`, `CallTo`, `called_number`. **Direct bot routing:** a value starting with `bot_` is treated as a bot id (pattern `^[A-Za-z0-9_-]{1,64}$`) and routes to that bot directly, with no DID assignment required (used by the FreeSWITCH bridge); the bot must be published and its voice channel enabled. |
 | `From` | string | no | Caller/customer number. Stored (masked) on the call record. Aliases: `from`, `caller_number`. |
 | `callId` | string | no | Your call identifier for cross-system tracing (converted to a string and truncated after 64 chars). Aliases: `CallSid`, `call_id`. Strongly recommended and unique per call, but not used for deduplication. |
 | `botId` | string | no | Selects which of the tenant's bots answers this call (per-campaign routing over the shared DID). Pattern `^[A-Za-z0-9_-]{1,64}$`. Alias: `bot_id`. Omitted → the DID's default bot. |
@@ -193,9 +193,11 @@ validation errors may also add an `errors` array.
 | `404` | Wrong provider segment in the path | `Unsupported telephony provider '…'` |
 | `404` | `To` doesn't match a registered, assigned number | `A bot assignment for this number not found.` |
 | `404` | `botId` unknown, archived, or belongs to another tenant (existence is deliberately not revealed) | `Bot not found.` |
+| `404` | `To` is a bot id that is unknown or archived | `Bot not found.` |
 | `404` | Selected/default bot has no published release | `Bot has no published release not found.` |
 | `422` | No dialed number in the payload | `Webhook payload missing the dialed number` |
 | `422` | `botId` fails the pattern | `Invalid botId in webhook payload` |
+| `422` | `To` starts with `bot_` but fails the bot-id pattern | `Invalid bot id in the To field` |
 | `503` | Bot's AI provider disabled under platform governance | `Voice engine unavailable: …` |
 | `503` | Control-plane database temporarily unavailable | `The database is temporarily unavailable. Please try again shortly.` |
 | `500` | Unexpected server error, including a non-object JSON body | `An unexpected error occurred.` |

@@ -28,7 +28,7 @@ import time
 from fastapi import Request
 from fastapi.responses import Response
 
-from shared.bot_config import resolve_bot_for_dialer
+from shared.bot_config import is_bot_id, resolve_bot_for_dialer
 from shared.config import get_settings
 from shared.errors import ApiError
 from shared.telephony import (
@@ -174,8 +174,10 @@ def _sanitize_variables(raw: object) -> dict[str, str]:
 async def _extract_call_details(
     provider: str, request: Request
 ) -> tuple[str, str | None, str | None, dict[str, str], str | None, str | None]:
-    """Returns (called_number, caller_number, call_id, variables, bot_id,
-    direction). ``direction`` is the dialer's own declaration when present
+    """Returns (called, caller_number, call_id, variables, bot_id,
+    direction). ``called`` is the dialed target: a DID, or — when ``To``
+    starts with ``bot_`` — a bot id routed directly (no DID assignment).
+    ``direction`` is the dialer's own declaration when present
     ("inbound"/"outbound"); compliance policies may configure an assumption
     for payloads that omit it."""
     if provider == "twilio":
@@ -195,6 +197,13 @@ async def _extract_call_details(
         body.get("To") or body.get("to") or body.get("CallTo")
         or body.get("called_number") or ""
     )
+    if is_bot_id(called):
+        # ``To`` names a bot directly. The id gets the same shape check as
+        # ``botId`` before it reaches the DB or the logs; a DID is passed
+        # through untouched (exact-match contract, no normalization).
+        called = called.strip()
+        if not _BOT_ID.match(called):
+            raise ApiError("Invalid bot id in the To field", status_code=422)
     caller = body.get("From") or body.get("from") or body.get("caller_number")
     call_id = (
         body.get("CallSid") or body.get("callId") or body.get("call_id") or None
@@ -295,9 +304,9 @@ async def enforce_pre_call_compliance(
 
 async def handle_inbound_call_webhook(provider: str, request: Request) -> Response:
     """Answer an inbound-call webhook: verify the signature → resolve the
-    tenant/bot from the dialed number (+ optional botId) → issue a voice
-    session → return the provider's connect payload pointing its media
-    stream at the voice worker."""
+    tenant/bot from the dialed target (a DID or a bot id, + optional botId)
+    → issue a voice session → return the provider's connect payload pointing
+    its media stream at the voice worker."""
     if provider not in SUPPORTED_PROVIDERS:
         raise ApiError(f"Unsupported telephony provider '{provider}'", status_code=404)
     settings = get_settings()
@@ -321,7 +330,7 @@ async def handle_inbound_call_webhook(provider: str, request: Request) -> Respon
         verify_generic_signature(body=raw_body, signature=signature, timestamp=timestamp)
         await check_replay(signature)
 
-    # ── trusted routing: number (+ botId) → tenant → bot → published config ─
+    # ── trusted routing: DID or bot id (+ botId) → tenant → bot → config ──
     called, caller, call_id, variables, requested_bot, direction = (
         await _extract_call_details(provider, request)
     )
@@ -355,7 +364,8 @@ async def handle_inbound_call_webhook(provider: str, request: Request) -> Respon
     logger.info(
         "telephony.inbound provider=%s called=%s routed_via=%s tenant=%s bot=%s "
         "session=%s call_id=%s variables=%d",
-        provider, called, "botId" if requested_bot else "number",
+        provider, called,
+        "botId" if requested_bot else ("bot" if is_bot_id(called) else "number"),
         config.tenant_id, config.bot_id, session["session_id"], call_id,
         len(variables),
     )
