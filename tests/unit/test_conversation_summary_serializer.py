@@ -75,3 +75,26 @@ def test_malformed_specs_are_ignored():
         {"structured_fields": STORED}, [None, "x", {"label": "no name"}, {"name": "  "}]
     )
     assert set(fields) == set(STORED) and labels == {}
+
+
+DATE_SPECS = [
+    {"name": "appointment_date", "label": "Pickup date", "type": "date"},
+    {"name": "appointment_time", "label": "Pickup time", "type": "time", "timezone": "Asia/Kolkata"},
+    {"name": "note", "label": "Note", "type": "text"},
+]
+
+
+def test_serializer_adds_display_forms_for_normalized_date_time_fields():
+    stored = {"appointment_date": "2026-10-20", "appointment_time": "17:00", "note": "2026-10-20"}
+    payload = serialize_conversation_memory(_memory_row(memory={"structured_fields": stored}), DATE_SPECS)
+    assert payload["structuredFields"] == stored                       # values stay machine-readable
+    assert payload["structuredFieldDisplay"] == {"appointment_date": "20 Oct 2026",
+                                                 "appointment_time": "05:00 PM IST"}
+
+
+def test_display_is_empty_without_specs_or_values():
+    assert serialize_conversation_memory(_memory_row())["structuredFieldDisplay"] == {}
+    payload = serialize_conversation_memory(
+        _memory_row(memory={"structured_fields": {"appointment_date": None, "appointment_time": "evening"}}),
+        DATE_SPECS)
+    assert payload["structuredFieldDisplay"] == {"appointment_time": "Evening (time window)"}

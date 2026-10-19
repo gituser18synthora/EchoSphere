@@ -159,20 +159,25 @@ class GoalSpec(BaseModel):
     completion: str = ""
 
 
-SUMMARY_FIELD_TYPES = ("yes_no", "choice", "text")
+SUMMARY_FIELD_TYPES = ("yes_no", "choice", "text", "date", "time")
 
 
 class SummaryFieldSpec(BaseModel):
     """One structured post-call summary field the bot reports for every call.
 
     Configuration, not code: the field's output ``name``, its ``type``
-    (``yes_no`` → "Yes"/"No", ``choice`` → one of ``options``, ``text``), the
-    workflow slot it is read from (``source``) and how that slot's canonical
-    values map onto the output vocabulary (``values``; ``"*"`` = any other
-    non-empty slot value). The workflow slot is authoritative — it reflects
-    every correction the caller made during the call; the post-call analyst
-    may fill a field only when the slot never got a value and ``allowLlm`` is
-    on. See shared.post_call.structured for the derivation rules.
+    (``yes_no`` → "Yes"/"No", ``choice`` → one of ``options``, ``text``,
+    ``date`` → ``YYYY-MM-DD``, ``time`` → ``HH:MM`` 24-hour or a window word
+    morning/afternoon/evening/night — both read from a slot that already
+    holds the normalized form, e.g. the companions written by an ask's
+    ``validation``), the workflow slot it is read from (``source``) and how
+    that slot's canonical values map onto the output vocabulary (``values``;
+    ``"*"`` = any other non-empty slot value). ``timezone`` names the zone a
+    ``time`` value was given in (display only: "05:00 PM IST"). The workflow
+    slot is authoritative — it reflects every correction the caller made
+    during the call; the post-call analyst may fill a field only when the
+    slot never got a value and ``allowLlm`` is on. See
+    shared.post_call.structured for the derivation and display rules.
     """
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -182,6 +187,7 @@ class SummaryFieldSpec(BaseModel):
     description: str = ""
     type: str = "yes_no"
     source: str = ""
+    timezone: str = ""
     options: list[str] = Field(default_factory=list)
     values: dict[str, str] = Field(default_factory=dict)
     allow_llm: bool = Field(default=True, alias="allowLlm")
@@ -191,7 +197,7 @@ class SummaryFieldSpec(BaseModel):
     # stale/analyst value can never contradict the decided handover type.
     requires: dict[str, list[str]] = Field(default_factory=dict)
 
-    @field_validator("name", "source", mode="before")
+    @field_validator("name", "source", "timezone", mode="before")
     @classmethod
     def _clean_key(cls, v):
         return str(v or "").strip()[:64]

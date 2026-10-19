@@ -23,7 +23,7 @@ from shared.orchestration.goal_engine import BotGoalPolicy, compile_goal_policy
 from shared.post_call.structured import derive_structured_fields, merge_structured_fields
 
 SETUP = runpy.run_path("jeeves/setup/01_structured_summary.py")
-SUMMARY_FIELDS = SETUP["SUMMARY_FIELDS"]
+SUMMARY_FIELDS = SETUP["summary_fields"](1)   # stage-1 fields: pickup day/time as spoken
 BASELINE = SETUP["load_baseline"]()
 V12 = {"id": BASELINE["id"], "version": 12, "name": BASELINE["name"],
        "nodes": BASELINE["nodes"], "edges": BASELINE["edges"]}

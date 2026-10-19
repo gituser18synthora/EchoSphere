@@ -18,11 +18,20 @@ Two sources feed a field, in strict precedence:
 
 Fields with neither source stay ``None`` ("not determined") — the key is
 still present so downstream consumers see a stable shape.
+
+``date`` / ``time`` fields carry normalized values (``YYYY-MM-DD``; ``HH:MM``
+24-hour, or a window word for a period the caller gave without a clock time)
+and nothing else — a slot or analyst value in any other shape is "not
+determined", never reformatted here. :func:`display_value` renders them for
+people ("20 Oct 2026", "05:00 PM IST", "Evening (time window)").
 """
 
 import re
+from datetime import date, datetime
 
 from shared.orchestration.goal_engine import BotGoalPolicy, SummaryFieldSpec
+from shared.orchestration.time_context import resolve_zone
+from shared.orchestration.visit_datetime import PERIOD_WORDS
 
 YES = "Yes"
 NO = "No"
@@ -35,6 +44,11 @@ _MAX_TEXT_CHARS = 120
 
 SOURCE_WORKFLOW = "workflow"
 SOURCE_ANALYSIS = "analysis"
+
+TIME_WINDOWS = tuple(PERIOD_WORDS)      # morning | afternoon | evening | night
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CLOCK_24H = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def _norm(value) -> str:
@@ -56,6 +70,26 @@ def normalize_yes_no(value) -> str | None:
     if first in _YES_TOKENS:
         return YES
     return None
+
+
+def normalize_date_value(value) -> str | None:
+    """``YYYY-MM-DD`` when the value is exactly that and a real date."""
+    text = _norm(value)
+    if not _ISO_DATE.match(text):
+        return None
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return None
+    return text
+
+
+def normalize_time_value(value) -> str | None:
+    """``HH:MM`` (24-hour) or a window word; anything else is not a value."""
+    text = _norm(value)
+    if _CLOCK_24H.match(text):
+        return text
+    return text if text in TIME_WINDOWS else None
 
 
 def _match_option(spec: SummaryFieldSpec, value) -> str | None:
@@ -85,8 +119,8 @@ def derive_field(spec: SummaryFieldSpec, slots: dict | None) -> str | None:
             return decided
     if "*" in spec.values:
         return _validate_value(spec, spec.values["*"]) or None
-    if spec.type == "choice":
-        return _match_option(spec, lowered)
+    if spec.type in ("choice", "date", "time"):
+        return _validate_value(spec, raw)
     if spec.type == "text":
         return str(raw).strip()[:_MAX_TEXT_CHARS]
     return None
@@ -100,8 +134,57 @@ def _validate_value(spec: SummaryFieldSpec, value) -> str | None:
         return normalize_yes_no(value)
     if spec.type == "choice":
         return _match_option(spec, value)
+    if spec.type == "date":
+        return normalize_date_value(value)
+    if spec.type == "time":
+        return normalize_time_value(value)
     text = " ".join(str(value).split()).strip()
     return text[:_MAX_TEXT_CHARS] or None
+
+
+def display_value(field_type, value, timezone=None) -> str | None:
+    """The human-readable form of a normalized ``date`` / ``time`` value:
+    "20 Oct 2026"; "05:00 PM IST" (zone abbreviation from ``timezone``, none
+    without one); "Evening (time window)". None for other types, an unset
+    field, or a value that is not in the normalized shape."""
+    if value is None:
+        return None
+    kind = str(field_type or "").strip().lower()
+    if kind == "date":
+        iso = normalize_date_value(value)
+        if not iso:
+            return None
+        d = date.fromisoformat(iso)
+        return f"{d.day} {_MONTHS[d.month - 1]} {d.year}"
+    if kind == "time":
+        text = normalize_time_value(value)
+        if not text:
+            return None
+        if text in TIME_WINDOWS:
+            return f"{text.capitalize()} (time window)"
+        hour, minute = (int(part) for part in text.split(":"))
+        clock = f"{hour % 12 or 12:02d}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+        zone = str(timezone or "").strip()
+        if not zone:
+            return clock
+        return f"{clock} {datetime.now(resolve_zone(zone)).tzname() or zone}"
+    return None
+
+
+def display_structured_fields(summary_fields, fields: dict | None) -> dict[str, str]:
+    """``{name: display}`` for every configured date/time field with a value
+    (raw spec dicts as stored in goal_policy.summaryFields)."""
+    out: dict[str, str] = {}
+    for spec in summary_fields or []:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "").strip()
+        if not name:
+            continue
+        shown = display_value(spec.get("type"), (fields or {}).get(name), spec.get("timezone"))
+        if shown:
+            out[name] = shown
+    return out
 
 
 def derive_structured_fields(
@@ -186,6 +269,10 @@ def summary_fields_prompt_block(policy: BotGoalPolicy | None) -> str:
             allowed = '"Yes" | "No" | null'
         elif spec.type == "choice":
             allowed = " | ".join(f'"{o}"' for o in spec.options) + " | null"
+        elif spec.type == "date":
+            allowed = '"YYYY-MM-DD" | null'
+        elif spec.type == "time":
+            allowed = '"HH:MM" (24-hour) | ' + " | ".join(f'"{w}"' for w in TIME_WINDOWS) + " | null"
         else:
             allowed = "short text | null"
         meaning = spec.description or spec.label or spec.name.replace("_", " ")
@@ -196,9 +283,14 @@ def summary_fields_prompt_block(policy: BotGoalPolicy | None) -> str:
 __all__ = [
     "SOURCE_ANALYSIS",
     "SOURCE_WORKFLOW",
+    "TIME_WINDOWS",
     "derive_field",
     "derive_structured_fields",
+    "display_structured_fields",
+    "display_value",
     "merge_structured_fields",
+    "normalize_date_value",
+    "normalize_time_value",
     "normalize_yes_no",
     "summary_fields_prompt_block",
 ]

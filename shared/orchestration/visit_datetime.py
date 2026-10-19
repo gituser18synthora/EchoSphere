@@ -17,8 +17,18 @@ Node config (opt-in, nothing happens without it)::
         "replyByLanguage": {                    # optional overrides
             "day_past": {"hi": "...", "en": "..."}, "day_invalid": {...},
             "time_past": {...}, "time_ambiguous": {...}, "time_invalid": {...}
-        }
+        },
+        "normalizedDayVariable": "visit_date_iso",    # optional: where the
+        "normalizedTimeVariable": "visit_time_24h"    # resolved values go
     }
+
+Normalized companions (opt-in): every accepted answer also writes the day
+the parser resolved — against the clock at THAT utterance, in the configured
+zone, so "kal" said after midnight is the right calendar day — as
+``YYYY-MM-DD``, and the time as ``HH:MM`` (24-hour) for an exact time or the
+period name (``morning`` | ``afternoon`` | ``evening`` | ``night``) for a
+window, '' when no time was given. The spoken slots are untouched (readbacks
+keep the caller's words); a rejection clears both companions.
 
 Rules (``now`` in the configured zone):
 
@@ -369,45 +379,82 @@ class Verdict:
     clear: tuple[str, ...] = field(default_factory=tuple)
 
 
-def validate_visit(day_text, time_text, now: datetime, *,
-                   accept_unparsed_day: bool = False) -> tuple[bool, str | None]:
-    """(ok, reason) for a spoken day/time against ``now`` (zone-aware).
+def normalize_time(t: TimeResult) -> str:
+    """``HH:MM`` (24-hour) for an exact time, the period name for a window
+    (``morning`` | ``afternoon`` | ``evening`` | ``night``), '' otherwise —
+    a window is never turned into a clock time."""
+    if t.kind == "exact" and t.candidates:
+        return "%02d:%02d" % divmod(t.candidates[0] % (24 * 60), 60)
+    if t.kind == "period" and t.period in PERIOD_WORDS:
+        return t.period
+    return ""
+
+
+@dataclass(frozen=True)
+class VisitResolution:
+    """What the parser made of a spoken day/time pair against ``now``."""
+    ok: bool
+    reason: str | None = None
+    day: DayResult = field(default_factory=lambda: DayResult("unknown"))
+    time: TimeResult = field(default_factory=lambda: TimeResult("unknown"))
+
+    @property
+    def iso_date(self) -> str:
+        """``YYYY-MM-DD`` of the resolved day ('' when none was resolved)."""
+        return self.day.value.isoformat() if self.day.kind == "ok" and self.day.value else ""
+
+    @property
+    def normalized_time(self) -> str:
+        return normalize_time(self.time)
+
+
+def resolve_visit(day_text, time_text, now: datetime, *,
+                  accept_unparsed_day: bool = False) -> VisitResolution:
+    """Parse and judge a spoken day/time against ``now`` (zone-aware).
 
     A day the parser cannot read ("next week", "agle hafte") is
     ``day_unclear`` — the flow asks for a specific day rather than confirming
     an unverified one — unless ``accept_unparsed_day`` opts into the old
-    accept-as-spoken behaviour. An EMPTY day is simply "not given yet".
+    accept-as-spoken behaviour. An EMPTY day is simply "not given yet". The
+    time is only read once the day is known.
     """
     today = now.date()
     day = parse_day(day_text, today)
     if day.kind == "invalid":
-        return False, "day_invalid"
+        return VisitResolution(False, "day_invalid", day)
     if day.kind == "past":
-        return False, "day_past"
+        return VisitResolution(False, "day_past", day)
     if day.kind == "unknown" and _norm(day_text) and not accept_unparsed_day:
-        return False, "day_unclear"
+        return VisitResolution(False, "day_unclear", day)
     if day.kind != "ok" or not _norm(time_text):
-        return True, None
+        return VisitResolution(True, None, day)
     t = parse_time(time_text)
     if t.kind == "invalid":
-        return False, "time_invalid"
+        return VisitResolution(False, "time_invalid", day, t)
     if t.kind == "unknown":
-        return False, "time_unclear"     # something was said, nothing understood: ask, never guess
+        return VisitResolution(False, "time_unclear", day, t)   # said, not understood: ask, never guess
     is_today = day.value == today
     now_minutes = now.hour * 60 + now.minute
     if t.kind == "ambiguous":
         # A bare hour is never accepted: morning or evening is asked on any
         # day; when both readings are already gone today it is simply past.
         if is_today and all(c <= now_minutes for c in t.candidates):
-            return False, "time_past"
-        return False, "time_ambiguous"
+            return VisitResolution(False, "time_past", day, t)
+        return VisitResolution(False, "time_ambiguous", day, t)
     if not is_today:
-        return True, None
-    if t.kind == "exact":
-        return (True, None) if t.candidates[0] > now_minutes else (False, "time_past")
-    if t.kind == "period":
-        return (True, None) if _PERIOD_ENDS.get(t.period, 24 * 60) > now_minutes else (False, "time_past")
-    return True, None
+        return VisitResolution(True, None, day, t)
+    if t.kind == "exact" and t.candidates[0] <= now_minutes:
+        return VisitResolution(False, "time_past", day, t)
+    if t.kind == "period" and _PERIOD_ENDS.get(t.period, 24 * 60) <= now_minutes:
+        return VisitResolution(False, "time_past", day, t)
+    return VisitResolution(True, None, day, t)
+
+
+def validate_visit(day_text, time_text, now: datetime, *,
+                   accept_unparsed_day: bool = False) -> tuple[bool, str | None]:
+    """(ok, reason) for a spoken day/time — see :func:`resolve_visit`."""
+    r = resolve_visit(day_text, time_text, now, accept_unparsed_day=accept_unparsed_day)
+    return r.ok, r.reason
 
 
 def _first_filled(slots: dict, names: list) -> str:
@@ -427,15 +474,22 @@ def pending_time_variable(config: dict) -> str:
 def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verdict:
     """Apply a node's ``validation`` config to the slots as they stand.
 
-    Mutates only the pending-hour slot: a bare hour refused as
-    ``time_ambiguous`` is parked there, and a later bare period answer
-    ("शाम", "PM") is composed with it into every time slot, so the caller's
-    clarification completes the time instead of replacing it.
+    Mutates the pending-hour slot — a bare hour refused as ``time_ambiguous``
+    is parked there, and a later bare period answer ("शाम", "PM") is composed
+    with it into every time slot, so the caller's clarification completes the
+    time instead of replacing it — and the optional normalized companions
+    (``normalizedDayVariable`` / ``normalizedTimeVariable``): written from
+    the resolution whenever a day is accepted ('' time for a day alone),
+    cleared on every rejection. The spoken slots are never rewritten.
     """
     if not isinstance(config, dict) or config.get("type") != VALIDATION_TYPE:
         return Verdict(True)
     day_vars = [str(v) for v in (config.get("dayVariables") or []) if str(v).strip()]
     time_vars = [str(v) for v in (config.get("timeVariables") or []) if str(v).strip()]
+    normalized = tuple(
+        str(config.get(key) or "").strip()
+        for key in ("normalizedDayVariable", "normalizedTimeVariable")
+    )
     pending_var = pending_time_variable(config)
     pending = str(slots.get(pending_var) or "").strip() if pending_var else ""
     time_text = _first_filled(slots, time_vars)
@@ -447,15 +501,20 @@ def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verd
             time_text = composed
         slots.pop(pending_var, None)   # consumed, or superseded by a full time
     current = now or now_in(config.get("timezone") or DEFAULT_TIMEZONE)
-    ok, reason = validate_visit(
+    resolved = resolve_visit(
         _first_filled(slots, day_vars), time_text, current,
         accept_unparsed_day=config.get("acceptUnparsedDay") is True,
     )
-    if ok:
+    if resolved.ok:
+        if resolved.iso_date:
+            for name, value in zip(normalized, (resolved.iso_date, resolved.normalized_time)):
+                if name:
+                    slots[name] = value
         return Verdict(True)
+    reason = resolved.reason or "day_unclear"
     if reason == "time_ambiguous" and pending_var and time_text:
         slots[pending_var] = time_text
-    clear = tuple(day_vars if reason.startswith("day_") else time_vars)
+    clear = tuple(day_vars if reason.startswith("day_") else time_vars) + tuple(n for n in normalized if n)
     return Verdict(False, reason, clear)
 
 
@@ -514,9 +573,9 @@ def rejection_reply(config: dict, reason: str, lang: str) -> str:
 
 
 __all__ = [
-    "DEFAULT_TIMEZONE", "VALIDATION_TYPE", "DayResult", "TimeResult", "Verdict",
+    "DEFAULT_TIMEZONE", "VALIDATION_TYPE", "DayResult", "TimeResult", "Verdict", "VisitResolution",
     "HOUR_WORDS", "HOUR_WORDS_HI", "HOUR_WORDS_ROMAN", "HOUR_WORDS_EN", "FRACTION_WORDS",
     "SPECIAL_TIMES", "MINUTE_WORDS_EN", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
-    "now_in", "parse_day", "parse_time", "compose_time", "validate_visit", "validate_ask",
-    "pending_time_variable", "rejection_reply",
+    "now_in", "parse_day", "parse_time", "normalize_time", "compose_time", "resolve_visit",
+    "validate_visit", "validate_ask", "pending_time_variable", "rejection_reply",
 ]

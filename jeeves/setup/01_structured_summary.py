@@ -41,6 +41,18 @@ What this stage does (dry-run by default, idempotent):
      state that the engineer confirms the exact time when only a day was
      given, and their yes/no edges accept the natural answers to that
      question (ठीक रहेगा, चलेगा, सही है …). Outcome logic is untouched.
+  6. Normalized pickup date/time (fifth workflow upgrade): the four validated
+     asks also write what the parser resolved — at the utterance, in
+     Asia/Kolkata — into ``visit_date_iso`` (YYYY-MM-DD) and ``visit_time_24h``
+     (HH:MM, or morning/afternoon/evening/night for a time window, '' when
+     only a day was given); the reset marker forgets them with the spoken
+     slots. ``appointment_date`` / ``appointment_time`` become ``date`` /
+     ``time`` fields read from those companions (same keys and labels), shown
+     as "20 Oct 2026" / "05:00 PM IST". Nothing spoken changes.
+     RUNTIME DEPENDENCY: the companions are written only by runtime code that
+     knows ``normalizedDayVariable`` (shared/orchestration/visit_datetime.py)
+     and the ``date``/``time`` field types (shared/post_call/structured.py);
+     applied to a server running older code, Pickup date/time come out empty.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -83,7 +95,32 @@ VISIT_STATUS_OPTIONS = [
     "wrong_person", "not_disconnected", "incomplete",
 ]
 
-SUMMARY_FIELDS = [
+NORMALIZED_SLOTS = {"normalizedDayVariable": "visit_date_iso",
+                    "normalizedTimeVariable": "visit_time_24h"}
+
+# Stage ≥ 5: the pickup date/time fields read the normalized companions.
+NORMALIZED_DATE_FIELDS = {
+    "appointment_date": {
+        "type": "date", "source": NORMALIZED_SLOTS["normalizedDayVariable"],
+        "description": (
+            "The visit day the customer confirmed, resolved to a calendar "
+            "date (YYYY-MM-DD) at the time it was said. Only when the "
+            "appointment was confirmed."
+        ),
+    },
+    "appointment_time": {
+        "type": "time", "source": NORMALIZED_SLOTS["normalizedTimeVariable"],
+        "timezone": "Asia/Kolkata",
+        "description": (
+            "The visit time the customer gave: HH:MM (24-hour, IST) for an "
+            "exact time, or morning/afternoon/evening/night when only a time "
+            "window was given; empty when only a day was given. Only when "
+            "the appointment was confirmed."
+        ),
+    },
+}
+
+SUMMARY_FIELDS_SPOKEN = [
     {
         "name": "address_verified",
         "label": "Address verified",
@@ -178,6 +215,19 @@ SUMMARY_FIELDS = [
         "description": "The customer's full callback request, as spoken.",
     },
 ]
+
+
+def summary_fields(stage: int | None = None) -> list[dict]:
+    """The goal-policy summaryFields for an upgrade stage (default: target):
+    up to stage 4 the pickup date/time are the caller's words; from stage 5
+    they are the normalized companions. Keys, labels and order never change."""
+    fields = copy.deepcopy(SUMMARY_FIELDS_SPOKEN)
+    if (TARGET_STAGE if stage is None else stage) >= 5:
+        for spec in fields:
+            override = NORMALIZED_DATE_FIELDS.get(spec["name"])
+            if override:
+                spec.update(override)
+    return fields
 
 # ── workflow upgrade ─────────────────────────────────────────────────────────
 
@@ -610,9 +660,34 @@ def has_confirmation_wording(nodes: list[dict]) -> bool:
     )
 
 
+# ── normalized pickup date/time (stage 5) ────────────────────────────────────
+
+def add_normalized_capture(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 5: the validated asks also write the resolved day/time into the
+    normalized companion slots; the reset marker clears them. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_confirmation_wording(nodes):
+        raise ValueError("stage 4 (confirmation wording) must be applied first")
+    for node_id in VALIDATED_ASKS:
+        by_id[node_id]["config"]["validation"].update(NORMALIZED_SLOTS)
+    reset = by_id[RESET_MARKER]
+    reset["config"]["setSlots"].update({name: "" for name in NORMALIZED_SLOTS.values()})
+    return nodes, edges
+
+
+def has_normalized_capture(nodes: list[dict]) -> bool:
+    return all(
+        all(((n.get("config") or {}).get("validation") or {}).get(k) == v
+            for k, v in NORMALIZED_SLOTS.items())
+        for n in nodes if n.get("id") in VALIDATED_ASKS
+    )
+
+
 def normalise_to_stage1(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Undo everything stages 2-4 may have written (validation, retry prompt
-    text, capture regexes, pending slots, readback/prompt, edge tokens) by
+    """Undo everything stages 2-5 may have written (validation, retry prompt
+    text, capture regexes, pending/normalized slots, readback/prompt, edge tokens) by
     restoring those keys from the stage-1 output. A saved workflow from any
     earlier stage then equals the stage-1 output; anything else differs."""
     base = load_baseline()
@@ -645,13 +720,15 @@ def load_baseline() -> dict:
         return json.load(f)
 
 
-TARGET_STAGE = 4
+TARGET_STAGE = 5
+SUMMARY_FIELDS = summary_fields()
 
 
 def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TARGET_STAGE) -> dict:
     """The upgraded definition in the engine's shape (tests + --dump):
     stage 1 = summary markers (v13), stage 2 = + day/time validation (v14/v15),
-    stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation wording."""
+    stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation
+    wording (v17), stage 5 = + normalized pickup date/time companions."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
@@ -660,6 +737,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
         nodes, edges = improve_time_capture(nodes, edges)
     if stage >= 4:
         nodes, edges = refine_confirmation_wording(nodes, edges)
+    if stage >= 5:
+        nodes, edges = add_normalized_capture(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -678,9 +757,11 @@ def describe(old_nodes, old_edges, new_nodes, new_edges) -> list[str]:
             changed_keys = sorted(k for k in set(new_cfg) | set(old_cfg) if new_cfg.get(k) != old_cfg.get(k))
             if "validation" in changed_keys:
                 v = new_cfg["validation"]
+                normalized = {k: v[k] for k in NORMALIZED_SLOTS if k in v}
                 lines.append(f"  ~ {n['id']}: validation {v['type']} {v['timezone']} "
                              f"day={v['dayVariables']} time={v['timeVariables']} "
-                             f"replies={sorted(v['replyByLanguage'])}")
+                             f"replies={sorted(v['replyByLanguage'])}"
+                             + (f" normalized={normalized}" if normalized else ""))
             other = [k for k in changed_keys if k != "validation"]
             if other:
                 lines.append(f"  ~ {n['id']}: text changed in {other}")
@@ -766,8 +847,9 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(f"workflow is v{wf.get('version')}, baseline is v{BASELINE_VERSION}; "
                          "re-export the baseline (or pass --allow-version) before upgrading")
         new_nodes, new_edges = target["nodes"], target["edges"]
-        print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording)"
-              if at_baseline else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
+        print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording, "
+              "normalized date/time)" if at_baseline
+              else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)
         if args.apply:
@@ -787,7 +869,11 @@ def main(argv: list[str] | None = None) -> None:
               f"summaryFields: {len(current or [])} → {len(SUMMARY_FIELDS)}")
         for spec in SUMMARY_FIELDS:
             print(f"       {spec['name']:<22} {spec['type']:<7} ← {spec['source']}"
+                  + (f" ({spec['timezone']})" if spec.get("timezone") else "")
                   + (f"  requires {spec['requires']}" if spec.get("requires") else ""))
+        print("     NOTE: the date/time fields read visit_date_iso / visit_time_24h, which only a "
+              "runtime with normalized-companion support writes (stage 5 code); on an older "
+              "runtime Pickup date/time stay empty — deploy the code first.")
         if args.apply:
             policy["summaryFields"] = SUMMARY_FIELDS
             _check(c.put(f"/bots/{BOT_ID}/voice-settings", json={"goalPolicy": policy}),
