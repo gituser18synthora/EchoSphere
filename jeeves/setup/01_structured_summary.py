@@ -27,6 +27,12 @@ What this stage does (dry-run by default, idempotent):
      with a short bilingual line and asked again — keeping whatever was
      valid — instead of being read back and booked. Unparseable phrasing is
      accepted as spoken; nothing is invented.
+  4. Spoken-number time capture (third workflow upgrade): the five time
+     regexes are rebuilt from the parser's own vocabulary
+     (shared.orchestration.visit_datetime), so "कल सुबह नौ बजे", "subah das
+     baje", "साढ़े चार बजे", "half past four" are captured whole instead of
+     collapsing to the period word; a bare hour is clarified ("सुबह या शाम?")
+     and the answer is composed with the hour it clarifies.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -56,6 +62,11 @@ WORKFLOW_ID = "wf_9685ed07e312"
 BASELINE_VERSION = 12
 HERE = pathlib.Path(__file__).resolve().parent
 BASELINE_PATH = HERE / "workflow_v12_bot_44a50e8c4146.json"
+# Run as a script from anywhere: the repo root must be importable for the
+# parser vocabulary the time regexes are built from.
+_ROOT = str(HERE.parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 # ── structured summary fields ────────────────────────────────────────────────
 
@@ -304,8 +315,12 @@ VALIDATION_REPLIES = {
         "en": "That time today has already passed. Please tell me a later time today, or another day.",
     },
     "time_ambiguous": {
-        "hi": "आज सुबह या शाम? आप समय बताइए, जैसे शाम 4 बजे।",
-        "en": "For today, do you mean the morning or the evening? Please tell me the time, for example 4 PM.",
+        "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।",
+        "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+    },
+    "time_unclear": {
+        "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।",
+        "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
     },
     "time_invalid": {
         "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।",
@@ -392,6 +407,107 @@ def has_validation(nodes: list[dict]) -> bool:
     )
 
 
+# ── spoken-number time capture (stage 3) ─────────────────────────────────────
+#
+# Why a rebuilt regex: Sarvam writes Hindi numbers as words on live calls
+# ("कल सुबह नौ बजे", "कल सुबह दस बजे", "ढाई बजे"), and the authored time regex
+# matched the bare period word first, so the extractor's number-word rewrite
+# never ran and the hour was lost. Every alternative below is anchored (a
+# period before, a fraction before, बजे/baje/am/pm after, "at" before), so a
+# number inside a date ("25 October") is never taken for a time.
+
+import re as _re
+from shared.orchestration import visit_datetime as _vd
+
+
+def _guarded(words) -> str:
+    parts = []
+    for w in sorted(words, key=len, reverse=True):
+        esc = _re.escape(w).replace(r"\ ", r"\s+")
+        if _re.search(r"[\u0900-\u097f]", w):
+            parts.append(rf"(?<![\u0900-\u097f]){esc}(?![\u0900-\u097f])")
+        else:
+            parts.append(rf"\b{esc}\b")
+    return "(?:" + "|".join(parts) + ")"
+
+
+PERIOD_SURFACE = [w for words in _vd.PERIOD_WORDS.values() for w in words
+                  if w != "noon"] + ["सवेरे", "savere", "subha"]
+
+
+def build_time_regex() -> str:
+    period = _guarded(PERIOD_SURFACE)
+    ko = r"(?:\s+(?:ko|को|mein|में|me))?"
+    hour_digit = r"(?<![\d:.])\d{1,2}(?:[:.]\d{2})?(?![\d])"
+    hour = f"(?:{hour_digit}|{_guarded(_vd.HOUR_WORDS)})"
+    frac = _guarded(_vd.FRACTION_WORDS)
+    special = _guarded(_vd.SPECIAL_TIMES)
+    min_en = r"(?:\s+(?:thirty|fifteen|forty[\s-]?five))?"
+    ampm = r"(?:\s*(?<![a-z])[ap]\.?\s?m\.?(?![a-z]))"
+    suffix = rf"(?:\s*(?:बजे|बजकर|baje|bje|o'?\s?clock|hrs)){ampm}?|{ampm}"
+    trail = rf"(?:\s+(?:in\s+the\s+)?{period}{ko})?"
+    lead = rf"{period}\s+(?:ko\s+|को\s+)?"
+    alternatives = [
+        rf"{lead}(?:{frac}\s+)?{hour}{min_en}(?:{suffix})?{trail}",     # सुबह नौ बजे / subah 10
+        rf"{frac}\s+{hour}{min_en}(?:{suffix})?{trail}",                # साढ़े चार बजे / half past four
+        rf"(?:{lead})?{special}(?:{suffix})?{trail}",                    # ढाई बजे / दोपहर डेढ़ बजे
+        rf"{hour}{min_en}(?:{suffix}){trail}",                           # 4 PM / nau baje subah
+        rf"{hour}{min_en}\s+(?:in\s+the\s+)?{period}{ko}",            # 10 in the morning / nau sham ko
+        rf"(?<=\bat ){hour}{min_en}(?:{suffix})?{trail}",                 # (at) four
+        rf"{_guarded(_vd.HOUR_WORDS_EN)}\s+(?:thirty|fifteen|forty[\s-]?five)\b",  # four thirty
+        r"(?<![\d:.])(?:1[3-9]|2[0-3])[:.][0-5]\d(?![\d])",            # 16:30
+        rf"{period}(?!\s+(?:ko\s+|को\s+)?(?:{frac}|{hour}|{special}))|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])",  # bare period / PM
+    ]
+    return "(?i)(" + "|".join(alternatives) + ")"
+
+
+_OLD_TARIKH = r"\b\d{1,2}\s*(?:tarikh|taarikh|tareekh|tarik)\b"
+
+
+def _new_tarikh() -> str:
+    words = "|".join(sorted((_re.escape(w) for w in _vd.DAY_WORDS_ROMAN), key=len, reverse=True))
+    return rf"\b(?:\d{{1,2}}|{words})\s*(?:tarikh|taarikh|tareekh|tarik)\b"
+
+
+TIME_CAPTURE_VARIABLES = {"visit_time", "visit_time_2", "callback_time"}
+
+
+def improve_time_capture(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 3: rebuild the time regexes from the parser vocabulary, let the
+    day regex read romanised day-of-month words ("pachees tarikh"), and make
+    the reset marker also forget a parked ambiguous hour. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_validation(nodes):
+        raise ValueError("stage 2 (validation) must be applied first")
+    time_regex = build_time_regex()
+    for node_id in list(VALIDATED_ASKS) + ["n_ask_callback"]:
+        node = by_id.get(node_id)
+        if node is None:
+            raise ValueError(f"baseline node {node_id!r} missing — not the expected workflow")
+        config = node.setdefault("config", {})
+        for capture in config.get("alsoCapture") or []:
+            if capture.get("variable") in TIME_CAPTURE_VARIABLES:
+                capture.setdefault("entity", {})["regexPattern"] = time_regex
+        entity = config.get("entity") or {}
+        if isinstance(entity.get("regexPattern"), str) and _OLD_TARIKH in entity["regexPattern"]:
+            entity["regexPattern"] = entity["regexPattern"].replace(_OLD_TARIKH, _new_tarikh())
+    reset = by_id[RESET_MARKER]
+    reset["config"]["setSlots"].update({"visit_time_pending": "", "visit_time_2_pending": ""})
+    return nodes, edges
+
+
+def has_time_capture(nodes: list[dict]) -> bool:
+    regex = build_time_regex()
+    return all(
+        any(c.get("variable") in TIME_CAPTURE_VARIABLES
+            and (c.get("entity") or {}).get("regexPattern") == regex
+            for c in ((n.get("config") or {}).get("alsoCapture") or []))
+        for n in nodes if n.get("id") in VALIDATED_ASKS
+    )
+
+
 def load_baseline() -> dict:
     with open(BASELINE_PATH, encoding="utf-8") as f:
         return json.load(f)
@@ -399,11 +515,14 @@ def load_baseline() -> dict:
 
 def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = 1) -> dict:
     """The upgraded definition in the engine's shape (tests + --dump):
-    stage 1 = summary markers (v13), stage 2 = + day/time validation (v14)."""
+    stage 1 = summary markers (v13), stage 2 = + day/time validation (v14/v15),
+    stage 3 = + spoken-number time capture (v16)."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
         nodes, edges = add_datetime_validation(nodes, edges)
+    if stage >= 3:
+        nodes, edges = improve_time_capture(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -486,28 +605,30 @@ def main(argv: list[str] | None = None) -> None:
     baseline = load_baseline()
     stage1 = upgraded_definition(stage=1)
     stage2 = upgraded_definition(stage=2)
+    stage3 = upgraded_definition(stage=3)
     at_baseline = nodes == baseline["nodes"] and edges == baseline["edges"]
     at_stage1 = nodes == stage1["nodes"] and edges == stage1["edges"]
     at_stage2 = nodes == stage2["nodes"] and edges == stage2["edges"]
+    at_stage3 = nodes == stage3["nodes"] and edges == stage3["edges"]
     # An earlier stage-2 save (older validation replies / example text) is
     # stage-1 content once its stage-2 additions are stripped.
-    at_old_stage2 = (not at_stage2 and has_validation(nodes)
+    at_old_stage2 = (not (at_stage2 or at_stage3) and has_validation(nodes)
                      and strip_stage2(nodes) == stage1["nodes"] and edges == stage1["edges"])
-    if at_stage2:
-        print("     workflow already upgraded (markers + validation) — nothing to change")
-    elif not (at_baseline or at_stage1 or at_old_stage2):
-        sys.exit("workflow content matches neither the committed v12 baseline nor the "
-                 "stage-1 (markers) output — refusing to upgrade blindly")
+    if at_stage3:
+        print("     workflow already upgraded (markers + validation + time capture) — nothing to change")
+    elif not (at_baseline or at_stage1 or at_stage2 or at_old_stage2):
+        sys.exit("workflow content matches neither the committed v12 baseline nor a known "
+                 "upgrade stage — refusing to upgrade blindly")
     else:
         if at_baseline:
             expected = {BASELINE_VERSION, args.allow_version}
             if wf.get("version") not in expected:
                 sys.exit(f"workflow is v{wf.get('version')}, baseline is v{BASELINE_VERSION}; "
                          "re-export the baseline (or pass --allow-version) before upgrading")
-        new_nodes, new_edges = stage2["nodes"], stage2["edges"]
-        print("     applying:", "stage 1 (markers) + stage 2 (validation)" if at_baseline
-              else "stage 2 (day/time validation + example-date fix) on top of the saved markers"
-              if at_stage1 else "updated stage 2 (validation replies / example-date fix)")
+        new_nodes, new_edges = stage3["nodes"], stage3["edges"]
+        print("     applying:", "stages 1-3 (markers + validation + time capture)" if at_baseline
+              else "stages 2-3 (validation + time capture) on top of the saved markers"
+              if at_stage1 else "stage 3 (spoken-number time capture, validation replies)")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)
         if args.apply:

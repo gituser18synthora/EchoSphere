@@ -90,7 +90,8 @@ _PERIODS = {
     "night": ("night", "raat", "रात"),
 }
 # Minute of day at which each period is over (for a period given alone).
-_PERIOD_ENDS = {"morning": 12 * 60, "afternoon": 17 * 60, "evening": 21 * 60, "night": 24 * 60}
+_PERIOD_ENDS = {"morning": 12 * 60, "afternoon": 17 * 60, "evening": 21 * 60, "night": 24 * 60,
+                "a": 12 * 60, "p": 24 * 60}  # a/p = a bare "AM"/"PM" answer
 
 
 def _word(words: tuple[str, ...]) -> re.Pattern:
@@ -114,7 +115,19 @@ _DAY_MONTH_RE = re.compile(
     rf"(?:,?\s*(\d{{4}}))?", re.I)
 _MONTH_DAY_RE = re.compile(
     rf"(?<![a-zऀ-ॿ])({_MONTH_ALT})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?!\d)(?:,?\s*(\d{{4}}))?", re.I)
-_TARIKH_RE = re.compile(r"(?<!\d)(\d{1,2})\s*(?:tarikh|taarikh|tareekh|tarik|तारीख)", re.I)
+DAY_WORDS_ROMAN = {
+    "ek": 1, "do": 2, "teen": 3, "tin": 3, "char": 4, "chaar": 4, "paanch": 5, "panch": 5,
+    "chhe": 6, "che": 6, "saat": 7, "sat": 7, "aath": 8, "ath": 8, "nau": 9, "das": 10, "dus": 10,
+    "gyarah": 11, "gyara": 11, "barah": 12, "bara": 12, "terah": 13, "tera": 13, "chaudah": 14,
+    "chauda": 14, "pandrah": 15, "pandra": 15, "solah": 16, "sola": 16, "satrah": 17, "satra": 17,
+    "atharah": 18, "athara": 18, "unnis": 19, "unees": 19, "bees": 20, "bis": 20, "ikkis": 21,
+    "ikkees": 21, "bais": 22, "baees": 22, "teis": 23, "tees": 30, "chaubis": 24, "chobis": 24,
+    "pachees": 25, "pachchis": 25, "pachis": 25, "chhabbis": 26, "chabbis": 26, "sattais": 27,
+    "satais": 27, "atthais": 28, "athais": 28, "untis": 29, "untees": 29, "ikattis": 31, "ektis": 31,
+}
+_DAY_WORD_ALT = "|".join(sorted((re.escape(w) for w in DAY_WORDS_ROMAN), key=len, reverse=True))
+_TARIKH_RE = re.compile(
+    rf"(?<![\d])(\d{{1,2}}|\b(?:{_DAY_WORD_ALT})\b)\s*(?:tarikh|taarikh|tareekh|tarik|तारीख)", re.I)
 _NUMERIC_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)")
 _ISO_RE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
 _PERIOD_RE = {name: _word(words) for name, words in _PERIODS.items()}
@@ -175,7 +188,8 @@ def parse_day(text, today: date) -> DayResult:
         return _judge_yearless(month, day, today)
     m = _TARIKH_RE.search(t)
     if m:
-        day = int(m.group(1))
+        raw = m.group(1)
+        day = int(raw) if raw.isdigit() else DAY_WORDS_ROMAN[raw.lower()]
         year, month = today.year, today.month
         if day < today.day:  # "10 tarikh" on the 19th → next month's 10th
             month = month % 12 + 1
@@ -217,22 +231,97 @@ class TimeResult:
     period: str | None = None
 
 
+# Spoken hour words — Sarvam writes Hindi numbers as WORDS ("कल सुबह नौ बजे",
+# "कल सुबह दस बजे" on live calls), so a time capture must read them. These
+# tables are the single vocabulary: the Jeeves setup script builds the capture
+# regexes from them, and the parser below reads what those regexes capture.
+HOUR_WORDS_HI = {
+    "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पाँच": 5, "पांच": 5, "पाच": 5,
+    "छह": 6, "छः": 6, "छे": 6, "सात": 7, "आठ": 8, "नौ": 9, "दस": 10,
+    "ग्यारह": 11, "बारह": 12,
+}
+HOUR_WORDS_ROMAN = {
+    "ek": 1, "do": 2, "teen": 3, "tin": 3, "char": 4, "chaar": 4,
+    "paanch": 5, "panch": 5, "pach": 5, "chhe": 6, "che": 6, "cheh": 6, "chah": 6,
+    "saat": 7, "sat": 7, "aath": 8, "ath": 8, "nau": 9, "das": 10, "dus": 10,
+    "gyarah": 11, "gyara": 11, "barah": 12, "bara": 12,
+}
+HOUR_WORDS_EN = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+HOUR_WORDS = {**HOUR_WORDS_HI, **HOUR_WORDS_ROMAN, **HOUR_WORDS_EN}
+# Fractions spoken BEFORE the hour: value = (hour offset, minutes).
+FRACTION_WORDS = {
+    "साढ़े": (0, 30), "साढे": (0, 30), "साडे": (0, 30), "sadhe": (0, 30), "saadhe": (0, 30),
+    "sade": (0, 30), "saade": (0, 30), "half past": (0, 30),
+    "सवा": (0, 15), "sawa": (0, 15), "sava": (0, 15), "quarter past": (0, 15),
+    "पौने": (-1, 45), "paune": (-1, 45), "pone": (-1, 45), "quarter to": (-1, 45),
+}
+# Whole spoken times: value = (hour, minutes), ambiguous AM/PM like a bare hour.
+SPECIAL_TIMES = {
+    "ढाई": (2, 30), "dhai": (2, 30), "dhaai": (2, 30),
+    "डेढ़": (1, 30), "डेढ": (1, 30), "dedh": (1, 30), "derh": (1, 30),
+}
+# English minutes spoken AFTER the hour word ("four thirty").
+MINUTE_WORDS_EN = {"thirty": 30, "fifteen": 15, "forty five": 45, "forty-five": 45}
+PERIOD_WORDS = {name: words for name, words in _PERIODS.items()}
+_AMPM_RE = re.compile(r"(?<![a-z])([ap])\.?\s?m\.?(?![a-z])", re.I)
+_TOKEN_RE = re.compile(r"\d{1,2}(?:[:.]\d{2})?|[a-z]+(?:'[a-z]+)?|[ऀ-ॿ]+")
+
+
+def _phrase_hit(phrases: dict, t: str) -> str | None:
+    """Longest phrase from ``phrases`` present in the text (word-bounded)."""
+    for phrase in sorted(phrases, key=len, reverse=True):
+        if _word((phrase,)).search(t):
+            return phrase
+    return None
+
+
 def parse_time(text) -> TimeResult:
+    """Read a spoken time: digits or hour words, fraction words, periods, am/pm."""
     t = _norm(text)
     if not t:
         return TimeResult("unknown")
     period = next((name for name, p in _PERIOD_RE.items() if p.search(t)), None)
-    m = _HOUR_RE.search(t)
-    if m is None or not m.group(1):
+    ampm = _AMPM_RE.search(t)
+    ampm = ampm.group(1).lower() if ampm else None
+    hour = minute = None
+    special = _phrase_hit(SPECIAL_TIMES, t)
+    if special:
+        hour, minute = SPECIAL_TIMES[special]
+    else:
+        tokens = _TOKEN_RE.findall(t)
+        for i, tok in enumerate(tokens):
+            if tok[0].isdigit():
+                h, _, m = tok.partition(":") if ":" in tok else tok.partition(".")
+                hour, minute = int(h), int(m or 0)
+                break
+            if tok in HOUR_WORDS:
+                hour, minute = HOUR_WORDS[tok], 0
+                nxt = " ".join(tokens[i + 1:i + 3])
+                for words, value in MINUTE_WORDS_EN.items():
+                    if nxt.startswith(words):
+                        minute = value
+                break
+        fraction = _phrase_hit(FRACTION_WORDS, t)
+        if hour is not None and fraction:
+            offset, minute = FRACTION_WORDS[fraction]
+            hour = hour + offset
+            if hour == 0:
+                hour = 12
+    if hour is None:
         if re.search(r"\bnoon\b", t):
             return TimeResult("exact", (12 * 60,), "afternoon")
-        return TimeResult("period", period=period) if period else TimeResult("unknown")
-    hour, minute = int(m.group(1)), int(m.group(2) or 0)
-    suffix = (m.group(3) or "").replace(".", "").replace(" ", "").lower()
+        if period:
+            return TimeResult("period", period=period)
+        if ampm:
+            return TimeResult("period", period=ampm)
+        return TimeResult("unknown")
     if hour > 23 or minute > 59:
         return TimeResult("invalid")
-    if suffix in ("am", "pm"):
-        hour = hour % 12 + (12 if suffix == "pm" else 0)
+    if ampm:
+        hour = hour % 12 + (12 if ampm == "p" else 0)
         return TimeResult("exact", (hour * 60 + minute,), period)
     if hour >= 13 or hour == 0:
         return TimeResult("exact", (hour * 60 + minute,), period)
@@ -249,12 +338,34 @@ def parse_time(text) -> TimeResult:
     return TimeResult("ambiguous", (hour * 60 + minute, (hour + 12) * 60 + minute))
 
 
+def compose_time(answer_text, pending_text) -> str | None:
+    """The clarification answer joined with the hour it clarifies.
+
+    After "4 baje" was refused as ambiguous, "शाम" / "evening" / "PM" alone is
+    the missing half: the composed value keeps the caller's own words
+    ("शाम 4 baje", "4 baje PM"). None when the answer is not a bare period.
+    """
+    answer = " ".join(str(answer_text or "").split())
+    pending = " ".join(str(pending_text or "").split())
+    if not answer or not pending:
+        return None
+    parsed = parse_time(answer)
+    if parsed.kind != "period":
+        return None
+    if parsed.period in ("a", "p"):
+        return f"{pending} {parsed.period.upper()}M"
+    english = re.search(r"\b(morning|afternoon|evening|night)\b", answer, re.I)
+    if english:
+        return f"{pending} in the {english.group(1).lower()}"
+    return f"{answer} {pending}"
+
+
 # ── verdict ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Verdict:
     ok: bool
-    reason: str | None = None   # day_past | day_invalid | time_past | time_ambiguous | time_invalid
+    reason: str | None = None   # day_past | day_invalid | day_unclear | time_past | time_ambiguous | time_unclear | time_invalid
     clear: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -275,21 +386,27 @@ def validate_visit(day_text, time_text, now: datetime, *,
         return False, "day_past"
     if day.kind == "unknown" and _norm(day_text) and not accept_unparsed_day:
         return False, "day_unclear"
-    if day.kind != "ok" or day.value != today or not _norm(time_text):
+    if day.kind != "ok" or not _norm(time_text):
         return True, None
-    now_minutes = now.hour * 60 + now.minute
     t = parse_time(time_text)
     if t.kind == "invalid":
         return False, "time_invalid"
+    if t.kind == "unknown":
+        return False, "time_unclear"     # something was said, nothing understood: ask, never guess
+    is_today = day.value == today
+    now_minutes = now.hour * 60 + now.minute
+    if t.kind == "ambiguous":
+        # A bare hour is never accepted: morning or evening is asked on any
+        # day; when both readings are already gone today it is simply past.
+        if is_today and all(c <= now_minutes for c in t.candidates):
+            return False, "time_past"
+        return False, "time_ambiguous"
+    if not is_today:
+        return True, None
     if t.kind == "exact":
         return (True, None) if t.candidates[0] > now_minutes else (False, "time_past")
-    if t.kind == "ambiguous":
-        ahead = [c for c in t.candidates if c > now_minutes]
-        if not ahead:
-            return False, "time_past"
-        return (True, None) if len(ahead) == len(t.candidates) else (False, "time_ambiguous")
     if t.kind == "period":
-        return (True, None) if _PERIOD_ENDS[t.period] > now_minutes else (False, "time_past")
+        return (True, None) if _PERIOD_ENDS.get(t.period, 24 * 60) > now_minutes else (False, "time_past")
     return True, None
 
 
@@ -301,19 +418,43 @@ def _first_filled(slots: dict, names: list) -> str:
     return ""
 
 
+def pending_time_variable(config: dict) -> str:
+    """Slot that holds a refused bare hour while its morning/evening is asked."""
+    time_vars = [str(v) for v in (config.get("timeVariables") or []) if str(v).strip()]
+    return str(config.get("pendingTimeVariable") or (f"{time_vars[0]}_pending" if time_vars else ""))
+
+
 def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verdict:
-    """Apply a node's ``validation`` config to the slots as they stand."""
+    """Apply a node's ``validation`` config to the slots as they stand.
+
+    Mutates only the pending-hour slot: a bare hour refused as
+    ``time_ambiguous`` is parked there, and a later bare period answer
+    ("शाम", "PM") is composed with it into every time slot, so the caller's
+    clarification completes the time instead of replacing it.
+    """
     if not isinstance(config, dict) or config.get("type") != VALIDATION_TYPE:
         return Verdict(True)
     day_vars = [str(v) for v in (config.get("dayVariables") or []) if str(v).strip()]
     time_vars = [str(v) for v in (config.get("timeVariables") or []) if str(v).strip()]
+    pending_var = pending_time_variable(config)
+    pending = str(slots.get(pending_var) or "").strip() if pending_var else ""
+    time_text = _first_filled(slots, time_vars)
+    if pending and time_text:
+        composed = compose_time(time_text, pending)
+        if composed:
+            for name in time_vars:
+                slots[name] = composed
+            time_text = composed
+        slots.pop(pending_var, None)   # consumed, or superseded by a full time
     current = now or now_in(config.get("timezone") or DEFAULT_TIMEZONE)
     ok, reason = validate_visit(
-        _first_filled(slots, day_vars), _first_filled(slots, time_vars), current,
+        _first_filled(slots, day_vars), time_text, current,
         accept_unparsed_day=config.get("acceptUnparsedDay") is True,
     )
     if ok:
         return Verdict(True)
+    if reason == "time_ambiguous" and pending_var and time_text:
+        slots[pending_var] = time_text
     clear = tuple(day_vars if reason.startswith("day_") else time_vars)
     return Verdict(False, reason, clear)
 
@@ -343,8 +484,12 @@ _DEFAULT_REPLIES = {
         "hi": "आज का वो समय निकल चुका है। आप आज का कोई बाद का समय बताइए, या कोई और दिन।",
     },
     "time_ambiguous": {
-        "en": "For today, do you mean the morning or the evening? Please tell me the time, for example 4 PM.",
-        "hi": "आज सुबह या शाम? आप समय बताइए, जैसे शाम 4 बजे।",
+        "en": "Is that in the morning or in the evening? Please tell me, for example 4 PM.",
+        "hi": "ये समय सुबह का है या शाम का? आप बताइए, जैसे शाम 4 बजे।",
+    },
+    "time_unclear": {
+        "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
+        "hi": "ये समय समझ नहीं आया। आप समय फिर से बताइए, जैसे शाम 4 बजे।",
     },
     "time_invalid": {
         "en": "I could not understand that time. Please tell me the time again, for example 4 PM.",
@@ -370,5 +515,8 @@ def rejection_reply(config: dict, reason: str, lang: str) -> str:
 
 __all__ = [
     "DEFAULT_TIMEZONE", "VALIDATION_TYPE", "DayResult", "TimeResult", "Verdict",
-    "now_in", "parse_day", "parse_time", "validate_visit", "validate_ask", "rejection_reply",
+    "HOUR_WORDS", "HOUR_WORDS_HI", "HOUR_WORDS_ROMAN", "HOUR_WORDS_EN", "FRACTION_WORDS",
+    "SPECIAL_TIMES", "MINUTE_WORDS_EN", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
+    "now_in", "parse_day", "parse_time", "compose_time", "validate_visit", "validate_ask",
+    "pending_time_variable", "rejection_reply",
 ]
