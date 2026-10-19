@@ -38,6 +38,63 @@ async def test_all_fields_are_accepted_even_while_customer_call_is_pending():
     assert (result.input_tokens, result.output_tokens, result.requests) == (100, 48, 4)
 
 
+PROD_STORY = "अरे मैंने प्रोडक्ट डिलीवर कर दिया फिर भी हमने नहीं मांग लिया।"
+STORY_QUESTION = "आपके ticket पर MDND का deduction दिख रहा है। बताइए — क्या हुआ था?"
+
+
+async def test_not_handed_over_without_a_denial_in_the_quote_is_dropped():
+    """cv_5d87e65add19 (prod, 2026-10-16): the handoff reader returned
+    other/not_handed_over for the garbled story and quoted the clause that
+    says the opposite ("I delivered the product"). The slot became "not
+    handed over" and the explicit handover question was never asked."""
+    llm = _provider({"delivery_handoff": "other"},
+                    {"delivery_handoff": "अरे मैंने प्रोडक्ट डिलीवर कर दिया"},
+                    handoff_type="not_handed_over", understood=True)
+    result = await _extract(llm, PROD_STORY, pending_question=STORY_QUESTION,
+                            pending_variable="m_issue_description", pending_fields=(),
+                            language="hi-IN")
+    assert "delivery_handoff" not in result.patch
+    assert "delivery_handoff" not in result.evidence
+    assert result.handoff_type is None
+    assert result.understood and not result.failed
+
+
+async def test_not_handed_over_without_a_denial_is_dropped_in_english_too():
+    llm = _provider({"delivery_handoff": "other"},
+                    {"delivery_handoff": "I have delivered the order to the customer"},
+                    handoff_type="not_handed_over", understood=True)
+    result = await _extract(llm, "I have delivered the order to the customer but MDND got marked",
+                            pending_variable="m_issue_description", pending_fields=(),
+                            language="en-IN")
+    assert result.patch == {} and result.handoff_type is None
+
+
+@pytest.mark.parametrize("text, quote", [
+    ("customer को call किया लेकिन किसी को नहीं दिया, order मेरे पास है", "किसी को नहीं दिया"),
+    ("order wapas le aaya tha", "order wapas le aaya tha"),
+    ("I still have the order with me", "I still have the order with me"),
+    ("could not hand over the parcel", "could not hand over the parcel"),
+])
+async def test_not_handed_over_with_a_real_denial_or_return_survives(text, quote):
+    language = "en-IN" if text[0].isascii() else "hi-IN"
+    llm = _provider({"delivery_handoff": "other"}, {"delivery_handoff": quote},
+                    handoff_type="not_handed_over", understood=True)
+    result = await _extract(llm, text, pending_variable="m_issue_description",
+                            pending_fields=(), language=language)
+    assert result.patch == {"delivery_handoff": "other"}
+    assert result.handoff_type == "not_handed_over"
+
+
+async def test_other_handoff_types_are_not_touched_by_the_denial_guard():
+    llm = _provider({"delivery_handoff": "other"},
+                    {"delivery_handoff": "इन्वर्टर के ऊपर रख दिया"},
+                    handoff_type="place", drop_location="इन्वर्टर के ऊपर", understood=True)
+    result = await _extract(llm, "घर जाकर इन्वर्टर के ऊपर रख दिया",
+                            pending_variable="m_issue_description", pending_fields=())
+    assert result.patch == {"delivery_handoff": "other"}
+    assert result.handoff_type == "place" and result.drop_location == "इन्वर्टर के ऊपर"
+
+
 async def test_prompt_receives_entire_utterance_state_and_bounded_reference_history():
     llm = _provider()
     text = "extra complaint " * 600 + "CX से कोई call नहीं आया"

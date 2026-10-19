@@ -77,10 +77,15 @@ _SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = list(_signals.compiled())
 # to plain chat and the configured workflow never started.
 # Word ends are enforced with a not-another-letter lookahead over every
 # registered script (Devanagari / Malayalam / Tamil vowel signs are combining
-# marks outside ``\w``, so ``\b`` never forms after them).
+# marks outside ``\w``, so ``\b`` never forms after them). Token punctuation
+# also ends the word: the Devanagari danda (। U+0964, ॥ U+0965) lies INSIDE
+# the Devanagari block that letters() spans, so without this alternative
+# Sarvam's "जी।" / "हाँ।" read as an unfinished word and the opening
+# confirmation fell to plain chat (cv_8ed0e5c585bd, 2026-10-16).
 _LEADING_AFFIRM = re.compile(
     r"^\W*(?:" + _lang.alternatives("leading_affirm_tokens") + r")"
-    r"(?![\w" + _lang.letters() + r"])",
+    r"(?:(?![\w" + _lang.letters() + r"])"
+    r"|(?=[" + re.escape(_lang.token_strip_chars()) + r"]))",
     re.I,
 )
 _AFFIRM_CONTRADICTION = re.compile(_lang.alternatives("contradiction"), re.I)

@@ -177,6 +177,37 @@ async def test_no_handover_is_preserved_in_legacy_reporting(collector):
     assert r["trace"][-1] == "n_hub_verify"
 
 
+async def test_cv_5d87e65add19_ungrounded_not_handed_over_never_skips_the_handover_ask(collector):
+    """Prod 2026-10-16: the story "अरे मैंने प्रोडक्ट डिलीवर कर दिया फिर भी हमने
+    नहीं मांग लिया" was read as other/not_handed_over with the quote "अरे
+    मैंने प्रोडक्ट डिलीवर कर दिया"; the slot became "not handed over", the
+    handover question was skipped and the summary said the order was never
+    handed over. The mocked model reproduces that exact output."""
+    engine, llm, _ = collector
+    await turn(collector, "जी।")
+    llm.generate.return_value = LLMResult(text=json.dumps({
+        "patch": {"delivery_handoff": "other"},
+        "evidence": {"delivery_handoff": "अरे मैंने प्रोडक्ट डिलीवर कर दिया"},
+        "explicit_retractions": [], "drop_location": None, "recipient_detail": None,
+        "handoff_type": "not_handed_over", "understood": True,
+    }, ensure_ascii=False))
+    r = await engine.handle_turn_detailed(
+        session_id="semantic", tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd",
+        user_text="अरे मैंने प्रोडक्ट डिलीवर कर दिया फिर भी हमने नहीं मांग लिया।",
+        language="hi-IN", context_values=CONTEXT, llm=llm,
+    )
+    assert "m_handover_recipient" not in r["slots"]
+    assert r["trace"][-1] == "n_ask_reached_called"
+    # The bare yes answers the pending joint ask (both fields are pending).
+    r = await turn(collector, "हाँ।", {"reached_location": "yes", "customer_called": "yes"})
+    assert r["trace"][-1] == "n_ask_handover"
+    assert "n_ask_handover" in r["spokenNodes"]
+    r = await turn(collector, "मैंने कस्टमर की मम्मी को दिया था।",
+                   {"delivery_handoff": "family_member"})
+    assert r["slots"]["delivery_handoff"] == "family_member"
+    assert r["trace"][-1] == "n_ask_cx"
+
+
 async def test_missing_ticket_metadata_never_adds_required_questions(collector):
     r = await turn(collector, "I called, reached and left it at the door. CX called", ALL,
                    kwargs={"context_values": {}})

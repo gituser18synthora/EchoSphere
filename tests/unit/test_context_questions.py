@@ -217,7 +217,12 @@ async def test_short_opening_ack_cannot_invent_business_question():
     brain._config.greeting = "नमस्ते। क्या मैं सही व्यक्ति से बात कर रहा हूँ?"
     brain._take_decision = AsyncMock(return_value=None)
     brain._classify_turn = AsyncMock(return_value=IntentClassification())
-    await brain._handle_turn("अच्छा।")
+    # An affirmative ack that is NOT a leading confirmation token ("sahi hai"
+    # carries the affirm signal but does not open with haan/ji/theek…) stays
+    # on chat, and chat must resume the pending opening question rather than
+    # invent a business question. ("अच्छा।" used to exercise this path only
+    # because the danda defeated leading_affirmation — see the router fix.)
+    await brain._handle_turn("sahi hai")
     assert brain._recorder.turns[-1].text == "क्या मैं सही व्यक्ति से बात कर रहा हूँ?"
     assert not llm.systems and not engine.calls
     assert not brain._workflow_ever_routed

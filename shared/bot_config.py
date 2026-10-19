@@ -973,6 +973,17 @@ async def resolve_bot_config(
     return config
 
 
+# A dialer's ``To`` is either a DID (``+91…``) or a bot id. Bot ids are minted
+# as ``bot_<12 hex>`` (shared.ids.new_id) and no phone number can start with
+# that prefix, so the prefix alone discriminates the two without ambiguity.
+BOT_ID_PREFIX = "bot_"
+
+
+def is_bot_id(value: object) -> bool:
+    """Whether a dialer-supplied ``To`` names a bot directly rather than a DID."""
+    return isinstance(value, str) and value.strip().startswith(BOT_ID_PREFIX)
+
+
 def _phone_assignment_sync(phone_number: str) -> tuple[str | None, str | None]:
     """Trusted phone-number mapping for inbound telephony → (bot_id, tenant_id)."""
     session = get_sessionmaker()()
@@ -1012,16 +1023,29 @@ async def resolve_bot_for_phone_number(phone_number: str) -> ResolvedBotConfig:
 
 
 async def resolve_bot_for_dialer(
-    called_number: str, requested_bot_id: str | None = None
+    called: str, requested_bot_id: str | None = None
 ) -> ResolvedBotConfig:
-    """Dialer routing: the dialed number anchors the tenant (trusted DB
-    mapping); the signed payload's ``botId`` may then select a different bot
-    *within that tenant* — per-campaign routing over a shared DID. Nothing
-    client-supplied ever picks the tenant, and a bot id from another tenant
-    resolves to a sanitized 404 (existence is not revealed)."""
-    default_bot_id, tenant_id = await asyncio.to_thread(
-        _phone_assignment_sync, called_number
-    )
+    """Dialer routing. ``called`` is the webhook's ``To`` value and anchors
+    the tenant in one of two ways:
+
+    - a DID → the trusted ``phone_numbers`` mapping names the tenant and the
+      number's assigned bot (the historical path, unchanged);
+    - a bot id (``bot_…``) → that bot is the target directly, no DID
+      assignment required. The signed webhook is the authorization to name
+      a bot; the bot must still exist, not be archived and have a published
+      release — exactly the gates a number's assigned bot passes.
+
+    Either way the signed payload's ``botId`` may then select a different bot
+    *within that tenant* — per-campaign routing over a shared DID. A bot id
+    from another tenant resolves to a sanitized 404 (existence is not
+    revealed)."""
+    if is_bot_id(called):
+        default_bot_id: str | None = called.strip()
+        tenant_id = await asyncio.to_thread(_bot_tenant_sync, default_bot_id)
+    else:
+        default_bot_id, tenant_id = await asyncio.to_thread(
+            _phone_assignment_sync, called
+        )
     if not requested_bot_id:
         if not default_bot_id:
             raise NotFoundError("A bot assignment for this number")

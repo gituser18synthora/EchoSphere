@@ -375,6 +375,39 @@ def _ground_indic_evidence(result: MDNDExtraction,
     return replace(result, patch=patch, evidence=evidence)
 
 
+# A "never handed over" reading has to quote a denial, a return or the parcel
+# staying with the partner. cv_5d87e65add19 (prod, 2026-10-16): the handoff
+# reader answered other/not_handed_over for "अरे मैंने प्रोडक्ट डिलीवर कर दिया
+# फिर भी हमने नहीं मांग लिया", quoting "अरे मैंने प्रोडक्ट डिलीवर कर दिया" (the
+# opposite). The yes/no guards above never see the handoff fact, so the slot
+# became "not handed over" and the explicit handover question was skipped.
+_NOT_HANDED_OVER_EVIDENCE = re.compile(
+    r"नहीं|नही|नहि|मत|(?<![\wऀ-ॿ])ना(?![\wऀ-ॿ])|वापस|वापिस|लौटा|मेरे\s*पास|पास\s*(?:ही\s*)?है"
+    r"|\b(?:nahi|nahin|nai|na|mat|no|not|never|none|nobody|wapas|wapis|lauta\w*|return\w*"
+    r"|undelivered|brought\s+(?:it\s+)?back|still\s+(?:have|with|got)|mere\s+paa?s)\b|n['’]t\b",
+    re.I)
+
+
+def _ground_not_handed_over(result: MDNDExtraction) -> MDNDExtraction:
+    """Drop a ``not_handed_over`` handoff whose quote denies nothing.
+
+    The fact falls back to the authored matchers and the explicit handover
+    ask; a dropped detail never becomes a stored "not handed over".
+    """
+    if result.handoff_type != "not_handed_over" or "delivery_handoff" not in result.patch:
+        return result
+    if _NOT_HANDED_OVER_EVIDENCE.search(result.evidence.get("delivery_handoff", "")):
+        return result
+    from dataclasses import replace
+
+    return replace(
+        result,
+        patch={k: v for k, v in result.patch.items() if k != "delivery_handoff"},
+        evidence={k: v for k, v in result.evidence.items() if k != "delivery_handoff"},
+        handoff_type=None, drop_location=None, recipient_detail=None,
+    )
+
+
 async def extract_mdnd_slots(
     llm: LLMProvider,
     *,
@@ -449,6 +482,7 @@ async def extract_mdnd_slots(
             validated = _ground_english_evidence(validated, pending_fields)
         else:
             validated = _ground_indic_evidence(validated, pending_fields)
+        validated = _ground_not_handed_over(validated)
         # Each independent reader may supply ONLY its field. This prevents a
         # negative about a different call from becoming the pending answer.
         from dataclasses import replace
