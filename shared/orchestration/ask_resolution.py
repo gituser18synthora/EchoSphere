@@ -32,6 +32,7 @@ from shared.orchestration import signals as _signals
 from shared.orchestration.behavior import WorkflowBehavior
 from shared.orchestration.phrases import canned
 from shared.orchestration.router import looks_like_question
+from shared.orchestration import visit_datetime as _validation
 
 
 def _node_config(node: dict) -> dict:
@@ -702,13 +703,88 @@ def outcome_filled(ctx: AskContext) -> bool:
         return False
     ctx.slots[ctx.variable] = ctx.value
     ctx.pending_digits.pop(ctx.node_id, None)
-    ctx.node_retries.pop(ctx.node_id, None)
+    prior_retries = ctx.node_retries.pop(ctx.node_id, 0)
     entry = {"action": "slot_filled", "node": ctx.node_id, "variable": ctx.variable}
     if ctx.accumulated:
         entry["accumulated_digits"] = len(ctx.combined)
     ctx.audit.append(entry)
     if not ctx.captured_first:
         _apply_also_capture(ctx.node, ctx.text, ctx.slots, ctx.audit, ctx.node_id)
+    if reject_invalid_answer(ctx.node, ctx.node_id, ctx.slots, ctx.audit, ctx.lang,
+                             ctx.replies, ctx.node_retries, prior_retries=prior_retries):
+        _apply_rejection_outcome(ctx)
+        return True
+    ctx.advance()
+    return True
+
+
+# ── opt-in answer validation (node config ``validation``) ────────────────────
+#
+# A matcher proves the caller SAID a day/time; it cannot know whether that
+# moment is still ahead. A node may declare ``validation`` (see
+# shared.orchestration.visit_datetime); after the value and its alsoCapture
+# companions are stored, the check runs on the slots as they stand. A
+# rejection clears only the offending slot(s) — valid information already
+# given is kept — speaks the configured reply and keeps the ask open, under
+# the same retry budget as an unmatched answer so an endlessly invalid
+# caller still reaches the authored fallback edge.
+
+def reject_invalid_answer(node: dict, node_id: str, slots: dict, audit: list, lang: str,
+                          replies: list, node_retries: dict, *,
+                          prior_retries: int | None = None) -> bool:
+    """Validate the node's slots; on rejection clear/reply/count and return True."""
+    config = _node_config(node).get("validation")
+    if not isinstance(config, dict):
+        return False
+    verdict = _validation.validate_ask(config, slots)
+    if verdict.ok:
+        return False
+    for name in verdict.clear:
+        slots.pop(name, None)
+    audit.append({"action": "answer_invalid", "node": node_id,
+                  "reason": verdict.reason, "cleared": list(verdict.clear)})
+    base = prior_retries if prior_retries is not None else node_retries.get(node_id, 0)
+    node_retries[node_id] = base + 1
+    replies.append(_validation.rejection_reply(config, verdict.reason, lang))
+    return True
+
+
+def _apply_rejection_outcome(ctx: AskContext) -> None:
+    """After a rejection: stay at the ask, or take the fallback edge once the
+    retry budget is spent (the reply just appended is still spoken)."""
+    if ctx.node_retries.get(ctx.node_id, 0) > ctx.behavior.max_ask_retries:
+        target = ctx.fallback_target(ctx.node_id)
+        if target is not None:
+            ctx.replies.pop()  # the fallback branch speaks for itself
+            ctx.current, ctx.awaiting = target, None
+            return
+    ctx.stay()
+
+
+def _validation_completes_ask(ctx: AskContext) -> bool:
+    """An open ask whose OWN slot survived an earlier rejection (the day was
+    valid, only the time was refused) is complete once this turn's capture
+    makes the combination valid — advance instead of parking off-script."""
+    config = ctx.config.get("validation")
+    if not isinstance(config, dict):
+        return False
+    own = ctx.slots.get(ctx.variable)
+    if own is None or not str(own).strip():
+        # A time without a day ("4 baje" at the day ask): the time stays
+        # captured; ask for the day in the node's own words instead of
+        # parking off-script, where the model could invent one.
+        ctx.audit.append({"action": "companion_captured_reask", "node": ctx.node_id,
+                          "variable": ctx.variable, "reason": "day_missing"})
+        ctx.replies.append(_validation.rejection_reply(config, "day_missing", ctx.lang)
+                           or ctx.ask_question(ctx.node, True, ctx.lang))
+        ctx.stay()
+        return True
+    if reject_invalid_answer(ctx.node, ctx.node_id, ctx.slots, ctx.audit, ctx.lang,
+                             ctx.replies, ctx.node_retries):
+        _apply_rejection_outcome(ctx)
+        return True
+    ctx.audit.append({"action": "slot_completed", "node": ctx.node_id, "variable": ctx.variable})
+    ctx.node_retries.pop(ctx.node_id, None)
     ctx.advance()
     return True
 
@@ -797,6 +873,8 @@ def outcome_captured_other_field(ctx: AskContext) -> bool:
     if not _captures_other_field(ctx.node, ctx.text, ctx.slots, ctx.audit, ctx.node_id,
                                  already=ctx.captured_first):
         return False
+    if _validation_completes_ask(ctx):
+        return True
     ctx.audit.append({"action": "off_script", "node": ctx.node_id, "signal": None,
                       "reason": "captured_other_field"})
     ctx.off_script = True
