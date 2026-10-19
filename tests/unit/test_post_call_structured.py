@@ -9,6 +9,8 @@ from shared.post_call.analyzer import _build_system, fallback_analysis
 from shared.post_call.schema import parse_analysis
 from shared.post_call.structured import (
     derive_structured_fields,
+    display_structured_fields,
+    display_value,
     merge_structured_fields,
     normalize_yes_no,
     summary_fields_prompt_block,
@@ -223,3 +225,87 @@ class TestFallback:
             "hand_over_product": "workflow",
             "hand_over_to": "workflow",
         }
+
+
+DATE_FIELDS = [
+    {"name": "appointment_booked", "type": "yes_no", "source": "visit_status",
+     "values": {"booked": "Yes", "*": "No"}, "allowLlm": False},
+    {"name": "appointment_date", "type": "date", "source": "visit_date_iso", "allowLlm": False,
+     "requires": {"appointment_booked": ["Yes"]}},
+    {"name": "appointment_time", "type": "time", "source": "visit_time_24h",
+     "timezone": "Asia/Kolkata", "allowLlm": True},
+    {"name": "note", "type": "text", "source": "note"},
+]
+BOOKED = {"visit_status": "booked"}
+
+
+def _date_policy() -> BotGoalPolicy:
+    return BotGoalPolicy.model_validate({"summaryFields": DATE_FIELDS})
+
+
+class TestDateTimeFields:
+    def test_normalized_slot_values_pass_through(self):
+        fields = derive_structured_fields(_date_policy(), {**BOOKED, "visit_date_iso": "2026-10-20",
+                                                           "visit_time_24h": "17:00"})
+        assert (fields["appointment_date"], fields["appointment_time"]) == ("2026-10-20", "17:00")
+
+    def test_spoken_or_malformed_values_are_not_determined(self):
+        for bad_date, bad_time in [("कल", "शाम 5 बजे"), ("2026-02-31", "24:00"), ("20 Oct 2026", "5 PM"),
+                                   ("2026-10-20T17:00", "7:05"), ("", "")]:
+            fields = derive_structured_fields(_date_policy(), {**BOOKED, "visit_date_iso": bad_date,
+                                                               "visit_time_24h": bad_time})
+            assert fields["appointment_date"] is None and fields["appointment_time"] is None, (bad_date, bad_time)
+
+    def test_window_words_are_values(self):
+        fields = derive_structured_fields(_date_policy(), {**BOOKED, "visit_date_iso": "2026-10-20",
+                                                           "visit_time_24h": " Evening "})
+        assert fields["appointment_time"] == "evening"
+
+    def test_requires_still_blanks_a_normalized_date(self):
+        fields = derive_structured_fields(_date_policy(), {"visit_status": "date_pending",
+                                                           "visit_date_iso": "2026-10-20"})
+        assert fields["appointment_booked"] == "No" and fields["appointment_date"] is None
+
+    def test_analyst_fill_is_clamped_to_the_shape(self):
+        fields, sources = merge_structured_fields(
+            _date_policy(), BOOKED, {"appointment_time": "5 PM", "appointment_date": "2026-10-20"})
+        assert fields["appointment_time"] is None            # not in the normalized shape
+        assert fields["appointment_date"] is None            # allowLlm is off
+        fields, sources = merge_structured_fields(_date_policy(), BOOKED, {"appointment_time": "17:00"})
+        assert fields["appointment_time"] == "17:00" and sources["appointment_time"] == "analysis"
+        fields, sources = merge_structured_fields(
+            _date_policy(), {**BOOKED, "visit_time_24h": "evening"}, {"appointment_time": "17:00"})
+        assert fields["appointment_time"] == "evening" and sources["appointment_time"] == "workflow"
+
+    def test_display_forms(self):
+        assert display_value("date", "2026-10-20") == "20 Oct 2026"
+        assert display_value("date", "2026-01-05") == "5 Jan 2026"
+        assert display_value("time", "17:00", "Asia/Kolkata") == "05:00 PM IST"
+        assert display_value("time", "00:05", "Asia/Kolkata") == "12:05 AM IST"
+        assert display_value("time", "12:30") == "12:30 PM"
+        assert display_value("time", "evening", "Asia/Kolkata") == "Evening (time window)"
+        assert display_value("date", "कल") is None and display_value("time", "5 PM") is None
+        assert display_value("text", "2026-10-20") is None and display_value("date", None) is None
+
+    def test_display_map_follows_the_raw_specs(self):
+        fields = {"appointment_booked": "Yes", "appointment_date": "2026-10-20",
+                  "appointment_time": "17:00", "note": "2026-10-20"}
+        assert display_structured_fields(DATE_FIELDS, fields) == {
+            "appointment_date": "20 Oct 2026", "appointment_time": "05:00 PM IST"}
+        assert display_structured_fields(DATE_FIELDS, {"appointment_time": "morning"}) == {
+            "appointment_time": "Morning (time window)"}
+        assert display_structured_fields(DATE_FIELDS, {"appointment_date": None}) == {}
+        assert display_structured_fields([None, "x", {"type": "date"}], fields) == {}
+
+    def test_spec_keeps_the_new_types_and_timezone(self):
+        policy = _date_policy()
+        by_name = {f.name: f for f in policy.summary_fields}
+        assert by_name["appointment_date"].type == "date" and by_name["appointment_date"].timezone == ""
+        assert by_name["appointment_time"].type == "time" and by_name["appointment_time"].timezone == "Asia/Kolkata"
+        weird = BotGoalPolicy.model_validate({"summaryFields": [{"name": "x", "type": "datetime", "timezone": " UTC "}]})
+        assert weird.summary_fields[0].type == "text" and weird.summary_fields[0].timezone == "UTC"
+
+    def test_prompt_block_describes_the_shape(self):
+        block = summary_fields_prompt_block(_date_policy())
+        assert '"appointment_date": "YYYY-MM-DD" | null' in block
+        assert '"appointment_time": "HH:MM" (24-hour) | "morning" | "afternoon" | "evening" | "night" | null' in block

@@ -9,6 +9,7 @@ import re
 from datetime import date, datetime
 
 from shared.orchestration.behavior import resolve_behavior
+from shared.post_call.structured import display_structured_fields
 from shared.models import (
     AiConfigProfile,
     ApiConnection,
@@ -814,6 +815,9 @@ def serialize_conversation_memory(m, summary_fields: list[dict] | None = None) -
         # Human-readable field names from the same configuration ({} when
         # the bot's fields carry no labels).
         "structuredFieldLabels": structured_labels,
+        # Display forms of normalized date/time fields ("20 Oct 2026",
+        # "05:00 PM IST"); the value itself stays machine-readable.
+        "structuredFieldDisplay": display_structured_fields(summary_fields, structured_fields),
         "nextBestAction": (
             {
                 "action": (m.next_best_action or {}).get("action") or m.next_action,

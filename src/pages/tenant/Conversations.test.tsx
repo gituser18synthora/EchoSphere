@@ -653,6 +653,27 @@ describe("AI call summary display", () => {
     expect(within(section).getByText("not determined")).toBeInTheDocument();
   });
 
+  it("shows normalized date/time fields in their display form, keeping the value on hover", async () => {
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      summary: {
+        ...SUMMARY,
+        structuredFields: { appointment_date: "2026-10-20", appointment_time: "17:00", callback_time: null },
+        structuredFieldLabels: { appointment_date: "Pickup date", appointment_time: "Pickup time" },
+        structuredFieldDisplay: { appointment_date: "20 Oct 2026", appointment_time: "05:00 PM IST" },
+      },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    const section = await within(dialog).findByTestId("structured-summary");
+    expect(within(section).getByText("Pickup date")).toBeInTheDocument();
+    expect(within(section).getByText("20 Oct 2026")).toBeInTheDocument();
+    const time = within(section).getByText("05:00 PM IST");
+    expect(time.closest('[role="cell"]')).toHaveAttribute("title", "17:00");
+    expect(within(section).queryByText("2026-10-20")).not.toBeInTheDocument();
+    expect(within(section).getByText("not determined")).toBeInTheDocument();
+  });
+
   it("shows a processing state while the analysis is pending", async () => {
     vi.mocked(api.getConversation).mockResolvedValue({
       ...DETAIL,

@@ -168,10 +168,11 @@ def _summary_parts(
     if summary.get("callOutcome"):
         facts.append(("Call outcome", _words(summary["callOutcome"])))
     labels = summary.get("structuredFieldLabels") or {}
+    display = summary.get("structuredFieldDisplay") or {}
     for key, value in (summary.get("structuredFields") or {}).items():
         facts.append((
             labels.get(key) or _words(key),
-            "Not determined" if value is None else _words(value),
+            "Not determined" if value is None else display.get(key) or _words(value),
         ))
     nba = summary.get("nextBestAction") or {}
     if nba.get("action"):

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import shared.orchestration.visit_datetime as vd
 from shared.orchestration.visit_datetime import (
     compose_time, parse_day, parse_time, rejection_reply, validate_ask, validate_visit,
 )
@@ -209,3 +210,98 @@ class TestValidateAsk:
         assert "time" in rejection_reply(CONFIG, "time_past", "en-US")
         assert "दिन" in rejection_reply(CONFIG, "day_unclear", "hi-IN")
         assert "which day" in rejection_reply(CONFIG, "day_missing", "en-IN")
+
+
+class TestResolveVisit:
+    @pytest.mark.parametrize("day, time, iso, clock", [
+        ("कल", "शाम के 5 बजे", "2026-10-20", "17:00"),
+        ("tomorrow", "4 PM", "2026-10-20", "16:00"),
+        ("kal", "subah das baje", "2026-10-20", "10:00"),
+        ("परसों", "दोपहर ढाई बजे", "2026-10-21", "14:30"),
+        ("कल", "साढ़े चार बजे PM", "2026-10-20", "16:30"),
+        ("आज", "रात 9 बजे", "2026-10-19", "21:00"),
+        ("somvar", "", "2026-10-26", ""),
+        ("25 October", "16:30", "2026-10-25", "16:30"),
+        ("कल", "noon", "2026-10-20", "12:00"),
+        ("20/10/2026", "9 AM", "2026-10-20", "09:00"),
+    ])
+    def test_resolved_values(self, day, time, iso, clock):
+        r = vd.resolve_visit(day, time, NOW)
+        assert r.ok and (r.iso_date, r.normalized_time) == (iso, clock)
+
+    def test_a_window_stays_a_window(self):
+        assert vd.resolve_visit("कल", "शाम", NOW).normalized_time == "evening"
+        assert vd.resolve_visit("tomorrow", "in the morning", NOW).normalized_time == "morning"
+        assert vd.normalize_time(vd.TimeResult("period", period="p")) == ""   # a bare "PM" is no window
+
+    def test_nothing_is_resolved_without_a_day(self):
+        r = vd.resolve_visit("", "4 PM", NOW)
+        assert r.ok and r.iso_date == "" and r.normalized_time == ""
+        r = vd.resolve_visit("agle hafte", "", NOW, accept_unparsed_day=True)
+        assert r.ok and r.iso_date == ""
+
+    def test_rejections_carry_the_reason_and_no_values(self):
+        r = vd.resolve_visit("10 October", "", NOW)
+        assert (r.ok, r.reason, r.iso_date) == (False, "day_past", "")
+        r = vd.resolve_visit("कल", "4 baje", NOW)
+        assert (r.ok, r.reason, r.normalized_time) == (False, "time_ambiguous", "")
+        for args in (("10 October", ""), ("कल", "4 baje"), ("आज", "सुबह 9 बजे"), ("31 February", "")):
+            r = vd.resolve_visit(*args, NOW)
+            assert vd.validate_visit(*args, NOW) == (r.ok, r.reason)
+
+    def test_relative_days_follow_the_given_clock(self):
+        after_midnight = datetime(2026, 10, 20, 0, 10, tzinfo=IST)
+        assert vd.resolve_visit("कल", "", after_midnight).iso_date == "2026-10-21"
+        assert vd.resolve_visit("आज", "", after_midnight).iso_date == "2026-10-20"
+        assert vd.resolve_visit("कल", "", NOW).iso_date == "2026-10-20"
+
+
+NORMALIZED = {**CONFIG, "dayVariables": ["visit_day"], "timeVariables": ["visit_time"],
+              "normalizedDayVariable": "visit_date_iso", "normalizedTimeVariable": "visit_time_24h"}
+
+
+class TestNormalizedCompanions:
+    def test_written_on_acceptance_without_touching_the_spoken_slots(self):
+        slots = {"visit_day": "कल", "visit_time": "शाम के 5 बजे"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert slots == {"visit_day": "कल", "visit_time": "शाम के 5 बजे",
+                         "visit_date_iso": "2026-10-20", "visit_time_24h": "17:00"}
+
+    def test_day_alone_writes_an_empty_time_even_over_a_stale_one(self):
+        slots = {"visit_day": "परसों", "visit_time_24h": "10:00"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert (slots["visit_date_iso"], slots["visit_time_24h"]) == ("2026-10-21", "")
+
+    def test_window_and_english(self):
+        slots = {"visit_day": "कल", "visit_time": "शाम"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok and slots["visit_time_24h"] == "evening"
+        slots = {"visit_day": "Monday", "visit_time": "4 PM"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert (slots["visit_date_iso"], slots["visit_time_24h"]) == ("2026-10-26", "16:00")
+
+    def test_cleared_on_every_rejection(self):
+        slots = {"visit_day": "10 October", "visit_time": "4 PM",
+                 "visit_date_iso": "2026-10-20", "visit_time_24h": "10:00"}
+        verdict = validate_ask(NORMALIZED, slots, now=NOW)
+        assert verdict.reason == "day_past"
+        assert verdict.clear == ("visit_day", "visit_date_iso", "visit_time_24h")
+        verdict = validate_ask(NORMALIZED, {"visit_day": "कल", "visit_time": "4 baje"}, now=NOW)
+        assert verdict.reason == "time_ambiguous"
+        assert verdict.clear == ("visit_time", "visit_date_iso", "visit_time_24h")
+
+    def test_clarification_completes_the_normalized_time(self):
+        slots = {"visit_day": "कल", "visit_time": "4 baje"}
+        verdict = validate_ask(NORMALIZED, slots, now=NOW)
+        for name in verdict.clear:
+            slots.pop(name, None)
+        slots["visit_time"] = "शाम"
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert (slots["visit_time"], slots["visit_time_24h"], slots["visit_date_iso"]) == \
+            ("शाम 4 baje", "16:00", "2026-10-20")
+
+    def test_nothing_without_the_config_keys_or_a_day(self):
+        slots = {"visit_day": "कल", "visit_time": "4 PM"}
+        assert validate_ask(CONFIG, slots, now=NOW).ok
+        assert "visit_date_iso" not in slots and "visit_time_24h" not in slots
+        slots = {"visit_time": "4 PM"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok and slots == {"visit_time": "4 PM"}

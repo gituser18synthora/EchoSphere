@@ -221,3 +221,16 @@ class TestPdf:
         pdf = fitz.open("pdf", render_conversation_pdf(_document(summary=None)))
         assert "Transcript" not in pdf[0].get_text()
         assert pdf[1].get_text().startswith("Transcript")
+
+
+class TestStructuredDisplay:
+    def test_normalized_fields_render_their_display_form(self):
+        from backend.reports.conversation_document import _summary_parts
+
+        summary = {**SUMMARY,
+                   "structuredFields": {"appointment_date": "2026-10-20", "appointment_time": None},
+                   "structuredFieldLabels": {"appointment_date": "Pickup date", "appointment_time": "Pickup time"},
+                   "structuredFieldDisplay": {"appointment_date": "20 Oct 2026"}}
+        _, facts, _ = _summary_parts(summary)
+        assert ("Pickup date", "20 Oct 2026") in facts
+        assert ("Pickup time", "Not determined") in facts

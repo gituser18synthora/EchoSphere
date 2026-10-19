@@ -1,15 +1,17 @@
 """Jeeves Airtel uninstallation bot: visit day/time validation (workflow
-stages 2-3, jeeves/setup/01_structured_summary.py → v16).
+stages 2-5, jeeves/setup/01_structured_summary.py → v18).
 
 The four date-capturing asks declare ``validation: future_datetime`` in
 Asia/Kolkata. A past or impossible day, or a past/ambiguous time for today,
 is refused with the configured line and asked again while valid information
 already given is kept; unparseable phrasing is accepted as spoken. For valid
 inputs the flow speaks exactly what v13 speaks (golden comparison over the 15
-structured-summary scenarios)."""
+structured-summary scenarios). Stage 5 adds the normalized pickup date/time
+companions (TestNormalizedSummary) without changing a spoken word."""
 
 import runpy
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,8 +19,9 @@ from langgraph.checkpoint.memory import MemorySaver
 
 import shared.orchestration.visit_datetime as vd
 import shared.orchestration.workflow_engine as wfe
+from backend.serializers import serialize_conversation_memory
 from shared.orchestration.goal_engine import compile_goal_policy
-from shared.post_call.structured import derive_structured_fields
+from shared.post_call.structured import derive_structured_fields, display_structured_fields
 from tests.unit.test_jeeves_structured_summary import (
     BOT, CONTEXT, SCENARIOS as SUMMARY_SCENARIOS, TENANT, WORKFLOW, _snapshot,
 )
@@ -26,9 +29,14 @@ from tests.unit.test_jeeves_structured_summary import (
 IST = ZoneInfo("Asia/Kolkata")
 SETUP = runpy.run_path("jeeves/setup/01_structured_summary.py")
 V13 = SETUP["upgraded_definition"](13, stage=1)
-V14 = SETUP["upgraded_definition"](17, stage=4)   # markers + validation + time capture + wording
-POLICY = compile_goal_policy({"summaryFields": SETUP["SUMMARY_FIELDS"]},
+V17 = SETUP["upgraded_definition"](17, stage=4)   # markers + validation + time capture + wording
+V14 = SETUP["upgraded_definition"](18)            # + normalized date/time companions (target)
+# The cases below assert the pickup day/time AS SPOKEN (stage ≤ 4 fields);
+# the normalized fields the bot now reports are covered in TestNormalizedSummary.
+POLICY = compile_goal_policy({"summaryFields": SETUP["summary_fields"](4)},
                              bot_name="Customer Support", system_prompt="")
+NORMALIZED_POLICY = compile_goal_policy({"summaryFields": SETUP["SUMMARY_FIELDS"]},
+                                        bot_name="Customer Support", system_prompt="")
 
 MONDAY_NOON = datetime(2026, 10, 19, 12, 30, tzinfo=IST)
 OPEN, YES, ADDR_YES = "हाँ बोल रहा हूँ", "हाँ", "हाँ सही है"
@@ -393,6 +401,101 @@ class TestBareHourScenarios:
         assert result["slots"]["visit_status"] == "booked"
 
 
+EN_PRE = ["yes speaking", "yes", "yes that's correct"]
+TODAY_BRANCH = [OPEN, "आज सुबह 9 बजे भेज दो", "शाम 5 बजे", "ठीक है", ADDR_YES, YES]
+
+# name → (turns, language, normalized date, normalized time) at MONDAY_NOON (Mon 19 Oct 2026)
+NORMALIZED_CASES = {
+    "hindi: kal sham ke 5 baje": (PRE + ["कल शाम के 5 बजे", YES], "hi-IN", "2026-10-20", "17:00"),
+    "hindi spoken numbers: parso subah nau baje": (PRE + ["परसों सुबह नौ बजे", YES], "hi-IN", "2026-10-21", "09:00"),
+    "hindi fraction then PM": (PRE + ["कल साढ़े चार बजे", "PM", YES], "hi-IN", "2026-10-20", "16:30"),
+    "hindi special time: dopahar dhai baje": (PRE + ["कल दोपहर ढाई बजे", YES], "hi-IN", "2026-10-20", "14:30"),
+    "hinglish: kal subah das baje": (PRE + ["kal subah das baje", YES], "hi-IN", "2026-10-20", "10:00"),
+    "hinglish tarikh: 25 tarikh subah 10 baje": (PRE + ["25 tarikh subah 10 baje", YES], "hi-IN", "2026-10-25", "10:00"),
+    "english: tomorrow at 4 PM": (EN_PRE + ["tomorrow at 4 PM", "yes"], "en-IN", "2026-10-20", "16:00"),
+    "english: Monday, half past four, evening": (EN_PRE + ["Monday half past four", "evening", "yes"], "en-IN", "2026-10-26", "16:30"),
+    "english: 25 October 16:30": (EN_PRE + ["25 October 16:30", "yes"], "en-IN", "2026-10-25", "16:30"),
+    "today with a later time": (PRE + ["आज रात 9 बजे", YES], "hi-IN", "2026-10-19", "21:00"),
+    "today branch via the hub": (TODAY_BRANCH, "hi-IN", "2026-10-19", "17:00"),
+    "date only: Pickup time stays null": (PRE + ["परसों", YES], "hi-IN", "2026-10-21", None),
+    "weekday only": (PRE + ["somvar", YES], "hi-IN", "2026-10-26", None),
+    "period only is a window, not a clock time": (PRE + ["कल शाम", YES], "hi-IN", "2026-10-20", "evening"),
+    "english period only": (EN_PRE + ["tomorrow in the morning", "yes"], "en-IN", "2026-10-20", "morning"),
+    "bare hour clarified then composed": (PRE + ["कल 4 बजे", "शाम", YES], "hi-IN", "2026-10-20", "16:00"),
+    "past date refused, then kal keeps the valid time": (PRE + ["10 October 4 PM", "कल", YES], "hi-IN", "2026-10-20", "16:00"),
+    "reschedule: new day and time": (PRE + ["कल सुबह 10 बजे", "नहीं", "परसों शाम के 5 बजे", YES], "hi-IN", "2026-10-21", "17:00"),
+    "reschedule to a day only drops the old time": (PRE + ["कल सुबह 10 बजे", "नहीं", "परसों", YES], "hi-IN", "2026-10-21", None),
+    "reschedule: time first, then day, then period": (PRE + ["कल सुबह 10 बजे", "नहीं", "4 baje", "parso", "शाम", YES], "hi-IN", "2026-10-21", "16:00"),
+    "reschedule in english": (EN_PRE + ["tomorrow at 10 AM", "no", "day after tomorrow at 5 PM", "yes"], "en-IN", "2026-10-21", "17:00"),
+    "not booked: nothing reported": (PRE + ["कल 4 बजे", "5 बजे", "6 बजे"], "hi-IN", None, None),
+    "date pending (team callback) reports no date": (PRE + ["कल सुबह 10 बजे", "नहीं", "pata nahi", "pata nahi", "pata nahi"], "hi-IN", None, None),
+}
+
+
+class TestNormalizedSummary:
+    """Stage 5: appointment_date / appointment_time are the parser's resolved
+    values (ISO date, 24-hour clock or a window word), derived through the
+    bot's real summaryFields from the final slots exactly as the post-call
+    pipeline sees them; the spoken slots and every reply are untouched."""
+
+    @pytest.mark.parametrize("name", list(NORMALIZED_CASES))
+    async def test_scenario(self, engine, monkeypatch, name):
+        turns, lang, date_expected, time_expected = NORMALIZED_CASES[name]
+        _clock(monkeypatch, MONDAY_NOON)
+        _, result = await _run(engine, monkeypatch, V14, turns, f"norm-{name}", lang=lang)
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        assert (fields["appointment_date"], fields["appointment_time"]) == (date_expected, time_expected), (name, fields, result["slots"])
+        assert set(fields) == {f["name"] for f in SETUP["SUMMARY_FIELDS"]}
+
+    @pytest.mark.parametrize("name", list(CASES))
+    async def test_nothing_spoken_changes_between_stage_4_and_5(self, engine, monkeypatch, name):
+        turns = CASES[name][0]
+        _clock(monkeypatch, MONDAY_NOON)
+        old, r4 = await _run(engine, monkeypatch, V17, turns, f"s4-{name}")
+        new, r5 = await _run(engine, monkeypatch, V14, turns, f"s5-{name}")
+        assert new == old, name
+        companions = set(SETUP["NORMALIZED_SLOTS"].values())
+        assert {k: v for k, v in r5["slots"].items() if k not in companions} == r4["slots"], name
+        # the spoken fields are identical too; only the normalized ones differ
+        assert derive_structured_fields(POLICY, _snapshot(r5["slots"])) == \
+            derive_structured_fields(POLICY, _snapshot(r4["slots"]))
+
+    async def test_relative_day_is_resolved_at_the_utterance_not_the_call_start(self, engine, monkeypatch):
+        """A call that starts at 23:58 and hears "कल" at 00:02: tomorrow is
+        the 21st (the clock at that utterance), not the 20th."""
+        _clock(monkeypatch, datetime(2026, 10, 19, 23, 58, tzinfo=IST))
+        await _run(engine, monkeypatch, V14, PRE, "midnight-1")
+        _clock(monkeypatch, datetime(2026, 10, 20, 0, 2, tzinfo=IST))
+        _, result = await _run(engine, monkeypatch, V14, ["कल शाम 5 बजे", YES], "midnight-1")
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        assert (fields["appointment_date"], fields["appointment_time"]) == ("2026-10-21", "17:00")
+        assert result["slots"]["visit_day"] == "कल"   # the spoken word is kept for the readback
+
+    async def test_today_just_after_midnight(self, engine, monkeypatch):
+        _clock(monkeypatch, datetime(2026, 10, 20, 0, 10, tzinfo=IST))
+        _, result = await _run(engine, monkeypatch, V14, PRE + ["आज सुबह 9 बजे", YES], "midnight-2")
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        assert (fields["appointment_date"], fields["appointment_time"]) == ("2026-10-20", "09:00")
+
+    async def test_api_payload_shows_the_display_forms_and_keeps_the_values(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        _, result = await _run(engine, monkeypatch, V14, PRE + ["कल शाम के 5 बजे", YES], "display-1")
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        row = SimpleNamespace(status="completed", call_outcome=None, summary="", memory={"structured_fields": fields},
+                              next_best_action=None, next_action=None, follow_up_required=False,
+                              follow_up_at=None, confidence=None, generated_at=None, error=None)
+        payload = serialize_conversation_memory(row, SETUP["SUMMARY_FIELDS"])
+        assert payload["structuredFields"]["appointment_date"] == "2026-10-20"
+        assert payload["structuredFields"]["appointment_time"] == "17:00"
+        assert payload["structuredFieldLabels"]["appointment_date"] == "Pickup date"
+        assert payload["structuredFieldLabels"]["appointment_time"] == "Pickup time"
+        assert payload["structuredFieldDisplay"] == {"appointment_date": "20 Oct 2026",
+                                                     "appointment_time": "05:00 PM IST"}
+        assert list(payload["structuredFields"]) == [f["name"] for f in SETUP["SUMMARY_FIELDS"]]
+        window = dict(fields, appointment_time="evening")
+        assert display_structured_fields(SETUP["SUMMARY_FIELDS"], window)["appointment_time"] == "Evening (time window)"
+
+
 class TestDefinition:
     def test_validation_declared_on_the_four_date_asks_only(self):
         from backend.routers.workflows import validate_definition
@@ -421,6 +524,18 @@ class TestDefinition:
                 assert n["config"]["readback"] == SETUP["build_readback"](*SETUP["CONFIRM_NODES"][n["id"]])
             if n["id"] == SETUP["RESET_MARKER"]:
                 assert n["config"]["setSlots"] == {"visit_day": "", "visit_time": "",
-                                                   "visit_time_pending": "", "visit_time_2_pending": ""}
+                                                   "visit_time_pending": "", "visit_time_2_pending": "",
+                                                   "visit_date_iso": "", "visit_time_24h": ""}
+            if n["id"] in SETUP["VALIDATED_ASKS"]:
+                assert n["config"]["validation"]["normalizedDayVariable"] == "visit_date_iso"
+                assert n["config"]["validation"]["normalizedTimeVariable"] == "visit_time_24h"
+        for spec in SETUP["SUMMARY_FIELDS"]:
+            if spec["name"] == "appointment_date":
+                assert (spec["type"], spec["source"], spec["label"]) == ("date", "visit_date_iso", "Pickup date")
+            if spec["name"] == "appointment_time":
+                assert (spec["type"], spec["source"], spec["label"], spec["timezone"]) == \
+                    ("time", "visit_time_24h", "Pickup time", "Asia/Kolkata")
+        assert [f["name"] for f in SETUP["SUMMARY_FIELDS"]] == [f["name"] for f in SETUP["summary_fields"](1)]
+        assert [f["label"] for f in SETUP["SUMMARY_FIELDS"]] == [f["label"] for f in SETUP["summary_fields"](1)]
         yes_edges = [e for e in V14["edges"] if e["from"] in SETUP["CONFIRM_NODES"] and e["to"] == "n_mark_booked"]
         assert len(yes_edges) == 2 and all("ठीक रहेगा" in e["label"] and "chalega" in e["label"] for e in yes_edges)

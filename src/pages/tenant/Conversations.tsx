@@ -570,6 +570,7 @@ function AiSummarySection({ summary, loading }: {
   const structured = Object.entries(summary.structuredFields ?? {});
   const structuredSources = summary.structuredFieldSources ?? {};
   const structuredLabels = summary.structuredFieldLabels ?? {};
+  const structuredDisplay = summary.structuredFieldDisplay ?? {};
 
   return (
     <div className="card-pad-sm col gap-8" style={{ border: "1px solid var(--hairline)", borderRadius: 10 }}>
@@ -644,14 +645,14 @@ function AiSummarySection({ summary, loading }: {
                       flexShrink: 0,
                       fontWeight: value == null ? 400 : 600,
                       fontStyle: value == null ? "italic" : "normal",
-                      textTransform: value == null || isYes || isNo ? "none" : "capitalize",
+                      textTransform: value == null || isYes || isNo || structuredDisplay[key] ? "none" : "capitalize",
                       color: isYes ? "var(--status-good)" : isNo ? "var(--status-warning)" : value == null ? "var(--ink-3)" : "var(--ink)",
                     }}
-                    title={value == null ? "Not determined on this call" : undefined}
+                    title={value == null ? "Not determined on this call" : structuredDisplay[key] ? value : undefined}
                   >
                     {isYes && <Icon name="check-circle" size={13} />}
                     {isNo && <Icon name="x-circle" size={13} />}
-                    <span>{value == null ? "not determined" : value.replace(/_/g, " ")}</span>
+                    <span>{value == null ? "not determined" : structuredDisplay[key] ?? value.replace(/_/g, " ")}</span>
                   </span>
                 </div>
               );

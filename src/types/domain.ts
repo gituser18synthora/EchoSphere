@@ -1815,6 +1815,8 @@ export interface ConversationAiSummary {
   structuredFieldSources?: Record<string, string>;
   /** Display labels from goal policy summaryFields; keys without one are shown humanised. */
   structuredFieldLabels?: Record<string, string>;
+  /** Display forms of normalized date/time fields ("20 Oct 2026", "05:00 PM IST"); the value stays machine-readable. */
+  structuredFieldDisplay?: Record<string, string>;
   nextBestAction?: ConversationNextBestAction | null;
   followUpRequired: boolean;
   followUpAt?: string | null;
