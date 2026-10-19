@@ -132,7 +132,27 @@
       "courier_name": "Xpressbees",
       "awb": "XB3401201011",
       "sent_at": "2026-09-10T10:54:58+00:00"
+    },
+    {
+      "link_id": "TL-2C4D5987",
+      "order_id": "7001002",
+      "channel": "whatsapp",
+      "sent_to_masked": "XXXXXX1002",
+      "courier_name": "Blue Dart",
+      "awb": "BD4501201002",
+      "sent_at": "2026-10-07T11:53:14+00:00"
     }
   ],
-  "escalations": []
+  "escalations": [
+    {
+      "ticket_id": "TCK-BFCA141D",
+      "queue": "customer_support",
+      "order_id": null,
+      "call_state": {
+        "order_ref": "1234561234",
+        "order_ref2": "1234567"
+      },
+      "created_at": "2026-10-07T10:52:28+00:00"
+    }
+  ]
 }
