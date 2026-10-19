@@ -363,7 +363,7 @@ class TestExtractTime:
 
     @pytest.mark.parametrize("text, kind", [
         ("रात 12 बजे", "unknown"), ("कल रात 12 बजे", "unknown"), ("12 AM", "exact"), ("दोपहर 12 बजे", "exact"),
-        ("4 30", "unknown"), ("four forty five", "ambiguous"), ("ten to five", "unknown"), ("रात 11 बजे", "exact"),
+        ("4 30", "ambiguous"), ("four forty five", "ambiguous"), ("ten to five", "unknown"), ("रात 11 बजे", "exact"),
     ])
     def test_midnight_and_two_hours_are_not_understood(self, text, kind):
         assert vd.parse_time(text).kind == kind
@@ -404,6 +404,67 @@ class TestExtractDay:
     def test_two_different_days_capture_nothing(self, text):
         assert vd.extract_day(text, TODAY) is None
 
-    def test_relocated_capture_regex_still_reads_the_connector(self):
+    def test_capture_regex_reads_the_connector_and_stops_at_a_danda(self):
         regex = vd.time_capture_regex()
-        assert "के" in regex and "ke" in regex and "[\\u0900-\\u097f]" in regex
+        assert "के" in regex and "ke" in regex
+        assert vd._TIME_CAPTURE_RE.search("शाम के 5 बजे।").group(0) == "शाम के 5 बजे"
+        assert vd._DAY_CAPTURE_RE.search("परसों।").group(0) == "परसों"
+
+
+class TestHourAndMinutes:
+    @pytest.mark.parametrize("text, kind, minutes", [
+        ("4 बजकर 30 मिनट", "ambiguous", (270, 990)),
+        ("शाम 4 बजकर 30 मिनट", "exact", (990,)),
+        ("चार बजकर पाँच मिनट", "ambiguous", (245, 965)),
+        ("सुबह दस बजकर बीस मिनट", "exact", (620,)),
+        ("4 बजकर 45", "ambiguous", (285, 1005)),
+        ("4 bajkar 45 minute", "ambiguous", (285, 1005)),
+        ("sham 4 bajke 15", "exact", (975,)),
+        ("4 baje 30 minute", "ambiguous", (270, 990)),
+        ("4 30 बजे", "ambiguous", (270, 990)),
+        ("4 30 PM", "exact", (990,)),
+        ("16 30", "exact", (990,)),
+        ("four twenty", "ambiguous", (260, 980)),
+        ("four ten in the evening", "exact", (970,)),
+        ("four forty five", "ambiguous", (285, 1005)),
+        ("साढ़े चार बजे", "ambiguous", (270, 990)),
+        ("4:30 PM", "exact", (990,)),
+    ])
+    def test_minutes_are_kept_whole(self, text, kind, minutes):
+        result = parse_time(text)
+        assert (result.kind, result.candidates) == (kind, minutes), text
+
+    @pytest.mark.parametrize("text", ["4 बजे 30", "4 5 बजे", "four five", "ढाई बजे या तीन बजे", "4 बजकर 30 मिनट या 5 बजे"])
+    def test_a_reading_that_is_not_one_time_is_not_understood(self, text):
+        assert parse_time(text).kind == "unknown"
+
+    def test_capture_keeps_the_minutes_and_the_clarification_completes_them(self):
+        assert vd.extract_time("कल 4 बजकर 30 मिनट") == "4 बजकर 30 मिनट"
+        assert vd.extract_time("कल शाम के 4 बजकर 30 मिनट कर दो") == "शाम के 4 बजकर 30 मिनट"
+        assert vd.extract_time("kal 4 baje 30 minute") == "4 baje 30 minute"
+        assert vd.extract_time("tomorrow at four twenty") == "four twenty"
+        composed = compose_time("शाम", "4 बजकर 30 मिनट")
+        assert composed == "शाम 4 बजकर 30 मिनट" and parse_time(composed).candidates == (990,)
+        assert vd.normalize_time(parse_time(composed)) == "16:30"
+        slots = {"visit_day": "कल", "visit_time": "4 बजकर 30 मिनट"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).reason == "time_ambiguous"
+        assert slots["visit_time_pending"] == "4 बजकर 30 मिनट"
+
+
+class TestSentenceFinalDanda:
+    """Sarvam ends sentences with ।: a word before it must still be read."""
+
+    def test_days_and_times_before_a_danda(self):
+        assert vd.extract_day("परसों।", TODAY) == "परसों"
+        assert vd.extract_day("25 अक्टूबर।", TODAY) == "25 अक्टूबर"
+        assert vd.extract_day("कल नहीं। परसों।", TODAY) == "परसों"
+        assert vd.extract_day("कल नहीं।", TODAY) is None
+        assert vd.extract_time("कल शाम।") == "शाम"
+        assert vd.extract_time("शाम 5 बजे।") == "शाम 5 बजे"
+        assert vd.extract_time("4 बजकर 30 मिनट।") == "4 बजकर 30 मिनट"
+        assert parse_day("25 अक्टूबर।", TODAY).value == date(2026, 10, 25)
+
+    def test_a_bare_number_after_baje_is_kept_so_it_is_asked_again(self):
+        assert vd.extract_time("कल 4 बजे 30") == "4 बजे 30"
+        assert parse_time("4 बजे 30").kind == "unknown"
+        assert vd.extract_time("5 बजे 2 लोग आएंगे") == "5 बजे"     # not a minute count
