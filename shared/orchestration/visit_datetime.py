@@ -288,12 +288,43 @@ def _phrase_hit(phrases: dict, t: str) -> str | None:
     return None
 
 
+def _hour_values(tokens: list[str]) -> set[int]:
+    """Every distinct hour a token list names (digits, hour words, special
+    times), skipping the minute words that follow an English hour word."""
+    values: set[int] = set()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok[0].isdigit():
+            values.add(int(tok.partition(":")[0].partition(".")[0]))
+        elif tok in HOUR_WORDS:
+            values.add(HOUR_WORDS[tok])
+            nxt = " ".join(tokens[i + 1:i + 3])
+            for words in MINUTE_WORDS_EN:
+                if nxt.startswith(words):
+                    i += len(words.split())
+                    break
+        i += 1
+    return values
+
+
 def parse_time(text) -> TimeResult:
-    """Read a spoken time: digits or hour words, fraction words, periods, am/pm."""
+    """Read a spoken time: digits or hour words, fraction words, periods, am/pm.
+
+    A text naming two different hours ("5 बजे या 6 बजे", "4 30") or two
+    different periods ("सुबह या शाम"), or "रात 12" (midnight, ambiguous about
+    the date), is ``unknown``: said, not understood — the flow asks again
+    rather than keeping either reading.
+    """
     t = _norm(text)
     if not t:
         return TimeResult("unknown")
-    period = next((name for name, p in _PERIOD_RE.items() if p.search(t)), None)
+    periods = [name for name, p in _PERIOD_RE.items() if p.search(t)]
+    if len(periods) > 1:
+        return TimeResult("unknown")
+    period = periods[0] if periods else None
+    if len(_hour_values(_TOKEN_RE.findall(t))) > 1:
+        return TimeResult("unknown")
     ampm = _AMPM_RE.search(t)
     ampm = ampm.group(1).lower() if ampm else None
     hour = minute = None
@@ -342,6 +373,8 @@ def parse_time(text) -> TimeResult:
     if period == "evening":
         return TimeResult("exact", ((hour + 12 if hour < 12 else hour) * 60 + minute,), period)
     if period == "night":
+        if hour == 12:
+            return TimeResult("unknown")   # midnight: which night? ask
         return TimeResult("exact", ((hour + 12 if 6 <= hour < 12 else hour) * 60 + minute,), period)
     if hour == 12:
         return TimeResult("exact", (12 * 60 + minute,))
@@ -368,6 +401,268 @@ def compose_time(answer_text, pending_text) -> str | None:
     if english:
         return f"{pending} in the {english.group(1).lower()}"
     return f"{answer} {pending}"
+
+
+# ── capture: candidate spans chosen by the parser ────────────────────────────
+#
+# The capture regexes are built from the vocabulary above, so the words the
+# parser reads are exactly the words the capture finds. They only FIND
+# candidate spans; choosing among them is the parser's job (extract_time /
+# extract_day), never the regex engine's leftmost rule: on live call
+# cv_0b1e4d99ac69 "कल कर दो शाम के पाँच बजे" the leftmost match was "दो शाम" —
+# the verb particle of "कर दो" plus the period word — read as 2 PM, while the
+# complete "शाम के पाँच बजे" started later in the sentence.
+
+def _guarded(words) -> str:
+    """Alternation of whole words; Devanagari words get letter look-arounds
+    (no \b there), multi-word phrases accept any whitespace."""
+    parts = []
+    for w in sorted(words, key=len, reverse=True):
+        esc = re.escape(w).replace(r"\ ", r"\s+")
+        if re.search(r"[\u0900-\u097f]", w):
+            parts.append(rf"(?<![\u0900-\u097f]){esc}(?![\u0900-\u097f])")
+        else:
+            parts.append(rf"\b{esc}\b")
+    return "(?:" + "|".join(parts) + ")"
+
+
+PERIOD_SURFACE = [w for words in PERIOD_WORDS.values() for w in words
+                  if w != "noon"] + ["सवेरे", "savere", "subha"]
+
+
+def time_capture_regex() -> str:
+    """Regex matching one spoken time expression (digits or hour words,
+    fractions, periods before/after with को/के/ko/ke, बजे/baje/am/pm, "at
+    four", "four thirty", 16:30, a bare period or AM/PM). Every alternative
+    is anchored so a number inside a date ("25 October") is never a time."""
+    period = _guarded(PERIOD_SURFACE)
+    ko = r"(?:\s+(?:ko|को|mein|में|me))?"
+    hour_digit = r"(?<![\d:.])\d{1,2}(?:[:.]\d{2})?(?![\d])"
+    hour = f"(?:{hour_digit}|{_guarded(HOUR_WORDS)})"
+    frac = _guarded(FRACTION_WORDS)
+    special = _guarded(SPECIAL_TIMES)
+    min_en = r"(?:\s+(?:thirty|fifteen|forty[\s-]?five))?"
+    ampm = r"(?:\s*(?<![a-z])[ap]\.?\s?m\.?(?![a-z]))"
+    suffix = rf"(?:\s*(?:बजे|बजकर|baje|bje|o'?\s?clock|hrs)){ampm}?|{ampm}"
+    trail = rf"(?:\s+(?:in\s+the\s+)?{period}{ko})?"
+    lead = rf"{period}\s+(?:ko\s+|को\s+|ke\s+|के\s+)?"
+    alternatives = [
+        rf"{lead}(?:{frac}\s+)?{hour}{min_en}(?:{suffix})?{trail}",     # सुबह नौ बजे / subah 10
+        rf"{frac}\s+{hour}{min_en}(?:{suffix})?{trail}",                # साढ़े चार बजे / half past four
+        rf"(?:{lead})?{special}(?:{suffix})?{trail}",                    # ढाई बजे / दोपहर डेढ़ बजे
+        rf"{hour}{min_en}(?:{suffix}){trail}",                           # 4 PM / nau baje subah
+        rf"{hour}{min_en}\s+(?:in\s+the\s+)?{period}{ko}",            # 10 in the morning / nau sham ko
+        rf"(?<=\bat ){hour}{min_en}(?:{suffix})?{trail}",                 # (at) four
+        rf"{_guarded(HOUR_WORDS_EN)}\s+(?:thirty|fifteen|forty[\s-]?five)\b",  # four thirty
+        r"(?<![\d:.])(?:1[3-9]|2[0-3])[:.][0-5]\d(?![\d])",            # 16:30
+        rf"{period}(?!\s+(?:ko\s+|को\s+|ke\s+|के\s+)?(?:{frac}|{hour}|{special}))|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])",  # bare period / PM
+    ]
+    return "(?i)(" + "|".join(alternatives) + ")"
+
+
+_WEEK_WORDS = ("week", "hafte", "hafta", "हफ्ते", "हफ़्ते", "सप्ताह")
+_NEXT_WORDS = ("this", "next", "coming", "agle", "agla", "aane wale", "is", "अगले", "आने वाले", "इस")
+_TARIKH = r"(?:tarikh|taarikh|tareekh|tarik|तारीख)"
+
+
+def day_capture_regex() -> str:
+    """Regex matching one spoken day expression: today/kal/परसों, weekdays
+    (with next/agle/अगले), "next week"/"agle hafte" (captured so validation
+    can ask for a specific day), DD tarikh (digits or romanised day words),
+    DD Month / Month DD (en/hi months, optional year), DD/MM[/YYYY], ISO."""
+    months = _guarded(list(_MONTH_WORDS))
+    weekdays = _guarded([w for ws in _WEEKDAYS.values() for w in ws])
+    relative = _guarded([w for ws in _RELATIVE.values() for w in ws])
+    alternatives = [
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s*(?:of\s+)?{months}(?:,?\s*\d{{4}})?",
+        rf"{months}\s+\d{{1,2}}(?:st|nd|rd|th)?(?!\d)(?:,?\s*\d{{4}})?",
+        r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)",
+        r"(?<!\d)\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)",
+        rf"(?<!\d)(?:\d{{1,2}}|{_guarded(list(DAY_WORDS_ROMAN))})\s*{_TARIKH}",
+        rf"(?:{_guarded(_NEXT_WORDS)}\s+)?(?:{weekdays}|{_guarded(_WEEK_WORDS)})",
+        relative,
+    ]
+    return "(?i)(" + "|".join(alternatives) + ")"
+
+
+_TIME_CAPTURE_RE = re.compile(time_capture_regex())
+_DAY_CAPTURE_RE = re.compile(day_capture_regex())
+_TIME_MARKER_RE = re.compile(r"बजे|बजकर|\bbaje\b|\bbje\b|o'?\s?clock|\bhrs\b|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])", re.I)
+# "X नहीं" / "X nahi" / "X not" right after a span (an optional तो/ही/भी/to/hi
+# between) negates it; English "not X" / "no X" before it does too. A Hindi
+# नहीं BEFORE a span is the answer "no" followed by the correction, not a
+# negation of it ("नहीं, कल कर दो"), and a bare English "no" AFTER one is
+# usually "no problem" — neither counts.
+_NEG_AFTER_RE = re.compile(
+    r"^\s*,?\s*(?:(?:to|hi|bhi|ko|me|mein|par|तो|ही|भी|को|में|पर)\s+)?(?:nahi|nahin|nahee|nhi|mat|not|नहीं|नही|मत)(?![a-z\u0900-\u097f])", re.I)
+_NEG_BEFORE_RE = re.compile(r"(?:^|[^a-z])(?:not|no)\s+(?:(?:on|at|for)\s+)?$", re.I)
+_NO_AFTER_RE = re.compile(r"\s*,?\s*(?:no|nope)\b", re.I)
+_TOKEN_START_RE = re.compile(r"(?:^|(?<=[\s,.;:!?।(\-]))\S")
+
+
+@dataclass(frozen=True)
+class _Span:
+    start: int
+    end: int
+    text: str
+    parsed: object      # TimeResult | DayResult
+
+    def overlaps(self, other: "_Span") -> bool:
+        return self.start < other.end and other.start < self.end
+
+
+def _candidate_spans(text: str, pattern: re.Pattern) -> list[tuple[int, int, str]]:
+    """Every match starting at a token boundary (overlapping spans allowed)."""
+    out, seen = [], set()
+    for m in _TOKEN_START_RE.finditer(text):
+        hit = pattern.match(text, m.start())
+        if hit and hit.group(0).strip():
+            span = (hit.start(), hit.end(), hit.group(0).strip())
+            if span not in seen:
+                seen.add(span)
+                out.append(span)
+    return out
+
+
+def _negated(text: str, start: int, end: int) -> bool:
+    return bool(_NEG_AFTER_RE.search(text[end:]) or _NEG_BEFORE_RE.search(text[:start]))
+
+
+def _hour_word_unanchored(span: str) -> bool:
+    """A Hindi / romanised-Hindi hour WORD that is neither followed by a
+    time marker nor preceded by a period or fraction word — "दो" in "कर दो
+    शाम", "ek" in "ek baar" — is a verb particle or a determiner, not an hour.
+    Digits and English hour words ("four in the evening") stand on their own."""
+    tokens = _norm(span).split()
+    if not tokens:
+        return True
+    first = tokens[0]
+    hindi_hour = first in HOUR_WORDS_HI or first in HOUR_WORDS_ROMAN
+    return hindi_hour and not _TIME_MARKER_RE.search(span)
+
+
+def extract_time(text) -> str | None:
+    """The one spoken time expression in ``text`` the parser stands behind,
+    as the caller said it — or None.
+
+    All candidate spans are read (not just the leftmost), negated spans are
+    dropped, and the most complete reading wins (exact > bare hour > period;
+    with a बजे/baje/AM/PM marker; longest). A bare hour in one place and a
+    bare period in another ("5 बजे … शाम को") are composed into one exact
+    time. Two readings that disagree ("5 बजे या 6 बजे", "सुबह या शाम") are
+    returned together, as said, which :func:`parse_time` cannot read — so
+    validation asks for the time again instead of either reading being kept.
+    """
+    raw = str(text or "")
+    spans: list[_Span] = []
+    for start, end, span in _candidate_spans(raw, _TIME_CAPTURE_RE):
+        if _hour_word_unanchored(span) or _negated(raw, start, end):
+            continue
+        # A span the parser refuses ("रात 12 बजे") stays a candidate: as the
+        # fullest reading of its mention it must not degrade into a shorter
+        # one it contains ("12 बजे" = noon); validation will ask again.
+        spans.append(_Span(start, end, span, parse_time(span)))
+    spans = _drop_corrected(raw, spans)
+    if not spans:
+        return None
+    rank = {"exact": 3, "ambiguous": 2, "period": 1, "unknown": 0, "invalid": 0}
+
+    def score(s: _Span):
+        return (rank[s.parsed.kind], bool(_TIME_MARKER_RE.search(s.text)),
+                s.parsed.period is not None, len(s.text))
+
+    mentions = _mentions(spans, lambda s: (len(s.text), score(s)))   # fullest reading per mention
+    best, *others = sorted(mentions, key=score, reverse=True)
+    if best.parsed.kind in ("unknown", "invalid"):
+        return best.text
+    if best.parsed.kind == "ambiguous":
+        period = next((s for s in others if s.parsed.kind == "period"), None)
+        if period is not None:
+            composed = compose_time(period.text, best.text)
+            if composed and parse_time(composed).kind == "exact":
+                rest = [s for s in others if s is not period and not _agrees(s, period)]
+                if rest:
+                    return _together(raw, [best, period, *rest])
+                return composed
+    disagreeing = [s for s in others if not _agrees(s, best)]
+    if disagreeing:
+        return _together(raw, [best, *disagreeing])
+    return best.text
+
+
+def _agrees(s: _Span, best: _Span) -> bool:
+    """Whether ``s`` is the same time as ``best`` said less completely:
+    the same window ("शाम 5 बजे … शाम को"), the same bare hour ("5 बजे …
+    शाम 5 बजे"), or the same reading."""
+    a, b = s.parsed, best.parsed
+    if a.kind == "period":
+        return b.period == a.period
+    if a.kind == "ambiguous" and b.kind == "exact":
+        return b.candidates[0] in a.candidates
+    return _time_value(s) == _time_value(best)
+
+
+def _together(raw: str, spans: list[_Span]) -> str:
+    """The caller's words from the first to the last disagreeing mention."""
+    return raw[min(s.start for s in spans):max(s.end for s in spans)].strip()
+
+
+def _drop_corrected(raw: str, spans: list[_Span]) -> list[_Span]:
+    """A bare English "no" right after a span is a correction only when
+    another span follows ("Tomorrow, no, make it Monday" → Monday); alone it
+    is "no problem" and keeps the span."""
+    kept = []
+    for s in spans:
+        if _NO_AFTER_RE.match(raw[s.end:]) and any(t.start >= s.end for t in spans if t is not s):
+            continue
+        kept.append(s)
+    return kept
+
+
+def _mentions(spans: list[_Span], score) -> list[_Span]:
+    """Overlapping spans are readings of ONE mention ("शाम 5 बजे" also
+    contains "5 बजे"): keep the best-scoring reading of each mention, best
+    mention first."""
+    kept: list[_Span] = []
+    for s in sorted(spans, key=score, reverse=True):
+        if not any(s.overlaps(k) for k in kept):
+            kept.append(s)
+    return kept
+
+
+def _time_value(s: _Span):
+    p = s.parsed
+    return (p.kind, p.candidates, p.period if p.kind == "period" else None)
+
+
+def extract_day(text, today: date | None = None) -> str | None:
+    """The one spoken day expression in ``text``, as said — or None.
+
+    Every candidate span is read against ``today`` (default: now in the
+    default zone); negated spans are dropped ("कल नहीं परसों" → परसों, "not
+    tomorrow, Monday" → Monday); a resolvable day beats one the parser cannot
+    place ("next week"), which is still returned alone so validation can ask
+    for a specific day. Two different resolvable days ("कल या परसों") give
+    None, so the flow asks instead of picking one.
+    """
+    raw = str(text or "")
+    today = today or now_in(DEFAULT_TIMEZONE).date()
+    spans: list[_Span] = []
+    for start, end, span in _candidate_spans(raw, _DAY_CAPTURE_RE):
+        if _negated(raw, start, end):
+            continue
+        spans.append(_Span(start, end, span, parse_day(span, today)))
+    spans = _drop_corrected(raw, spans)
+    if not spans:
+        return None
+    rank = {"ok": 3, "past": 2, "invalid": 2, "unknown": 1}
+    best, *others = _mentions(spans, lambda s: (rank[s.parsed.kind], len(s.text)))
+    for s in others:
+        if s.parsed.kind == "unknown":
+            continue   # "next week … Monday": the vague one is refined, not contradicted
+        if (s.parsed.kind, s.parsed.value) != (best.parsed.kind, best.parsed.value):
+            return None
+    return best.text
 
 
 # ── verdict ──────────────────────────────────────────────────────────────────
@@ -578,4 +873,5 @@ __all__ = [
     "SPECIAL_TIMES", "MINUTE_WORDS_EN", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
     "now_in", "parse_day", "parse_time", "normalize_time", "compose_time", "resolve_visit",
     "validate_visit", "validate_ask", "pending_time_variable", "rejection_reply",
+    "time_capture_regex", "day_capture_regex", "extract_time", "extract_day",
 ]

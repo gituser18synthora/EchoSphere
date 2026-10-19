@@ -102,3 +102,21 @@ class TestRegexPatternsDigitHint:
         from shared.orchestration.entity_extractor import _expects_digits
 
         assert _expects_digits({"dataType": "text", "regexPatterns": [r"(guard\s+\w+)"]}) is False
+
+
+class TestSpokenDateTimeTypes:
+    """dataType spoken_day / spoken_time hand the choice to the parser."""
+
+    def test_time_is_parser_chosen_not_leftmost(self):
+        out = extract_entity("कल कर दो शाम के पाँच बजे।", {"name": "visit_time", "dataType": "spoken_time"})
+        assert out["matched"] and out["value"] == "शाम के पाँच बजे" and out["method"] == "spoken_time"
+
+    def test_day_and_nothing(self):
+        out = extract_entity("कल नहीं परसों", {"name": "visit_day", "dataType": "spoken_day"})
+        assert out["value"] == "परसों"
+        out = extract_entity("हाँ ठीक है", {"name": "visit_day", "dataType": "spoken_day"})
+        assert not out["matched"] and out["value"] is None
+
+    def test_no_spoken_number_retry_for_these_types(self):
+        out = extract_entity("do baje", {"name": "visit_time", "dataType": "spoken_time"})
+        assert out["value"] == "do baje" and out["normalized"] is False

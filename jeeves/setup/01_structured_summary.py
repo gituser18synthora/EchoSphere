@@ -53,6 +53,17 @@ What this stage does (dry-run by default, idempotent):
      knows ``normalizedDayVariable`` (shared/orchestration/visit_datetime.py)
      and the ``date``/``time`` field types (shared/post_call/structured.py);
      applied to a server running older code, Pickup date/time come out empty.
+  7. Parser-chosen capture (sixth workflow upgrade): the day/time entities of
+     the four validated asks and the callback ask become ``dataType:
+     spoken_day`` / ``spoken_time`` — the parser reads every candidate span
+     of the utterance and keeps the most complete one, drops negated spans
+     ("कल नहीं परसों"), composes a bare hour with a period said elsewhere,
+     captures no day when two days disagree (the ask repeats) and keeps two
+     disagreeing times as said so validation asks again — instead of the
+     regex engine's leftmost match, which on live call cv_0b1e4d99ac69 took
+     "दो शाम" (the "कर दो" particle + the period) out of "कल कर दो शाम के पाँच
+     बजे" and booked 2 PM. RUNTIME DEPENDENCY: entity_extractor must know the
+     two data types; on older code such an entity matches nothing.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -477,46 +488,9 @@ def has_validation(nodes: list[dict]) -> bool:
 import re as _re
 from shared.orchestration import visit_datetime as _vd
 
-
-def _guarded(words) -> str:
-    parts = []
-    for w in sorted(words, key=len, reverse=True):
-        esc = _re.escape(w).replace(r"\ ", r"\s+")
-        if _re.search(r"[\u0900-\u097f]", w):
-            parts.append(rf"(?<![\u0900-\u097f]){esc}(?![\u0900-\u097f])")
-        else:
-            parts.append(rf"\b{esc}\b")
-    return "(?:" + "|".join(parts) + ")"
-
-
-PERIOD_SURFACE = [w for words in _vd.PERIOD_WORDS.values() for w in words
-                  if w != "noon"] + ["सवेरे", "savere", "subha"]
-
-
-def build_time_regex() -> str:
-    period = _guarded(PERIOD_SURFACE)
-    ko = r"(?:\s+(?:ko|को|mein|में|me))?"
-    hour_digit = r"(?<![\d:.])\d{1,2}(?:[:.]\d{2})?(?![\d])"
-    hour = f"(?:{hour_digit}|{_guarded(_vd.HOUR_WORDS)})"
-    frac = _guarded(_vd.FRACTION_WORDS)
-    special = _guarded(_vd.SPECIAL_TIMES)
-    min_en = r"(?:\s+(?:thirty|fifteen|forty[\s-]?five))?"
-    ampm = r"(?:\s*(?<![a-z])[ap]\.?\s?m\.?(?![a-z]))"
-    suffix = rf"(?:\s*(?:बजे|बजकर|baje|bje|o'?\s?clock|hrs)){ampm}?|{ampm}"
-    trail = rf"(?:\s+(?:in\s+the\s+)?{period}{ko})?"
-    lead = rf"{period}\s+(?:ko\s+|को\s+|ke\s+|के\s+)?"
-    alternatives = [
-        rf"{lead}(?:{frac}\s+)?{hour}{min_en}(?:{suffix})?{trail}",     # सुबह नौ बजे / subah 10
-        rf"{frac}\s+{hour}{min_en}(?:{suffix})?{trail}",                # साढ़े चार बजे / half past four
-        rf"(?:{lead})?{special}(?:{suffix})?{trail}",                    # ढाई बजे / दोपहर डेढ़ बजे
-        rf"{hour}{min_en}(?:{suffix}){trail}",                           # 4 PM / nau baje subah
-        rf"{hour}{min_en}\s+(?:in\s+the\s+)?{period}{ko}",            # 10 in the morning / nau sham ko
-        rf"(?<=\bat ){hour}{min_en}(?:{suffix})?{trail}",                 # (at) four
-        rf"{_guarded(_vd.HOUR_WORDS_EN)}\s+(?:thirty|fifteen|forty[\s-]?five)\b",  # four thirty
-        r"(?<![\d:.])(?:1[3-9]|2[0-3])[:.][0-5]\d(?![\d])",            # 16:30
-        rf"{period}(?!\s+(?:ko\s+|को\s+|ke\s+|के\s+)?(?:{frac}|{hour}|{special}))|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])",  # bare period / PM
-    ]
-    return "(?i)(" + "|".join(alternatives) + ")"
+# The time capture regex is the parser's own (built from its vocabulary);
+# kept under this name because saved stage-3/4 workflows carry its text.
+build_time_regex = _vd.time_capture_regex
 
 
 _OLD_TARIKH = r"\b\d{1,2}\s*(?:tarikh|taarikh|tareekh|tarik)\b"
@@ -660,6 +634,44 @@ def has_confirmation_wording(nodes: list[dict]) -> bool:
     )
 
 
+# ── parser-chosen day/time capture (stage 6) ─────────────────────────────────
+
+SPOKEN_DAY = {"dataType": "spoken_day"}
+SPOKEN_TIME = {"dataType": "spoken_time"}
+DAY_CAPTURE_VARIABLES = {"visit_day", "visit_day_2", "callback_date"}
+
+
+def use_spoken_capture(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 6: day/time captures become parser-chosen entities. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_normalized_capture(nodes):
+        raise ValueError("stage 5 (normalized companions) must be applied first")
+    for node_id in list(VALIDATED_ASKS) + ["n_ask_callback"]:
+        node = by_id.get(node_id)
+        if node is None:
+            raise ValueError(f"baseline node {node_id!r} missing — not the expected workflow")
+        config = node.setdefault("config", {})
+        if config.get("variable") in DAY_CAPTURE_VARIABLES:
+            config["entity"] = dict(SPOKEN_DAY)
+        for capture in config.get("alsoCapture") or []:
+            if capture.get("variable") in TIME_CAPTURE_VARIABLES:
+                capture["entity"] = dict(SPOKEN_TIME)
+            elif capture.get("variable") in DAY_CAPTURE_VARIABLES:
+                capture["entity"] = dict(SPOKEN_DAY)
+    return nodes, edges
+
+
+def has_spoken_capture(nodes: list[dict]) -> bool:
+    return all(
+        (n.get("config") or {}).get("entity") == SPOKEN_DAY
+        and all(c.get("entity") == SPOKEN_TIME for c in ((n.get("config") or {}).get("alsoCapture") or [])
+                if c.get("variable") in TIME_CAPTURE_VARIABLES)
+        for n in nodes if n.get("id") in VALIDATED_ASKS
+    )
+
+
 # ── normalized pickup date/time (stage 5) ────────────────────────────────────
 
 def add_normalized_capture(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -720,7 +732,7 @@ def load_baseline() -> dict:
         return json.load(f)
 
 
-TARGET_STAGE = 5
+TARGET_STAGE = 6
 SUMMARY_FIELDS = summary_fields()
 
 
@@ -728,7 +740,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
     """The upgraded definition in the engine's shape (tests + --dump):
     stage 1 = summary markers (v13), stage 2 = + day/time validation (v14/v15),
     stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation
-    wording (v17), stage 5 = + normalized pickup date/time companions."""
+    wording (v17), stage 5 = + normalized pickup date/time companions (v18),
+    stage 6 = + parser-chosen day/time capture."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
@@ -739,6 +752,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
         nodes, edges = refine_confirmation_wording(nodes, edges)
     if stage >= 5:
         nodes, edges = add_normalized_capture(nodes, edges)
+    if stage >= 6:
+        nodes, edges = use_spoken_capture(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -848,7 +863,7 @@ def main(argv: list[str] | None = None) -> None:
                          "re-export the baseline (or pass --allow-version) before upgrading")
         new_nodes, new_edges = target["nodes"], target["edges"]
         print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording, "
-              "normalized date/time)" if at_baseline
+              "normalized date/time, parser-chosen capture)" if at_baseline
               else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)
