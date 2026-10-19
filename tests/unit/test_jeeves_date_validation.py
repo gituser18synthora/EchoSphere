@@ -1,5 +1,5 @@
 """Jeeves Airtel uninstallation bot: visit day/time validation (workflow
-stage 2, jeeves/setup/01_structured_summary.py → v14).
+stages 2-3, jeeves/setup/01_structured_summary.py → v16).
 
 The four date-capturing asks declare ``validation: future_datetime`` in
 Asia/Kolkata. A past or impossible day, or a past/ambiguous time for today,
@@ -26,7 +26,7 @@ from tests.unit.test_jeeves_structured_summary import (
 IST = ZoneInfo("Asia/Kolkata")
 SETUP = runpy.run_path("jeeves/setup/01_structured_summary.py")
 V13 = SETUP["upgraded_definition"](13, stage=1)
-V14 = SETUP["upgraded_definition"](14, stage=2)
+V14 = SETUP["upgraded_definition"](16, stage=3)   # markers + validation + spoken-number time capture
 POLICY = compile_goal_policy({"summaryFields": SETUP["SUMMARY_FIELDS"]},
                              bot_name="Customer Support", system_prompt="")
 
@@ -101,14 +101,58 @@ CASES = {
         [R["time_ambiguous"]["hi"], "आज शाम 4 बजे", BOOKED],
         {"visit_day": "आज", "visit_time": "शाम 4 बजे"},
         {"appointment_time": "शाम 4 बजे"}),
+    "bare hour on a future day: period answer completes the time": (
+        PRE + ["कल 4 बजे", "शाम", YES],
+        [R["time_ambiguous"]["hi"], "कल शाम 4 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 4 बजे"},
+        {"appointment_date": "कल", "appointment_time": "शाम 4 बजे"}),
+    "live expression: कल सुबह नौ बजे is captured whole": (
+        PRE + ["कल सुबह नौ बजे", YES], ["कल सुबह नौ बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "सुबह नौ बजे"}, {"appointment_time": "सुबह नौ बजे"}),
+    "live expression: कल सुबह दस बजे": (
+        PRE + ["कल सुबह दस बजे", YES], ["कल सुबह दस बजे", BOOKED],
+        {"visit_time": "सुबह दस बजे"}, {"appointment_time": "सुबह दस बजे"}),
+    "live expression: ढाई बजे alone → day → period": (
+        PRE + ["ढाई बजे", "कल", "दोपहर", YES],
+        [R["day_missing"]["hi"], R["time_ambiguous"]["hi"], "कल दोपहर ढाई बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "दोपहर ढाई बजे"}, {"appointment_time": "दोपहर ढाई बजे"}),
+    "fraction with PM answer": (
+        PRE + ["कल साढ़े चार बजे", "PM", YES],
+        [R["time_ambiguous"]["hi"], "साढ़े चार बजे PM", BOOKED],
+        {"visit_time": "साढ़े चार बजे PM"}, {"appointment_time": "साढ़े चार बजे PM"}),
+    "parked hour replaced by a full time": (
+        PRE + ["कल 4 बजे", "कल सुबह 10 बजे", YES],
+        [R["time_ambiguous"]["hi"], "कल सुबह 10 बजे", BOOKED],
+        {"visit_time": "सुबह 10 बजे"}, {"appointment_time": "सुबह 10 बजे"}),
+    "romanised spoken numbers": (
+        PRE + ["kal subah das baje", YES], ["kal subah das baje", BOOKED],
+        {"visit_time": "subah das baje"}, {"appointment_time": "subah das baje"}),
+    "romanised day-of-month word": (
+        PRE + ["pachees tarikh subah 10 baje", YES], ["pachees tarikh subah 10 baje", BOOKED],
+        {"visit_day": "pachees tarikh", "visit_time": "subah 10 baje"}, {"appointment_date": "pachees tarikh"}),
+    "today past spoken time then a later spoken time": (
+        PRE + ["आज सुबह नौ बजे", "शाम सात बजे", YES],
+        [R["time_past"]["hi"], "आज शाम सात बजे", BOOKED],
+        {"visit_day": "आज", "visit_time": "शाम सात बजे"}, {"appointment_time": "शाम सात बजे"}),
+    "reschedule with a romanised fraction, period answer composes into both slots": (
+        PRE + ["कल सुबह 10 बजे", "नहीं", "parso sadhe paanch baje", "sham", YES],
+        [READBACK, "किस दिन", R["time_ambiguous"]["hi"], "parso sham sadhe paanch baje", BOOKED],
+        {"visit_day": "parso", "visit_time": "sham sadhe paanch baje", "visit_time_2": "sham sadhe paanch baje"},
+        {"appointment_date": "parso", "appointment_time": "sham sadhe paanch baje"}),
+    "three bare hours take the authored fallback": (
+        PRE + ["कल 4 बजे", "5 बजे", "6 बजे"],
+        [R["time_ambiguous"]["hi"], R["time_ambiguous"]["hi"], TEAM_DATE],
+        {"visit_status": "date_pending"}, {"appointment_booked": "No", "appointment_time": None, "call_result": "date_pending"}),
+    "day with a period only is accepted as spoken": (
+        PRE + ["कल शाम", YES], ["कल शाम", BOOKED], {"visit_time": "शाम"}, {"appointment_time": "शाम"}),
+    "callback keeps the whole spoken time": (
+        [OPEN, "नहीं अभी busy हूँ", "परसों शाम 5 बजे call karna"], ["call back", "call back"],
+        {"callback_time": "शाम 5 बजे"}, {"callback_time": "शाम 5 बजे", "call_result": "callback_requested"}),
     "today past time, then a different day": (
         PRE + ["आज सुबह 9 बजे", "कल सुबह 10 बजे", YES],
         [R["time_past"]["hi"], "कल सुबह 10 बजे", BOOKED],
         {"visit_day": "कल", "visit_time": "सुबह 10 बजे"},
         {"appointment_date": "कल", "appointment_time": "सुबह 10 बजे"}),
-    "future day with bare hour is accepted as spoken": (
-        PRE + ["कल 4 बजे", YES], ["कल 4 बजे", BOOKED],
-        {"visit_day": "कल", "visit_time": "4 बजे"}, {"appointment_time": "4 बजे"}),
     "today with a later time is accepted": (
         PRE + ["आज रात 9 बजे", YES], [READBACK, BOOKED],
         {"visit_day": "आज", "visit_time": "रात 9 बजे"}, {"appointment_time": "रात 9 बजे"}),
@@ -123,16 +167,16 @@ CASES = {
     "week-only phrase in Devanagari asks for a specific day": (
         PRE + ["अगले हफ्ते", "परसों", YES],
         [R["day_unclear"]["hi"], "परसों", BOOKED], {"visit_day": "परसों"}, {}),
-    "time without a day keeps the time and asks for the day": (
-        PRE + ["4 baje", "parso", YES],
-        [R["day_missing"]["hi"], "parso 4 baje", BOOKED],
-        {"visit_day": "parso", "visit_time": "4 baje"},
-        {"appointment_date": "parso", "appointment_time": "4 baje"}),
+    "time without a day keeps the time, asks the day, then the period": (
+        PRE + ["4 baje", "parso", "शाम", YES],
+        [R["day_missing"]["hi"], R["time_ambiguous"]["hi"], "parso शाम 4 baje", BOOKED],
+        {"visit_day": "parso", "visit_time": "शाम 4 baje"},
+        {"appointment_date": "parso", "appointment_time": "शाम 4 baje"}),
     "reschedule with a time-only answer never reaches the model": (
-        PRE + ["कल सुबह 10 बजे", "नहीं", "4 baje", "parso", YES],
-        [READBACK, "किस दिन", R["day_missing"]["hi"], "parso 4 baje", BOOKED],
-        {"visit_day": "parso", "visit_time": "4 baje", "visit_day_2": "parso", "visit_time_2": "4 baje"},
-        {"appointment_date": "parso", "appointment_time": "4 baje"}),
+        PRE + ["कल सुबह 10 बजे", "नहीं", "4 baje", "parso", "शाम", YES],
+        [READBACK, "किस दिन", R["day_missing"]["hi"], R["time_ambiguous"]["hi"], "parso शाम 4 baje", BOOKED],
+        {"visit_day": "parso", "visit_time": "शाम 4 baje", "visit_day_2": "parso", "visit_time_2": "शाम 4 baje"},
+        {"appointment_date": "parso", "appointment_time": "शाम 4 baje"}),
     "retry prompt no longer suggests a past example date": (
         PRE + ["pata nahi", "कल", YES],
         ["जैसे कल, या परसों", READBACK, BOOKED], {"visit_day": "कल"}, {}),
@@ -184,6 +228,20 @@ class TestValidation:
         assert result["slots"]["visit_status"] == "booked"
         assert result["slots"]["visit_time"] == "4 PM"
 
+    @pytest.mark.parametrize("turns, composed", [
+        (["tomorrow at four", "evening"], "four in the evening"),
+        (["half past four tomorrow", "pm"], "half past four PM"),
+        (["four thirty tomorrow", "in the morning"], "four thirty in the morning"),
+    ])
+    async def test_english_spoken_times_are_clarified_then_composed(self, engine, monkeypatch, turns, composed):
+        _clock(monkeypatch, MONDAY_NOON)
+        replies, result = await _run(
+            engine, monkeypatch, V14,
+            ["yes speaking", "yes", "yes that's correct", *turns, "yes"], f"val-en-{turns[0]}", lang="en-IN")
+        assert replies[3] == R["time_ambiguous"]["en"]
+        assert composed in replies[4]
+        assert result["slots"]["visit_time"] == composed and result["slots"]["visit_status"] == "booked"
+
     async def test_rejection_is_audited_and_slot_cleared(self, engine, monkeypatch):
         _clock(monkeypatch, MONDAY_NOON)
         monkeypatch.setattr(wfe, "load_workflow_definition", lambda t, b, n: V14)
@@ -199,12 +257,17 @@ class TestValidation:
         assert result["status"] == "collecting"
 
 
+BARE_HOUR_SCENARIOS = {"date_changed_day_and_time", "date_changed_time_then_day"}
+
+
 class TestNoChangeForValidInput:
     """Clock set to 2026-10-10 so every date the 15 summary scenarios use
-    (कल, parso, आज, 16 October, tomorrow) lies ahead: v14 must speak exactly
-    what v13 speaks and derive the same fields."""
+    (कल, parso, आज, 16 October, tomorrow) lies ahead: v16 must speak exactly
+    what v13 speaks and derive the same fields. The two scenarios that answer
+    with a bare hour ("5 baje", "4 baje") now get a morning-or-evening
+    question by design and are covered in TestBareHourScenarios."""
 
-    @pytest.mark.parametrize("name", sorted(SUMMARY_SCENARIOS))
+    @pytest.mark.parametrize("name", sorted(set(SUMMARY_SCENARIOS) - BARE_HOUR_SCENARIOS))
     async def test_replies_and_fields_identical_to_v13(self, engine, monkeypatch, name):
         case = SUMMARY_SCENARIOS[name]
         _clock(monkeypatch, datetime(2026, 10, 10, 10, 0, tzinfo=IST))
@@ -221,10 +284,36 @@ class TestNoChangeForValidInput:
                 continue
             assert got == want, (name, i, want, got)
         assert len(new) == len(old)
-        assert derive_structured_fields(POLICY, _snapshot(r14["slots"])) == \
-            derive_structured_fields(POLICY, _snapshot(r13["slots"]))
+        new_fields = derive_structured_fields(POLICY, _snapshot(r14["slots"]))
+        old_fields = derive_structured_fields(POLICY, _snapshot(r13["slots"]))
+        if name == "callback":
+            # Intended improvement: the callback time is captured whole now.
+            assert (old_fields.pop("callback_time"), new_fields.pop("callback_time")) == ("शाम", "शाम 5 बजे")
+        assert new_fields == old_fields
         for key, expected in case["fields"].items():
+            if name == "callback" and key == "callback_time":
+                continue   # asserted above: "शाम 5 बजे" instead of the v13 "शाम"
             assert derive_structured_fields(POLICY, _snapshot(r14["slots"]))[key] == expected
+
+
+class TestBareHourScenarios:
+    async def test_change_date_with_bare_hour_is_clarified_then_booked(self, engine, monkeypatch):
+        _clock(monkeypatch, datetime(2026, 10, 10, 10, 0, tzinfo=IST))
+        turns = PRE + ["कल सुबह 10 बजे", "नहीं date change karni hai", "16 October 5 baje", "शाम", YES]
+        replies, result = await _run(engine, monkeypatch, V14, turns, "bare-1")
+        assert replies[5] == R["time_ambiguous"]["hi"]
+        assert "16 October शाम 5 baje" in replies[6]
+        fields = derive_structured_fields(POLICY, _snapshot(result["slots"]))
+        assert (fields["appointment_date"], fields["appointment_time"]) == ("16 October", "शाम 5 baje")
+
+    async def test_time_first_then_day_then_period(self, engine, monkeypatch):
+        _clock(monkeypatch, datetime(2026, 10, 10, 10, 0, tzinfo=IST))
+        turns = PRE + ["कल सुबह 10 बजे", "नहीं", "4 baje", "parso", "शाम", YES]
+        replies, result = await _run(engine, monkeypatch, V14, turns, "bare-2")
+        assert replies[5] == R["day_missing"]["hi"]
+        assert replies[6] == R["time_ambiguous"]["hi"]
+        assert "parso शाम 4 baje" in replies[7]
+        assert result["slots"]["visit_status"] == "booked"
 
 
 class TestDefinition:
@@ -239,11 +328,28 @@ class TestDefinition:
             if cfg:
                 assert cfg["type"] == "future_datetime" and cfg["timezone"] == "Asia/Kolkata"
                 assert set(cfg["replyByLanguage"]) == {"day_unclear", "day_missing", "day_past",
-                                                       "day_invalid", "time_past",
-                                                       "time_ambiguous", "time_invalid"}
+                                                       "day_invalid", "time_past", "time_ambiguous",
+                                                       "time_unclear", "time_invalid"}
                 assert "10 अक्टूबर" not in n["config"]["unmatchedReplyByLanguage"]["hi"]
                 assert "10 October" not in n["config"]["unmatchedReplyByLanguage"]["en"]
         assert validate_definition(V14["nodes"], V14["edges"]) == ([], [])
-        # Nothing but the validation key and the example date differs from v13.
-        assert SETUP["strip_stage2"](V14["nodes"]) == V13["nodes"]
         assert V14["edges"] == V13["edges"]
+        # Beyond the validation key and the example date, stage 3 may only
+        # touch: the time-capture regexes, the day regex (romanised tarikh
+        # words) and the reset marker's pending slots.
+        regex = SETUP["build_time_regex"]()
+        v13 = {n["id"]: n for n in V13["nodes"]}
+        for n in SETUP["strip_stage2"](V14["nodes"]):
+            old = v13[n["id"]]
+            if n["id"] in SETUP["VALIDATED_ASKS"] or n["id"] == "n_ask_callback":
+                for cap in n["config"].get("alsoCapture") or []:
+                    if cap["variable"] in SETUP["TIME_CAPTURE_VARIABLES"]:
+                        assert cap["entity"]["regexPattern"] == regex
+                stripped = {**n, "config": {k: v for k, v in n["config"].items() if k not in ("alsoCapture", "entity")}}
+                old_stripped = {**old, "config": {k: v for k, v in old["config"].items() if k not in ("alsoCapture", "entity")}}
+                assert stripped == old_stripped
+            elif n["id"] == SETUP["RESET_MARKER"]:
+                assert n["config"]["setSlots"] == {"visit_day": "", "visit_time": "",
+                                                   "visit_time_pending": "", "visit_time_2_pending": ""}
+            else:
+                assert n == old
