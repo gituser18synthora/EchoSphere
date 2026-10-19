@@ -266,6 +266,21 @@ CASES = {
     "midnight is asked again, never booked as noon": (
         PRE + ["कल रात 12 बजे", "शाम 5 बजे", YES], [R["time_unclear"]["hi"], "कल शाम 5 बजे", BOOKED],
         {"visit_day": "कल", "visit_time": "शाम 5 बजे"}, {"appointment_time": "शाम 5 बजे"}),
+    "minutes after बजकर are kept and the half-day is asked": (
+        PRE + ["कल 4 बजकर 30 मिनट", "शाम", YES],
+        [R["time_ambiguous"]["hi"], "कल शाम 4 बजकर 30 मिनट", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 4 बजकर 30 मिनट"}, {"appointment_time": "शाम 4 बजकर 30 मिनट"}),
+    "minutes with the period said up front need no question": (
+        PRE + ["कल शाम के 4 बजकर 30 मिनट कर दो", YES], ["कल शाम के 4 बजकर 30 मिनट", BOOKED],
+        {"visit_time": "शाम के 4 बजकर 30 मिनट"}, {"appointment_time": "शाम के 4 बजकर 30 मिनट"}),
+    "hinglish minutes": (
+        PRE + ["kal 4 bajkar 45 minute", "sham", YES],
+        [R["time_ambiguous"]["hi"], "kal sham 4 bajkar 45 minute", BOOKED],
+        {"visit_time": "sham 4 bajkar 45 minute"}, {"appointment_time": "sham 4 bajkar 45 minute"}),
+    "minutes after बजे without a unit are asked again": (
+        PRE + ["कल 4 बजे 30", "शाम साढ़े 4 बजे", YES],
+        [R["time_unclear"]["hi"], "कल शाम साढ़े 4 बजे", BOOKED],
+        {"visit_time": "शाम साढ़े 4 बजे"}, {"appointment_time": "शाम साढ़े 4 बजे"}),
     "negated day alone asks again": (
         PRE + ["कल तो नहीं", "परसों", YES], ["किस दिन", READBACK, BOOKED], {"visit_day": "परसों"}, {}),
     "reschedule with a correction in the answer": (
@@ -446,6 +461,8 @@ STAGE6_ONLY = {   # answers the regex capture read differently (by design)
     "correction inside one utterance: time", "hour and period said apart are composed",
     "two days in one answer are not guessed", "two times in one answer are asked again, nothing booked meanwhile",
     "two windows in one answer are asked again", "midnight is asked again, never booked as noon",
+    "minutes after बजकर are kept and the half-day is asked", "minutes with the period said up front need no question",
+    "hinglish minutes", "minutes after बजे without a unit are asked again",
     "negated day alone asks again", "reschedule with a correction in the answer",
 }
 EN_PRE = ["yes speaking", "yes", "yes that's correct"]
@@ -479,6 +496,10 @@ NORMALIZED_CASES = {
     "english correction: Tomorrow, no, make it Monday": (EN_PRE + ["Tomorrow, no, make it Monday", "yes"], "en-IN", "2026-10-26", None),
     "two times: asked, then exact": (PRE + ["कल 5 बजे या 6 बजे", "शाम 6 बजे", YES], "hi-IN", "2026-10-20", "18:00"),
     "midnight: asked, then exact": (PRE + ["कल रात 12 बजे", "शाम 5 बजे", YES], "hi-IN", "2026-10-20", "17:00"),
+    "minutes: 4 बजकर 30 मिनट + शाम": (PRE + ["कल 4 बजकर 30 मिनट", "शाम", YES], "hi-IN", "2026-10-20", "16:30"),
+    "minutes: hinglish 4 bajkar 45 minute + sham": (PRE + ["kal 4 bajkar 45 minute", "sham", YES], "hi-IN", "2026-10-20", "16:45"),
+    "minutes: english four twenty + evening": (EN_PRE + ["tomorrow at four twenty", "evening", "yes"], "en-IN", "2026-10-20", "16:20"),
+    "minutes: digits 4 30 PM": (EN_PRE + ["tomorrow 4 30 PM", "yes"], "en-IN", "2026-10-20", "16:30"),
     "hinglish correction: kal nahi parso sham ko 5 baje": (PRE + ["kal nahi parso sham ko 5 baje", YES], "hi-IN", "2026-10-21", "17:00"),
     "date pending (team callback) reports no date": (PRE + ["कल सुबह 10 बजे", "नहीं", "pata nahi", "pata nahi", "pata nahi"], "hi-IN", None, None),
 }

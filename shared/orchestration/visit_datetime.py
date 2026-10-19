@@ -58,6 +58,9 @@ DEFAULT_TIMEZONE = "Asia/Kolkata"
 VALIDATION_TYPE = "future_datetime"
 
 _DEV_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+# Devanagari letters and marks — the danda (। ॥) is punctuation, so a word
+# before it ("परसों।", "बजे।", as Sarvam ends sentences) still ends there.
+_DEV = "\u0900-\u0963\u0966-\u097f"
 
 
 def now_in(timezone_name: str | None) -> datetime:
@@ -110,7 +113,7 @@ def _word(words: tuple[str, ...]) -> re.Pattern:
     parts = []
     for w in sorted(words, key=len, reverse=True):
         if re.search(r"[ऀ-ॿ]", w):
-            parts.append(rf"(?<![ऀ-ॿ]){re.escape(w)}(?![ऀ-ॿ])")
+            parts.append(rf"(?<![{_DEV}]){re.escape(w)}(?![{_DEV}])")
         else:
             parts.append(rf"\b{re.escape(w)}\b")
     return re.compile("|".join(parts), re.I)
@@ -121,10 +124,10 @@ _WEEKDAY_RE = {n: _word(w) for n, w in _WEEKDAYS.items()}
 _MONTH_WORDS = {w: m for m, words in _MONTHS.items() for w in words}
 _MONTH_ALT = "|".join(sorted((re.escape(w) for w in _MONTH_WORDS), key=len, reverse=True))
 _DAY_MONTH_RE = re.compile(
-    rf"(?<![\d])(\d{{1,2}})(?:st|nd|rd|th)?\s*(?:of\s+)?({_MONTH_ALT})(?![a-zऀ-ॿ])"
+    rf"(?<![\d])(\d{{1,2}})(?:st|nd|rd|th)?\s*(?:of\s+)?({_MONTH_ALT})(?![a-z{_DEV}])"
     rf"(?:,?\s*(\d{{4}}))?", re.I)
 _MONTH_DAY_RE = re.compile(
-    rf"(?<![a-zऀ-ॿ])({_MONTH_ALT})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?!\d)(?:,?\s*(\d{{4}}))?", re.I)
+    rf"(?<![a-z{_DEV}])({_MONTH_ALT})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?!\d)(?:,?\s*(\d{{4}}))?", re.I)
 DAY_WORDS_ROMAN = {
     "ek": 1, "do": 2, "teen": 3, "tin": 3, "char": 4, "chaar": 4, "paanch": 5, "panch": 5,
     "chhe": 6, "che": 6, "saat": 7, "sat": 7, "aath": 8, "ath": 8, "nau": 9, "das": 10, "dus": 10,
@@ -273,11 +276,28 @@ SPECIAL_TIMES = {
     "ढाई": (2, 30), "dhai": (2, 30), "dhaai": (2, 30),
     "डेढ़": (1, 30), "डेढ": (1, 30), "dedh": (1, 30), "derh": (1, 30),
 }
-# English minutes spoken AFTER the hour word ("four thirty").
-MINUTE_WORDS_EN = {"thirty": 30, "fifteen": 15, "forty five": 45, "forty-five": 45}
+# Minutes spoken AFTER the hour: English words after an hour word ("four
+# twenty"), Hindi / romanised words after बजकर / bajkar ("चार बजकर बीस मिनट").
+# Single-digit minutes are not read from bare words ("four five" is a
+# conflict, never 4:05); after बजकर any number word counts.
+MINUTE_WORDS_EN = {
+    "ten": 10, "fifteen": 15, "twenty": 20, "twenty five": 25, "twenty-five": 25,
+    "thirty": 30, "thirty five": 35, "thirty-five": 35, "forty": 40,
+    "forty five": 45, "forty-five": 45, "fifty": 50, "fifty five": 55, "fifty-five": 55,
+}
+MINUTE_WORDS_HI = {
+    "दस": 10, "पंद्रह": 15, "पन्द्रह": 15, "बीस": 20, "पच्चीस": 25, "तीस": 30, "पैंतीस": 35,
+    "चालीस": 40, "पैंतालीस": 45, "पचास": 50, "पचपन": 55,
+    "das": 10, "dus": 10, "pandrah": 15, "pandra": 15, "bees": 20, "bis": 20, "pachees": 25,
+    "pachis": 25, "tees": 30, "tis": 30, "paintees": 35, "paintis": 35, "chalis": 40,
+    "chaalis": 40, "paintalis": 45, "paintaalis": 45, "pachas": 50, "pachpan": 55,
+}
+_MINUTE_MARKERS = frozenset({"बजकर", "बजके", "bajkar", "bajke", "bajakar"})   # minutes follow
+_HOUR_MARKERS = frozenset({"बजे", "baje", "bje"})                      # minutes follow only with a unit
+_MINUTE_UNITS = frozenset({"मिनट", "मिनिट", "minute", "minutes", "min", "mint"})
 PERIOD_WORDS = {name: words for name, words in _PERIODS.items()}
 _AMPM_RE = re.compile(r"(?<![a-z])([ap])\.?\s?m\.?(?![a-z])", re.I)
-_TOKEN_RE = re.compile(r"\d{1,2}(?:[:.]\d{2})?|[a-z]+(?:'[a-z]+)?|[ऀ-ॿ]+")
+_TOKEN_RE = re.compile(rf"\d{{1,2}}(?:[:.]\d{{2}})?|[a-z]+(?:'[a-z]+)?|[{_DEV}]+")
 
 
 def _phrase_hit(phrases: dict, t: str) -> str | None:
@@ -288,33 +308,67 @@ def _phrase_hit(phrases: dict, t: str) -> str | None:
     return None
 
 
-def _hour_values(tokens: list[str]) -> set[int]:
-    """Every distinct hour a token list names (digits, hour words, special
-    times), skipping the minute words that follow an English hour word."""
-    values: set[int] = set()
-    i = 0
-    while i < len(tokens):
+def _minute_number(tok: str) -> int | None:
+    """A minute count named by one token after बजकर / बजे (digits or words)."""
+    if tok.isdigit():
+        value = int(tok)
+        return value if value <= 59 else None
+    for table in (MINUTE_WORDS_HI, HOUR_WORDS, DAY_WORDS_ROMAN, MINUTE_WORDS_EN):
+        if tok in table:
+            return table[tok]
+    return None
+
+
+_MINUTE_PHRASES_EN = sorted(((re.split(r"[\s-]+", words), value) for words, value in MINUTE_WORDS_EN.items()),
+                            key=lambda item: -len(item[0]))
+
+
+def _clock_readings(tokens: list[str]) -> list[tuple[int, int]]:
+    """Every (hour, minute) a token list names, in order: "4", "4:30",
+    "four twenty", "4 30 बजे", "4 बजकर 30 मिनट", "4 baje 30 minute". Two
+    different readings mean the text is not one time."""
+    readings: list[tuple[int, int]] = []
+    i, n = 0, len(tokens)
+    while i < n:
         tok = tokens[i]
         if tok[0].isdigit():
-            values.add(int(tok.partition(":")[0].partition(".")[0]))
+            h, _, m = tok.partition(":") if ":" in tok else tok.partition(".")
+            hour, minute, explicit = int(h), int(m or 0), bool(m)
         elif tok in HOUR_WORDS:
-            values.add(HOUR_WORDS[tok])
-            nxt = " ".join(tokens[i + 1:i + 3])
-            for words in MINUTE_WORDS_EN:
-                if nxt.startswith(words):
-                    i += len(words.split())
-                    break
-        i += 1
-    return values
+            hour, minute, explicit = HOUR_WORDS[tok], 0, False
+        else:
+            i += 1
+            continue
+        j = i + 1
+        if not explicit:
+            if not tok[0].isdigit():                      # "four twenty"
+                for phrase, value in _MINUTE_PHRASES_EN:
+                    if tokens[j:j + len(phrase)] == phrase:
+                        minute, j = value, j + len(phrase)
+                        break
+            elif j < n and tokens[j].isdigit() and 10 <= int(tokens[j]) <= 59:   # "4 30 बजे"
+                minute, j = int(tokens[j]), j + 1
+            if minute == 0 and j < n and (tokens[j] in _MINUTE_MARKERS or tokens[j] in _HOUR_MARKERS):
+                k = j + 1
+                value = _minute_number(tokens[k]) if k < n else None
+                if value is not None:
+                    unit = k + 1 < n and tokens[k + 1] in _MINUTE_UNITS
+                    if tokens[j] in _MINUTE_MARKERS or unit:   # बजकर 30 | बजे 30 मिनट
+                        minute, j = value, k + 1 + (1 if unit else 0)
+        readings.append((hour, minute))
+        i = j
+    return readings
 
 
 def parse_time(text) -> TimeResult:
     """Read a spoken time: digits or hour words, fraction words, periods, am/pm.
 
-    A text naming two different hours ("5 बजे या 6 बजे", "4 30") or two
-    different periods ("सुबह या शाम"), or "रात 12" (midnight, ambiguous about
-    the date), is ``unknown``: said, not understood — the flow asks again
-    rather than keeping either reading.
+    Minutes are kept whole: "4:30", "four twenty", "4 30 बजे", "4 बजकर 30
+    मिनट", "4 baje 30 minute", साढ़े/सवा/पौने and half/quarter past. A text
+    naming two different readings ("5 बजे या 6 बजे", "4 5 बजे", "4 बजे 30")
+    or two different periods ("सुबह या शाम"), or "रात 12" (midnight,
+    ambiguous about the date), is ``unknown``: said, not understood — the
+    flow asks again rather than keeping either reading or dropping a part.
     """
     t = _norm(text)
     if not t:
@@ -323,30 +377,21 @@ def parse_time(text) -> TimeResult:
     if len(periods) > 1:
         return TimeResult("unknown")
     period = periods[0] if periods else None
-    if len(_hour_values(_TOKEN_RE.findall(t))) > 1:
+    readings = _clock_readings(_TOKEN_RE.findall(t))
+    if len(set(readings)) > 1:
         return TimeResult("unknown")
     ampm = _AMPM_RE.search(t)
     ampm = ampm.group(1).lower() if ampm else None
     hour = minute = None
     special = _phrase_hit(SPECIAL_TIMES, t)
     if special:
+        if readings:
+            return TimeResult("unknown")   # "ढाई बजे या तीन बजे"
         hour, minute = SPECIAL_TIMES[special]
-    else:
-        tokens = _TOKEN_RE.findall(t)
-        for i, tok in enumerate(tokens):
-            if tok[0].isdigit():
-                h, _, m = tok.partition(":") if ":" in tok else tok.partition(".")
-                hour, minute = int(h), int(m or 0)
-                break
-            if tok in HOUR_WORDS:
-                hour, minute = HOUR_WORDS[tok], 0
-                nxt = " ".join(tokens[i + 1:i + 3])
-                for words, value in MINUTE_WORDS_EN.items():
-                    if nxt.startswith(words):
-                        minute = value
-                break
+    elif readings:
+        hour, minute = readings[0]
         fraction = _phrase_hit(FRACTION_WORDS, t)
-        if hour is not None and fraction:
+        if fraction and minute == 0:
             offset, minute = FRACTION_WORDS[fraction]
             hour = hour + offset
             if hour == 0:
@@ -420,7 +465,7 @@ def _guarded(words) -> str:
     for w in sorted(words, key=len, reverse=True):
         esc = re.escape(w).replace(r"\ ", r"\s+")
         if re.search(r"[\u0900-\u097f]", w):
-            parts.append(rf"(?<![\u0900-\u097f]){esc}(?![\u0900-\u097f])")
+            parts.append(rf"(?<![{_DEV}]){esc}(?![{_DEV}])")
         else:
             parts.append(rf"\b{esc}\b")
     return "(?:" + "|".join(parts) + ")"
@@ -437,13 +482,17 @@ def time_capture_regex() -> str:
     is anchored so a number inside a date ("25 October") is never a time."""
     period = _guarded(PERIOD_SURFACE)
     ko = r"(?:\s+(?:ko|को|mein|में|me))?"
-    hour_digit = r"(?<![\d:.])\d{1,2}(?:[:.]\d{2})?(?![\d])"
+    hour_digit = r"(?<![\d:.])\d{1,2}(?:[:.]\d{2}|\s[1-5]\d)?(?![\d])"
     hour = f"(?:{hour_digit}|{_guarded(HOUR_WORDS)})"
     frac = _guarded(FRACTION_WORDS)
     special = _guarded(SPECIAL_TIMES)
-    min_en = r"(?:\s+(?:thirty|fifteen|forty[\s-]?five))?"
+    min_en = rf"(?:\s+{_guarded(MINUTE_WORDS_EN)})?"
     ampm = r"(?:\s*(?<![a-z])[ap]\.?\s?m\.?(?![a-z]))"
-    suffix = rf"(?:\s*(?:बजे|बजकर|baje|bje|o'?\s?clock|hrs)){ampm}?|{ampm}"
+    minute_number = rf"(?:\d{{1,2}}(?![\d])|{_guarded({**MINUTE_WORDS_HI, **HOUR_WORDS, **DAY_WORDS_ROMAN, **MINUTE_WORDS_EN})})"
+    unit = rf"(?:\s*{_guarded(_MINUTE_UNITS)})"
+    suffix = (rf"(?:\s*{_guarded(_MINUTE_MARKERS)}(?:\s+{minute_number}{unit}?)?"      # बजकर 30 [मिनट]
+              rf"|\s*(?:{_guarded(_HOUR_MARKERS)}|o'?\s?clock|hrs)(?:\s+{minute_number}{unit}|\s+[1-5]\d(?![\d]))?)"   # बजे 30 मिनट / बजे 30 (asked again)
+              rf"{ampm}?|{ampm}")
     trail = rf"(?:\s+(?:in\s+the\s+)?{period}{ko})?"
     lead = rf"{period}\s+(?:ko\s+|को\s+|ke\s+|के\s+)?"
     alternatives = [
@@ -487,14 +536,14 @@ def day_capture_regex() -> str:
 
 _TIME_CAPTURE_RE = re.compile(time_capture_regex())
 _DAY_CAPTURE_RE = re.compile(day_capture_regex())
-_TIME_MARKER_RE = re.compile(r"बजे|बजकर|\bbaje\b|\bbje\b|o'?\s?clock|\bhrs\b|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])", re.I)
+_TIME_MARKER_RE = re.compile(r"बजे|बजकर|बजके|\bbaje\b|\bbje\b|\bbajka?r\b|\bbajke\b|o'?\s?clock|\bhrs\b|(?<![a-z])[ap]\.?\s?m\.?(?![a-z])", re.I)
 # "X नहीं" / "X nahi" / "X not" right after a span (an optional तो/ही/भी/to/hi
 # between) negates it; English "not X" / "no X" before it does too. A Hindi
 # नहीं BEFORE a span is the answer "no" followed by the correction, not a
 # negation of it ("नहीं, कल कर दो"), and a bare English "no" AFTER one is
 # usually "no problem" — neither counts.
 _NEG_AFTER_RE = re.compile(
-    r"^\s*,?\s*(?:(?:to|hi|bhi|ko|me|mein|par|तो|ही|भी|को|में|पर)\s+)?(?:nahi|nahin|nahee|nhi|mat|not|नहीं|नही|मत)(?![a-z\u0900-\u097f])", re.I)
+    rf"^\s*,?\s*(?:(?:to|hi|bhi|ko|me|mein|par|तो|ही|भी|को|में|पर)\s+)?(?:nahi|nahin|nahee|nhi|mat|not|नहीं|नही|मत)(?![a-z{_DEV}])", re.I)
 _NEG_BEFORE_RE = re.compile(r"(?:^|[^a-z])(?:not|no)\s+(?:(?:on|at|for)\s+)?$", re.I)
 _NO_AFTER_RE = re.compile(r"\s*,?\s*(?:no|nope)\b", re.I)
 _TOKEN_START_RE = re.compile(r"(?:^|(?<=[\s,.;:!?।(\-]))\S")
@@ -870,7 +919,7 @@ def rejection_reply(config: dict, reason: str, lang: str) -> str:
 __all__ = [
     "DEFAULT_TIMEZONE", "VALIDATION_TYPE", "DayResult", "TimeResult", "Verdict", "VisitResolution",
     "HOUR_WORDS", "HOUR_WORDS_HI", "HOUR_WORDS_ROMAN", "HOUR_WORDS_EN", "FRACTION_WORDS",
-    "SPECIAL_TIMES", "MINUTE_WORDS_EN", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
+    "SPECIAL_TIMES", "MINUTE_WORDS_EN", "MINUTE_WORDS_HI", "PERIOD_WORDS", "DAY_WORDS_ROMAN",
     "now_in", "parse_day", "parse_time", "normalize_time", "compose_time", "resolve_visit",
     "validate_visit", "validate_ask", "pending_time_variable", "rejection_reply",
     "time_capture_regex", "day_capture_regex", "extract_time", "extract_day",
