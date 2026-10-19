@@ -30,7 +30,8 @@ IST = ZoneInfo("Asia/Kolkata")
 SETUP = runpy.run_path("jeeves/setup/01_structured_summary.py")
 V13 = SETUP["upgraded_definition"](13, stage=1)
 V17 = SETUP["upgraded_definition"](17, stage=4)   # markers + validation + time capture + wording
-V14 = SETUP["upgraded_definition"](18)            # + normalized date/time companions (target)
+V18 = SETUP["upgraded_definition"](18, stage=5)   # + normalized date/time companions
+V14 = SETUP["upgraded_definition"](19)            # + parser-chosen day/time capture (target)
 # The cases below assert the pickup day/time AS SPOKEN (stage ≤ 4 fields);
 # the normalized fields the bot now reports are covered in TestNormalizedSummary.
 POLICY = compile_goal_policy({"summaryFields": SETUP["summary_fields"](4)},
@@ -233,6 +234,45 @@ CASES = {
         [R["day_invalid"]["hi"], R["day_past"]["hi"], TEAM_DATE],
         {"visit_status": "date_pending"},
         {"appointment_booked": "No", "appointment_date": None, "call_result": "date_pending"}),
+    # ── stage 6: parser-chosen capture ──
+    "live utterance cv_0b1e4d99ac69: the verb particle is not an hour": (
+        PRE + ["कल कर दो शाम के पाँच बजे।", "हाँ, ठीक है।"],
+        ["हमारे engineer कल शाम के पाँच बजे आपके registered address", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम के पाँच बजे"},
+        {"appointment_date": "कल", "appointment_time": "शाम के पाँच बजे"}),
+    "verb particle with a window only": (
+        PRE + ["कल बता दो सुबह", YES], ["कल सुबह", BOOKED],
+        {"visit_day": "कल", "visit_time": "सुबह"}, {"appointment_time": "सुबह"}),
+    "correction inside one utterance: day": (
+        PRE + ["कल नहीं परसों शाम 5 बजे", YES], ["परसों शाम 5 बजे", BOOKED],
+        {"visit_day": "परसों", "visit_time": "शाम 5 बजे"}, {"appointment_date": "परसों"}),
+    "correction inside one utterance: time": (
+        PRE + ["कल 5 बजे नहीं 6 बजे", "शाम", YES],
+        [R["time_ambiguous"]["hi"], "कल शाम 6 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 6 बजे"}, {"appointment_time": "शाम 6 बजे"}),
+    "hour and period said apart are composed": (
+        PRE + ["कल 5 बजे आ जाना शाम को", YES], ["कल शाम 5 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 5 बजे"}, {"appointment_time": "शाम 5 बजे"}),
+    "two days in one answer are not guessed": (
+        PRE + ["कल या परसों", "परसों", YES],
+        ["किस दिन", READBACK, BOOKED], {"visit_day": "परसों"}, {"appointment_date": "परसों"}),
+    "two times in one answer are asked again, nothing booked meanwhile": (
+        PRE + ["कल 5 बजे या 6 बजे", "शाम 6 बजे", YES],
+        [R["time_unclear"]["hi"], "कल शाम 6 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 6 बजे"}, {"appointment_date": "कल", "appointment_time": "शाम 6 बजे"}),
+    "two windows in one answer are asked again": (
+        PRE + ["कल सुबह या शाम", "शाम", YES], [R["time_unclear"]["hi"], "कल शाम", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम"}, {"appointment_time": "शाम"}),
+    "midnight is asked again, never booked as noon": (
+        PRE + ["कल रात 12 बजे", "शाम 5 बजे", YES], [R["time_unclear"]["hi"], "कल शाम 5 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम 5 बजे"}, {"appointment_time": "शाम 5 बजे"}),
+    "negated day alone asks again": (
+        PRE + ["कल तो नहीं", "परसों", YES], ["किस दिन", READBACK, BOOKED], {"visit_day": "परसों"}, {}),
+    "reschedule with a correction in the answer": (
+        PRE + ["कल सुबह 10 बजे", "नहीं", "कल नहीं, परसों शाम के 5 बजे", "हाँ चलेगा"],
+        [READBACK, "किस दिन", "परसों शाम के 5 बजे", BOOKED],
+        {"visit_day": "परसों", "visit_time": "शाम के 5 बजे", "visit_day_2": "परसों"},
+        {"appointment_date": "परसों", "appointment_time": "शाम के 5 बजे"}),
 }
 
 
@@ -401,6 +441,13 @@ class TestBareHourScenarios:
         assert result["slots"]["visit_status"] == "booked"
 
 
+STAGE6_ONLY = {   # answers the regex capture read differently (by design)
+    "verb particle with a window only", "correction inside one utterance: day",
+    "correction inside one utterance: time", "hour and period said apart are composed",
+    "two days in one answer are not guessed", "two times in one answer are asked again, nothing booked meanwhile",
+    "two windows in one answer are asked again", "midnight is asked again, never booked as noon",
+    "negated day alone asks again", "reschedule with a correction in the answer",
+}
 EN_PRE = ["yes speaking", "yes", "yes that's correct"]
 TODAY_BRANCH = [OPEN, "आज सुबह 9 बजे भेज दो", "शाम 5 बजे", "ठीक है", ADDR_YES, YES]
 
@@ -428,6 +475,11 @@ NORMALIZED_CASES = {
     "reschedule: time first, then day, then period": (PRE + ["कल सुबह 10 बजे", "नहीं", "4 baje", "parso", "शाम", YES], "hi-IN", "2026-10-21", "16:00"),
     "reschedule in english": (EN_PRE + ["tomorrow at 10 AM", "no", "day after tomorrow at 5 PM", "yes"], "en-IN", "2026-10-21", "17:00"),
     "not booked: nothing reported": (PRE + ["कल 4 बजे", "5 बजे", "6 बजे"], "hi-IN", None, None),
+    "english correction: not tomorrow, Monday at 6 pm": (EN_PRE + ["not tomorrow, Monday at 6 pm", "yes"], "en-IN", "2026-10-26", "18:00"),
+    "english correction: Tomorrow, no, make it Monday": (EN_PRE + ["Tomorrow, no, make it Monday", "yes"], "en-IN", "2026-10-26", None),
+    "two times: asked, then exact": (PRE + ["कल 5 बजे या 6 बजे", "शाम 6 बजे", YES], "hi-IN", "2026-10-20", "18:00"),
+    "midnight: asked, then exact": (PRE + ["कल रात 12 बजे", "शाम 5 बजे", YES], "hi-IN", "2026-10-20", "17:00"),
+    "hinglish correction: kal nahi parso sham ko 5 baje": (PRE + ["kal nahi parso sham ko 5 baje", YES], "hi-IN", "2026-10-21", "17:00"),
     "date pending (team callback) reports no date": (PRE + ["कल सुबह 10 बजे", "नहीं", "pata nahi", "pata nahi", "pata nahi"], "hi-IN", None, None),
 }
 
@@ -447,18 +499,28 @@ class TestNormalizedSummary:
         assert (fields["appointment_date"], fields["appointment_time"]) == (date_expected, time_expected), (name, fields, result["slots"])
         assert set(fields) == {f["name"] for f in SETUP["SUMMARY_FIELDS"]}
 
-    @pytest.mark.parametrize("name", list(CASES))
-    async def test_nothing_spoken_changes_between_stage_4_and_5(self, engine, monkeypatch, name):
+    @pytest.mark.parametrize("name", [n for n in CASES if "cv_0b1e4d99ac69" not in n and n not in STAGE6_ONLY])
+    async def test_nothing_spoken_changes_between_stage_4_and_6(self, engine, monkeypatch, name):
         turns = CASES[name][0]
         _clock(monkeypatch, MONDAY_NOON)
         old, r4 = await _run(engine, monkeypatch, V17, turns, f"s4-{name}")
-        new, r5 = await _run(engine, monkeypatch, V14, turns, f"s5-{name}")
+        new, r6 = await _run(engine, monkeypatch, V14, turns, f"s6-{name}")
         assert new == old, name
         companions = set(SETUP["NORMALIZED_SLOTS"].values())
-        assert {k: v for k, v in r5["slots"].items() if k not in companions} == r4["slots"], name
+        assert {k: v for k, v in r6["slots"].items() if k not in companions} == r4["slots"], name
         # the spoken fields are identical too; only the normalized ones differ
-        assert derive_structured_fields(POLICY, _snapshot(r5["slots"])) == \
+        assert derive_structured_fields(POLICY, _snapshot(r6["slots"])) == \
             derive_structured_fields(POLICY, _snapshot(r4["slots"]))
+
+    async def test_live_regression_cv_0b1e4d99ac69_is_normalized_to_5_pm(self, engine, monkeypatch):
+        _clock(monkeypatch, datetime(2026, 10, 19, 17, 58, tzinfo=IST))   # the live call's clock
+        turns = PRE + ["कल कर दो शाम के पाँच बजे।", "हाँ, ठीक है।"]
+        old, r5 = await _run(engine, monkeypatch, V18, turns, "live-s5")
+        new, r6 = await _run(engine, monkeypatch, V14, turns, "live-s6")
+        assert "कल दो शाम" in old[3] and r5["slots"]["visit_time_24h"] == "14:00"   # stage 5 alone: wrong
+        assert "कल शाम के पाँच बजे" in new[3] and r6["slots"]["visit_time"] == "शाम के पाँच बजे"
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(r6["slots"]))
+        assert (fields["appointment_date"], fields["appointment_time"]) == ("2026-10-20", "17:00")
 
     async def test_relative_day_is_resolved_at_the_utterance_not_the_call_start(self, engine, monkeypatch):
         """A call that starts at 23:58 and hears "कल" at 00:02: tomorrow is
@@ -529,6 +591,13 @@ class TestDefinition:
             if n["id"] in SETUP["VALIDATED_ASKS"]:
                 assert n["config"]["validation"]["normalizedDayVariable"] == "visit_date_iso"
                 assert n["config"]["validation"]["normalizedTimeVariable"] == "visit_time_24h"
+                assert n["config"]["entity"] == {"dataType": "spoken_day"}
+                for capture in n["config"]["alsoCapture"]:
+                    assert capture["entity"] == ({"dataType": "spoken_time"} if "time" in capture["variable"]
+                                                 else {"dataType": "spoken_day"}), capture
+            if n["id"] == "n_ask_callback":
+                kinds = {c["variable"]: c["entity"]["dataType"] for c in n["config"]["alsoCapture"]}
+                assert kinds == {"callback_date": "spoken_day", "callback_time": "spoken_time"}
         for spec in SETUP["SUMMARY_FIELDS"]:
             if spec["name"] == "appointment_date":
                 assert (spec["type"], spec["source"], spec["label"]) == ("date", "visit_date_iso", "Pickup date")

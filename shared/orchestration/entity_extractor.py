@@ -186,11 +186,25 @@ def _match_synonym_patterns(text: str, patterns: Any) -> str | None:
     return None
 
 
+# Spoken day / time expressions: the parser reads every candidate span and
+# chooses (shared.orchestration.visit_datetime) — a regex's leftmost match is
+# not a safe choice for these ("कल कर दो शाम के पाँच बजे" → "दो शाम", 2 PM).
+_SPOKEN_DATETIME_TYPES = frozenset({"spoken_day", "spoken_time"})
+
+
 def _match_entity_text(text: str, entity: dict[str, Any]) -> tuple[str | None, str]:
-    """One matching pass over one candidate text: regex → patterns → lexicon → builtin."""
+    """One matching pass over one candidate text: spoken day/time → regex →
+    patterns → lexicon → builtin."""
     kind = entity.get("kind", "custom")
     data_type = entity.get("dataType") or entity.get("data_type") or "text"
     lowered = text.lower()
+
+    # 0. Spoken day/time: parser-chosen among all candidate spans.
+    if data_type in _SPOKEN_DATETIME_TYPES:
+        from shared.orchestration.visit_datetime import extract_day, extract_time
+
+        value = (extract_day if data_type == "spoken_day" else extract_time)(text)
+        return (value, data_type) if value else (None, "")
 
     # 1. Explicit regex wins. ``regexPatterns`` (a list) is tried in order,
     #    each pattern with its own capturing group — the way to extract one

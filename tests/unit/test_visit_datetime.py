@@ -305,3 +305,105 @@ class TestNormalizedCompanions:
         assert "visit_date_iso" not in slots and "visit_time_24h" not in slots
         slots = {"visit_time": "4 PM"}
         assert validate_ask(NORMALIZED, slots, now=NOW).ok and slots == {"visit_time": "4 PM"}
+
+
+LIVE_UTTERANCE = "कल कर दो शाम के पाँच बजे।"   # cv_0b1e4d99ac69 (DEMO LIVE, 2026-10-19)
+
+
+class TestExtractTime:
+    """The parser chooses among ALL candidate spans; the regex only finds them."""
+
+    def test_live_regression_the_verb_particle_is_not_an_hour(self):
+        # Leftmost regex match was "दो शाम" ("कर दो" + the period) → booked 2 PM.
+        assert vd._TIME_CAPTURE_RE.search(LIVE_UTTERANCE).group(0) == "दो शाम"
+        assert vd.extract_time(LIVE_UTTERANCE) == "शाम के पाँच बजे"
+        assert vd.parse_time("शाम के पाँच बजे").candidates == (17 * 60,)
+
+    @pytest.mark.parametrize("text, expected", [
+        ("बता दो सुबह", "सुबह"),                        # verb particle + period: window only
+        ("ek baar sham ko aa jao", "sham"),               # "ek" is a determiner here
+        ("कल सुबह नौ बजे कर दो", "सुबह नौ बजे"),
+        ("kal sham ke 5 baje", "sham ke 5 baje"),
+        ("दोपहर ढाई बजे", "दोपहर ढाई बजे"),
+        ("कल साढ़े चार", "साढ़े चार"),                     # bare fraction hour → still ambiguous
+        ("25 October शाम 6 बजे", "शाम 6 बजे"),           # the date's number is not a time
+        ("four thirty in the morning", "four thirty in the morning"),
+        ("tomorrow at four", "four"),
+        ("कल शाम", "शाम"),
+        ("शाम 5 बजे, कोई दिक्कत नहीं", "शाम 5 बजे"),    # "नहीं" not adjacent: no negation
+        ("5 बजे शाम को, हाँ शाम 5 बजे", "5 बजे शाम को"), # same time twice is not a conflict; the fuller mention wins
+        ("हाँ ठीक है", None),
+    ])
+    def test_choice_among_candidates(self, text, expected):
+        assert vd.extract_time(text) == expected
+
+    @pytest.mark.parametrize("text, expected", [
+        ("5 बजे नहीं 6 बजे", "6 बजे"),
+        ("not at 5, at 6 pm", "6 pm"),
+        ("subah nahi, sham ko", "sham"),
+        ("सुबह 10 बजे, शाम को नहीं", "सुबह 10 बजे"),      # "शाम को नहीं" negates the window
+    ])
+    def test_negation_and_corrections(self, text, expected):
+        assert vd.extract_time(text) == expected
+
+    def test_bare_hour_and_period_said_apart_are_composed(self):
+        assert vd.extract_time("कल 5 बजे आ जाना शाम को") == "शाम 5 बजे"
+        assert vd.parse_time(vd.extract_time("कल 5 बजे आ जाना शाम को")).candidates == (17 * 60,)
+        assert vd.extract_time("five o'clock tomorrow, evening") == "five o'clock in the evening"
+
+    @pytest.mark.parametrize("text", ["5 बजे या 6 बजे", "सुबह या शाम", "4 PM or 6 PM", "सुबह 10 बजे या शाम 5 बजे", "कल 5 बजे या 6 बजे"])
+    def test_two_readings_that_disagree_are_kept_as_said_for_validation_to_refuse(self, text):
+        kept = vd.extract_time(text)
+        assert kept and kept in text and vd.parse_time(kept).kind == "unknown"
+        assert vd.validate_visit("कल", kept, NOW) == (False, "time_unclear")
+
+    def test_the_same_time_said_twice_is_not_a_conflict(self):
+        assert vd.extract_time("5 बजे आ जाना, हाँ शाम 5 बजे") == "शाम 5 बजे"
+        assert vd.extract_time("at 5, no, at 6 pm") == "6 pm"
+
+    @pytest.mark.parametrize("text, kind", [
+        ("रात 12 बजे", "unknown"), ("कल रात 12 बजे", "unknown"), ("12 AM", "exact"), ("दोपहर 12 बजे", "exact"),
+        ("4 30", "unknown"), ("four forty five", "ambiguous"), ("ten to five", "unknown"), ("रात 11 बजे", "exact"),
+    ])
+    def test_midnight_and_two_hours_are_not_understood(self, text, kind):
+        assert vd.parse_time(text).kind == kind
+        if text == "four forty five":
+            assert vd.parse_time(text).candidates == (4 * 60 + 45, 16 * 60 + 45)
+
+    def test_a_refused_full_reading_never_degrades_into_its_sub_span(self):
+        assert vd.extract_time("कल रात 12 बजे") == "रात 12 बजे"          # not "12 बजे" (noon)
+        assert vd.validate_visit("कल", vd.extract_time("कल रात 12 बजे"), NOW) == (False, "time_unclear")
+        assert vd.extract_time("रात 12:30") == "रात 12:30"
+
+
+class TestExtractDay:
+    @pytest.mark.parametrize("text, expected", [
+        (LIVE_UTTERANCE, "कल"),
+        ("कल नहीं परसों", "परसों"),
+        ("not tomorrow, Monday", "Monday"),
+        ("आज नहीं हो पाएगा, कल", "कल"),
+        ("नहीं, कल कर दो", "कल"),                        # Hindi नहीं before = the answer "no"
+        ("Monday, no problem", "Monday"),                # bare English "no" after is not a negation…
+        ("Tomorrow, no, make it Monday", "Monday"),      # …unless another day follows: a correction
+        ("कल तो नहीं", None),
+        ("agle hafte", "agle hafte"),                    # kept so validation asks for a specific day
+        ("next week Monday", "Monday"),
+        ("इस हफ्ते शुक्रवार", "शुक्रवार"),
+        ("25 tarikh subah 10 baje", "25 tarikh"),
+        ("pachees tarikh", "pachees tarikh"),
+        ("day after tomorrow", "day after tomorrow"),
+        ("10 October 4 PM", "10 October"),
+        ("25 अक्टूबर को", "25 अक्टूबर"),
+        ("20/10/2026", "20/10/2026"),
+        ("pata nahi", None),
+    ])
+    def test_choice_among_candidates(self, text, expected):
+        assert vd.extract_day(text, TODAY) == expected
+
+    @pytest.mark.parametrize("text", ["कल या परसों", "Monday or Tuesday", "kal ya parso"])
+    def test_two_different_days_capture_nothing(self, text):
+        assert vd.extract_day(text, TODAY) is None
+
+    def test_relocated_capture_regex_still_reads_the_connector(self):
+        regex = vd.time_capture_regex()
+        assert "के" in regex and "ke" in regex and "[\\u0900-\\u097f]" in regex
