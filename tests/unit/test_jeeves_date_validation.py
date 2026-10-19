@@ -26,7 +26,7 @@ from tests.unit.test_jeeves_structured_summary import (
 IST = ZoneInfo("Asia/Kolkata")
 SETUP = runpy.run_path("jeeves/setup/01_structured_summary.py")
 V13 = SETUP["upgraded_definition"](13, stage=1)
-V14 = SETUP["upgraded_definition"](16, stage=3)   # markers + validation + spoken-number time capture
+V14 = SETUP["upgraded_definition"](17, stage=4)   # markers + validation + time capture + wording
 POLICY = compile_goal_policy({"summaryFields": SETUP["SUMMARY_FIELDS"]},
                              bot_name="Customer Support", system_prompt="")
 
@@ -66,7 +66,9 @@ async def _run(engine, monkeypatch, definition, turns, session, lang="hi-IN", co
     return replies, result
 
 
-READBACK = "details confirm"
+READBACK = "एक बार confirm कर लेते हैं"
+DAY_ONLY_NOTE = "exact समय engineer आपको call करके बताएँगे"
+CONFIRM_Q = "क्या ये आपके लिए ठीक रहेगा?"
 BOOKED = "engineer allocate"
 TEAM_DATE = "सही date तय"
 
@@ -145,6 +147,34 @@ CASES = {
         {"visit_status": "date_pending"}, {"appointment_booked": "No", "appointment_time": None, "call_result": "date_pending"}),
     "day with a period only is accepted as spoken": (
         PRE + ["कल शाम", YES], ["कल शाम", BOOKED], {"visit_time": "शाम"}, {"appointment_time": "शाम"}),
+    "के connector: period, के, hour captured whole": (
+        PRE + ["कल शाम के 5 बजे", YES], ["कल शाम के 5 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम के 5 बजे"}, {"appointment_time": "शाम के 5 बजे"}),
+    "ke connector romanised": (
+        PRE + ["kal sham ke 5 baje", YES], ["kal sham ke 5 baje", BOOKED],
+        {"visit_time": "sham ke 5 baje"}, {"appointment_time": "sham ke 5 baje"}),
+    "के connector with a fraction is exact, no clarification": (
+        PRE + ["कल शाम के साढ़े पाँच बजे", YES], ["कल शाम के साढ़े पाँच बजे", BOOKED],
+        {"visit_time": "शाम के साढ़े पाँच बजे"}, {"appointment_time": "शाम के साढ़े पाँच बजे"}),
+    "के time alone asks for the day": (
+        PRE + ["सुबह के 10 बजे", "परसों", YES],
+        [R["day_missing"]["hi"], "परसों सुबह के 10 बजे", BOOKED],
+        {"visit_day": "परसों", "visit_time": "सुबह के 10 बजे"}, {"appointment_time": "सुबह के 10 बजे"}),
+    "live utterance cv_37ce8d991411: past date refused, के time kept": (
+        PRE + ["हाँ, यह कर दो 17 अक्टूबर को। शाम के 5 बजे।", "कल", YES],
+        [R["day_past"]["hi"], "कल शाम के 5 बजे", BOOKED],
+        {"visit_day": "कल", "visit_time": "शाम के 5 बजे"},
+        {"appointment_date": "कल", "appointment_time": "शाम के 5 बजे"}),
+    "live utterance cv_43dd2e621291: past date refused": (
+        PRE + ["18 अक्टूबर कर दो। शाम के 5 बजे।", "परसों", YES],
+        [R["day_past"]["hi"], "परसों शाम के 5 बजे", BOOKED],
+        {"visit_day": "परसों", "visit_time": "शाम के 5 बजे"}, {}),
+    "natural yes answers take the booked edge": (
+        PRE + ["कल शाम के 5 बजे", "ठीक रहेगा"], [READBACK, BOOKED], {"visit_status": "booked"}, {}),
+    "natural no answer reopens the date": (
+        PRE + ["कल शाम के 5 बजे", "ठीक नहीं रहेगा", "परसों सुबह के 10 बजे", "haan chalega"],
+        [READBACK, "किस दिन", READBACK, BOOKED],
+        {"visit_status": "booked", "visit_day": "परसों", "visit_time": "सुबह के 10 बजे"}, {}),
     "callback keeps the whole spoken time": (
         [OPEN, "नहीं अभी busy हूँ", "परसों शाम 5 बजे call karna"], ["call back", "call back"],
         {"callback_time": "शाम 5 बजे"}, {"callback_time": "शाम 5 बजे", "call_result": "callback_requested"}),
@@ -260,6 +290,51 @@ class TestValidation:
 BARE_HOUR_SCENARIOS = {"date_changed_day_and_time", "date_changed_time_then_day"}
 
 
+class TestConfirmationWording:
+    async def test_day_and_time_sentence(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        replies, _ = await _run(engine, monkeypatch, V14, PRE + ["कल शाम के 5 बजे"], "wording-1")
+        assert replies[3] == (
+            "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer कल शाम के 5 बजे आपके registered address "
+            "Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। "
+            "क्या ये आपके लिए ठीक रहेगा?")
+
+    async def test_day_only_sentence_promises_no_time(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        replies, _ = await _run(engine, monkeypatch, V14, PRE + ["परसों"], "wording-2")
+        assert replies[3] == (
+            "ठीक है, एक बार confirm कर लेते हैं। हमारे engineer परसों आपके registered address "
+            "Sector 62, Noida पर Airtel Broadband device के uninstallation और pickup के लिए आएँगे। "
+            "visit का exact समय engineer आपको call करके बताएँगे। क्या ये आपके लिए ठीक रहेगा?")
+
+    async def test_period_only_reads_as_spoken(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        replies, _ = await _run(engine, monkeypatch, V14, PRE + ["कल शाम"], "wording-3")
+        assert "हमारे engineer कल शाम आपके registered address" in replies[3]
+        assert DAY_ONLY_NOTE not in replies[3]
+
+    async def test_english_sentences(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        en = ["yes speaking", "yes", "yes that's correct"]
+        replies, _ = await _run(engine, monkeypatch, V14, en + ["tomorrow at 4 PM"], "wording-4", lang="en-IN")
+        assert replies[3] == (
+            "Let me confirm the details. Our engineer will come to your registered address in Sector 62, Noida "
+            "tomorrow at 4 PM for the Airtel Broadband device uninstallation and pickup. Does that work for you?")
+        replies, _ = await _run(engine, monkeypatch, V14, en + ["Monday"], "wording-5", lang="en-IN")
+        assert replies[3].endswith("The engineer will call you to confirm the exact time. Does that work for you?")
+
+    async def test_second_confirmation_uses_the_same_wording(self, engine, monkeypatch):
+        _clock(monkeypatch, MONDAY_NOON)
+        replies, result = await _run(engine, monkeypatch, V14,
+                                     PRE + ["कल शाम के 5 बजे", "नहीं", "परसों", "सही है"], "wording-6")
+        assert replies[5].startswith("ठीक है, एक बार confirm कर लेते हैं। हमारे engineer परसों आपके registered address")
+        assert DAY_ONLY_NOTE in replies[5] and result["slots"]["visit_status"] == "booked"
+
+
+OLD_INTROS = ("हम जल्दी से एक बार details confirm कर लेते हैं।", "Let me quickly confirm the details.")
+NEW_INTROS = ("ठीक है, एक बार confirm कर लेते हैं।", "Let me confirm the details.")
+
+
 class TestNoChangeForValidInput:
     """Clock set to 2026-10-10 so every date the 15 summary scenarios use
     (कल, parso, आज, 16 October, tomorrow) lies ahead: v16 must speak exactly
@@ -282,6 +357,8 @@ class TestNoChangeForValidInput:
         for i, (want, got) in enumerate(zip(expected, new)):
             if want == "" and got == R["day_missing"]["hi"]:
                 continue
+            if want.startswith(OLD_INTROS) and got.startswith(NEW_INTROS):
+                continue   # intended: the confirmation is reworded (TestConfirmationWording)
             assert got == want, (name, i, want, got)
         assert len(new) == len(old)
         new_fields = derive_structured_fields(POLICY, _snapshot(r14["slots"]))
@@ -333,23 +410,17 @@ class TestDefinition:
                 assert "10 अक्टूबर" not in n["config"]["unmatchedReplyByLanguage"]["hi"]
                 assert "10 October" not in n["config"]["unmatchedReplyByLanguage"]["en"]
         assert validate_definition(V14["nodes"], V14["edges"]) == ([], [])
-        assert V14["edges"] == V13["edges"]
-        # Beyond the validation key and the example date, stage 3 may only
-        # touch: the time-capture regexes, the day regex (romanised tarikh
-        # words) and the reset marker's pending slots.
+        # Beyond stage 1, the upgrade only touches the keys the normaliser
+        # restores; everything else must equal the stage-1 definition.
+        norm_nodes, norm_edges = SETUP["normalise_to_stage1"](V14["nodes"], V14["edges"])
+        assert norm_nodes == V13["nodes"] and norm_edges == V13["edges"]
         regex = SETUP["build_time_regex"]()
-        v13 = {n["id"]: n for n in V13["nodes"]}
-        for n in SETUP["strip_stage2"](V14["nodes"]):
-            old = v13[n["id"]]
-            if n["id"] in SETUP["VALIDATED_ASKS"] or n["id"] == "n_ask_callback":
-                for cap in n["config"].get("alsoCapture") or []:
-                    if cap["variable"] in SETUP["TIME_CAPTURE_VARIABLES"]:
-                        assert cap["entity"]["regexPattern"] == regex
-                stripped = {**n, "config": {k: v for k, v in n["config"].items() if k not in ("alsoCapture", "entity")}}
-                old_stripped = {**old, "config": {k: v for k, v in old["config"].items() if k not in ("alsoCapture", "entity")}}
-                assert stripped == old_stripped
-            elif n["id"] == SETUP["RESET_MARKER"]:
+        assert "के" in regex and "ke" in regex
+        for n in V14["nodes"]:
+            if n["id"] in SETUP["CONFIRM_NODES"]:
+                assert n["config"]["readback"] == SETUP["build_readback"](*SETUP["CONFIRM_NODES"][n["id"]])
+            if n["id"] == SETUP["RESET_MARKER"]:
                 assert n["config"]["setSlots"] == {"visit_day": "", "visit_time": "",
                                                    "visit_time_pending": "", "visit_time_2_pending": ""}
-            else:
-                assert n == old
+        yes_edges = [e for e in V14["edges"] if e["from"] in SETUP["CONFIRM_NODES"] and e["to"] == "n_mark_booked"]
+        assert len(yes_edges) == 2 and all("ठीक रहेगा" in e["label"] and "chalega" in e["label"] for e in yes_edges)

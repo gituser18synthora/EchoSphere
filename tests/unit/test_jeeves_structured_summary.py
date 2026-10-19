@@ -27,7 +27,7 @@ SUMMARY_FIELDS = SETUP["SUMMARY_FIELDS"]
 BASELINE = SETUP["load_baseline"]()
 V12 = {"id": BASELINE["id"], "version": 12, "name": BASELINE["name"],
        "nodes": BASELINE["nodes"], "edges": BASELINE["edges"]}
-UPGRADED = SETUP["upgraded_definition"](13)
+UPGRADED = SETUP["upgraded_definition"](13, stage=1)   # markers only: the v12 → v13 golden
 
 TENANT, BOT, WORKFLOW = "tn_b0e1194a1e1d", "bot_44a50e8c4146", "wf_9685ed07e312"
 CONTEXT = {"customer_name": "Rahul", "locality": "Sector 62, Noida",

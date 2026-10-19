@@ -68,6 +68,8 @@ class TestParseTime:
         ("4 baje PM", 960), ("four in the evening", 960), ("half past four PM", 990),
         ("four thirty in the morning", 270), ("half past four in the evening", 990),
         ("at four pm", 960), ("ten in the morning", 600),
+        ("शाम के 5 बजे", 1020), ("सुबह के 10 बजे", 600), ("sham ke 5 baje", 1020),
+        ("शाम के साढ़े पाँच बजे", 1050), ("subah ke das baje", 600),
     ])
     def test_exact(self, text, minutes):
         result = parse_time(text)
