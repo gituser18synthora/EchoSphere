@@ -497,18 +497,25 @@ class _Report:
         self.reused: dict[str, int] = {}
         self.remapped_ids: dict[str, str] = {}
         self.warnings: list[str] = []
+        # Set only when the import CREATED the tenant: its freshly provisioned
+        # API token (plaintext included — this response is the one place it
+        # exists; the operator captures it or rotates from the tenant page).
+        self.api_token: dict | None = None
 
     def count(self, bucket: dict, key: str) -> None:
         bucket[key] = bucket.get(key, 0) + 1
 
     def as_dict(self) -> dict:
-        return {
+        data = {
             "created": self.created,
             "updated": self.updated,
             "reused": self.reused,
             "remappedIds": self.remapped_ids,
             "warnings": self.warnings,
         }
+        if self.api_token is not None:
+            data["apiToken"] = self.api_token
+        return data
 
 
 def _apply(instance, values: dict) -> None:
@@ -834,6 +841,13 @@ def import_tenant(db: Session, package: dict, user: User) -> tuple[dict, dict]:
     db.flush()
 
     _ensure_admin_user(db, tenant, report, user)
+    if existing_tenant is None:
+        # Every new tenant gets its integration credential, however it was
+        # created. Never exported/imported: tokens are per environment.
+        from backend.core.api_keys import provision_api_key, serialize_api_key
+
+        key_row, token = provision_api_key(db, tenant, user)
+        report.api_token = serialize_api_key(key_row, db.get(User, key_row.user_id), token=token)
 
     if resources.get("tenant_settings"):
         raw = dict(resources["tenant_settings"])

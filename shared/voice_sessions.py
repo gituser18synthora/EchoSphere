@@ -34,6 +34,7 @@ async def create_voice_session(
     call_id: str | None = None,
     variables: dict[str, str] | None = None,
     customer_context_id: str | None = None,
+    variables_dropped: list[str] | None = None,
 ) -> dict:
     """Issue a session token (called from the authenticated API process).
 
@@ -59,6 +60,10 @@ async def create_voice_session(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "issued",
     }
+    if variables_dropped:
+        # Names of dialer variables the webhook rejected or could not keep;
+        # surfaced on the call's trace so a missing field is explainable.
+        payload["variables_dropped"] = list(variables_dropped)
     await get_redis().set(
         _session_key(session_id), json.dumps(payload), ex=settings.voice_session_timeout
     )

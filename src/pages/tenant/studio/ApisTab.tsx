@@ -1082,6 +1082,10 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
               <Toggle checked={!!f.sensitive} onChange={(v) => patchField(i, { sensitive: v })} label={`Field ${i + 1} sensitive`} />
               <span className="t-micro">sensitive</span>
             </span>
+            <span className="row gap-4" style={{ flexShrink: 0 }} title="The dialer may send this value per call in the webhook's variables; a non-blank value then replaces the API / test value for this field.">
+              <Toggle checked={!!f.sessionOverride} onChange={(v) => patchField(i, { sessionOverride: v })} label={`Field ${i + 1} dialer override`} />
+              <span className="t-micro">dialer override</span>
+            </span>
             <button className="btn-icon" aria-label={`Remove field ${i + 1}`} onClick={() => setFields((rows) => rows.filter((_, j) => j !== i))}>
               <Icon name="x" size={13} />
             </button>

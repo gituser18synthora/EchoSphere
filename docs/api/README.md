@@ -56,7 +56,10 @@ sync with it.
 
 - **Authentication** — unless an endpoint is explicitly documented as public
   or webhook-verified, send `Authorization: Bearer <ACCESS_TOKEN>` obtained
-  from `POST /api/v1/auth/login`.
+  from `POST /api/v1/auth/login`. Integrations may instead send the tenant's
+  long-lived **API token** (`Authorization: Bearer esk_…` or `X-API-Key: esk_…`,
+  read-only, tenant-scoped — see *Tenant API tokens* in
+  [BACKEND_PLATFORM_ADMIN.md](BACKEND_PLATFORM_ADMIN.md)).
 - **Tenancy** — the tenant is derived from the authenticated user; it is never
   accepted from request bodies for tenant-scoped resources.
 - **Placeholders** — examples use `<ACCESS_TOKEN>`, `<TENANT_ID>`, `<BOT_ID>`,

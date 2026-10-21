@@ -22,6 +22,7 @@ from backend.core.deps import (
     assert_tenant_access,
     can_view_costs,
     get_current_user,
+    is_super_admin,
     require_tenant_admin,
     resolve_tenant_id,
 )
@@ -34,7 +35,7 @@ from backend.core.transcripts import (
 from shared.errors import NotFoundError
 from shared.ids import new_id
 from shared.models.billing_models import BASE_CURRENCY
-from backend.core.pagination import PageParams, page_params
+from backend.core.pagination import PageParams, apply_sort, page_params
 from backend.core.responses import ok, paginated
 from shared.db.mongo import Mongo
 from shared.db.mysql import get_db
@@ -72,6 +73,10 @@ def list_conversations(
         None, alias="dateTo", max_length=40,
         description="Inclusive end of the call date range (YYYY-MM-DD or ISO-8601 instant)",
     ),
+    call_id: str | None = Query(
+        None, alias="callId", max_length=64,
+        description="Exact telephony call id (the dialer's callId / CallSid)",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -80,6 +85,9 @@ def list_conversations(
     stmt = select(ConversationSession).where(
         ConversationSession.tenant_id == tid, ConversationSession.is_deleted.is_(False)
     )
+    if call_id and call_id.strip():
+        # Exact, never LIKE: a call id is an identifier the integrator holds.
+        stmt = stmt.where(ConversationSession.call_id == call_id.strip())
     if bot_id:
         stmt = stmt.where(ConversationSession.bot_id == bot_id)
     if channel:
@@ -104,14 +112,17 @@ def list_conversations(
                 ConversationSession.caller_masked.like(like),
                 ConversationSession.escalation_reason.like(like),
                 ConversationSession.id.like(like),
+                ConversationSession.call_id.like(like),
             )
         )
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = db.scalars(
-        stmt.order_by(ConversationSession.started_at.desc())
-        .offset(params.offset)
-        .limit(params.page_size)
-    ).all()
+    # Sort keys are the serialized field names; unknown keys fall back to the
+    # historical order (startedAt desc). The id tie-break keeps pages stable
+    # when many calls share a start second.
+    stmt = apply_sort(
+        stmt, ConversationSession, params, _SORT_COLUMNS, ConversationSession.started_at,
+    ).order_by(ConversationSession.id.desc())
+    rows = db.scalars(stmt.offset(params.offset).limit(params.page_size)).all()
     names = _bot_names(db, [c.bot_id for c in rows])
     include_costs = can_view_costs(user)
     return paginated(
@@ -121,17 +132,66 @@ def list_conversations(
     )
 
 
+_SORT_COLUMNS = {
+    "startedAt": ConversationSession.started_at,
+    "durationSec": ConversationSession.duration_sec,
+    "costUsd": ConversationSession.cost_usd,
+    "sentiment": ConversationSession.sentiment,
+    "csat": ConversationSession.csat,
+    "qaScore": ConversationSession.qa_score,
+    "createdAt": ConversationSession.created_at,
+}
+
+
+def _find_conversation(
+    db: Session, user: User, key: str, tenant_id: str | None,
+) -> ConversationSession:
+    """A conversation by its own id, else by the telephony call id.
+
+    The call-id fallback is tenant-scoped (a tenant role searches its own
+    tenant; a super admin must say which via ``tenantId``) and returns the
+    newest match, since a dialer may retry a call under the same id. Both
+    misses are the same 404 — existence is never revealed across tenants.
+    """
+    key = (key or "").strip()
+    c = db.get(ConversationSession, key) if key else None
+    if c is not None and not c.is_deleted:
+        assert_tenant_access(user, c.tenant_id)
+        return c
+    if not key:
+        raise NotFoundError("Conversation")
+    if is_super_admin(user) and not tenant_id:
+        raise NotFoundError("Conversation")
+    tid = resolve_tenant_id(user, tenant_id)
+    c = db.scalar(
+        select(ConversationSession)
+        .where(
+            ConversationSession.tenant_id == tid,
+            ConversationSession.call_id == key,
+            ConversationSession.is_deleted.is_(False),
+        )
+        .order_by(ConversationSession.started_at.desc(), ConversationSession.created_at.desc())
+        .limit(1)
+    )
+    if c is None:
+        raise NotFoundError("Conversation")
+    return c
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
     currency: str | None = Query(None, description="Display currency for the cost breakdown"),
+    tenant_id: str | None = Query(
+        None, alias="tenantId",
+        description="Super admins only: the tenant to search when the path is a telephony call id",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    c = db.get(ConversationSession, conversation_id)
-    if c is None or c.is_deleted:
-        raise NotFoundError("Conversation")
-    assert_tenant_access(user, c.tenant_id)
+    # The path accepts either the conversation id (cv_…) or the telephony
+    # call id the dialer sent on the webhook (callId / CallSid).
+    c = _find_conversation(db, user, conversation_id, tenant_id)
     doc = await find_transcript_doc(c)
     transcript = ui_turns((doc or {}).get("turns"))
     names = _bot_names(db, [c.bot_id])

@@ -543,3 +543,61 @@ class TestSimulator:
         assert trace["paymentVerification"] == "completed"
         assert "payment_status: completed" in trace["renderedPrompt"] \
             or "payment IS confirmed" in trace["renderedPrompt"]
+
+
+class TestSessionOverride:
+    """Dialer variables (signed webhook) vs the configured payload — real DB."""
+
+    def test_flag_saved_and_round_tripped(self, client, tenant_admin, estate_bot):
+        data = _data(client.put(
+            f"{API}/bots/{estate_bot['id']}/runtime-context", headers=tenant_admin,
+            json={
+                "name": "Lead details",
+                "sourceMode": "manual",
+                "fields": [
+                    {"key": "lead_name", "type": "string", "sessionOverride": True},
+                    {"key": "budget_max", "type": "number", "sessionOverride": True},
+                    {"key": "properties", "type": "array"},
+                ],
+                "testPayload": {"lead_name": "Arjun", "budget_max": 7500000,
+                                "properties": [{"id": "P-12"}]},
+                "domainPolicy": "generic",
+            },
+        ))
+        flags = {f["key"]: f.get("sessionOverride") for f in data["fields"]}
+        assert flags == {"lead_name": True, "budget_max": True, "properties": None}
+
+    def test_flag_rejected_on_container_types(self, client, tenant_admin, estate_bot):
+        response = client.put(
+            f"{API}/bots/{estate_bot['id']}/runtime-context", headers=tenant_admin,
+            json={"sourceMode": "manual", "fields": [
+                {"key": "properties", "type": "array", "sessionOverride": True},
+            ]},
+        )
+        assert response.status_code == 422
+        assert "sessionOverride" in response.text
+
+    async def test_loader_prefers_dialer_values_per_field(self, estate_bot):
+        from shared.runtime_context import load_runtime_context
+
+        ctx = await load_runtime_context(
+            _tenant_of(estate_bot["id"]), estate_bot["id"], phone="+911234567890",
+            session_variables={"leadName": "Priya", "budget_max": "", "campaign": "oct"},
+        )
+        assert ctx is not None
+        assert ctx.get("lead_name") == "Priya"                 # dialer wins (camelCase matched)
+        assert ctx.values["lead_name"].source == "session"
+        assert "leadName" not in ctx.values
+        assert ctx.get("budget_max") == 7500000                 # blank → fixture fills
+        assert ctx.values["budget_max"].source == "test"
+        assert ctx.values["campaign"].source == "session"      # undeclared: unchanged
+        assert ctx.api_skipped is False
+
+    async def test_loader_without_variables_is_unchanged(self, estate_bot):
+        from shared.runtime_context import load_runtime_context
+
+        ctx = await load_runtime_context(
+            _tenant_of(estate_bot["id"]), estate_bot["id"], phone="+911234567890",
+        )
+        assert ctx.get("lead_name") == "Arjun"
+        assert ctx.values["lead_name"].source == "test"

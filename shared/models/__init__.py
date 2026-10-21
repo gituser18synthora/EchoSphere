@@ -8,6 +8,7 @@ from shared.models.tenancy_models import (
     Subscription,
     SystemSetting,
     Tenant,
+    TenantApiKey,
     TenantSetting,
 )
 from shared.models.bot_models import (
@@ -75,7 +76,7 @@ from shared.models.memory_models import ConversationMemory
 __all__ = [
     "Base",
     "Role", "Permission", "RolePermission", "User",
-    "Tenant", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
+    "Tenant", "TenantApiKey", "Plan", "Subscription", "Invoice", "SystemSetting", "TenantSetting",
     "VoiceBot", "VoiceBotReadiness", "VoiceProfile", "VoiceCloneAudio",
     "PronunciationDictionary",
     "SupportedLanguage", "BotLanguage",

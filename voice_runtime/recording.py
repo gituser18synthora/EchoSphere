@@ -37,11 +37,14 @@ class SessionRecorder:
     """Accumulates turns/events/usage for one call and persists them."""
 
     def __init__(self, session_id: str, config: ResolvedBotConfig, channel: str = "browser",
-                 caller: str | None = None) -> None:
+                 caller: str | None = None, call_id: str | None = None) -> None:
         self.session_id = session_id
         self.config = config
         self.channel = channel
         self.caller = caller
+        # The telephony provider's call id (webhook callId / CallSid): the
+        # handle an integrator holds, persisted on the conversation row.
+        self.call_id = (str(call_id)[:64] or None) if call_id else None
         self.started_at = time.time()
         self.turns: list[TurnRecord] = []
         self.events: list[dict] = []
@@ -275,6 +278,7 @@ class SessionRecorder:
             payload = {
                 "session_id": self.session_id,
                 "control_plane_id": self.control_plane_id,
+                "call_id": self.call_id,
                 "tenant_id": self.config.tenant_id,
                 "bot_id": self.config.bot_id,
                 "channel": self.channel,
@@ -385,6 +389,7 @@ class SessionRecorder:
                 # The link to this call's usage events — without it the stored
                 # cost cannot be audited or recomputed later.
                 session_id=self.session_id,
+                call_id=self.call_id,
                 tenant_id=self.config.tenant_id,
                 bot_id=self.config.bot_id,
                 channel="voice" if self.channel != "browser" else "web",

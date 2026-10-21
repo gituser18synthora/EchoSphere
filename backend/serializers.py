@@ -706,6 +706,9 @@ def serialize_conversation(c: ConversationSession, *, bot_name: str,
             ]
     return {
         "id": c.id,
+        # The dialer's own call id (telephony webhook callId / CallSid), so an
+        # integrator can correlate without knowing EchoSphere's ids.
+        "callId": c.call_id,
         "botId": c.bot_id,
         "bot": bot_name,
         "channel": c.channel,

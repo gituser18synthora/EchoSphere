@@ -36,6 +36,9 @@ class ConversationSession(Base, TimestampMixin, SoftDeleteMixin):
         Index("ix_conversations_tenant_started", "tenant_id", "started_at"),
         Index("ix_conversations_bot_started", "bot_id", "started_at"),
         Index("ix_conversations_session", "session_id"),
+        # Integrators look a call up by the id THEY know; the index is
+        # tenant-first so the lookup can never cross a tenant boundary.
+        Index("ix_conversations_tenant_call_id", "tenant_id", "call_id"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
@@ -43,6 +46,11 @@ class ConversationSession(Base, TimestampMixin, SoftDeleteMixin):
     # keyed by it, so this is what makes a conversation's cost auditable and
     # recomputable. Nullable: historical rows predate the column.
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The telephony provider's own call identifier (webhook `callId` /
+    # `CallSid`), verbatim as received (≤64 chars). Not unique: a dialer may
+    # retry a call under the same id, so lookups return the newest match.
+    # Nullable: browser sessions have none and historical rows predate it.
+    call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tenant_id: Mapped[str] = mapped_column(
         String(ID_LEN), ForeignKey("tenants.id"), nullable=False
     )

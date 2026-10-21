@@ -278,6 +278,7 @@ async def _run_call(
         config,
         channel=telephony_provider or session.get("channel", "browser"),
         caller=session.get("caller"),
+        call_id=session.get("call_id"),
     )
 
     # Effective guardrails for this bot (mandatory platform rules ∪ the bot's
@@ -385,6 +386,8 @@ async def _run_call(
     # bots without a schema fall back to the legacy loan-collection table so
     # existing behavior is preserved bit-for-bit. Both paths are bounded and
     # fail-open — a lookup failure degrades the call, never blocks it.
+    from collections import Counter
+
     from shared.customer_context import load_customer_context
     from shared.runtime_context import load_runtime_context
 
@@ -433,6 +436,12 @@ async def _run_call(
             source_mode=runtime_context.source_mode,
             domain_policy=runtime_context.domain_policy,
             values=len(runtime_context.values),
+            # Per-source counts (session = signed dialer variables): shows at
+            # a glance whether the dialer's values or the API/fixture won.
+            sources=dict(Counter(
+                entry.source for entry in runtime_context.values.values()
+            )),
+            api_skipped=runtime_context.api_skipped,
             load_error=runtime_context.load_error,
         )
 
@@ -616,6 +625,9 @@ async def _run_call(
             "call_started",
             channel=recorder.channel,
             call_id=session.get("call_id"),
+            # Dialer variables the webhook could not keep (names only) — the
+            # trace says so instead of a required field silently missing.
+            variables_dropped=session.get("variables_dropped") or None,
         )
         await brain.speak_greeting()
 
