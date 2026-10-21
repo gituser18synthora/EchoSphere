@@ -33,6 +33,9 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
         raise ApiError("Invalid email or password.", 401)
     if user.status == "deactivated":
         raise ApiError("This account has been deactivated.", 403)
+    if user.is_service_account:
+        # Machine identity behind a tenant API token: never a session.
+        raise ApiError("Service accounts cannot sign in — use the tenant API token.", 403)
 
     tenant_name = None
     if user.tenant_id:

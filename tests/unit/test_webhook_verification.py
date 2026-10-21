@@ -112,8 +112,8 @@ class TestDialerVariableSanitization:
         assert out == {"ok": "yes"}
 
     def test_limits_are_enforced(self):
-        out = self._sanitize({f"k{i}": "v" for i in range(50)})
-        assert len(out) == 20
+        out = self._sanitize({f"k{i}": "v" for i in range(80)})
+        assert len(out) == 50          # cap raised from 20; overflow is reported by name
         out = self._sanitize({"long": "A" * 500})
         assert len(out["long"]) == 200
 

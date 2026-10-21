@@ -332,6 +332,9 @@ function ConversationDrawer({ conv, money, onClose, onUpdate }: { conv: Conversa
           <span><Icon name="clock" size={12} />{fmtDateTime(conv.startedAt)}</span>
           <span>{fmtDuration(conv.durationSec)}</span>
           <span>{conv.caller}</span>
+          {/* The dialer's own call id — what an integrator quotes and what
+              the API accepts in place of the conversation id. */}
+          {conv.callId && <span title="Telephony call id"><Icon name="link" size={12} /><code>{conv.callId}</code></span>}
         </span>
       )}
       headerExtra={

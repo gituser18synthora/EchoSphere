@@ -23,6 +23,14 @@ Trust model (same as shared.customer_context, which this generalizes):
 Source precedence, lowest to highest: system < session (dialer variables)
 < the configured payload source (api | test | record) < workflow (facts
 established mid-call, e.g. a verified tool result).
+
+One opt-in exception, per field: a schema field flagged ``sessionOverride``
+is a per-call fact the dialer supplies on the SIGNED webhook (``variables``).
+When the dialer sent a non-blank value for it, that value wins over the
+api/test/record payload; otherwise the payload fills the field as before.
+When the dialer covered every declared field this way, the User Details API
+is not called at all (its latency lands 1:1 on the greeting). Nothing changes
+for schemas that never set the flag.
 """
 
 import asyncio
@@ -76,6 +84,100 @@ _SENSITIVE_KEY_HINT = re.compile(
     r"(account|card|password|secret|token|otp|cvv|ssn|aadhaar|pan)", re.I
 )
 
+# Field-definition flag: the dialer may supply this field per call through the
+# signed webhook's ``variables``. See the module docstring for the precedence.
+SESSION_OVERRIDE_FLAG = "sessionOverride"
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CANONICAL_KEY = re.compile(r"[^a-z0-9]+")
+_INTEGER_TEXT = re.compile(r"^[+-]?\d+$")
+_BOOLEAN_TEXT = {
+    "true": True, "yes": True, "1": True,
+    "false": False, "no": False, "0": False,
+}
+
+
+def canonical_variable_key(key: str) -> str:
+    """Spelling-insensitive variable key.
+
+    ``customerName`` / ``customer-name`` / ``Customer Name`` → ``customer_name``,
+    so a dialer's camelCase variable lands on the snake_case schema field the
+    prompts and workflow are written against.
+    """
+    spaced = _CAMEL_BOUNDARY.sub("_", str(key).strip())
+    return _CANONICAL_KEY.sub("_", spaced.lower()).strip("_")
+
+
+def _coerce_session_value(value, ftype: str):
+    """A dialer variable (always text) as the declared scalar type, or None.
+
+    Strict on purpose — payloads are never coerced either, so a session value
+    that does not read unambiguously as the declared type counts as "not
+    supplied" and the configured source fills the field instead.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    if ftype == "string":
+        return text
+    if ftype == "integer":
+        return int(text) if _INTEGER_TEXT.match(text) else None
+    if ftype == "number":
+        if _INTEGER_TEXT.match(text):
+            return int(text)
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    if ftype == "boolean":
+        return _BOOLEAN_TEXT.get(text.lower())
+    if ftype == "date":
+        return text if _ISO_DATE.match(text) else None
+    return None  # object / array cannot arrive as a scalar variable
+
+
+def session_override_values(
+    field_definitions: list | None, session_variables: dict | None,
+) -> tuple[dict[str, object], set[str]]:
+    """Dialer-supplied values for the schema's ``sessionOverride`` fields.
+
+    Returns ``(overrides, consumed)``: ``overrides`` maps the DECLARED field
+    key to the typed value the dialer sent; ``consumed`` lists the raw
+    variable names that addressed a flagged field (matched by
+    :func:`canonical_variable_key`), so they are not kept a second time under
+    the dialer's own spelling. Blank, absent and wrongly typed values are not
+    overrides — the configured payload source fills those fields as before.
+    """
+    flagged: dict[str, tuple[str, str]] = {}
+    for item in field_definitions or []:
+        if not isinstance(item, dict) or item.get(SESSION_OVERRIDE_FLAG) is not True:
+            continue
+        key = str(item.get("key") or "").strip()
+        if key:
+            flagged[canonical_variable_key(key)] = (key, str(item.get("type") or "string"))
+    overrides: dict[str, object] = {}
+    consumed: set[str] = set()
+    if not flagged:
+        return overrides, consumed
+    for raw_key, raw_value in (session_variables or {}).items():
+        hit = flagged.get(canonical_variable_key(str(raw_key)))
+        if hit is None or raw_value is None:
+            continue
+        declared_key, ftype = hit
+        consumed.add(str(raw_key))
+        value = _coerce_session_value(raw_value, ftype)
+        if value is None:
+            if str(raw_value).strip():
+                logger.warning(
+                    "runtime context: dialer variable %r ignored for field %r "
+                    "(not a valid %s)", str(raw_key), declared_key, ftype,
+                )
+            continue
+        # The schema's own spelling beats an alias when the dialer sent both.
+        if str(raw_key) == declared_key or declared_key not in overrides:
+            overrides[declared_key] = value
+    return overrides, consumed
+
 
 def validate_field_definitions(fields: list | None) -> list[dict]:
     """Validate the tenant's schema-field definitions themselves."""
@@ -103,6 +205,19 @@ def validate_field_definitions(fields: list | None) -> list[dict]:
             errors.append({
                 "field": f"{where}.type",
                 "message": f"Type must be one of {sorted(_TYPE_CHECKS)}.",
+            })
+        flag = item.get(SESSION_OVERRIDE_FLAG)
+        if flag is not None and not isinstance(flag, bool):
+            errors.append({
+                "field": f"{where}.{SESSION_OVERRIDE_FLAG}",
+                "message": f"{SESSION_OVERRIDE_FLAG} must be true or false.",
+            })
+        elif flag and ftype in ("object", "array"):
+            errors.append({
+                "field": f"{where}.{SESSION_OVERRIDE_FLAG}",
+                "message": f"{SESSION_OVERRIDE_FLAG} needs a scalar type "
+                           "(string, number, integer, boolean or date): "
+                           "dialer variables are scalars.",
             })
     return errors
 
@@ -338,6 +453,9 @@ class RuntimeContext:
     record_id: str | None = None         # stored record / legacy context row id
     schema_id: str | None = None
     load_error: str | None = None        # e.g. the User Details API failed
+    # True when the dialer's variables covered every declared field, so the
+    # User Details API round trip was skipped for this call.
+    api_skipped: bool = False
     # Sticky call-level gate. It remains true after a workflow value replaces
     # a same-named fixture flag, so stale test facts never become visible.
     session_verification_required: bool = False
@@ -571,6 +689,7 @@ def build_runtime_context(
     record_id: str | None = None,
     schema_id: str | None = None,
     load_error: str | None = None,
+    api_skipped: bool = False,
 ) -> RuntimeContext:
     """Merge every source into one provenance-tagged context (masked).
 
@@ -586,6 +705,7 @@ def build_runtime_context(
         missing_value_policy=missing_value_policy,
         domain_policy=domain_policy, source_mode=source_mode,
         record_id=record_id, schema_id=schema_id, load_error=load_error,
+        api_skipped=api_skipped,
     )
     sensitive_keys = {
         str(f.get("key")): int(f.get("maskKeep") or 4)
@@ -604,8 +724,12 @@ def build_runtime_context(
     for key, value in (system_values or {}).items():
         if value is not None:
             _put(str(key), value, "system")
+    # Variables addressed at a ``sessionOverride`` field are applied LAST,
+    # under the declared key, so they win over the payload for that field;
+    # every other variable keeps today's place below the payload.
+    overrides, consumed = session_override_values(field_definitions, session_variables)
     for key, value in (session_variables or {}).items():
-        if value is not None:
+        if value is not None and str(key) not in consumed:
             _put(str(key), value, "session")
     errors, clean = validate_payload(
         field_definitions, payload, allow_additional=allow_additional
@@ -622,6 +746,8 @@ def build_runtime_context(
         )
     for key, value in clean.items():
         _put(key, value, payload_source)
+    for key, value in overrides.items():
+        _put(key, value, "session")
     return ctx
 
 
@@ -813,6 +939,7 @@ async def load_runtime_context(
     payload_source = "record"
     load_error: str | None = None
     found_record_id: str | None = None
+    api_skipped = False
 
     # A stored record for this caller wins over the generic source: it is the
     # per-customer row the tenant deliberately staged for this number.
@@ -832,28 +959,21 @@ async def load_runtime_context(
         payload, payload_source = record["data"], "record"
         found_record_id = record["id"]
     elif schema["source_mode"] == "api" and schema.get("api"):
-        variables = {
-            "caller_phone": phone or "",
-            "phone": phone or "",
-            **{str(k): str(v) for k, v in (session_variables or {}).items()},
-        }
-        try:
-            body, load_error = await asyncio.wait_for(
-                _fetch_api_payload(schema["api"], variables),
-                timeout=timeout_seconds,
+        if _dialer_covers_schema(schema["fields"], session_variables):
+            # Every declared field is a sessionOverride the dialer supplied:
+            # the User Details API would add nothing but its latency to the
+            # greeting. The context is built from the variables alone.
+            api_skipped, payload_source = True, "api"
+            logger.info(
+                "runtime context: User Details API skipped, dialer variables "
+                "cover all declared fields (bot=%s)", bot_id,
             )
-        except Exception:  # noqa: BLE001
-            logger.exception("user details API call failed (bot=%s)", bot_id)
-            body, load_error = None, "User details API call failed."
-        if body is not None:
-            resolved = resolve_response_path(body, schema.get("response_path"))
-            if isinstance(resolved, dict):
-                payload, payload_source = resolved, "api"
-            else:
-                load_error = (
-                    "User details API response did not contain an object at "
-                    f"'{schema.get('response_path') or '$'}'."
-                )
+        else:
+            payload, payload_source, load_error = await _load_api_payload(
+                schema, bot_id=bot_id, phone=phone,
+                session_variables=session_variables,
+                timeout_seconds=timeout_seconds,
+            )
     elif schema["source_mode"] == "manual" and isinstance(schema.get("test_payload"), dict):
         payload, payload_source = schema["test_payload"], "test"
 
@@ -872,7 +992,53 @@ async def load_runtime_context(
         record_id=found_record_id,
         schema_id=schema["id"],
         load_error=load_error,
+        api_skipped=api_skipped,
     )
+
+
+async def _load_api_payload(
+    schema: dict, *, bot_id: str, phone: str | None,
+    session_variables: dict | None, timeout_seconds: float,
+) -> tuple[dict | None, str, str | None]:
+    """The User Details API payload for this call: (payload, source, error)."""
+    variables = {
+        "caller_phone": phone or "",
+        "phone": phone or "",
+        **{str(k): str(v) for k, v in (session_variables or {}).items()},
+    }
+    try:
+        body, load_error = await asyncio.wait_for(
+            _fetch_api_payload(schema["api"], variables),
+            timeout=timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("user details API call failed (bot=%s)", bot_id)
+        return None, "record", "User details API call failed."
+    if body is None:
+        return None, "record", load_error
+    resolved = resolve_response_path(body, schema.get("response_path"))
+    if isinstance(resolved, dict):
+        return resolved, "api", load_error
+    return None, "record", (
+        "User details API response did not contain an object at "
+        f"'{schema.get('response_path') or '$'}'."
+    )
+
+
+def _dialer_covers_schema(field_definitions: list | None, session_variables: dict | None) -> bool:
+    """Whether the dialer supplied every declared field via ``sessionOverride``.
+
+    False for a schema without declared fields: an open schema relies on
+    whatever the API returns, so the call must still be made.
+    """
+    declared = [
+        str(f.get("key")).strip() for f in (field_definitions or [])
+        if isinstance(f, dict) and str(f.get("key") or "").strip()
+    ]
+    if not declared:
+        return False
+    overrides, _consumed = session_override_values(field_definitions, session_variables)
+    return all(key in overrides for key in declared)
 
 
 # ── collections compatibility ────────────────────────────────────────────────

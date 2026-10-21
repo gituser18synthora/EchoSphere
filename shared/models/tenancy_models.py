@@ -66,6 +66,46 @@ class Tenant(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
 
 
+class TenantApiKey(Base, TimestampMixin, AuditByMixin):
+    """A tenant's long-lived API credential for read-only integrations.
+
+    Only the SHA-256 of the key is stored — the plaintext exists once, in the
+    response that generated it. The key authenticates AS ``user_id``, the
+    tenant's service account (``users.is_service_account``), so tenant
+    isolation, permissions and audit attribution are the existing user paths,
+    not a parallel scheme. Rotation revokes the previous row and inserts a
+    new one; revoked rows stay for the audit trail. At most one row per tenant
+    is ``active`` (enforced by the provisioning code, not the schema).
+    """
+
+    __tablename__ = "tenant_api_keys"
+    __table_args__ = (
+        Index("ix_tenant_api_keys_tenant_status", "tenant_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LEN), primary_key=True)
+    # Both cascade on delete: a token is nothing without its tenant or its
+    # service account, and cleanup paths (tenant hard delete, test teardown)
+    # that delete users directly must not be blocked by it.
+    tenant_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(ID_LEN), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), default="Integration token", nullable=False)
+    # Display handle (first characters of the key) — enough to tell tokens
+    # apart in the UI and the audit log, never enough to authenticate.
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    # SHA-256 hex of the full key. Keys carry 256 bits of entropy, so a plain
+    # digest is a sufficient one-way store (no salt needed, unlike passwords).
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)  # active | revoked
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(ID_LEN), nullable=True)
+
+
 class Plan(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "plans"
 

@@ -55,7 +55,9 @@ def list_users(
     user: User = Depends(require_permission("team.manage", "security.manage")),
     db: Session = Depends(get_db),
 ):
-    stmt = select(User).where(User.is_deleted.is_(False))
+    # Service accounts (tenant API tokens) are machine identities: managed
+    # from the tenant's API-token card, never listed or edited as team members.
+    stmt = select(User).where(User.is_deleted.is_(False), User.is_service_account.is_(False))
     if scope == "platform":
         if not is_super_admin(user):
             raise ApiError("Only platform administrators can list platform users.", 403)
@@ -285,6 +287,8 @@ def admin_reset_password(
         assert_tenant_access(user, row.tenant_id)
     elif not is_super_admin(user):
         raise NotFoundError("User")
+    if row.is_service_account:
+        raise ApiError("Service accounts have no password — rotate the tenant API token instead.", 400)
     if row.role.code == SUPER_ADMIN and not is_super_admin(user):
         raise ApiError("Only platform administrators can reset platform accounts.", 403)
     if row.id == user.id:
@@ -406,6 +410,8 @@ def delete_user(
         raise NotFoundError("User")
     if row.id == user.id:
         raise ApiError("You cannot delete your own account.", 400)
+    if row.is_service_account:
+        raise ApiError("This is the tenant's API-token identity — revoke the token instead.", 400)
     if hard:
         guard_hard_delete()
     soft_delete(row, user)

@@ -145,30 +145,48 @@ def _public_ws_base(settings, request: Request) -> str:
 
 
 _VARIABLE_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
-_MAX_VARIABLES = 20
+# Per-call variables kept from the signed webhook. 50 × 200 chars bounds the
+# Redis session and the prompt's "Call context" block at ~10 KB; a dialer
+# that needs more is sending a record, not call context (use the User
+# Details API / stored records). Everything past the cap is reported by
+# name on the call trace (``variables_dropped``), never silently lost.
+_MAX_VARIABLES = 50
 _MAX_VARIABLE_CHARS = 200
 
 _BOT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def _sanitize_variables(raw: object) -> dict[str, str]:
+def sanitize_variables_report(raw: object) -> tuple[dict[str, str], list[str]]:
     """Bound and normalize dialer-supplied per-call variables.
 
     The webhook is HMAC-signed, so the sender is trusted — but values still
     get size/shape limits before they reach Redis, logs, or the LLM context.
+    Returns ``(kept, dropped_names)``: a variable is dropped for an invalid
+    key, a non-scalar value, or because the cap was already reached (the
+    dialer's own order decides which ones make it). Null values are simply
+    absent, not dropped.
     """
     if not isinstance(raw, dict):
-        return {}
+        return {}, []
     out: dict[str, str] = {}
+    dropped: list[str] = []
     for key, value in raw.items():
-        if len(out) >= _MAX_VARIABLES:
-            break
-        key = str(key).strip()
-        if not _VARIABLE_KEY.match(key):
+        name = str(key).strip()
+        if value is None:
             continue
-        if isinstance(value, (str, int, float, bool)):
-            out[key] = str(value)[:_MAX_VARIABLE_CHARS]
-    return out
+        if not _VARIABLE_KEY.match(name) or not isinstance(value, (str, int, float, bool)):
+            dropped.append(name[:40])
+            continue
+        if len(out) >= _MAX_VARIABLES:
+            dropped.append(name)
+            continue
+        out[name] = str(value)[:_MAX_VARIABLE_CHARS]
+    return out, dropped[:_MAX_VARIABLES]
+
+
+def _sanitize_variables(raw: object) -> dict[str, str]:
+    """The kept variables only (see :func:`sanitize_variables_report`)."""
+    return sanitize_variables_report(raw)[0]
 
 
 async def _extract_call_details(
@@ -208,7 +226,14 @@ async def _extract_call_details(
     call_id = (
         body.get("CallSid") or body.get("callId") or body.get("call_id") or None
     )
-    variables = _sanitize_variables(body.get("variables"))
+    variables, dropped = sanitize_variables_report(body.get("variables"))
+    if dropped:
+        # Names only — values never reach the logs.
+        logger.warning(
+            "telephony webhook: %d dialer variable(s) not kept (cap %d, kept %d): %s",
+            len(dropped), _MAX_VARIABLES, len(variables), ", ".join(dropped),
+        )
+    request.state.variables_dropped = dropped
     direction = str(body.get("Direction") or body.get("direction") or "").strip().lower() or None
     if direction not in (None, "inbound", "outbound"):
         direction = "outbound" if "outbound" in direction else "inbound"
@@ -360,6 +385,7 @@ async def handle_inbound_call_webhook(provider: str, request: Request) -> Respon
         caller=caller,
         call_id=call_id,
         variables=variables,
+        variables_dropped=getattr(request.state, "variables_dropped", None) or None,
     )
     logger.info(
         "telephony.inbound provider=%s called=%s routed_via=%s tenant=%s bot=%s "

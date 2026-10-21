@@ -20,6 +20,12 @@ from backend.core.deps import (
 )
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
+from backend.core.api_keys import (
+    latest_api_key,
+    provision_api_key,
+    revoke_api_keys,
+    serialize_api_key,
+)
 from backend.core.pagination import PageParams, page_params
 from backend.core.responses import ok, paginated
 from backend.core.security import (
@@ -150,7 +156,8 @@ def _tenant_context(db: Session, tenants: list[Tenant]) -> list[dict]:
     user_counts = dict(
         db.execute(
             select(User.tenant_id, func.count())
-            .where(User.tenant_id.in_(ids), User.is_deleted.is_(False))
+            .where(User.tenant_id.in_(ids), User.is_deleted.is_(False),
+                   User.is_service_account.is_(False))  # API-token identities are not seats
             .group_by(User.tenant_id)
         ).all()
     )
@@ -390,10 +397,72 @@ def create_tenant(
                    "guardrailProfile": guardrail_profile.code if guardrail_profile else None},
         request=request,
     )
+    # Every tenant gets its integration credential from day one. The
+    # plaintext is in THIS response only — afterwards the Super Admin can
+    # only rotate it (Tenant → API token card).
+    api_key, api_token = provision_api_key(db, tenant, user, request=request)
     db.commit()
     data = _tenant_context(db, [tenant])[0]
     if admin_user_payload:
         data["adminUser"] = admin_user_payload
+    data["apiToken"] = serialize_api_key(api_key, db.get(User, api_key.user_id), token=api_token)
+    return ok(data)
+
+
+# ── Tenant API token (Super Admin) ───────────────────────────────────────────
+
+
+def _tenant_for_token(db: Session, tenant_id: str) -> Tenant:
+    t = db.get(Tenant, tenant_id)
+    if t is None or t.is_deleted:
+        raise NotFoundError("Tenant")
+    return t
+
+
+@router.get("/tenants/{tenant_id}/api-token")
+def get_tenant_api_token(
+    tenant_id: str,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Metadata of the tenant's current token (prefix, status, last use) —
+    never the token itself, which is not stored."""
+    tenant = _tenant_for_token(db, tenant_id)
+    row = latest_api_key(db, tenant.id)
+    account = db.get(User, row.user_id) if row is not None else None
+    return ok(serialize_api_key(row, account))
+
+
+@router.post("/tenants/{tenant_id}/api-token/rotate", status_code=201)
+def rotate_tenant_api_token(
+    tenant_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Generate a new token and revoke the previous one in the same
+    transaction. The plaintext is returned once, here, and nowhere else."""
+    tenant = _tenant_for_token(db, tenant_id)
+    row, token = provision_api_key(db, tenant, user, request=request)
+    db.commit()
+    return ok(serialize_api_key(row, db.get(User, row.user_id), token=token))
+
+
+@router.delete("/tenants/{tenant_id}/api-token")
+def revoke_tenant_api_token(
+    tenant_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Revoke without replacement — integrations stop until a rotation."""
+    tenant = _tenant_for_token(db, tenant_id)
+    revoked = revoke_api_keys(db, tenant, user, request=request)
+    db.commit()
+    row = latest_api_key(db, tenant.id)
+    account = db.get(User, row.user_id) if row is not None else None
+    data = serialize_api_key(row, account)
+    data["revoked"] = len(revoked)
     return ok(data)
 
 
@@ -639,7 +708,9 @@ async def import_tenant_configuration(
             entity_type="tenant", entity_id=tenant_id,
             target_label=package["resources"]["tenant"].get("name"),
             tenant_id=tenant_id,
-            new_value={k: v for k, v in report.items() if k != "warnings"},
+            # The plaintext API token of a newly imported tenant must never
+            # land in the audit log.
+            new_value={k: v for k, v in report.items() if k not in ("warnings", "apiToken")},
             request=request,
         )
     except Exception:

@@ -17,7 +17,7 @@ import type {
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
   RuntimeContextValidateResult, SearchTestResult, SessionUserInfo, SimulateTrace, SipTrunk,
-  StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantProfile,
+  StructuredPromptConfig, Subscription, TeamMember, Tenant, TenantApiToken, TenantProfile,
   TenantSettings, TestScenario, TurnDetectionConfig, TurnDetectionMode,
   TurnDetectionOverrides, UploadConfig, VoiceBot, VoiceCatalog,
   VoiceProfile, VoiceSessionInfo, VoiceSettings, Workflow, EndCallToggleResult,
@@ -55,7 +55,16 @@ export const createTenant = (body: {
   adminEmail: string; adminName?: string;
   status?: string; seats?: number; defaultLanguages?: string[];
   callSummaryEnabled?: boolean; usePreviousCallSummary?: boolean;
-}) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string } }>("/tenants", body);
+}) => http.post<Tenant & { adminUser?: { email: string; temporaryPassword?: string }; apiToken?: TenantApiToken }>("/tenants", body);
+/* Tenant API token (Super Admin). Only the SHA-256 is stored server-side, so
+   `getTenantApiToken` returns metadata (prefix/status/last use) and the
+   plaintext is only ever in the rotate response — show it once, then it is gone. */
+export const getTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.get(`/tenants/${tenantId}/api-token`);
+export const rotateTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.post(`/tenants/${tenantId}/api-token/rotate`);
+export const revokeTenantApiToken = (tenantId: string): Promise<TenantApiToken> =>
+  http.delete(`/tenants/${tenantId}/api-token`);
 export const updateTenant = (id: string, body: Partial<Pick<Tenant, "name" | "code" | "status" | "health" | "industry" | "region" | "adminEmail" | "defaultLanguages" | "callSummaryEnabled" | "usePreviousCallSummary"> & { planCode: string; aiProfileCode: string; guardrailProfileId: string }>) =>
   http.patch<Tenant>(`/tenants/${id}`, body);
 export const getTenantEffectiveGuardrails = (id: string): Promise<EffectiveGuardrails> =>

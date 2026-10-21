@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  createRelease, getOnboardingOptions, getTenant, getTenantAnalytics,
-  getTenantEffectiveGuardrails, listAudit, listBots,
+  createRelease, getOnboardingOptions, getTenant, getTenantAnalytics, getTenantApiToken,
+  getTenantEffectiveGuardrails, listAudit, listBots, revokeTenantApiToken, rotateTenantApiToken,
   listGuardrailProfiles, listKnowledge, listReleases, listSubscriptions,
   listTeam, resetUserPassword, updateReleaseStage, updateTenant,
 } from "@/services/api";
@@ -19,7 +19,7 @@ import { passwordPolicyError } from "@/services/password";
 import { KnowledgeDetailDrawer } from "@/components/KnowledgeDetailDrawer";
 import { fmtNum, ChartCard, LineChart, Legend } from "@/components/charts";
 import { Icon } from "@/components/Icon";
-import type { Release, Tenant, VoiceBot } from "@/types/domain";
+import type { Release, Tenant, TenantApiToken, VoiceBot } from "@/types/domain";
 import { useApp } from "@/state/AppContext";
 
 const tabs = [
@@ -430,7 +430,145 @@ function OverviewTab({ tenant: t }: { tenant: Tenant }) {
           </div>
         </div>
       </div>
+      <div className="mt-16">
+        <ApiTokenCard tenantId={t.id} />
+      </div>
     </>
+  );
+}
+
+/* The tenant's integration credential. The server stores only a hash, so the
+   card shows metadata (prefix, status, last use) and the full token appears
+   exactly once — in the reveal modal right after Generate/Rotate. */
+function ApiTokenCard({ tenantId }: { tenantId: string }) {
+  const { toast } = useApp();
+  const q = useAsync(() => getTenantApiToken(tenantId), [tenantId]);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [revealed, setRevealed] = useState<TenantApiToken | null>(null);
+  const [copied, setCopied] = useState(false);
+  const info = q.data;
+  const active = Boolean(info?.configured);
+
+  const rotate = async () => {
+    setBusy(true);
+    try {
+      const next = await rotateTenantApiToken(tenantId);
+      setConfirmRotate(false);
+      setCopied(false);
+      setRevealed(next);
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not rotate the token.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async () => {
+    setBusy(true);
+    try {
+      await revokeTenantApiToken(tenantId);
+      setConfirmRevoke(false);
+      toast("Tenant API token revoked — integrations using it will now get 401.");
+      q.reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not revoke the token.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = async () => {
+    if (!revealed?.token) return;
+    try {
+      await navigator.clipboard.writeText(revealed.token);
+      setCopied(true);
+      toast("Token copied to the clipboard.");
+    } catch {
+      toast("Clipboard unavailable — select the token and copy it manually.", "error");
+    }
+  };
+  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-title">Tenant API token</span>
+        {info && <StatusChip status={active ? "good" : "neutral"} label={active ? "Active" : info.status === "revoked" ? "Revoked" : "Not generated"} />}
+      </div>
+      <div className="col" style={{ padding: 18, gap: 12 }}>
+        {q.loading ? <CardSkeleton rows={3} /> : q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : (
+          <>
+            <span className="t-sub">
+              Read-only credential for the tenant's integrations (conversation list and details, analytics).
+              Send it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>X-API-Key</code>. Only its hash is stored:
+              the full token is shown once, when generated — rotate to get a new one.
+            </span>
+            {[
+              ["Token", info?.prefix ? <code key="p">{info.prefix}…</code> : "—"],
+              ["Created", fmt(info?.createdAt)],
+              ["Last used", fmt(info?.lastUsedAt)],
+              ["Acts as", info?.serviceAccountEmail ? <code key="s">{info.serviceAccountEmail}</code> : "—"],
+              ["Scope", `${info?.role ?? "tenant_user"} · read-only`],
+            ].map(([k, v], i) => (
+              <div className="row-between" key={i} style={{ borderBottom: i < 4 ? "1px solid var(--hairline)" : "none", paddingBottom: i < 4 ? 10 : 0 }}>
+                <span className="t-sub">{k}</span>
+                <span className="t-body t-strong t-num">{v}</span>
+              </div>
+            ))}
+            <div className="row gap-8" style={{ justifyContent: "flex-end" }}>
+              {active && <Button icon="x" onClick={() => setConfirmRevoke(true)}>Revoke</Button>}
+              <Button variant="primary" icon="refresh" onClick={() => setConfirmRotate(true)}>
+                {active ? "Rotate token" : "Generate token"}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <ConfirmModal
+        open={confirmRotate}
+        onClose={() => setConfirmRotate(false)}
+        onConfirm={() => void rotate()}
+        title={active ? "Rotate the tenant API token?" : "Generate a tenant API token?"}
+        body={active
+          ? "A new token is generated and the current one stops working immediately. Integrations must be updated with the new token."
+          : "A new read-only token is generated for this tenant. It is shown once — copy it before closing."}
+        confirmLabel={active ? "Rotate" : "Generate"}
+        danger={active}
+        busy={busy}
+      />
+      <ConfirmModal
+        open={confirmRevoke}
+        onClose={() => setConfirmRevoke(false)}
+        onConfirm={() => void revoke()}
+        title="Revoke the tenant API token?"
+        body="Integrations using this token will be refused (401) until a new token is generated."
+        confirmLabel="Revoke"
+        danger
+        busy={busy}
+      />
+      <Modal
+        open={revealed !== null}
+        onClose={() => setRevealed(null)}
+        title="Copy the new API token"
+        sub="This is the only time the full token is shown. EchoSphere stores only its hash."
+        footer={<Button variant="primary" onClick={() => setRevealed(null)}>{copied ? "Done" : "I have copied it"}</Button>}
+      >
+        <div className="col gap-12">
+          <Callout tone="warning" title="Shown once">
+            Store it in your integration's secret store now. If it is lost, rotate the token to get a new one.
+          </Callout>
+          <div className="row gap-8">
+            <input className="input mono" readOnly value={revealed?.token ?? ""} aria-label="Tenant API token" onFocus={(e) => e.currentTarget.select()} style={{ flex: 1 }} />
+            <Button icon="copy" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</Button>
+          </div>
+          <span className="t-micro">
+            Example: <code>curl -H "Authorization: Bearer {revealed?.prefix ?? "esk_"}…" {window.location.origin}/api/v1/conversations?pageSize=20</code>
+          </span>
+        </div>
+      </Modal>
+    </div>
   );
 }
 

@@ -188,12 +188,22 @@ workflow `handover` node — whose configured `queue` becomes `transfer_queue`)
 emits the `transfer` event *after* the bot has finished speaking its
 announcement, so the caller hears it before Vaani re-routes the call.
 
-**Call metadata.** The signed Vaani webhook may include `callId` (logged and
-attached to the session for trace correlation) and a `variables` object of
-per-call dialer values (max 20 keys, `[A-Za-z0-9_.-]{1,40}` names, values
-capped at 200 chars). Variables enter the LLM system prompt as reference data
+**Call metadata.** The signed Vaani webhook may include `callId` (attached to
+the session, written on the `call_started` event and stored on the
+conversation row as `callId`, so `GET /conversations/{callId}` and
+`?callId=` find the call) and a `variables` object of per-call dialer values
+(max 50 keys, `[A-Za-z0-9_.-]{1,40}` names, values capped at 200 chars; the
+names of entries that could not be kept — invalid key, non-scalar value, or
+past the cap — are logged and recorded on the `call_started` event as
+`variables_dropped`, never silently lost). Variables enter the LLM system
+prompt as reference data
 ("Call context") — they are never treated as instructions and never override
 tenant/bot resolution, which always comes from the dialed number mapping.
+For a bot with a runtime-context schema, a variable whose name matches a
+schema field flagged `sessionOverride` (spelling-insensitive: `customerName`
+fills `customer_name`) replaces that field's User Details API / test value for
+the call; fields the dialer omits or sends blank still come from the API, and
+the API is skipped entirely when the dialer covered every declared field.
 
 ## FreeSWITCH
 

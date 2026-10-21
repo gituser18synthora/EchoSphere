@@ -24,7 +24,13 @@ testing](BACKEND_BOT_STUDIO.md), [Knowledge and RAG](BACKEND_KNOWLEDGE.md), and
 Runtime context is tenant-defined and domain-independent. A bot owns at most
 one `RuntimeContextSchema`; optional `RuntimeContextRecord` rows provide stored
 per-customer values. Live resolution precedence is `system < session <
-api|test|record < workflow`.
+api|test|record < workflow`, with one per-field exception: a field flagged
+`sessionOverride` takes a non-blank per-call value from the telephony
+webhook's `variables` (matched spelling-insensitively, `customerName` →
+`customer_name`) over the api/test/record payload; the payload still fills
+that field when the dialer omitted it or sent a blank. When every declared
+field is a `sessionOverride` the dialer supplied, the User Details API is not
+called for that call (`runtime_context_loaded` reports `api_skipped: true`).
 
 ### Field-definition contract
 
@@ -39,6 +45,7 @@ the runtime:
 | `required` | boolean | no | Falsey when omitted. Missing required values produce a validation error. |
 | `sensitive` | boolean | no | Falsey when omitted; sensitive values are masked before entering prompt/traces. |
 | `maskKeep` | integer | no | Masking metadata consumed when building context. |
+| `sessionOverride` | boolean | no | Falsey when omitted. When true, a non-blank per-call dialer variable for this field wins over the api/test/record value (scalar types only; the text is parsed strictly as the declared type, anything else counts as not supplied). |
 | `description` | string | no | Stored metadata/prompt context. |
 | `example` | any JSON value | no | Stored metadata. |
 

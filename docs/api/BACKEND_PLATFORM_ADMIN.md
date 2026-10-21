@@ -142,6 +142,10 @@ Response `200`:
 
 Errors: `401` `"Invalid email or password."`; `403` `"This account has been deactivated."` / `"Your organization is no longer active."` / `"Your organization is suspended. Contact support."`; `422` malformed body.
 
+### Tenant API tokens (machine access without a login)
+
+Besides login JWTs, every tenant has a long-lived **API token** (`esk_…`) for integrations. It is accepted wherever "JWT bearer" is stated, as `Authorization: Bearer esk_…` or `X-API-Key: esk_…`, and resolves to the tenant's **service account** — a hidden `users` row (`is_service_account`, Tenant User role) that cannot sign in. Consequences: tenant scoping, permissions and audit attribution are the ordinary user paths; the token is **read-only** (`GET`/`HEAD` only, `403 "API tokens are read-only."` otherwise); financial fields are `null` (no `costs.view`); a suspended tenant gets `403`; an unknown, revoked or rotated token gets `401 "Invalid API token."` — the same message for every failure, so existence is never confirmed. Only the token's SHA-256 is stored; the plaintext is returned once (tenant creation, rotation) and is never logged. Management endpoints are under *Tenants → Tenant API token* below.
+
 ### Current user
 `GET /api/v1/auth/me`
 
@@ -387,7 +391,7 @@ Creates tenant + subscription + settings + (if the email is new) a tenant-admin 
 | callSummaryEnabled | bool | no (default `false`) | Post-call intelligence opt-in |
 | usePreviousCallSummary | bool | no (default `false`) | |
 
-Response `201`: tenant object, plus `"adminUser": { "email": "…", "temporaryPassword": "<GENERATED>" }` when a new admin user was created (temporaryPassword only when no `adminPassword` was supplied). Subscription is created `trial` (mrr 0) when `status=trial`, else `active` with the plan's monthly price.
+Response `201`: tenant object, plus `"adminUser": { "email": "…", "temporaryPassword": "<GENERATED>" }` when a new admin user was created (temporaryPassword only when no `adminPassword` was supplied), plus `"apiToken"` — the tenant's freshly provisioned API token (see below) **with its plaintext `token`, shown in this response only**. Subscription is created `trial` (mrr 0) when `status=trial`, else `active` with the plan's monthly price.
 
 Errors: `409` duplicate domain/code; `422` unknown plan/master refs/languages; `500` if the `tenant_admin` role seed is missing.
 
@@ -395,6 +399,23 @@ Errors: `409` duplicate domain/code; `422` unknown plan/master refs/languages; `
 `GET /api/v1/tenants/{tenant_id}`
 
 **Auth: JWT bearer.** Role: `tenant_admin`/`super_admin`; tenant admins can only fetch their own tenant (others → `404`). Response `200`: tenant object. `404` unknown/deleted.
+
+### Tenant API token
+`GET /api/v1/tenants/{tenant_id}/api-token` · `POST /api/v1/tenants/{tenant_id}/api-token/rotate` → `201` · `DELETE /api/v1/tenants/{tenant_id}/api-token`
+
+**Auth: JWT bearer. Super Admin only** (tenant admins and API tokens → `403`). The Super Admin tenant page renders this as the *Tenant API token* card.
+
+- `GET` returns metadata of the latest token — never the token: `{ "configured": true, "id": "tak_…", "name": "Integration token", "prefix": "esk_AbCdEfGh", "status": "active" | "revoked", "createdAt", "lastUsedAt", "revokedAt", "serviceAccountEmail": "api-tn_…@service.echosphere.internal", "role": "tenant_user", "readOnly": true, "token": null }`; `{ "configured": false, … }` when none was ever generated.
+- `POST …/rotate` generates a new token and revokes the previous one in the same transaction (never two valid tokens, never none). Response: the same object **with `"token": "esk_…"` — the only time the plaintext exists**. Creates the service account on first use. Audit: `Created tenant API token` / `Rotated tenant API token` with prefixes only.
+- `DELETE` revokes without replacement (integrations get `401` until a rotation); response adds `"revoked": <count>`.
+
+Why reveal-once: the server keeps only a SHA-256 digest, so "view the token later" is impossible by design — the safest practical workflow is *show once at generation, rotate to replace*. The service account is excluded from team listings and seat counts; `POST /users/{id}/reset-password` and `DELETE /users/{id}` refuse it (`400`) — use the token endpoints instead. To let a token see cost fields, a Super Admin may move its service account to the `tenant_admin` role via `PATCH /users/{id}`; it stays read-only regardless.
+
+```bash
+curl -s -H "Authorization: Bearer <SUPER_ADMIN_JWT>" "$BASE/tenants/tn_b0e1194a1e1d/api-token"
+curl -s -X POST -H "Authorization: Bearer <SUPER_ADMIN_JWT>" "$BASE/tenants/tn_b0e1194a1e1d/api-token/rotate"
+curl -s -X DELETE -H "Authorization: Bearer <SUPER_ADMIN_JWT>" "$BASE/tenants/tn_b0e1194a1e1d/api-token"
+```
 
 ### Update tenant
 `PATCH /api/v1/tenants/{tenant_id}`

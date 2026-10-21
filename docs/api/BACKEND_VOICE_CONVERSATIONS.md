@@ -702,11 +702,32 @@ The client connects the media WebSocket to the voice worker at `ws://<host>:<wor
 
 Conversation **metadata** lives in MySQL (`conversation_sessions`); **transcripts** live in MongoDB (`conversation_transcripts`, one document per session — turn shapes vary and can grow large). Two writers exist: this API (documents keyed by the conversation row id, turns already in the UI shape) and the voice runtime (documents keyed by a `vs_*` session id, runtime turn shape, stamped with `control_plane_id`). Reads resolve either generation and normalize turns to the UI shape.
 
+### Authentication for integrations: tenant API token
+
+Every read endpoint in this section accepts either a login JWT **or the tenant's API token** — a long-lived, read-only credential provisioned for every tenant (see *Tenant API token* in [BACKEND_PLATFORM_ADMIN.md](BACKEND_PLATFORM_ADMIN.md)). Send it as `Authorization: Bearer esk_…` or as `X-API-Key: esk_…`. The token acts as the tenant's service account (Tenant User role): it is always tenant-scoped (`tenantId` is neither needed nor accepted for another tenant), it can only call `GET` endpoints (`403` otherwise), and financial fields come back `null` (no `costs.view`). A revoked/rotated token gets `401 Invalid API token.`
+
+```bash
+TOKEN="esk_…"                                   # from the Super Admin tenant page (shown once)
+BASE="https://echosphere.edas.tech/api/v1"
+
+# newest 20 calls of the tenant
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/conversations?pageSize=20"
+
+# one call by the dialer's own call id (exact) — or by conversation id
+curl -s -H "X-API-Key: $TOKEN" "$BASE/conversations?callId=652db2e9-a64b-4688-aff2-933a70e59c84"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/conversations/652db2e9-a64b-4688-aff2-933a70e59c84"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/conversations/cv_2151cbfeadd1"
+
+# the Conversations page filters: bot, outcome tabs, search, date range, sort
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/conversations?botId=bot_44a50e8c4146&contained=false&dateFrom=2026-10-20T18:30:00Z&dateTo=2026-10-21T18:29:59Z&sortBy=durationSec&sortDir=desc&page=1&pageSize=50"
+```
+
 ### List conversations
 
 `GET /api/v1/conversations`
 
-Paginated tenant conversation list (metadata only — no transcripts, no cost breakdown). Auth: JWT bearer. Permission: any authenticated user; tenant-scoped via `resolve_tenant_id`.
+Paginated tenant conversation list (metadata only — no transcripts, no cost breakdown). Auth: JWT bearer **or tenant API token**. Permission: any authenticated user; tenant-scoped via `resolve_tenant_id`. These are exactly the filters the Conversations page uses (tabs → `contained`/`flagged`/`sentiment`, bot picker → `botId`, search box → `search`, date range → `dateFrom`/`dateTo`).
 
 Query params (all optional unless noted):
 
@@ -720,9 +741,11 @@ Query params (all optional unless noted):
 | `flagged` | boolean | — | Filter on review flag. |
 | `page` | int ≥1 | `1` | Page number. |
 | `pageSize` | int 1–200 | `50` | Page size. |
-| `search` | string ≤200 | — | `LIKE` match on masked caller, escalation reason, or conversation id. |
-| `sortBy` | string ≤50 | — | **Accepted but ignored** — the list is always sorted by `startedAt` descending. |
-| `sortDir` | string | `desc` | `asc` \| `desc` — **accepted but ignored** (see above). |
+| `callId` | string ≤64 | — | **Exact** match on the telephony call id (webhook `callId`/`CallSid`). A dialer may retry under the same id, so this can return more than one row (newest first). |
+| `dateFrom` / `dateTo` | string ≤40 | — | Inclusive `startedAt` range: `YYYY-MM-DD` or an ISO-8601 instant (send instants for the caller's own day boundaries). |
+| `search` | string ≤200 | — | `LIKE` match on masked caller, escalation reason, conversation id **or telephony call id**. |
+| `sortBy` | string ≤50 | `startedAt` | One of `startedAt`, `durationSec`, `costUsd`, `sentiment`, `csat`, `qaScore`, `createdAt`; unknown values fall back to `startedAt`. Ties break on id so pages are stable. |
+| `sortDir` | string | `desc` | `asc` \| `desc`. |
 
 Response `200` (paginated envelope):
 
@@ -731,7 +754,8 @@ Response `200` (paginated envelope):
   "success": true,
   "data": [
     {
-      "id": "<CONVERSATION_ID>", "botId": "<BOT_ID>", "bot": "eDAS Collection Bot",
+      "id": "<CONVERSATION_ID>", "callId": "652db2e9-a64b-4688-aff2-933a70e59c84",
+      "botId": "<BOT_ID>", "bot": "eDAS Collection Bot",
       "channel": "voice", "caller": "+91XXXXXXXXXX", "startedAt": "2026-08-06T09:15:00Z",
       "durationSec": 184, "sentiment": "neutral", "intents": ["payment_promise"],
       "contained": true, "escalationReason": null, "csat": null,
@@ -744,7 +768,7 @@ Response `200` (paginated envelope):
 }
 ```
 
-On the list, `transcript` is always `[]` and `cost`, `recording`, `summary` are always `null` (populated on the detail view only). `costUsd` is the cached authoritative total in USD. `bot` falls back to `"—"` when the bot row is gone.
+On the list, `transcript` is always `[]` and `cost`, `recording`, `summary` are always `null` (populated on the detail view only). `costUsd` is the cached authoritative total in USD (`null` for viewers without `costs.view`, including API tokens). `bot` falls back to `"—"` when the bot row is gone. `callId` is the dialer's call id as received on the telephony webhook — `null` for browser sessions and for calls recorded before it was stored (backfill: `backend/scripts/backfill_conversation_call_ids.py`).
 
 ### Create a conversation
 
@@ -798,6 +822,8 @@ Response `201`: the conversation object (detail shape, `transcript` echoed back,
 ### Get a conversation (detail + transcript + AI summary)
 
 `GET /api/v1/conversations/{conversation_id}`
+
+The path segment is **either** the conversation id (`cv_…`) **or the telephony call id** the dialer sent on the webhook (`callId`/`CallSid`): the id is tried first, then the call id within the caller's tenant (newest match when a dialer retried under the same id). Both misses are `404`. Super admins looking up by call id must pass `?tenantId=…` (a tenant to search in); tenant roles and API tokens are scoped automatically. Auth: JWT bearer **or tenant API token**.
 
 Full detail: metadata, normalized transcript, recording descriptor, auditable cost breakdown and post-call AI summary. Auth: JWT bearer. Permission: any authenticated user; foreign tenant → `404`.
 

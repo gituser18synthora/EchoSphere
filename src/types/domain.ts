@@ -466,6 +466,26 @@ export interface Kpi {
 export type TenantStatus = "active" | "trial" | "suspended" | "provisioning";
 export type PlanTier = "starter" | "growth" | "enterprise";
 
+/** A tenant's long-lived, read-only integration credential. The plaintext
+    `token` is present only in the response that generated it (create tenant,
+    rotate); afterwards only the display `prefix` is known. */
+export interface TenantApiToken {
+  configured: boolean;
+  id?: string | null;
+  name?: string | null;
+  prefix?: string | null;
+  status?: "active" | "revoked" | null;
+  createdAt?: string | null;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+  serviceAccountEmail?: string | null;
+  role?: string | null;
+  readOnly?: boolean;
+  token?: string | null;
+  /** Revoke response only: how many tokens were revoked. */
+  revoked?: number;
+}
+
 export interface Tenant {
   id: string;
   name: string;
@@ -1012,6 +1032,12 @@ export interface RuntimeContextField {
   sensitive?: boolean;
   /** Trailing characters left visible when a sensitive value is masked. */
   maskKeep?: number;
+  /**
+   * The dialer may supply this field per call (telephony webhook `variables`).
+   * A non-blank value then wins over the API / test payload for this field;
+   * when every declared field is covered this way the User Details API is skipped.
+   */
+  sessionOverride?: boolean;
   description?: string;
   example?: string;
 }
@@ -1734,6 +1760,9 @@ export type SentimentLabel = "positive" | "neutral" | "negative";
 
 export interface Conversation {
   id: string;
+  /** The telephony provider's own call id (webhook callId / CallSid); null for
+      browser sessions and for calls recorded before it was stored. */
+  callId?: string | null;
   botId: string;
   bot: string;
   channel: ChannelType;
