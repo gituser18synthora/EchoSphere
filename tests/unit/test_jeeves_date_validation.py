@@ -1,5 +1,5 @@
 """Jeeves Airtel uninstallation bot: visit day/time validation (workflow
-stages 2-7, jeeves/setup/01_structured_summary.py → v20).
+stages 2-8, jeeves/setup/01_structured_summary.py → v21).
 
 The four date-capturing asks declare ``validation: future_datetime`` in
 Asia/Kolkata. A past or impossible day, or a past/ambiguous time for today,
@@ -32,7 +32,8 @@ V13 = SETUP["upgraded_definition"](13, stage=1)
 V17 = SETUP["upgraded_definition"](17, stage=4)   # markers + validation + time capture + wording
 V18 = SETUP["upgraded_definition"](18, stage=5)   # + normalized date/time companions
 V19 = SETUP["upgraded_definition"](19, stage=6)   # + parser-chosen day/time capture
-V14 = SETUP["upgraded_definition"](20)            # + resolved-date confirmation, retry wording (target)
+V20 = SETUP["upgraded_definition"](20, stage=7)   # + resolved-date confirmation, retry wording
+V14 = SETUP["upgraded_definition"](21)            # + validated, normalized callback day/time (target)
 RETRY = SETUP["RETRY_PROMPT"]
 # The cases below assert the pickup day/time AS SPOKEN (stage ≤ 4 fields);
 # the normalized fields the bot now reports are covered in TestNormalizedSummary.
@@ -592,7 +593,8 @@ class TestNormalizedSummary:
             if want in OLD_RETRY and got in RETRY.values():
                 continue
             assert got == want, (name, want, got)
-        companions = set(SETUP["NORMALIZED_SLOTS"].values()) | set(SETUP["SPOKEN_SLOT_NAMES"])
+        companions = (set(SETUP["NORMALIZED_SLOTS"].values()) | set(SETUP["SPOKEN_SLOT_NAMES"])
+                      | set(SETUP["CALLBACK_NORMALIZED_SLOTS"].values()))
         fold = SETUP["_vd"].fold_text
         assert {k: v for k, v in r6["slots"].items() if k not in companions} == {k: fold(v) if isinstance(v, str) else v for k, v in r4["slots"].items()}, name
         # the spoken fields are identical too (nukta folded); only the normalized ones differ
@@ -646,12 +648,12 @@ class TestNormalizedSummary:
 
 
 class TestDefinition:
-    def test_validation_declared_on_the_four_date_asks_only(self):
+    def test_validation_declared_on_the_date_asks_and_the_callback_ask(self):
         from backend.routers.workflows import validate_definition
 
         declared = {n["id"] for n in V14["nodes"]
                     if isinstance((n.get("config") or {}).get("validation"), dict)}
-        assert declared == set(SETUP["VALIDATED_ASKS"])
+        assert declared == set(SETUP["VALIDATED_ASKS"]) | {SETUP["CALLBACK_ASK"]}
         for n in V14["nodes"]:
             cfg = (n.get("config") or {}).get("validation")
             if cfg:
@@ -659,9 +661,25 @@ class TestDefinition:
                 assert set(cfg["replyByLanguage"]) == {"day_unclear", "day_missing", "day_past",
                                                        "day_invalid", "time_past", "time_ambiguous",
                                                        "time_unclear", "time_invalid"}
+            if n["id"] in SETUP["VALIDATED_ASKS"]:
                 assert "10 अक्टूबर" not in n["config"]["unmatchedReplyByLanguage"]["hi"]
                 assert "10 October" not in n["config"]["unmatchedReplyByLanguage"]["en"]
+            if n["id"] == SETUP["CALLBACK_ASK"]:
+                # Stage 8: the same check as the visit asks, its own companions,
+                # no readback companions (the end node does not read it back).
+                assert (cfg["dayVariables"], cfg["timeVariables"]) == (["callback_date"], ["callback_time"])
+                assert cfg["normalizedDayVariable"] == "callback_date_iso"
+                assert cfg["normalizedTimeVariable"] == "callback_time_24h"
+                assert "spokenVariables" not in cfg
+                assert "call back" in cfg["replyByLanguage"]["day_missing"]["hi"]
+                others = {k: v for k, v in cfg["replyByLanguage"].items() if k != "day_missing"}
+                assert others == {k: v for k, v in SETUP["VALIDATION_REPLIES"].items() if k != "day_missing"}
+                assert n["config"]["variable"] == "callback_preference"   # the words stay the ask's own slot
         assert validate_definition(V14["nodes"], V14["edges"]) == ([], [])
+        # Stage 8 touches only the callback ask: every other node is stage 7.
+        assert SETUP["has_callback_normalization"](V14["nodes"]) and not SETUP["has_callback_normalization"](V20["nodes"])
+        assert [n for n in V14["nodes"] if n["id"] != SETUP["CALLBACK_ASK"]] == \
+            [n for n in V20["nodes"] if n["id"] != SETUP["CALLBACK_ASK"]] and V14["edges"] == V20["edges"]
         # Beyond stage 1, the upgrade only touches the keys the normaliser
         # restores; everything else must equal the stage-1 definition.
         norm_nodes, norm_edges = SETUP["normalise_to_stage1"](V14["nodes"], V14["edges"])
@@ -699,7 +717,130 @@ class TestDefinition:
             if spec["name"] == "appointment_time":
                 assert (spec["type"], spec["source"], spec["label"], spec["timezone"]) == \
                     ("time", "visit_time_24h", "Pickup time", "Asia/Kolkata")
+            if spec["name"] == "callback_date":
+                assert (spec["type"], spec["source"], spec["label"], spec["requires"]) == \
+                    ("date", "callback_date_iso", "Callback day", {"call_result": ["callback_requested"]})
+            if spec["name"] == "callback_time":
+                assert (spec["type"], spec["source"], spec["label"], spec["timezone"]) == \
+                    ("time", "callback_time_24h", "Callback time", "Asia/Kolkata")
+            if spec["name"] == "callback_preference":
+                assert (spec["type"], spec["source"]) == ("text", "callback_preference")
+        # Stage 7 fields still read the spoken callback slots; only stage 8 switches them.
+        stage7 = {f["name"]: f for f in SETUP["summary_fields"](7)}
+        assert (stage7["callback_date"]["type"], stage7["callback_date"]["source"]) == ("text", "callback_date")
+        assert (stage7["appointment_date"]["type"], stage7["appointment_date"]["source"]) == ("date", "visit_date_iso")
         assert [f["name"] for f in SETUP["SUMMARY_FIELDS"]] == [f["name"] for f in SETUP["summary_fields"](1)]
         assert [f["label"] for f in SETUP["SUMMARY_FIELDS"]] == [f["label"] for f in SETUP["summary_fields"](1)]
         yes_edges = [e for e in V14["edges"] if e["from"] in SETUP["CONFIRM_NODES"] and e["to"] == "n_mark_booked"]
         assert len(yes_edges) == 2 and all("ठीक रहेगा" in e["label"] and "chalega" in e["label"] for e in yes_edges)
+
+
+# ── stage 8: validated, normalized callback day/time ─────────────────────────
+
+LIVE_CALLBACK_CLOCK = datetime(2026, 10, 21, 10, 22, tzinfo=IST)   # cv_4e3a74e34ead (Wed 21 Oct)
+BUSY = "नहीं, अभी मैं बिज़ी हूँ।"
+CB_END, CB_END_EN = "call back करेंगे", "call you back"
+# name → (turns, language, reply fragments after the busy turn, callback date, callback time, as spoken)
+CALLBACK_CASES = {
+    "live cv_4e3a74e34ead: परसों सुबह दस बजे": (
+        [OPEN, BUSY, "परसों कॉल करना सुबह दस बजे।"], "hi-IN", [CB_END],
+        "2026-10-23", "10:00", "परसों कॉल करना सुबह दस बजे।"),
+    "live cv_2d20b3438ba2: कल सुबह दस बजे": (
+        [OPEN, BUSY, "आप मुझे कल सुबह दस बजे कर दो फोन।"], "hi-IN", [CB_END],
+        "2026-10-22", "10:00", "आप मुझे कल सुबह दस बजे कर दो फोन।"),
+    "live cv_2d8a33645637: bare hour is asked morning or evening, then composed": (
+        [OPEN, BUSY, "परसों कर देंगे 10 बजे।", "सुबह"], "hi-IN", [R["time_ambiguous"]["hi"], CB_END],
+        "2026-10-23", "10:00", "सुबह"),
+    "live cv_39b4dbcde735: day only": (
+        [OPEN, BUSY, "कल कर लूं।"], "hi-IN", [CB_END], "2026-10-22", None, "कल कर लूं।"),
+    "window only": (
+        [OPEN, BUSY, "कल शाम को call करना"], "hi-IN", [CB_END], "2026-10-22", "evening", "कल शाम को call करना"),
+    "time without a day": (
+        [OPEN, BUSY, "शाम 5 बजे call करना"], "hi-IN", [CB_END], None, "17:00", "शाम 5 बजे call करना"),
+    "time without a day, bare hour clarified": (
+        [OPEN, BUSY, "5 बजे call करना", "शाम"], "hi-IN", [R["time_ambiguous"]["hi"], CB_END], None, "17:00", "शाम"),
+    "past date refused, the valid time is kept": (
+        [OPEN, BUSY, "20 अक्टूबर को शाम 5 बजे कर लेना।", "कल"], "hi-IN", [R["day_past"]["hi"], CB_END],
+        "2026-10-22", "17:00", "कल"),
+    "english": (
+        ["yes speaking", "no I'm busy", "call me tomorrow at 4 PM"], "en-IN", [CB_END_EN],
+        "2026-10-22", "16:00", "call me tomorrow at 4 PM"),
+    "no day or time: nothing is invented": (
+        [OPEN, BUSY, "बाद में call करना"], "hi-IN", [CB_END], None, None, "बाद में call करना"),
+    "live cv_78e70dccece9: nothing usable": (
+        [OPEN, BUSY, "आप मुझे।"], "hi-IN", [CB_END], None, None, "आप मुझे।"),
+    "three bare hours take the fallback: callback noted, no time": (
+        [OPEN, BUSY, "कल 4 बजे", "5 बजे", "6 बजे"], "hi-IN",
+        [R["time_ambiguous"]["hi"], R["time_ambiguous"]["hi"], CB_END], None, None, "6 बजे"),
+}
+
+
+class TestNormalizedCallback:
+    """Stage 8: callback_date / callback_time are the parser's resolved values
+    from the callback ask (ISO date, 24-hour clock or a window word), derived
+    through the bot's real summaryFields from the final slots; the free-text
+    "as spoken" field keeps the caller's words — after a clarification turn,
+    the clarification (the engine's last-answer-wins rule for free text)."""
+
+    @pytest.mark.parametrize("name", list(CALLBACK_CASES))
+    async def test_scenario(self, engine, monkeypatch, name):
+        turns, lang, expected_replies, date_expected, time_expected, spoken = CALLBACK_CASES[name]
+        _clock(monkeypatch, LIVE_CALLBACK_CLOCK)
+        replies, result = await _run(engine, monkeypatch, V14, turns, f"cb-{name}", lang=lang)
+        assert len(replies) == len(turns) and result["done"], (name, replies)
+        for want, got in zip(expected_replies, replies[2:]):
+            assert want in got, (name, want, got)
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        assert (fields["call_result"], fields["callback_date"], fields["callback_time"],
+                fields["callback_preference"]) == \
+            ("callback_requested", date_expected, time_expected, spoken), (name, fields, result["slots"])
+        assert fields["appointment_date"] is None and fields["appointment_time"] is None
+        assert set(fields) == {f["name"] for f in SETUP["SUMMARY_FIELDS"]}
+
+    async def test_live_call_is_shown_as_a_calendar_date_and_an_ist_clock_time(self, engine, monkeypatch):
+        _clock(monkeypatch, LIVE_CALLBACK_CLOCK)
+        turns = CALLBACK_CASES["live cv_4e3a74e34ead: परसों सुबह दस बजे"][0]
+        _, result = await _run(engine, monkeypatch, V14, turns, "cb-display")
+        fields = derive_structured_fields(NORMALIZED_POLICY, _snapshot(result["slots"]))
+        assert display_structured_fields(SETUP["SUMMARY_FIELDS"], fields) == \
+            {"callback_date": "23 Oct 2026", "callback_time": "10:00 AM IST"}
+        row = SimpleNamespace(status="completed", call_outcome=None, summary="", memory={"structured_fields": fields},
+                              next_best_action=None, next_action=None, follow_up_required=False,
+                              follow_up_at=None, confidence=None, generated_at=None, error=None)
+        payload = serialize_conversation_memory(row, SETUP["SUMMARY_FIELDS"])
+        assert payload["structuredFields"]["callback_date"] == "2026-10-23"
+        assert payload["structuredFields"]["callback_time"] == "10:00"
+        assert payload["structuredFieldLabels"]["callback_date"] == "Callback day"
+        assert payload["structuredFieldLabels"]["callback_time"] == "Callback time"
+        assert payload["structuredFieldDisplay"] == {"callback_date": "23 Oct 2026", "callback_time": "10:00 AM IST"}
+
+    async def test_stage_7_on_the_same_call_reports_the_words(self, engine, monkeypatch):
+        """What DEMO LIVE showed on cv_4e3a74e34ead: the stage-7 workflow has
+        no validation on the callback ask, so no companion is written and the
+        stage-7 fields are the caller's words. The stage-8 fields over those
+        slots are "not determined", never a guess."""
+        _clock(monkeypatch, LIVE_CALLBACK_CLOCK)
+        turns = CALLBACK_CASES["live cv_4e3a74e34ead: परसों सुबह दस बजे"][0]
+        replies7, r7 = await _run(engine, monkeypatch, V20, turns, "cb-stage7")
+        replies8, r8 = await _run(engine, monkeypatch, V14, turns, "cb-stage8")
+        assert replies8 == replies7   # a valid answer: nothing spoken changes
+        assert "callback_date_iso" not in r7["slots"] and "callback_time_24h" not in r7["slots"]
+        stage7 = compile_goal_policy({"summaryFields": SETUP["summary_fields"](7)},
+                                     bot_name="Customer Support", system_prompt="")
+        fields7 = derive_structured_fields(stage7, _snapshot(r7["slots"]))
+        assert (fields7["callback_date"], fields7["callback_time"]) == ("परसों", "सुबह दस बजे")
+        fields8_over_7 = derive_structured_fields(NORMALIZED_POLICY, _snapshot(r7["slots"]))
+        assert (fields8_over_7["callback_date"], fields8_over_7["callback_time"]) == (None, None)
+
+    @pytest.mark.parametrize("name", list(CASES) + list(NORMALIZED_CASES))
+    async def test_pickup_path_identical_between_stage_7_and_8(self, engine, monkeypatch, name):
+        """The callback stage touches one node: every visit scenario speaks
+        and records exactly what stage 7 does (the callback case only gains
+        its two companions)."""
+        turns, lang = (CASES[name][0], "hi-IN") if name in CASES else NORMALIZED_CASES[name][:2]
+        _clock(monkeypatch, MONDAY_NOON)
+        old, r7 = await _run(engine, monkeypatch, V20, turns, f"p7-{name}", lang=lang)
+        new, r8 = await _run(engine, monkeypatch, V14, turns, f"p8-{name}", lang=lang)
+        assert new == old, name
+        extra = set(SETUP["CALLBACK_NORMALIZED_SLOTS"].values())
+        assert {k: v for k, v in r8["slots"].items() if k not in extra} == r7["slots"], name

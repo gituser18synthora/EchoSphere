@@ -77,6 +77,21 @@ What this stage does (dry-run by default, idempotent):
      says the date was not understood. RUNTIME DEPENDENCY: visit_datetime
      must know ``spokenVariables``; on older code the readback groups find
      no spoken slots and the confirmation would lose the day.
+  9. Normalized callback day/time (eighth workflow upgrade): the callback ask
+     ("किस दिन और किस समय call back करें?") already captured the day and time
+     (spoken_day / spoken_time) but never declared ``validation`` — the only
+     place the normalized companions are written — so live call
+     cv_4e3a74e34ead reported Callback day "परसों" and Callback time "सुबह दस
+     बजे" next to calendar-valued Pickup fields. It now carries the same
+     validation as the visit asks (a past day or a bare hour is asked again
+     in the same words; nothing changes for a valid answer) with its own
+     companions ``callback_date_iso`` / ``callback_time_24h``, and
+     ``callback_date`` / ``callback_time`` become ``date`` / ``time`` fields
+     read from them (same keys and labels). The free-text
+     ``callback_preference`` keeps the caller's words. A time said without a
+     day ("शाम 5 बजे call करना") is normalized next to an empty day only by
+     runtime code that reads a time on its own (visit_datetime, 2026-10-21);
+     older code leaves both companions unset for such an answer.
 
 A summary-only goal policy keeps the live Goal Engine "derived" — the bot
 talks exactly as before (see shared.orchestration.goal_engine).
@@ -140,6 +155,29 @@ NORMALIZED_DATE_FIELDS = {
             "exact time, or morning/afternoon/evening/night when only a time "
             "window was given; empty when only a day was given. Only when "
             "the appointment was confirmed."
+        ),
+    },
+}
+
+# Stage ≥ 8: the callback day/time fields read the callback ask's companions.
+CALLBACK_NORMALIZED_SLOTS = {"normalizedDayVariable": "callback_date_iso",
+                             "normalizedTimeVariable": "callback_time_24h"}
+NORMALIZED_CALLBACK_FIELDS = {
+    "callback_date": {
+        "type": "date", "source": CALLBACK_NORMALIZED_SLOTS["normalizedDayVariable"],
+        "description": (
+            "The day the customer asked to be called back, resolved to a "
+            "calendar date (YYYY-MM-DD) at the time it was said; empty when "
+            "no day was given."
+        ),
+    },
+    "callback_time": {
+        "type": "time", "source": CALLBACK_NORMALIZED_SLOTS["normalizedTimeVariable"],
+        "timezone": "Asia/Kolkata",
+        "description": (
+            "The time the customer asked to be called back: HH:MM (24-hour, "
+            "IST) for an exact time, or morning/afternoon/evening/night when "
+            "only a time window was given; empty when only a day was given."
         ),
     },
 }
@@ -244,13 +282,19 @@ SUMMARY_FIELDS_SPOKEN = [
 def summary_fields(stage: int | None = None) -> list[dict]:
     """The goal-policy summaryFields for an upgrade stage (default: target):
     up to stage 4 the pickup date/time are the caller's words; from stage 5
-    they are the normalized companions. Keys, labels and order never change."""
+    they are the normalized companions, from stage 8 the callback day/time
+    too. Keys, labels and order never change."""
     fields = copy.deepcopy(SUMMARY_FIELDS_SPOKEN)
-    if (TARGET_STAGE if stage is None else stage) >= 5:
-        for spec in fields:
-            override = NORMALIZED_DATE_FIELDS.get(spec["name"])
-            if override:
-                spec.update(override)
+    target = TARGET_STAGE if stage is None else stage
+    overrides: dict[str, dict] = {}
+    if target >= 5:
+        overrides.update(NORMALIZED_DATE_FIELDS)
+    if target >= 8:
+        overrides.update(NORMALIZED_CALLBACK_FIELDS)
+    for spec in fields:
+        override = overrides.get(spec["name"])
+        if override:
+            spec.update(override)
     return fields
 
 # ── workflow upgrade ─────────────────────────────────────────────────────────
@@ -420,11 +464,12 @@ VALIDATED_ASKS = {
 }
 
 
-def validation_config(day_vars: list[str], time_vars: list[str]) -> dict:
+def validation_config(day_vars: list[str], time_vars: list[str],
+                      replies: dict | None = None) -> dict:
     return {
         "type": "future_datetime", "timezone": "Asia/Kolkata",
         "dayVariables": list(day_vars), "timeVariables": list(time_vars),
-        "replyByLanguage": copy.deepcopy(VALIDATION_REPLIES),
+        "replyByLanguage": copy.deepcopy(VALIDATION_REPLIES if replies is None else replies),
     }
 
 
@@ -787,8 +832,61 @@ def has_normalized_capture(nodes: list[dict]) -> bool:
     )
 
 
+# ── normalized callback day/time (stage 8) ───────────────────────────────────
+#
+# Live call cv_4e3a74e34ead (2026-10-21, release v0.1.12): "परसों कॉल करना
+# सुबह दस बजे" ended as callback_requested with Callback day "परसों" and
+# Callback time "सुबह दस बजे" — the caller's words — while the Pickup fields
+# of the same bot are calendar values. The callback ask captured the day and
+# time (spoken_day / spoken_time, stage 6) but never declared ``validation``,
+# and that is the only place the normalized companions are written. It now
+# gets the visit asks' validation with its own companions; the two callback
+# fields read those. For a valid answer nothing spoken changes.
+
+CALLBACK_ASK = "n_ask_callback"
+CALLBACK_VALIDATED = (["callback_date"], ["callback_time"])
+CALLBACK_VALIDATION_REPLIES = {
+    **VALIDATION_REPLIES,
+    # Not reachable for a free-text ask (its own slot is always filled);
+    # kept correct anyway — the generic line talks about the visit.
+    "day_missing": {
+        "hi": "समय note कर लिया। आप किस दिन call back चाहेंगे, जैसे कल या परसों?",
+        "en": "Noted the time. And on which day would you like the callback, for example tomorrow or the day after?",
+    },
+}
+
+
+def callback_validation_config() -> dict:
+    config = validation_config(*CALLBACK_VALIDATED, replies=CALLBACK_VALIDATION_REPLIES)
+    config.update(CALLBACK_NORMALIZED_SLOTS)
+    return config
+
+
+def normalize_callback(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Stage 8: the callback ask validates the day/time it captures and
+    writes the normalized companions. Idempotent."""
+    nodes = copy.deepcopy(nodes)
+    edges = copy.deepcopy(edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+    if not has_resolved_date_confirmation(nodes):
+        raise ValueError("stage 7 (resolved-date confirmation) must be applied first")
+    node = by_id.get(CALLBACK_ASK)
+    if node is None:
+        raise ValueError(f"baseline node {CALLBACK_ASK!r} missing — not the expected workflow")
+    node.setdefault("config", {})["validation"] = callback_validation_config()
+    return nodes, edges
+
+
+def has_callback_normalization(nodes: list[dict]) -> bool:
+    return any(
+        n.get("id") == CALLBACK_ASK
+        and (n.get("config") or {}).get("validation") == callback_validation_config()
+        for n in nodes
+    )
+
+
 def normalise_to_stage1(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Undo everything stages 2-5 may have written (validation, retry prompt
+    """Undo everything stages 2-8 may have written (validation, retry prompt
     text, capture regexes, pending/normalized slots, readback/prompt, edge tokens) by
     restoring those keys from the stage-1 output. A saved workflow from any
     earlier stage then equals the stage-1 output; anything else differs."""
@@ -824,7 +922,7 @@ def load_baseline() -> dict:
         return json.load(f)
 
 
-TARGET_STAGE = 7
+TARGET_STAGE = 8
 SUMMARY_FIELDS = summary_fields()
 
 
@@ -834,7 +932,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
     stage 3 = + spoken-number time capture (v16), stage 4 = + confirmation
     wording (v17), stage 5 = + normalized pickup date/time companions (v18),
     stage 6 = + parser-chosen day/time capture (v19), stage 7 = + resolved-date
-    confirmation and acknowledging retry prompt."""
+    confirmation and acknowledging retry prompt (v20), stage 8 = + validated,
+    normalized callback day/time (v21)."""
     base = load_baseline()
     nodes, edges = upgrade_workflow(base["nodes"], base["edges"])
     if stage >= 2:
@@ -849,6 +948,8 @@ def upgraded_definition(version: int = BASELINE_VERSION + 1, *, stage: int = TAR
         nodes, edges = use_spoken_capture(nodes, edges)
     if stage >= 7:
         nodes, edges = confirm_resolved_date(nodes, edges)
+    if stage >= 8:
+        nodes, edges = normalize_callback(nodes, edges)
     return {"id": base["id"], "version": version, "name": base["name"],
             "nodes": nodes, "edges": edges}
 
@@ -958,7 +1059,8 @@ def main(argv: list[str] | None = None) -> None:
                          "re-export the baseline (or pass --allow-version) before upgrading")
         new_nodes, new_edges = target["nodes"], target["edges"]
         print("     applying:", f"stages 1-{TARGET_STAGE} (markers, validation, time capture, wording, "
-              "normalized date/time, parser-chosen capture, resolved-date confirmation)" if at_baseline
+              "normalized date/time, parser-chosen capture, resolved-date confirmation, "
+              "normalized callback day/time)" if at_baseline
               else f"upgrade to stage {TARGET_STAGE} on top of the saved stage")
         for line in describe(nodes, edges, new_nodes, new_edges):
             print("    ", line)

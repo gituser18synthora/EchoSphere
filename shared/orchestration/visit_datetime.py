@@ -43,6 +43,11 @@ Rules (``now`` in the configured zone):
   values, or a period alone. Not after now → ``time_past``; a bare hour that
   is past as AM but ahead as PM → ``time_ambiguous``; impossible → ``time_invalid``.
 * anything else (a future day, an unparseable phrase, no time) → ok.
+* a time said without any day (a free-text ask such as "when should we call
+  you back?" answered "शाम 5 बजे call करना"): read on its own — an exact time
+  or a window is accepted and normalized next to an empty day; a bare hour
+  is ``time_ambiguous`` and an unreadable time ``time_unclear`` exactly as
+  with a day. It cannot be checked against the clock without a day.
 """
 
 from __future__ import annotations
@@ -951,8 +956,10 @@ def resolve_visit(day_text, time_text, now: datetime, *,
     A day the parser cannot read ("next week", "agle hafte") is
     ``day_unclear`` — the flow asks for a specific day rather than confirming
     an unverified one — unless ``accept_unparsed_day`` opts into the old
-    accept-as-spoken behaviour. An EMPTY day is simply "not given yet". The
-    time is only read once the day is known.
+    accept-as-spoken behaviour. An EMPTY day is simply "not given yet": a
+    time said with it is read on its own (it cannot be judged against the
+    clock, but a bare hour or an unreadable time is still asked again). A
+    day that was said but not resolved keeps the time unread.
     """
     today = now.date()
     day = parse_day(day_text, today)
@@ -962,13 +969,19 @@ def resolve_visit(day_text, time_text, now: datetime, *,
         return VisitResolution(False, "day_past", day)
     if day.kind == "unknown" and _norm(day_text) and not accept_unparsed_day:
         return VisitResolution(False, "day_unclear", day)
-    if day.kind != "ok" or not _norm(time_text):
+    if not _norm(time_text) or (day.kind != "ok" and _norm(day_text)):
         return VisitResolution(True, None, day)
     t = parse_time(time_text)
     if t.kind == "invalid":
         return VisitResolution(False, "time_invalid", day, t)
     if t.kind == "unknown":
         return VisitResolution(False, "time_unclear", day, t)   # said, not understood: ask, never guess
+    if day.kind != "ok":
+        # No day at all: nothing to compare the time with, but a bare hour
+        # is as unusable here as on a day — ask morning or evening.
+        if t.kind == "ambiguous":
+            return VisitResolution(False, "time_ambiguous", day, t)
+        return VisitResolution(True, None, day, t)
     is_today = day.value == today
     now_minutes = now.hour * 60 + now.minute
     if t.kind == "ambiguous":
@@ -1051,12 +1064,15 @@ def validate_ask(config: dict, slots: dict, now: datetime | None = None) -> Verd
         accept_unparsed_day=config.get("acceptUnparsedDay") is True,
     )
     if resolved.ok:
-        if resolved.iso_date:
+        if resolved.iso_date or resolved.normalized_time:
+            # A resolved day (with or without a time), or a time said without
+            # any day: the companions say exactly what was resolved, '' for
+            # the half that was not given.
             for name, value in zip(normalized, (resolved.iso_date, resolved.normalized_time)):
                 if name:
                     slots[name] = value
             for day_name, time_name, lang in spoken_vars:
-                if day_name:
+                if day_name and resolved.iso_date:
                     slots[f"{day_name}_{lang}"] = spoken_day(resolved.day.value, current.date(), lang)
                 if time_name:
                     slots[f"{time_name}_{lang}"] = spoken_time(resolved.normalized_time, lang)

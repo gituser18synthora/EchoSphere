@@ -234,11 +234,26 @@ class TestResolveVisit:
         assert vd.resolve_visit("tomorrow", "in the morning", NOW).normalized_time == "morning"
         assert vd.normalize_time(vd.TimeResult("period", period="p")) == ""   # a bare "PM" is no window
 
-    def test_nothing_is_resolved_without_a_day(self):
+    def test_a_time_without_any_day_is_read_on_its_own(self):
+        """A free-text ask ("when should we call you back?") answered with a
+        time alone: the time is resolved next to an empty day. It cannot be
+        judged against the clock, but a bare hour or an unreadable time is
+        still asked again exactly as with a day."""
         r = vd.resolve_visit("", "4 PM", NOW)
+        assert r.ok and r.iso_date == "" and r.normalized_time == "16:00"
+        assert vd.resolve_visit("", "शाम", NOW).normalized_time == "evening"
+        assert vd.resolve_visit("", "सुबह 9 बजे", NOW).normalized_time == "09:00"   # no day: never "past"
+        r = vd.resolve_visit("", "4 baje", NOW)
+        assert (r.ok, r.reason, r.normalized_time) == (False, "time_ambiguous", "")
+        assert vd.resolve_visit("", "5 बजे या 6 बजे", NOW).reason == "time_unclear"
+        r = vd.resolve_visit("", "", NOW)
         assert r.ok and r.iso_date == "" and r.normalized_time == ""
+
+    def test_a_day_said_but_not_resolved_keeps_the_time_unread(self):
         r = vd.resolve_visit("agle hafte", "", NOW, accept_unparsed_day=True)
         assert r.ok and r.iso_date == ""
+        r = vd.resolve_visit("agle hafte", "4 PM", NOW, accept_unparsed_day=True)
+        assert r.ok and r.iso_date == "" and r.normalized_time == ""
 
     def test_rejections_carry_the_reason_and_no_values(self):
         r = vd.resolve_visit("10 October", "", NOW)
@@ -299,12 +314,30 @@ class TestNormalizedCompanions:
         assert (slots["visit_time"], slots["visit_time_24h"], slots["visit_date_iso"]) == \
             ("शाम 4 baje", "16:00", "2026-10-20")
 
-    def test_nothing_without_the_config_keys_or_a_day(self):
+    def test_nothing_without_the_config_keys(self):
         slots = {"visit_day": "कल", "visit_time": "4 PM"}
         assert validate_ask(CONFIG, slots, now=NOW).ok
         assert "visit_date_iso" not in slots and "visit_time_24h" not in slots
+
+    def test_a_time_without_any_day_is_normalized_next_to_an_empty_day(self):
+        """A free-text ask ("when should we call you back?") answered with a
+        time alone: the clock time is kept, the day companion says "none"."""
         slots = {"visit_time": "4 PM"}
-        assert validate_ask(NORMALIZED, slots, now=NOW).ok and slots == {"visit_time": "4 PM"}
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert slots == {"visit_time": "4 PM", "visit_date_iso": "", "visit_time_24h": "16:00"}
+        # a bare hour is parked and asked, the clarification completes it
+        slots = {"visit_time": "5 बजे"}
+        verdict = validate_ask(NORMALIZED, slots, now=NOW)
+        assert verdict.reason == "time_ambiguous" and slots["visit_time_pending"] == "5 बजे"
+        for name in verdict.clear:
+            slots.pop(name, None)
+        slots["visit_time"] = "शाम"
+        assert validate_ask(NORMALIZED, slots, now=NOW).ok
+        assert (slots["visit_time"], slots["visit_date_iso"], slots["visit_time_24h"]) == ("शाम 5 बजे", "", "17:00")
+        # a day said but not resolved (accepted as spoken) still leaves the time unread
+        slots = {"visit_day": "agle hafte", "visit_time": "4 PM"}
+        assert validate_ask({**NORMALIZED, "acceptUnparsedDay": True}, slots, now=NOW).ok
+        assert "visit_time_24h" not in slots
 
 
 LIVE_UTTERANCE = "कल कर दो शाम के पाँच बजे।"   # cv_0b1e4d99ac69 (DEMO LIVE, 2026-10-19)
