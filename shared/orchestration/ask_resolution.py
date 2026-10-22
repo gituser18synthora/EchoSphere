@@ -280,6 +280,75 @@ def _bare_yes_no(text: str) -> str | None:
     return "yes" if yes else None
 
 
+# ── pending-ask shape ────────────────────────────────────────────────────────
+# What kind of answer the paused ask expects. The workflow engine reports it
+# as ``awaitingAsk`` and the voice brain turns it into the PendingAsk that the
+# reply LLM, the turn router and the Goal Engine read, so a short caller reply
+# ("haan", "2 baje", "pehla") is judged against the question actually asked.
+ASK_KIND_YES_NO = "yes_no"
+ASK_KIND_CHOICE = "choice"
+ASK_KIND_NUMBER = "number"
+ASK_KIND_DATE = "date"
+ASK_KIND_TIME = "time"
+ASK_KIND_FREE_TEXT = "free_text"
+_DATE_DATA_TYPES = frozenset({"date", "spoken_day"})
+_TIME_DATA_TYPES = frozenset({"time", "spoken_time"})
+
+
+def ask_prompt_text(node: dict) -> str:
+    """The question the ask node speaks (same keys the engine reads)."""
+    config = _node_config(node)
+    for key in ("question", "prompt", "text"):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def choice_options(entity: dict, prompt_text: str = "") -> list[str]:
+    """Canonical options of a choice-shaped entity, in the order the bot
+    spoke them: canonicals (or any of their surfaces) found in the prompt
+    come first by position, the rest keep their declaration order."""
+    allowed = [str(v) for v in (entity.get("allowedValues") or entity.get("allowed_values") or [])
+               if str(v).strip()]
+    synonyms = entity.get("synonyms") if isinstance(entity.get("synonyms"), dict) else {}
+    canonicals = list(dict.fromkeys(allowed + [str(c) for c in synonyms]))
+    if not canonicals:
+        return []
+    lowered = (prompt_text or "").lower()
+
+    def _first_mention(canonical: str) -> int | None:
+        surfaces = [canonical] + [str(s) for s in (synonyms.get(canonical) or []) if s]
+        found = [lowered.find(s.lower()) for s in surfaces if s]
+        found = [p for p in found if p >= 0]
+        return min(found) if found else None
+
+    ranked = [(_first_mention(c), i, c) for i, c in enumerate(canonicals)]
+    spoken = sorted((p, i, c) for p, i, c in ranked if p is not None)
+    unspoken = [c for p, i, c in ranked if p is None]
+    return [c for _, _, c in spoken] + unspoken
+
+
+def ask_answer_shape(node: dict, variable: str) -> dict:
+    """``{"kind", "options"}`` for an ask node: yes_no | choice | number |
+    date | time | free_text. A yes/no-shaped synonym set is yes_no before it
+    is a choice; a digit-expecting entity is a number."""
+    entity = _ask_entity(node, variable)
+    data_type = str(entity.get("dataType") or entity.get("data_type") or "text")
+    if _yes_no_canonicals(entity) is not None:
+        return {"kind": ASK_KIND_YES_NO, "options": []}
+    options = choice_options(entity, ask_prompt_text(node))
+    if options:
+        return {"kind": ASK_KIND_CHOICE, "options": options}
+    if data_type in _DATE_DATA_TYPES:
+        return {"kind": ASK_KIND_DATE, "options": []}
+    if data_type in _TIME_DATA_TYPES:
+        return {"kind": ASK_KIND_TIME, "options": []}
+    if _ask_expects_digits(node, variable):
+        return {"kind": ASK_KIND_NUMBER, "options": []}
+    return {"kind": ASK_KIND_FREE_TEXT, "options": []}
+
+
 def _strip_bare_words(text: str) -> str:
     """The utterance without its leading/trailing yes-no and filler words, so
     "हाँ, customer को call किया था" leaves only the field-level evidence."""
