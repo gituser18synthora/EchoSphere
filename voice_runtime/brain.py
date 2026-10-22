@@ -246,6 +246,11 @@ def interim_is_stability_reference(frame) -> bool:
 _INTENT_KB_MIN_SCORE = 0.15
 
 _HISTORY_MAX_TURNS = 20
+# Tail of the bot's last utterance handed to the Goal Engine as
+# ``last_bot_question``. 240 chars cut a two-sentence ask down to its second
+# sentence; 600 covers the default 360-char reply cap and a typical authored
+# workflow ask in full while still bounding the decision prompt.
+_LAST_QUESTION_CHARS = 600
 
 # Sentence boundary for the guardrail sentence-hold streaming mode (Latin
 # terminators plus the Devanagari danda).
@@ -5622,7 +5627,7 @@ class ConversationBrain(FrameProcessor):
             # standing explicit: background, outranked by the current turn.
             state["previous_call"] = self._previous_memory.live_state_entry()
         if self._last_bot_reply:
-            state["last_bot_question"] = self._last_bot_reply[-240:]
+            state["last_bot_question"] = self._last_bot_reply[-_LAST_QUESTION_CHARS:]
         if self._active_workflow:
             state["workflow_stage"] = f"workflow:{self._active_workflow}"
         policy = self._policy
@@ -5658,7 +5663,7 @@ class ConversationBrain(FrameProcessor):
         elif self._goal_session is not None:
             state.update(self._goal_session.live_state(
                 language=self._conversation_language,
-                last_bot_question=self._last_bot_reply[-240:],
+                last_bot_question=self._last_bot_reply[-_LAST_QUESTION_CHARS:],
             ))
         if self._active_workflow and self._pending_workflow_question:
             state["pending_question"] = self._pending_workflow_question
