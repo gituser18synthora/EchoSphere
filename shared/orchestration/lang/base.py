@@ -64,6 +64,7 @@ class LanguagePack:
     call_control_patterns: tuple[tuple[str, str], ...] = ()  # (regex, action)
     handoff_words: str = ""                         # "human|agent|…"
     kb_question_words: tuple[str, ...] = ()         # "what", "how", "can i", …
+    hmm_forms: tuple[str, ...] = ()                 # listening hums ("hmm", "हम्म")
     # Extra alternatives this language contributes to a named SIGNAL pattern
     # ("hardship", "payment_intent", …) — the semantic pattern is owned by the
     # signal pack; the pack only adds how this language says it.

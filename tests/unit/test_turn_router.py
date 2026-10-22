@@ -439,6 +439,20 @@ class TestUserSignalClassifier:
         assert router.decide("nahi ji", pending_kind="free_text").reason == "short_signal"
         assert router.decide("mera naam Rahul hai", pending_kind="free_text").reason == "default_chat"
 
+    def test_hmm_is_a_yes_only_for_a_pending_yes_no_question(self):
+        from shared.orchestration.router import is_bare_hmm
+        for text in ("hmm", "Hmm.", "hm", "hmmm", "mhm", "hmm hmm", "हम्म", "हम्म हम्म"):
+            assert is_bare_hmm(text), text
+        for text in ("hmm theek hai", "hmm nahi", "haan", "", "hmm, batao"):
+            assert not is_bare_hmm(text), text
+        assert self._signal("hmm") is None          # global tokens unchanged
+        router = make_router()
+        yes = router.decide("hmm", pending_kind="yes_no")
+        assert yes.kind == RouteKind.CHAT and yes.reason == "short_signal" and yes.signal == "affirm"
+        other = router.decide("hmm", pending_kind="free_text")
+        assert other.reason == "short_answer_to_pending" and other.signal is None
+        assert router.decide("hmm").reason == "too_short"
+
     def test_short_roman_affirmations_route_to_chat(self):
         router = make_router()
         for text in ("accha", "acha ji", "pakka", "ji nahi", "nahi ji"):

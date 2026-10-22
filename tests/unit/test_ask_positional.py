@@ -50,6 +50,26 @@ class TestPositionalChoice:
         assert ask.positional_choice("pehla", entity, "UPI ya cash?") == "upi"
 
 
+# ── "hmm" at a yes/no ask ────────────────────────────────────────────────────
+
+class TestHmmAtAsks:
+    def test_bare_yes_no_reads_hmm_as_yes(self):
+        assert ask._bare_yes_no("hmm") == "yes"
+        assert ask._bare_yes_no("हम्म") == "yes"
+        assert ask._bare_yes_no("hmm nahi") == "no"
+        assert ask._bare_yes_no("hmm batao") is None
+
+    async def test_hmm_fills_a_yes_no_ask_but_not_a_choice_ask(self, monkeypatch):
+        yes_no = _definition({"entityType": "list", "synonyms": {"yes (called)": ["haan", "call kiya"],
+                                                                  "no": ["nahi"]}},
+                             question="Customer ko call kiya tha?")
+        result = await _run(_engine(monkeypatch, yes_no), "h1", "start", "hmm")
+        assert result["slots"]["slot"] == "yes (called)"
+        choice = _definition({"entityType": "list", "synonyms": ENTITY["synonyms"]})
+        result = await _run(_engine(monkeypatch, choice), "h2", "start", "hmm")
+        assert "slot" not in result["slots"] and result["done"] is False
+
+
 # ── through the workflow engine ──────────────────────────────────────────────
 
 def _definition(ask_config: dict, question="Aap sham ka slot lenge, subah ka, ya raat ka?"):

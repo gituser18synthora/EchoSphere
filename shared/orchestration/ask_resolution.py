@@ -31,7 +31,7 @@ from shared.orchestration import lang as _lang
 from shared.orchestration import signals as _signals
 from shared.orchestration.behavior import WorkflowBehavior
 from shared.orchestration.phrases import canned
-from shared.orchestration.router import looks_like_question
+from shared.orchestration.router import is_bare_hmm, looks_like_question
 from shared.orchestration import visit_datetime as _validation
 
 
@@ -260,24 +260,32 @@ _BARE_TOKEN_SPLIT = re.compile(
 )
 
 
+_HMM_TOKEN_RE = re.compile("^(?:" + (_lang.alternatives("hmm_forms") or "(?!)") + ")$", re.IGNORECASE)
+
+
 def _bare_yes_no(text: str) -> str | None:
-    """"yes" / "no" when the utterance is ONLY affirmation/negation words."""
+    """"yes" / "no" when the utterance is ONLY affirmation/negation words.
+
+    Only yes/no-shaped asks consult this, so a bare "hmm" counts as yes
+    here (a pending yes/no question is exactly where "hmm" means yes)."""
     tokens = [t.lower() for t in _BARE_TOKEN_SPLIT.split(text or "") if t]
     if not tokens:
         return None
-    yes = no = False
+    yes = no = hmm = False
     for token in tokens:
         if token in _BARE_NO_WORDS:
             no = True
         elif token in _BARE_YES_WORDS:
             yes = True
+        elif _HMM_TOKEN_RE.match(token):
+            hmm = True
         elif token in _BARE_FILLERS:
             continue
         else:
             return None
     if no:
         return "no"      # "ji nahi" / "haan nahi" — the negation is the answer
-    return "yes" if yes else None
+    return "yes" if (yes or hmm) else None
 
 
 # ── pending-ask shape ────────────────────────────────────────────────────────
@@ -814,6 +822,13 @@ def resolve_standard(ctx: AskContext) -> bool:
         ctx.value = _yes_no_from_signal(node, variable, signal)
         if ctx.value is not None:
             ctx.audit.append({"action": "signal_answer", "node": ctx.node_id, "signal": signal})
+    if ctx.value is None and not guarded_free_text and not ctx.joint_partial and is_bare_hmm(text):
+        # A bare "hmm" answers ONLY a yes/no-shaped ask (as yes); at any
+        # other ask it stays a filler and the ladder below decides.
+        pair = _yes_no_canonicals(_ask_entity(node, variable))
+        if pair is not None:
+            ctx.value = pair[0]
+            ctx.audit.append({"action": "hmm_answer", "node": ctx.node_id})
     if ctx.value is None and signal is not None:
         # The label says "not an answer", yet the words may still carry
         # answers to UPCOMING asks ("guard ko diya tha, refund kab milega?"):

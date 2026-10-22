@@ -273,6 +273,20 @@ class TestShortAnswerRouting:
         assert llm.systems == []
 
 
+# ── "hmm" on the brain's fallback signal path ────────────────────────────────
+
+class TestHmmAffirm:
+    def test_only_when_a_yes_no_question_is_pending(self):
+        brain = make_brain()
+        brain._last_bot_reply = "Kya aap kal aa sakte hain?"
+        assert brain._hmm_affirm("hmm") == "affirm"
+        assert brain._hmm_affirm("hmm theek") is None
+        brain._last_bot_reply = "Aapka naam bataiye?"
+        assert brain._hmm_affirm("hmm") is None
+        brain._last_bot_reply = "Dhanyavaad."
+        assert brain._hmm_affirm("hmm") is None
+
+
 # ── Goal Engine live state ───────────────────────────────────────────────────
 
 class TestOrchestrationState:

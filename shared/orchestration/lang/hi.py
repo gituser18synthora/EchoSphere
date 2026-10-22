@@ -13,6 +13,9 @@ PACK = LanguagePack(
     caller_value_reference=(r"(?<![\wऀ-ॿ])(?:mera|meri|mere|maine|aapne\b.{0,60}\b(?:note|likha|likhe)|मेरा|मेरी|मेरे|मैंने|आपने.{0,60}(?:नोट|लिखा))(?![\wऀ-ॿ])",),
     bare_yes=frozenset({"bilkul", "haan", "haanji", "han", "hanji", "jarur", "ji", "sahi", "theek", "thik", "zaroor", "जरूर", "ज़रूर", "जी", "ठीक", "पक्का", "बिलकुल", "बिल्कुल", "सही", "हा", "हाँ", "हाँजी", "हां", "हांजी"}),
     bare_no=frozenset({"nahi", "nahin", "नही", "नहीं", "ना", "नो"}),
+    # "hmm" stays a FILLER here: it becomes a yes only as the whole reply to a
+    # pending yes/no question (shared.orchestration.router.is_bare_hmm, used
+    # by the router, the brain's fallback signal and yes/no ask resolution).
     fillers=frozenset({"ab", "are", "arre", "bas", "bhai", "bhi", "hai", "hi", "hmm", "tha", "tho", "to", "toh", "wo", "woh", "ye", "yeh", "अब", "अरे", "जी", "तो", "था", "बस", "भाई", "भी", "ये", "वो", "ही", "है"}),
     strip_fillers=frozenset({"are", "arre", "bhai", "tho", "to", "toh", "अरे", "जी", "तो", "भाई"}),
     generic_answer_tokens=frozenset({"accha", "acha", "achha", "han", "hmm", "ok ji", "okay ji", "sahi", "theek", "thik", "अच्छा", "ओके", "ठीक", "सही", "हम्म"}),
@@ -80,6 +83,12 @@ PACK = LanguagePack(
         r"""सही""",
         r"""ओके""",
         r"""अच्छा""",
+    ),
+    # Devanagari listening hums; a filler, read as yes only as the whole
+    # reply to a pending yes/no question (router.is_bare_hmm).
+    hmm_forms=(
+        r"""हम्म+""",
+        r"""हम्+""",
     ),
     no_tokens=(
         r"""nahi""",
