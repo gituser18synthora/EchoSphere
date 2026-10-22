@@ -42,6 +42,7 @@ from shared.orchestration import extensions as _extensions
 from shared.orchestration.workflow_state import WorkflowState
 from shared.orchestration import ask_resolution as _ask
 from shared.orchestration.ask_resolution import (  # noqa: F401 — shared ask helpers
+    ask_answer_shape,
     _BARE_NO,
     _BARE_YES,
     _CORRECTION_ACTIONS,
@@ -259,6 +260,15 @@ def load_workflow_definition(
         session.close()
 
 
+
+
+def _awaiting_ask_shape(node: dict | None) -> dict | None:
+    """``awaitingAsk`` for the result payload: the paused ask node's expected
+    answer kind and spoken options, None when the flow waits elsewhere."""
+    if not isinstance(node, dict) or node.get("kind") != "ask":
+        return None
+    variable = str(_node_config(node).get("variable") or node.get("id"))
+    return ask_answer_shape(node, variable)
 
 
 def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
@@ -1860,6 +1870,7 @@ class WorkflowEngine:
                 "nodePrompt": previous.get("awaiting_prompt"),
                 "awaitingIdentifier": previous.get("awaiting_identifier"),
                 "awaitingKind": pending.get("kind"), "signal": signal,
+                "awaitingAsk": _awaiting_ask_shape(pending),
                 "spokenNodes": [],
             }
         invocation = {
@@ -1920,6 +1931,11 @@ class WorkflowEngine:
         status = state.get("status", "collecting")
         done = status in ("done", "handoff", "error")
         off_script = bool(state.get("off_script"))
+        awaiting_node = (
+            next((n for n in ((definition or {}).get("nodes") or [])
+                  if str(n.get("id")) == str(state.get("awaiting"))), None)
+            if state.get("awaiting") else None
+        )
         return {
             "reply": "" if off_script
                      else (state.get("reply") or canned("wf_repeat", language)),
@@ -1966,6 +1982,9 @@ class WorkflowEngine:
                        if str(n.get("id")) == str(state.get("awaiting"))), {}) or {}).get("kind")
                 if state.get("awaiting") else None
             ),
+            # Expected answer of a paused ask ({kind, options}) — the brain's
+            # PendingAsk for its reply prompt, router and Goal Engine state.
+            "awaitingAsk": _awaiting_ask_shape(awaiting_node),
             # A node spoken this turn that declares ``coversKnowledgeQuestion``
             # (the flow's own document explanation): the runtime must not add a
             # separate KB answer for the same question in the same turn.

@@ -63,7 +63,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from shared.orchestration.context_questions import (
     CONTEXT_QUESTION_RESPONSE, CONTEXT_QUESTION_TURN,
@@ -251,6 +251,52 @@ _HISTORY_MAX_TURNS = 20
 # sentence; 600 covers the default 360-char reply cap and a typical authored
 # workflow ask in full while still bounding the decision prompt.
 _LAST_QUESTION_CHARS = 600
+
+
+@dataclass(frozen=True)
+class PendingAsk:
+    """What the bot is waiting for: the question a short caller reply answers.
+
+    ``kind`` is one of yes_no | choice | number | date | time | free_text |
+    none; ``options`` are the choices in the order the bot spoke them.
+    """
+
+    question: str
+    kind: str
+    options: tuple[str, ...] = ()
+
+
+PENDING_ASK_NONE = PendingAsk("", "none")
+# How the expected answer is described to the models.
+_PENDING_KIND_LABELS = {
+    "yes_no": "yes/no", "choice": "one of [{options}]", "number": "number",
+    "date": "date", "time": "time", "free_text": "free text", "none": "none",
+}
+
+
+def pending_kind_label(ask: PendingAsk) -> str:
+    label = _PENDING_KIND_LABELS.get(ask.kind, ask.kind)
+    return label.format(options=" | ".join(ask.options)) if ask.kind == "choice" else label
+
+
+# Fallback heuristics on the bot's own last utterance when no workflow,
+# policy or opening step declares the pending ask (free-chat bots). They are
+# deliberately cheap and conservative: a wrong "free_text" only costs the
+# short-reply rules a hint; a wrong "yes_no" could bias a bare "haan".
+_QUESTION_END_RE = re.compile(r"[?？]\s*[।.]*\s*$")
+_LAST_SENTENCE_RE = re.compile(r"[^.!?।॥]*[?？]\s*[।.]*\s*$")
+_YES_NO_QUESTION_RE = re.compile(
+    r"(?:(?:^|[\s,])(?:kya|क्या|can|could|do|does|did|is|are|will|would|should|shall|have|has)(?![\wऀ-ॿ])"
+    r"|(?:haan ya nahi|हाँ या नहीं|हां या नहीं|yes or no|sahi hai|theek hai|thik hai|ठीक है|सही है|right|correct)"
+    r"\s*[?？]|(?:^|\s)(?:ji|जी)\s*[?？])",
+    re.IGNORECASE,
+)
+_CHOICE_SPLIT_RE = re.compile(r"\s+(?:ya|या|or)\s+", re.IGNORECASE)
+_CHOICE_HINT_RE = re.compile(
+    r"\s(?:ya|या|or)\s|\b\d\s*[).]|(?:pehl[aei]|पहल[ाेी]).*(?:d(?:u|oo)sr[aei]|दूसर[ाेी])",
+    re.IGNORECASE,
+)
+_MAX_HEURISTIC_OPTION_WORDS = 3
 
 # Sentence boundary for the guardrail sentence-hold streaming mode (Latin
 # terminators plus the Devanagari danda).
@@ -890,6 +936,11 @@ class ConversationBrain(FrameProcessor):
         self._workflow_ever_routed = False
         self._pending_workflow_question = ""
         self._open_turn_pending_question = ""
+        # {kind, options} of the paused workflow ask (engine ``awaitingAsk``);
+        # None while no ask is pending. Snapshotted with the question so a
+        # rewound turn restores both.
+        self._pending_ask_shape: dict | None = None
+        self._open_turn_pending_ask_shape: dict | None = None
         self._last_bot_reply: str = ""
         self._conversation_language: str = config.language
         # Language continuity: the previous call's dominant customer language
@@ -3218,6 +3269,7 @@ class ConversationBrain(FrameProcessor):
             if rolled:
                 self._active_workflow = previous_active
                 self._pending_workflow_question = self._open_turn_pending_question
+                self._pending_ask_shape = self._open_turn_pending_ask_shape
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
@@ -6231,6 +6283,7 @@ class ConversationBrain(FrameProcessor):
                     initial_slots = verified_slots
         self._open_turn_workflow = (workflow_name, self._active_workflow, text)
         self._open_turn_pending_question = self._pending_workflow_question
+        self._open_turn_pending_ask_shape = self._pending_ask_shape
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -6289,6 +6342,10 @@ class ConversationBrain(FrameProcessor):
         self._active_workflow = None if result["done"] else workflow_name
         self._pending_workflow_question = (
             str(result.get("nodePrompt") or "") if not result["done"] else ""
+        )
+        shape = result.get("awaitingAsk")
+        self._pending_ask_shape = (
+            dict(shape) if isinstance(shape, dict) and not result["done"] else None
         )
         self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)
@@ -6941,6 +6998,64 @@ class ConversationBrain(FrameProcessor):
     def _context_response_instruction() -> str:
         """Instruction for an authored workflow context-response node."""
         return CONTEXT_RESPONSE_INSTRUCTION
+
+    def _pending_ask(self) -> PendingAsk:
+        """The question the caller is answering right now, with its expected
+        answer kind, resolved in priority order:
+
+        a) the paused workflow ask (question + engine-reported shape);
+        b) the collections policy's pending identity (yes/no) or
+           transaction-reference (free text) question;
+        c) the bot's opening question (yes/no);
+        d) the bot's own last utterance when it ends with a question mark —
+           yes/no or choice by cheap lexical cues, else free text; otherwise
+           nothing is pending.
+        """
+        if self._active_workflow and self._pending_workflow_question:
+            shape = self._pending_ask_shape or {}
+            kind = str(shape.get("kind") or "free_text")
+            options = tuple(str(o) for o in (shape.get("options") or []) if str(o))
+            return PendingAsk(self._pending_workflow_question, kind, options)
+        policy = self._policy
+        if policy is not None:
+            if getattr(policy, "awaiting_reference", False) and getattr(
+                policy, "transaction_reference", None
+            ) is None:
+                return PendingAsk(self._last_bot_reply, "free_text")
+            if getattr(policy, "awaiting_identity", False) and not getattr(
+                policy, "verified", False
+            ):
+                return PendingAsk(self._last_bot_reply, "yes_no")
+        if (opening := self._pending_opening_question()):
+            return PendingAsk(opening, "yes_no")
+        return self._pending_ask_from_last_reply()
+
+    def _pending_ask_from_last_reply(self) -> PendingAsk:
+        last = (self._last_bot_reply or "").strip()
+        if not last or not _QUESTION_END_RE.search(last):
+            return PENDING_ASK_NONE
+        sentence_match = _LAST_SENTENCE_RE.search(last)
+        sentence = (sentence_match.group(0) if sentence_match else last).strip()
+        if _YES_NO_QUESTION_RE.search(sentence):
+            return PendingAsk(last, "yes_no")
+        if _CHOICE_HINT_RE.search(sentence):
+            return PendingAsk(last, "choice", self._heuristic_options(sentence))
+        return PendingAsk(last, "free_text")
+
+    @staticmethod
+    def _heuristic_options(sentence: str) -> tuple[str, ...]:
+        """The two sides of a single short "A ya B?" ("subah ya sham?",
+        "पहला या दूसरा?"); () when either side is longer than three words —
+        the boundary of "aap subah ka slot lenge ya sham ka?" is not
+        recoverable lexically, so the model reads the question instead."""
+        parts = _CHOICE_SPLIT_RE.split(sentence.rstrip("?？।. "))
+        if len(parts) != 2:
+            return ()
+        left = parts[0].strip(" ,").split()
+        right = parts[1].strip(" ,").split()
+        if not left or not right or max(len(left), len(right)) > _MAX_HEURISTIC_OPTION_WORDS:
+            return ()
+        return (" ".join(left), " ".join(right))
 
     def _pending_opening_question(self) -> str:
         if (self._workflow_ever_routed or self._active_workflow is not None
