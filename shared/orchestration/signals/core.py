@@ -34,7 +34,12 @@ def _affirm(ctx: Composer) -> str:
             + (r"(?:" + tails + r")?" if tails else "") + r"\W*$")
 
 
-_REFUSAL_BASE = r"""(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)|(?:nahi|nahin|नहीं|नही)(?:\s+\w+){0,2}\s+(?:kar|कर)\s+(?:raha|rahi|रहा|रही|riha|रिहा)|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)|^\W*(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)(?:\W+(?:nahi|nahin|no|nope|नहीं|नही|ji|जी))*(?:\W+(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|shukriya|धन्यवाद|शुक्रिया))?\W*$"""
+# The anchored bare-negation clause accepts ONE leading particle ("ji nahi",
+# "haan nahi", "arre nahi") so a politeness or contradiction prefix never
+# hides the refusal, and "na ji" (Roman "na" only with a courtesy "ji" — bare
+# "na" doubles as a tag question, "hai na?"). Negation always outranks an
+# affirm word in the same utterance because refusal runs before affirm.
+_REFUSAL_BASE = r"""(?:nahi|nahin|नहीं|नही)\s+(?:karunga|karungi|karta|hoga|dunga|dungi|करूंगा|करूंगी|करता|होगा|दूंगा|दूंगी)|(?:nahi|nahin|नहीं|नही)(?:\s+\w+){0,2}\s+(?:kar|कर)\s+(?:raha|rahi|रहा|रही|riha|रिहा)|(?:mana|इनकार|इन्कार)\s*(?:kar|कर)|^\W*(?:(?:ji|haan|han|are|arre|जी|हाँ|हां|अरे)\W+)?(?:abhi|अभी|filhaal|फ़िलहाल|फिलहाल)?\W*(?:to|तो)?\W*(?:bilkul|बिल्कुल)?\W*(?:nahi|nahin|no|nope|नहीं|नही)(?:\W+(?:nahi|nahin|no|nope|नहीं|नही|ji|जी))*(?:\W+(?:please|pls|thanks|thank you|dhanyavaad|dhanyawad|shukriya|धन्यवाद|शुक्रिया))?\W*$|^\W*(?:na|ना)(?:\W+(?:ji|जी))+\W*$"""
 
 PACK = SignalPack(
     name="core",
