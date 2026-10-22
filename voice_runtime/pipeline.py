@@ -504,14 +504,11 @@ def build_stt_service(
                 stream_type = normalize_stream_type(runtime_settings.sarvam_realtime_stream_type)
                 realtime_settings = RealtimeSarvamSTTService.Settings(
                     model=realtime_model,
+                    # pipecat >= 1.13: ``language=None`` asks Sarvam to detect
+                    # the language of each utterance (``language_code`` is
+                    # deprecated); a pinned Language reaches the handshake as
+                    # its Sarvam locale code.
                     language=language,
-                    # Pipecat derives language_code from ``language``; with no
-                    # pinned language the recognizer must auto-detect (its own
-                    # default would silently pin en-IN).
-                    language_code=(
-                        RealtimeSarvamSTTService.Settings().language_code
-                        if language is not None else "auto"
-                    ),
                     stream_type=stream_type,
                     mode=mode or "transcribe",
                 )
