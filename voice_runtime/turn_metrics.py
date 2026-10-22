@@ -99,6 +99,14 @@ class TurnLatencyTracker:
     tts_request_at: float | None = None
     tts_first_byte_at: float | None = None
     bot_started_at: float | None = None
+    # How the turn ended (first decision wins): smart_turn (model verdict),
+    # pause_timeout (fixed window), lexical_shortcut (brain's complete-thought
+    # endpoint), finalize_grace (orphan final with no open turn).
+    endpoint_by: str | None = None
+    # Last Smart Turn prediction of the turn, when the analyzer ran.
+    smart_turn_probability: float | None = None
+    smart_turn_complete: bool | None = None
+    smart_turn_inference_ms: float | None = None
     # Set once the turn's spans have been reported, so a second bot-audio frame
     # (or a re-render after barge-in) does not emit the same turn twice.
     reported: bool = False
@@ -226,6 +234,19 @@ class TurnLatencyTracker:
         """Tally a per-turn occurrence (rejected segments, merges, duplicates)."""
         self.counts[name] = self.counts.get(name, 0) + 1
 
+    def mark_endpoint_by(self, by: str) -> None:
+        """Record what ended the turn; the first decision of a turn stands."""
+        if self.endpoint_by is None:
+            self.endpoint_by = by
+
+    def note_smart_turn(
+        self, *, probability: float, is_complete: bool, inference_ms: float = 0.0,
+    ) -> None:
+        """The Smart Turn analyzer's latest verdict for this turn."""
+        self.smart_turn_probability = round(float(probability), 4)
+        self.smart_turn_complete = bool(is_complete)
+        self.smart_turn_inference_ms = round(float(inference_ms), 1)
+
     def reset(self) -> None:
         self.bot_stop_gap_ms = None
         self.speech_started_at = None
@@ -243,6 +264,10 @@ class TurnLatencyTracker:
         self.tts_request_at = None
         self.tts_first_byte_at = None
         self.bot_started_at = None
+        self.endpoint_by = None
+        self.smart_turn_probability = None
+        self.smart_turn_complete = None
+        self.smart_turn_inference_ms = None
         self.reported = False
         self.counts = {}
 
@@ -340,6 +365,11 @@ class TurnLatencyTracker:
             "total_response_latency_ms": spans.get("response", 0),
             "spans_ms": spans,
             "slowest_stage": self.slowest_stage(spans),
+            # Phase 2: how the turn ended and what Smart Turn predicted.
+            "endpoint_by": self.endpoint_by or "unknown",
+            "smart_turn_probability": self.smart_turn_probability,
+            "smart_turn_complete": self.smart_turn_complete,
+            "smart_turn_inference_ms": self.smart_turn_inference_ms,
         }
 
     def report(self) -> dict[str, float]:

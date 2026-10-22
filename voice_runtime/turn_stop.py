@@ -31,7 +31,21 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 
 class FinalBoundedTurnStopStrategy(SpeechTimeoutUserTurnStopStrategy):
     """``SpeechTimeoutUserTurnStopStrategy`` whose transcript requirement lapses
-    when the STT safety net has run out."""
+    when the STT safety net has run out.
+
+    ``tracker`` (voice_runtime.turn_metrics) learns that the turn ended on the
+    pause window (``endpoint_by="pause_timeout"``) — unless a Smart Turn
+    verdict or the brain's lexical shortcut already closed it.
+    """
+
+    def __init__(self, *, tracker=None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._tracker = tracker
+
+    async def trigger_user_turn_stopped(self, **kwargs):
+        if self._tracker is not None:
+            self._tracker.mark_endpoint_by("pause_timeout")
+        await super().trigger_user_turn_stopped(**kwargs)
 
     async def _maybe_trigger_user_turn_stopped(self):
         if self._vad_user_speaking:
