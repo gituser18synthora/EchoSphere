@@ -349,6 +349,73 @@ def ask_answer_shape(node: dict, variable: str) -> dict:
     return {"kind": ASK_KIND_FREE_TEXT, "options": []}
 
 
+# ── positional answers at a choice ask ("pehla", "wo wala") ──────────────────
+# Ordinals and deictics resolve against the options in the order the bot
+# spoke them, so a choice ask accepts them without per-bot synonyms.
+_ORDINALS = {
+    "pehla": 0, "पहला": 0, "pehli": 0, "pahla": 0, "pahli": 0, "ek number": 0, "first": 0,
+    "dusra": 1, "दूसरा": 1, "doosra": 1, "dusri": 1, "doosri": 1, "second": 1,
+    "teesra": 2, "तीसरा": 2, "tisra": 2, "third": 2,
+    "chautha": 3, "चौथा": 3, "fourth": 3,
+    "aakhri": -1, "आखिरी": -1, "akhri": -1, "last wala": -1, "last": -1,
+}
+_DEICTIC = ("wo wala", "woh wala", "vo wala", "ye wala", "yeh wala", "wahi", "wohi",
+            "वो वाला", "वह वाला", "ये वाला", "यह वाला", "वही")
+_WALA_SUFFIX_RE = re.compile(r"\s*(?:wala|wali|वाला|वाली)\s*$")
+_POSITIONAL_PUNCT = ".,!?;:\"'()[]" + "।॥"
+
+
+def _positional_key(text: str) -> str:
+    """Lower-cased utterance without punctuation, leading yes-words and a
+    trailing "wala"/"wali" ("Haan, pehla wala." → "pehla")."""
+    tokens = [t.strip(_POSITIONAL_PUNCT).lower() for t in (text or "").split()]
+    tokens = [t for t in tokens if t]
+    while tokens and tokens[0] in _BARE_YES_WORDS:
+        tokens.pop(0)
+    key = " ".join(tokens)
+    if key in _DEICTIC:
+        return key
+    return _WALA_SUFFIX_RE.sub("", key).strip()
+
+
+def positional_choice(text: str, entity: dict, prompt_text: str = "") -> str | None:
+    """The option an ordinal or deictic reply points at, or None.
+
+    Ordinals index the options in spoken order; a deictic ("wo wala",
+    "वही") takes the option the bot mentioned LAST in its prompt. A yes/no
+    ask, an entity without options, an out-of-range ordinal or a deictic
+    with no option in the prompt all return None, so the ask re-asks.
+    """
+    if _yes_no_canonicals(entity) is not None:
+        return None
+    options = choice_options(entity, prompt_text)
+    if not options:
+        return None
+    key = _positional_key(text)
+    if not key:
+        return None
+    if key in _ORDINALS:
+        index = _ORDINALS[key]
+        if index == -1:
+            return options[-1]
+        return options[index] if index < len(options) else None
+    if key in _DEICTIC:
+        synonyms = entity.get("synonyms") if isinstance(entity.get("synonyms"), dict) else {}
+        lowered = (prompt_text or "").lower()
+        last_mentioned: tuple[int, str] | None = None
+        for option in options:
+            surfaces = [option] + [str(s) for s in (synonyms.get(option) or []) if s]
+            ends = [lowered.rfind(s.lower()) + len(s) for s in surfaces if s and s.lower() in lowered]
+            if ends and (last_mentioned is None or max(ends) > last_mentioned[0]):
+                last_mentioned = (max(ends), option)
+        return last_mentioned[1] if last_mentioned else None
+    return None
+
+
+def _positional_choice_value(node: dict, variable: str, text: str) -> str | None:
+    return positional_choice(text, _ask_entity(node, variable), ask_prompt_text(node))
+
+
 def _strip_bare_words(text: str) -> str:
     """The utterance without its leading/trailing yes-no and filler words, so
     "हाँ, customer को call किया था" leaves only the field-level evidence."""
@@ -736,6 +803,13 @@ def resolve_standard(ctx: AskContext) -> bool:
     guarded_free_text = ctx.guarded and _ask_is_free_text(node, variable)
     if ctx.value is None and not guarded_free_text and not ctx.joint_vars:
         ctx.value = _extract_ask_value(node, variable, text)
+    if ctx.value is None and not guarded_free_text and not ctx.joint_vars:
+        # "pehla", "dusra wala", "wo wala": an option by position in the
+        # order the bot spoke them, without per-bot synonyms.
+        ctx.value = _positional_choice_value(node, variable, text)
+        if ctx.value is not None:
+            ctx.audit.append({"action": "positional_answer", "node": ctx.node_id,
+                              "value": ctx.value})
     if ctx.value is None and not guarded_free_text and not ctx.joint_partial:
         ctx.value = _yes_no_from_signal(node, variable, signal)
         if ctx.value is not None:
