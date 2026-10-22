@@ -250,6 +250,29 @@ class TestShortReplyRulesInPrompt:
         assert "Poora ya partial?" not in block
 
 
+# ── router: short answer to a pending question ───────────────────────────────
+
+class TestShortAnswerRouting:
+    async def test_bare_name_with_pending_question_is_answered_not_clarified(self):
+        llm = _LLMStub()
+        brain = make_brain(llm=llm)
+        brain._last_bot_reply = "Aapka naam bataiye?"
+        await brain._handle_turn("Rahul")
+        reasons = [d.get("reason") for k, d in brain._recorder.events if k == "route_decision"]
+        assert reasons == ["short_answer_to_pending"]
+        assert llm.systems, "the reply LLM must answer the short reply"
+        assert "Pending question: Aapka naam bataiye?" in llm.systems[-1]
+
+    async def test_bare_name_with_nothing_pending_keeps_the_canned_clarify(self):
+        llm = _LLMStub()
+        brain = make_brain(llm=llm)
+        brain._last_bot_reply = "Theek hai, dhanyavaad."
+        await brain._handle_turn("Rahul")
+        reasons = [d.get("reason") for k, d in brain._recorder.events if k == "route_decision"]
+        assert reasons == ["too_short"]
+        assert llm.systems == []
+
+
 # ── ask_answer_shape / engine awaitingAsk ────────────────────────────────────
 
 def _ask_node(config):

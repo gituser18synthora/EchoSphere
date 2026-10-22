@@ -414,7 +414,11 @@ class TurnRouter:
         *,
         active_workflow: str | None = None,
         allow_affirm_entry: bool = True,
+        pending_kind: str = "none",
     ) -> RouteDecision:
+        """``pending_kind`` is the brain's PendingAsk kind (yes_no | choice |
+        number | date | time | free_text | none): a very short reply while a
+        question is pending is an answer to it, not an unclear utterance."""
         stripped = (text or "").strip()
         if not stripped:
             return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.3, reason="empty_input")
@@ -553,6 +557,14 @@ class TurnRouter:
         if len(stripped.split()) <= 2:
             signal = classify_user_signal(stripped)
             if signal is None:
+                if pending_kind and pending_kind != "none":
+                    # "Rahul", "2 baje", "wo wala" right after the bot asked a
+                    # question: the reply LLM reads it against that question
+                    # (short-reply rules + PendingAsk) instead of a canned
+                    # "didn't catch that" that burns the caller's answer.
+                    return RouteDecision(kind=RouteKind.CHAT, confidence=0.5,
+                                         reason="short_answer_to_pending",
+                                         considered_kb=True)
                 return RouteDecision(kind=RouteKind.CLARIFY, confidence=0.4,
                                      reason="too_short", considered_kb=True)
             return RouteDecision(kind=RouteKind.CHAT, confidence=0.5,

@@ -97,6 +97,7 @@ async def collect(uri: str, database: str, days: int, channel: str) -> dict:
     short_turns = 0
     short_clarify_routes = 0
     too_short_reasons = 0
+    short_answer_routes = 0          # Phase 1: <=2-word reply answered in context
     channels: dict[str, int] = {}
 
     for doc in docs:
@@ -137,6 +138,8 @@ async def collect(uri: str, database: str, days: int, channel: str) -> dict:
                     disabled = True
             elif kind == "route_decision" and ev.get("reason") == "too_short":
                 too_short_reasons += 1
+            elif kind == "route_decision" and ev.get("reason") == "short_answer_to_pending":
+                short_answer_routes += 1
         if attempted:
             calls_with_engine += 1
             if first_attempt == "timeout":
@@ -161,6 +164,7 @@ async def collect(uri: str, database: str, days: int, channel: str) -> dict:
         "calls_never_decided": calls_never_decided, "calls_disabled": calls_disabled,
         "short_turns": short_turns, "short_clarify_routes": short_clarify_routes,
         "too_short_reasons": too_short_reasons,
+        "short_answer_routes": short_answer_routes,
     }
 
 
@@ -180,6 +184,7 @@ def print_report(r: dict, channel: str) -> None:
     print(f"{'calls: engine self-disabled (3 timeouts)':<44}{_share(r['calls_disabled'], r['calls_with_engine'])}")
     print(f"{'<=2-word caller turns routed to CLARIFY':<44}{_share(r['short_clarify_routes'], r['short_turns'])}")
     print(f"{'route_decision reason=too_short events':<44}{r['too_short_reasons']}")
+    print(f"{'route_decision reason=short_answer_to_pending':<44}{r['short_answer_routes']}")
     print()
     print("notes: the route reason IS recorded (route_decision.reason); turns.route='clarify' on a <=2-word")
     print("       user turn is the canned too_short path outside a workflow. Medians per span do not sum to the")
