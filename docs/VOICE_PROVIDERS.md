@@ -143,6 +143,11 @@ codes, modes and VAD controls as v3 and adds **key-term biasing**:
 
 ### Sarvam realtime STT (`SARVAM_REALTIME_STT`, evaluation flag, OFF)
 
+Partials from this socket reach the barge-in word gate; since 2026-10-22 an
+interim only confirms an interruption with sustained VAD speech and stable
+words (see `barge_in_min_words` in VOICE_RUNTIME.md), because the always-open
+utterance transcribes the bot's own echo on a phone leg.
+
 Pipecat 1.12 ships `SarvamRealtimeSTTService` for Sarvam's newer
 `/speech-to-text-realtime/ws` socket. `voice_runtime/sarvam_realtime_stt.py`
 wraps it; `SARVAM_REALTIME_STT=true` on the voice worker routes Sarvam STT

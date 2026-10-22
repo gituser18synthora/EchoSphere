@@ -100,6 +100,12 @@ in `stt_settings.turn_detection`):
 - `finalize_grace` / `finalize_settle` — debounce for stragglers, skipped when the
   newest final is already stale;
 - `barge_in_min_words` — while the bot is **speaking**, VAD alone cannot interrupt
+  A FINAL transcript of that many words confirms on its own. An INTERIM
+  (realtime STT partial) confirms only when the VAD shows sustained caller
+  speech (>= 0.3 s) AND its leading words are stable across two consecutive
+  updates: the always-open realtime utterance accumulates the bot's own
+  PSTN echo word by word and, counted alone, cut every long reply 2-6 s in
+  (live, 2026-10-22; `voice_runtime/barge_in.py`).
   it; the turn (and the interruption) fires only once the STT has transcribed at
   least this many words (`voice_runtime/barge_in.py`). This is what stopped
   background chatter from chopping replies mid-word. While the bot is quiet, VAD
