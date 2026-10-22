@@ -281,6 +281,69 @@ class TestAlwaysOpenUtterance:
             await service.cleanup()
 
 
+class TestInterimsOnPipecat113:
+    """Phase 2: the realtime socket on pipecat 1.13 — partials reach the
+    pipeline as display-only interims, finals stay ``finalized``, and the
+    language setting no longer goes through the deprecated ``language_code``."""
+
+    async def _run_messages(self, service, messages):
+        pushed: list = []
+
+        async def _push(self_, frame, direction=FrameDirection.DOWNSTREAM):
+            pushed.append(frame)
+
+        parent = type(service).__mro__[1]  # SarvamRealtimeSTTService
+        original = parent.push_frame
+        try:
+            parent.push_frame = _push  # type: ignore[method-assign]
+            for message in messages:
+                await service._handle_message(message)
+        finally:
+            parent.push_frame = original  # type: ignore[method-assign]
+            await service.cleanup()
+        return pushed
+
+    async def test_partials_are_forwarded_and_finals_stay_finalized(self, realtime_on):
+        service = build_stt_service(_config("saaras:v4"))
+        pushed = await self._run_messages(service, [
+            {"event": "transcript.partial", "text": "Zepto se", "language": "hi-IN"},
+            {"event": "transcript.partial", "text": "Zepto se mera", "language": "hi-IN"},
+            {"event": "transcript.partial", "text": ""},                      # blank: dropped
+            {"event": "transcript.final", "text": "Zepto se mera order", "language": "hi-IN",
+             "request_id": "r1"},
+        ])
+        interims = [f for f in pushed if isinstance(f, InterimTranscriptionFrame)]
+        finals = [f for f in pushed if isinstance(f, TranscriptionFrame)]
+        assert [f.text for f in interims] == ["Zepto se", "Zepto se mera"]
+        assert all(interim_is_stability_reference(f) is False for f in interims)
+        assert [f.text for f in finals] == ["Zepto se mera order"]
+        assert finals[0].finalized is True
+        assert interim_is_stability_reference(finals[0]) is True
+
+    async def test_language_setting_without_the_deprecated_language_code(self, realtime_on, recwarn):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            auto = build_stt_service(_config("saaras:v4"))
+            pinned = build_stt_service(_config("saaras:v4", language="hi-IN"))
+        try:
+            assert auto._query_params()["language_code"] == "auto"
+            assert pinned._query_params()["language_code"] == "hi-IN"
+            assert "keyterms" not in auto._query_params()
+        finally:
+            await auto.cleanup()
+            await pinned.cleanup()
+
+    async def test_keyterms_ride_the_realtime_handshake_when_on(self, realtime_on):
+        service = build_stt_service(_config("saaras:v4", {"keyterms": ["Zepto", "MDND"]}))
+        try:
+            assert json.loads(service._query_params()["keyterms"]) == ["Zepto", "MDND"]
+            assert service.keyterms == ["Zepto", "MDND"]
+        finally:
+            await service.cleanup()
+
+
 class TestEvidence:
     async def test_session_events_are_recorded(self, realtime_on):
         recorder = _Recorder()
