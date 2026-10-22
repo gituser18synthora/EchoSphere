@@ -56,12 +56,18 @@ class _AgenticLLMStub(_StreamingLLMStub):
         self.generate_calls = []
 
     async def generate(self, messages, *, system=None, temperature=None,
-                       max_tokens=None, tools=None):
-        self.generate_calls.append({"messages": messages, "system": system})
-        payload = (
-            self._decisions.pop(0) if self._decisions
-            else {"scope": "in_scope", "next_action": "answer"}
-        )
+                       max_tokens=None, tools=None, response_format=None):
+        self.generate_calls.append({"messages": messages, "system": system,
+                                    "max_tokens": max_tokens})
+        if max_tokens == 1:
+            # The call-start prompt warm-up (Phase 2): discarded by the
+            # engine, so it must not consume a scripted decision.
+            payload = {}
+        else:
+            payload = (
+                self._decisions.pop(0) if self._decisions
+                else {"scope": "in_scope", "next_action": "answer"}
+            )
 
         class _Result:
             text = json.dumps(payload)

@@ -543,10 +543,63 @@ class GoalEngine:
         # disables itself for the remainder of the call.
         self._consecutive_timeouts = 0
         self._disabled_after_timeouts = False
+        # Prompt warm-up (Phase 2): one background request with the real
+        # system prompt at call start, so the first real decision does not
+        # pay the cold prefix. ``warmup`` carries its outcome for the call's
+        # event stream; a real decision that starts before the warm-up has
+        # finished is exempt from the consecutive-timeout self-disable.
+        self.warmup: dict | None = None
+        self._warmup_started_at: float | None = None
+        self._warmup_done_at: float | None = None
+        self._first_decision_at: float | None = None
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    # ── prompt warm-up ───────────────────────────────────────────────────
+
+    @property
+    def warmup_pending(self) -> bool:
+        """A warm-up was started and has not finished yet."""
+        return self._warmup_started_at is not None and self._warmup_done_at is None
+
+    async def warm_up(self) -> dict | None:
+        """Prime the provider's prompt cache with the call's real system prompt.
+
+        One request per call: the full decision system prompt, a one-line
+        placeholder user message, ``max_tokens=1`` and the same JSON mode as
+        a real decision, result discarded. Never raises, never counts as a
+        decision attempt or a timeout. Returns the outcome also stored on
+        ``self.warmup``: ``ok``, ``latency_ms``, ``error``,
+        ``before_first_decision`` (True when no real decision had been
+        dispatched before the warm-up finished).
+        """
+        if not self._enabled or self._warmup_started_at is not None:
+            return None
+        self._warmup_started_at = time.perf_counter()
+        error: str | None = None
+        try:
+            await self._llm.generate(
+                [{"role": "user", "content": "Caller's latest utterance:\n(warm-up, ignore)"}],
+                system=self._build_system(),
+                temperature=0.0,
+                max_tokens=1,
+                **self._json_mode_kwargs(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a warm-up must never hurt the call
+            error = type(exc).__name__
+            logger.debug("goal engine warm-up failed: %s", exc)
+        self._warmup_done_at = time.perf_counter()
+        self.warmup = {
+            "ok": error is None,
+            "error": error,
+            "latency_ms": round((self._warmup_done_at - self._warmup_started_at) * 1000, 1),
+            "before_first_decision": self._first_decision_at is None,
+        }
+        return self.warmup
 
     # ── Stage A: the structured decision call ────────────────────────────
 
@@ -570,12 +623,26 @@ class GoalEngine:
             self.last_fallback_reason = "disabled_after_timeouts"
             return None
         started = time.perf_counter()
+        if self._first_decision_at is None:
+            self._first_decision_at = started
+        # A decision that starts while the warm-up is still in flight pays the
+        # cold prefix; its timeout says nothing about the provider's steady
+        # state, so it must not move the self-disable streak.
+        cold = self.warmup_pending
         try:
             raw = await asyncio.wait_for(
                 self._call_llm(stripped, history or [], state or {}),
                 timeout=self._timeout,
             )
         except asyncio.TimeoutError:
+            if cold:
+                logger.warning(
+                    "goal engine decision timed out (%.1fs) before the prompt "
+                    "warm-up finished; not counted toward the self-disable streak",
+                    self._timeout,
+                )
+                self.last_fallback_reason = "timeout_before_warmup"
+                return None
             logger.warning("goal engine decision timed out (%.1fs)", self._timeout)
             self.last_fallback_reason = "timeout"
             self._consecutive_timeouts += 1
