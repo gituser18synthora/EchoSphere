@@ -16,6 +16,10 @@ PACK = LanguagePack(
     canonical_yes=frozenset({"yes"}),
     canonical_no=frozenset({"no"}),
     stop_tokens=frozenset({"aap", "aapko", "and", "been", "cut", "every", "for", "from", "gaya", "gaye", "gayi", "had", "hain", "has", "have", "hoga", "hogi", "hoon", "hota", "hote", "hoti", "hu", "ka", "kab", "kaise", "karta", "karte", "karti", "kata", "kate", "kati", "ke", "ki", "kyu", "kyun", "liye", "main", "me", "mein", "mera", "mere", "meri", "mujhe", "not", "one", "our", "par", "pe", "rahe", "sakta", "sakte", "sakti", "same", "that", "the", "these", "thi", "this", "those", "was", "were", "will", "with", "you", "your"}),
+    hmm_forms=(
+        r"""h+m+""",
+        r"""m+h+m+""",
+    ),
     affirm_tokens=(
         r"""yes""",
         r"""yeah""",

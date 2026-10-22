@@ -92,6 +92,19 @@ _AFFIRM_CONTRADICTION = re.compile(_lang.alternatives("contradiction"), re.I)
 _LEADING_AFFIRM_MAX_TOKENS = 10
 
 
+# "hmm" / "hm" / "mhm" / "हम्म": a filler everywhere (shared.orchestration.lang.hi
+# fillers) EXCEPT as the whole reply to a pending yes/no question, where it is
+# the caller's yes. Never part of the global affirm tokens: "hmm" opening a
+# sentence is thinking, not agreement.
+_HMM_FORM = "(?:" + (_lang.alternatives("hmm_forms") or "(?!)") + ")"
+_HMM_RE = re.compile(r"^\W*" + _HMM_FORM + r"(?:\W+" + _HMM_FORM + r")*\W*$", re.IGNORECASE)
+
+
+def is_bare_hmm(text: str) -> bool:
+    """Whether the utterance is only hmm-forms ("hmm", "hm hm", "हम्म")."""
+    return bool(_HMM_RE.match((text or "").strip()))
+
+
 def leading_affirmation(text: str) -> bool:
     """Whether a short utterance OPENS with a confirmation and carries no
     contrary meaning ("Yes, I am speaking" → True; "yes but I want an agent",
@@ -556,6 +569,8 @@ class TurnRouter:
         # the bot just asked — the LLM answers it in context.
         if len(stripped.split()) <= 2:
             signal = classify_user_signal(stripped)
+            if signal is None and pending_kind == "yes_no" and is_bare_hmm(stripped):
+                signal = "affirm"   # "hmm" answering a yes/no question is a yes
             if signal is None:
                 if pending_kind and pending_kind != "none":
                     # "Rahul", "2 baje", "wo wala" right after the bot asked a

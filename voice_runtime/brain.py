@@ -128,6 +128,7 @@ from shared.orchestration.naturalness import (
     is_serious_caller_state,
 )
 from shared.orchestration.router import (
+    is_bare_hmm,
     leading_affirmation,
     RouteDecision,
     RouteKind,
@@ -5007,6 +5008,7 @@ class ConversationBrain(FrameProcessor):
                 (classification.signal if classification is not None else None)
                 or decision.signal
                 or classify_user_signal(text)
+                or self._hmm_affirm(text)
             )
         if signal == "hold" and classify_user_signal(text) != "hold":
             # A model 'hold' the deterministic hold lexicon does not
@@ -7091,6 +7093,13 @@ class ConversationBrain(FrameProcessor):
         if (opening := self._pending_opening_question()):
             return PendingAsk(opening, "yes_no")
         return self._pending_ask_from_last_reply()
+
+    def _hmm_affirm(self, text: str) -> str | None:
+        """"hmm" as the whole reply to a pending yes/no question is a yes;
+        anywhere else it stays a filler (no signal)."""
+        if self._pending_ask().kind == "yes_no" and is_bare_hmm(text):
+            return "affirm"
+        return None
 
     def _pending_ask_from_last_reply(self) -> PendingAsk:
         last = (self._last_bot_reply or "").strip()
