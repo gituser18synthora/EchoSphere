@@ -1,7 +1,8 @@
 """Sarvam realtime STT (``/speech-to-text-realtime/ws``) behind a flag.
 
-Pipecat 1.12 ships ``SarvamRealtimeSTTService`` for Sarvam's newer realtime
-socket. Compared with the legacy ``/speech-to-text/ws`` streaming socket our
+Pipecat ships ``SarvamRealtimeSTTService`` for Sarvam's newer realtime socket
+(1.13 added the ``keyterms`` handshake, backoff reconnect and ``language``
+in place of ``language_code``). Compared with the legacy ``/speech-to-text/ws`` streaming socket our
 ``EndpointedSarvamSTTService`` adapter uses, the realtime endpoint:
 
 - emits true ``transcript.partial`` events during speech (the legacy socket
@@ -53,7 +54,6 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.sarvam.stt import SarvamRealtimeSTTService
 
 from shared.providers.stt.sarvam_keyterms import (
-    encode_keyterms_query,
     normalize_keyterms,
     supports_keyterms,
 )
@@ -103,34 +103,39 @@ def normalize_stream_type(value: object) -> str:
 
 
 class RealtimeSarvamSTTService(SarvamRealtimeSTTService):
-    """Pipecat's realtime service plus key-term biasing and call-event evidence.
+    """Pipecat's realtime service plus the model gate for key terms and the
+    call-event evidence the call review needs.
 
-    Transcription, endpointing and reconnection behaviour are upstream's; this
-    subclass only adds the ``keyterms`` handshake parameter (``saaras:v4``
-    only — the endpoint closes the socket otherwise) and records the session
-    facts the call review needs.
+    Transcription, endpointing, reconnection (pipecat >= 1.13: backoff
+    reconnect with the open utterance re-announced) and the ``keyterms``
+    handshake parameter are all upstream's. This subclass only refuses key
+    terms for a model that does not support them (the endpoint closes the
+    socket with code 4000 otherwise), keeps the utterance open under manual
+    endpointing, and records session facts.
     """
 
     def __init__(
         self, *args, recorder=None, keyterms: list[str] | None = None, **kwargs
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._recorder = recorder
-        self._keyterms: list[str] = normalize_keyterms(keyterms)
-        if self._keyterms and not supports_keyterms(self._settings.model):
+        terms = normalize_keyterms(keyterms)
+        model = kwargs.get("settings").model if kwargs.get("settings") is not None else None
+        if terms and not supports_keyterms(model):
             logger.warning(
                 "sarvam-realtime: %d keyterm(s) configured but model %r does not "
-                "support key-term biasing; not sent",
-                len(self._keyterms), self._settings.model,
+                "support key-term biasing; not sent", len(terms), model,
             )
-            self._keyterms = []
+            terms = []
+        # Upstream sends ``keyterms`` on the handshake whenever it is not None,
+        # so an empty list must become None (never an empty JSON array).
+        super().__init__(*args, keyterms=terms or None, **kwargs)
+        self._recorder = recorder
         self._utterance_open = False
         self._reopen_count = 0
 
     @property
     def keyterms(self) -> list[str]:
         """Key terms that WILL be sent on the handshake (saaras:v4 only)."""
-        return list(self._keyterms)
+        return list(self._keyterms or [])
 
     @property
     def endpointing(self) -> str:
@@ -163,13 +168,6 @@ class RealtimeSarvamSTTService(SarvamRealtimeSTTService):
             setattr(frame, "_echosphere_stability_reference", False)
         await super().push_frame(frame, direction)
 
-    def _query_params(self) -> dict[str, Any]:
-        params = super()._query_params()
-        if self._keyterms:
-            # One JSON-encoded array; pipecat urlencodes the whole query.
-            params["keyterms"] = encode_keyterms_query(self._keyterms)
-        return params
-
     async def _handle_message(self, message: dict[str, Any]):
         event = message.get("event")
         if self._recorder is not None:
@@ -180,7 +178,7 @@ class RealtimeSarvamSTTService(SarvamRealtimeSTTService):
                     model=str(self._settings.model),
                     endpointing=self._endpointing,
                     stream_type=self.stream_type,
-                    keyterms=len(self._keyterms),
+                    keyterms=len(self._keyterms or []),
                     always_open=self._endpointing == "manual",
                 )
             elif event == "error":

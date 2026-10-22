@@ -17,7 +17,7 @@ the front of the buffer.
 
 from collections.abc import AsyncIterator
 
-from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
+from pipecat.utils.text.base_text_aggregator import Aggregation, TextType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 
@@ -34,7 +34,7 @@ class VoiceSentenceAggregator(SimpleTextAggregator):
         return combined
 
     async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
-        if self._aggregation_type == AggregationType.TOKEN:
+        if self._aggregation_type == TextType.TOKEN:
             async for aggregation in super().aggregate(text):
                 yield aggregation
             return
@@ -59,7 +59,7 @@ class VoiceSentenceAggregator(SimpleTextAggregator):
                 self._text = self._text[cut:].lstrip(" ")
                 self._needs_lookahead = False
                 if chunk:
-                    yield Aggregation(text=chunk, type=AggregationType.SENTENCE)
+                    yield Aggregation(text=chunk, type=TextType.SENTENCE)
 
     async def flush(self) -> Aggregation | None:
         held = self._held  # capture first — super().flush() resets state via reset()
@@ -67,7 +67,7 @@ class VoiceSentenceAggregator(SimpleTextAggregator):
         parts = [part for part in (held, remaining.text if remaining else "") if part]
         self._held = ""
         if parts:
-            return Aggregation(text=" ".join(parts).strip(), type=AggregationType.SENTENCE)
+            return Aggregation(text=" ".join(parts).strip(), type=TextType.SENTENCE)
         return None
 
     async def handle_interruption(self):
