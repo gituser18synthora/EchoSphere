@@ -345,6 +345,16 @@ class TestLatencyBudget:
         assert engine._timeout == 1.6
         assert engine._max_tokens == 200
 
+    def test_live_state_names_the_expected_answer_and_options(self):
+        block = GoalEngine._live_state_block({
+            "pending_question": "Poora ya partial?",
+            "expected_answer": "choice",
+            "options_offered": ["full", "partial"],
+        })
+        assert "- Expected answer type: choice" in block
+        assert "- Options just offered: full, partial" in block
+        assert "Expected answer type" not in GoalEngine._live_state_block({"language": "hi-IN"})
+
     async def test_json_mode_only_for_providers_that_support_it(self):
         # OpenAI-style engines get response_format=json_object (the prompt
         # names "JSON", which that mode requires); fakes/providers without

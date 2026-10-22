@@ -273,6 +273,28 @@ class TestShortAnswerRouting:
         assert llm.systems == []
 
 
+# ── Goal Engine live state ───────────────────────────────────────────────────
+
+class TestOrchestrationState:
+    def test_choice_ask_adds_expected_answer_and_options(self):
+        brain = make_brain()
+        brain._active_workflow = "wf"
+        brain._pending_workflow_question = "Poora ya partial?"
+        brain._pending_ask_shape = {"kind": "choice", "options": ["full", "partial"]}
+        state = brain._orchestration_state()
+        assert state["pending_question"] == "Poora ya partial?"
+        assert state["expected_answer"] == "choice"
+        assert state["options_offered"] == ["full", "partial"]
+
+    def test_yes_no_from_last_reply_and_nothing_pending(self):
+        brain = make_brain()
+        brain._last_bot_reply = "Kya aap kal aa sakte hain?"
+        assert brain._orchestration_state()["expected_answer"] == "yes/no"
+        brain._last_bot_reply = "Dhanyavaad."
+        state = brain._orchestration_state()
+        assert "expected_answer" not in state and "options_offered" not in state
+
+
 # ── ask_answer_shape / engine awaitingAsk ────────────────────────────────────
 
 def _ask_node(config):

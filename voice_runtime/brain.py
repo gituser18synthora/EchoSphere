@@ -5731,6 +5731,16 @@ class ConversationBrain(FrameProcessor):
             state["pending_question"] = self._pending_workflow_question
         elif policy is None and (question := self._pending_opening_question()):
             state["pending_question"] = question
+        # What kind of answer the pending question expects (and the options
+        # the bot just offered): a bare "haan", "2 baje" or "pehla" is judged
+        # against it instead of being labelled unrelated or unclear.
+        pending = self._pending_ask()
+        if pending.kind != "none":
+            state["expected_answer"] = (
+                "choice" if pending.kind == "choice" else pending_kind_label(pending)
+            )
+            if pending.kind == "choice" and pending.options:
+                state["options_offered"] = list(pending.options)
         return state
 
     _DIRECT_SPEAK_PLAN_ACTIONS = frozenset({
