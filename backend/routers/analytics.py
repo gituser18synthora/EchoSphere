@@ -106,6 +106,25 @@ def _kpi(label: str, value: str, delta: float | None, spark: list, intent: str) 
     return out
 
 
+def _avg_call_sec(minutes: float, calls: int) -> int | None:
+    """Average call length in whole seconds, or None when nothing was answered."""
+    if calls <= 0:
+        return None
+    return int(round(minutes * 60 / calls))
+
+
+def _mmss(seconds: int | float | None) -> str:
+    """Zero-padded mm:ss (h:mm:ss past an hour); an em dash when there is no call."""
+    if seconds is None:
+        return "—"
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes:02d}:{secs:02d}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
 @router.get("/analytics/tenant")
 def tenant_analytics(
     days: int = Query(30, ge=7, le=90),
@@ -132,6 +151,13 @@ def tenant_analytics(
     total_contained = int(_sum(daily, "contained"))
     total_escalations = int(_sum(daily, "escalations"))
     containment = round(total_contained / total_calls * 100, 1) if total_calls else 0.0
+    # Average call length = talk minutes ÷ answered calls over the whole
+    # window (ratio of sums), from the same daily rollups as "Total calls".
+    avg_call_sec = _avg_call_sec(_sum(daily, "minutes"), total_calls)
+    avg_call_series = [
+        _avg_call_sec(daily.get(d, {}).get("minutes", 0), daily.get(d, {}).get("calls", 0)) or 0
+        for d in dates
+    ]
     ai_cost = _ai_cost_sum(daily)
     total_cost = ai_cost + _sum(daily, "telephony")
     cost_per_call = round(total_cost / total_calls, 3) if total_calls else 0.0
@@ -179,6 +205,7 @@ def tenant_analytics(
     prev_containment = (prev_contained / prev_calls * 100) if prev_calls else 0
     prev_ai_cost = _ai_cost_sum(prev)
     prev_escalations = int(_sum(prev, "escalations"))
+    prev_avg_call_sec = _avg_call_sec(_sum(prev, "minutes"), prev_calls)
 
     # Sentiment / language / intents from conversation metadata in the window.
     conv_stmt = select(
@@ -249,6 +276,9 @@ def tenant_analytics(
         _kpi("Escalations", f"{total_escalations:,}",
              _delta(total_escalations, prev_escalations),
              [daily.get(d, {}).get("escalations", 0) for d in dates][-14:], "down-good"),
+        _kpi("Avg call duration", _mmss(avg_call_sec),
+             _delta(avg_call_sec or 0, prev_avg_call_sec or 0),
+             avg_call_series[-14:], "neutral"),
         _kpi("Avg CSAT", f"{avg_csat} / 5" if avg_csat else "—", None,
              [round(daily_csat.get(d, 0) * 10) for d in dates][-14:], "up-good"),
         _kpi("Avg STT Input Characters / Min", f"{stt_chars_per_min:,.1f}", None,
@@ -448,7 +478,11 @@ def platform_analytics(
     ).all()
 
     top_tenants = db.execute(
-        select(Tenant.name, func.coalesce(func.sum(UsageRecord.calls), 0).label("calls"))
+        select(
+            Tenant.name,
+            func.coalesce(func.sum(UsageRecord.calls), 0).label("calls"),
+            func.coalesce(func.sum(UsageRecord.minutes), 0).label("minutes"),
+        )
         .join(UsageRecord, UsageRecord.tenant_id == Tenant.id)
         .where(
             UsageRecord.date >= start,
@@ -485,7 +519,13 @@ def platform_analytics(
             for name, mrr in mrr_by_plan
         ],
         "topTenantsByCalls": [
-            {"label": name, "value": int(calls)} for name, calls in top_tenants if calls
+            {
+                "label": name,
+                "value": int(calls),
+                "avgDurationSec": _avg_call_sec(float(minutes), int(calls)),
+                "avgDuration": _mmss(_avg_call_sec(float(minutes), int(calls))),
+            }
+            for name, calls, minutes in top_tenants if calls
         ],
         "aiCostByProvider": [
             {"label": "LLM", "value": round(cost_llm)},
