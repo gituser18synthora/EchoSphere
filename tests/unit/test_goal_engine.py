@@ -345,6 +345,54 @@ class TestLatencyBudget:
         assert engine._timeout == 1.6
         assert engine._max_tokens == 200
 
+    async def test_warm_up_fires_once_and_is_discarded(self):
+        engine, llm = make_engine({"scope": "in_scope", "next_action": "answer"})
+        first = await engine.warm_up()
+        assert await engine.warm_up() is None            # once per call
+        assert len(llm.calls) == 1 and llm.calls[0]["max_tokens"] == 1
+        assert "JSON" in llm.calls[0]["system"]          # the real system prompt
+        assert first["ok"] is True and first["before_first_decision"] is True
+        assert first["latency_ms"] >= 0 and engine.warmup is first
+        assert engine.last_fallback_reason is None and engine._consecutive_timeouts == 0
+        assert not engine.warmup_pending
+        # a real decision afterwards is unaffected and counts as the first one
+        assert await engine.decide("haan", []) is not None
+        assert len(llm.calls) == 2
+
+    async def test_warm_up_failure_is_swallowed(self):
+        engine, llm = make_engine({"scope": "in_scope"}, fail=True)
+        outcome = await engine.warm_up()
+        assert outcome["ok"] is False and outcome["error"] == "RuntimeError"
+        assert engine.enabled and not engine._disabled_after_timeouts
+        assert engine.last_fallback_reason is None
+
+    async def test_timeout_before_warm_up_finished_does_not_count(self):
+        # Timeout 0.5 s (the clamp floor) against a 0.7 s provider: every
+        # decision times out. The one dispatched while the warm-up is still
+        # in flight must not move the self-disable streak; the three after
+        # it must.
+        engine, llm = make_engine({"scope": "in_scope"}, delay=0.7)
+        warmup = asyncio.get_event_loop().create_task(engine.warm_up())
+        await asyncio.sleep(0)
+        assert engine.warmup_pending
+        assert await engine.decide("haan", []) is None
+        assert engine.last_fallback_reason == "timeout_before_warmup"
+        assert engine._consecutive_timeouts == 0 and not engine._disabled_after_timeouts
+        outcome = await warmup
+        assert outcome["before_first_decision"] is False  # the decision started first
+        for expected in (1, 2, 3):
+            assert await engine.decide("haan", []) is None
+            assert engine.last_fallback_reason == (
+                "timeout" if expected < 3 else "timeout")
+            assert engine._consecutive_timeouts == expected
+        assert engine._disabled_after_timeouts
+        assert await engine.decide("haan", []) is None
+        assert engine.last_fallback_reason == "disabled_after_timeouts"
+
+    async def test_disabled_engine_never_warms_up(self):
+        engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY, enabled=False)
+        assert await engine.warm_up() is None and engine.warmup is None
+
     def test_live_state_names_the_expected_answer_and_options(self):
         block = GoalEngine._live_state_block({
             "pending_question": "Poora ya partial?",

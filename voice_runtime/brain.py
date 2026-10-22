@@ -1066,6 +1066,8 @@ class ConversationBrain(FrameProcessor):
         # while the endpoint timer runs (dead time) — (text, task). Consumed
         # by the dispatched turn only when the text still matches exactly.
         self._decision_prefetch: tuple[str, asyncio.Task] | None = None
+        # Goal Engine prompt warm-up task (Phase 2), one per call.
+        self._decision_warmup_task: asyncio.Task | None = None
         # Engine-off bots: the hybrid classifier's LLM call, speculated on the
         # same text/consume/discard contract as the decision prefetch.
         self._classify_prefetch: tuple[str, asyncio.Task] | None = None
@@ -4664,6 +4666,9 @@ class ConversationBrain(FrameProcessor):
             setattr(self, slot, None)
             if prefetch is not None:
                 prefetch[1].cancel()
+        warmup, self._decision_warmup_task = self._decision_warmup_task, None
+        if warmup is not None and not warmup.done():
+            warmup.cancel()
         await self._cancel_generation("cleanup")
         release = getattr(self._naturalness, "clear_call_history", None)
         if callable(release):
@@ -7791,6 +7796,11 @@ class ConversationBrain(FrameProcessor):
         """
         if self._client_info:
             await self._notify_client({"type": "session_config", **self._client_info})
+        # Prime the decision model's prompt cache while the greeting plays:
+        # the call's FIRST real decision otherwise pays the cold 2k-token
+        # prefix and routinely overran its budget. Background, once per call,
+        # never awaited by the pipeline (voice_runtime.brain._run_decision_warmup).
+        self._start_decision_warmup()
         if self._conversation_language != self._config.language:
             # Language continuity chose a different starting locale: the TTS
             # router must speak the greeting with that locale's voice.
@@ -7807,6 +7817,30 @@ class ConversationBrain(FrameProcessor):
             "identity_verification" if self._policy is not None else "",
         )
         await self._say(self._config.greeting)
+
+    def _start_decision_warmup(self) -> None:
+        """Start the Goal Engine prompt warm-up once per call (no-op otherwise)."""
+        engine = self._goal_engine
+        if (
+            self._decision_warmup_task is not None
+            or not engine.enabled
+            or engine.warmup is not None
+            or engine.warmup_pending
+        ):
+            return
+        self._decision_warmup_task = self.create_task(self._run_decision_warmup())
+
+    async def _run_decision_warmup(self) -> None:
+        """Await the warm-up and record its outcome; errors never surface."""
+        try:
+            outcome = await self._goal_engine.warm_up()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a warm-up must never hurt the call
+            logger.debug("decision warm-up crashed", exc_info=True)
+            return
+        if outcome is not None:
+            self._recorder.add_event("decision_warmup", **outcome)
 
     async def _speak_memory_greeting(self) -> bool:
         """Open a repeat-contact call as a continuation, not a restart.
