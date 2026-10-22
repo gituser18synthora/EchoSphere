@@ -417,6 +417,28 @@ class TestUserSignalClassifier:
         assert self._signal("haan na") != "refusal"
         assert self._signal("na") is None
 
+    def test_short_reply_with_pending_question_is_an_answer(self):
+        # Phase 1: a <=2-word reply that carries no signal is CHAT while the
+        # bot is waiting for an answer, and the canned too_short clarify only
+        # when nothing is pending.
+        router = make_router()
+        for text in ("Rahul", "2 baje", "wo wala", "pehla", "Mumbai", "kal subah"):
+            pending = router.decide(text, pending_kind="free_text")
+            assert pending.kind == RouteKind.CHAT, text
+            assert pending.reason == "short_answer_to_pending", text
+            assert pending.signal is None
+            idle = router.decide(text)
+            assert idle.kind == RouteKind.CLARIFY and idle.reason == "too_short", text
+        for kind in ("yes_no", "choice", "number", "date", "time"):
+            assert router.decide("Rahul", pending_kind=kind).reason == "short_answer_to_pending"
+        assert router.decide("Rahul", pending_kind="none").reason == "too_short"
+
+    def test_short_signal_and_longer_replies_are_unchanged_by_pending(self):
+        router = make_router()
+        assert router.decide("haan", pending_kind="yes_no").reason == "short_signal"
+        assert router.decide("nahi ji", pending_kind="free_text").reason == "short_signal"
+        assert router.decide("mera naam Rahul hai", pending_kind="free_text").reason == "default_chat"
+
     def test_short_roman_affirmations_route_to_chat(self):
         router = make_router()
         for text in ("accha", "acha ji", "pakka", "ji nahi", "nahi ji"):

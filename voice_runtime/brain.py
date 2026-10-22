@@ -4358,6 +4358,7 @@ class ConversationBrain(FrameProcessor):
             decision = self._router.decide(
                 text, active_workflow=self._active_workflow,
                 allow_affirm_entry=not self._workflow_ever_routed,
+                pending_kind=self._pending_ask().kind,
             ) if text else None
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             decision = None
@@ -4593,6 +4594,9 @@ class ConversationBrain(FrameProcessor):
             text,
             active_workflow=self._active_workflow,
             allow_affirm_entry=not self._workflow_ever_routed,
+            # A <=2-word reply while a question is pending routes to CHAT
+            # (short_answer_to_pending) instead of the canned clarification.
+            pending_kind=self._pending_ask().kind,
         )
         if decision.kind in (
             RouteKind.CALL_CONTROL, RouteKind.HANDOFF, RouteKind.SAFETY,
@@ -4844,6 +4848,9 @@ class ConversationBrain(FrameProcessor):
             text,
             active_workflow=self._active_workflow,
             allow_affirm_entry=not self._workflow_ever_routed,
+            # A <=2-word reply while a question is pending routes to CHAT
+            # (short_answer_to_pending) instead of the canned clarification.
+            pending_kind=self._pending_ask().kind,
         )
         if (
             decision.kind == RouteKind.KNOWLEDGE
