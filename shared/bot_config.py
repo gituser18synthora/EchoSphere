@@ -705,7 +705,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         # when the CONVERSATION model is reasoning-class the fast defaults
         # follow. The per-turn decision call is a small, hard-deadline JSON
         # task; reasoning-era conversation models routinely blow that deadline
-        # (measured: gpt-5-mini ~3-4s vs the 1.2s budget, falling back to
+        # (measured: gpt-5-mini ~3-4s vs the 1.6 s budget, falling back to
         # regex every turn) — so a reasoning conversation model never decides
         # by default: the platform's non-reasoning default (or, failing that,
         # the pinned fast engine) does, and the reasoning model keeps the
