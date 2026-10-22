@@ -328,7 +328,7 @@ class TestGoalEngineDecide:
 class TestLatencyBudget:
     def test_default_budget_is_tight(self):
         engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY)
-        assert engine._timeout == 1.2
+        assert engine._timeout == 1.6
         assert engine._max_tokens == 200
 
     def test_configured_values_are_clamped_to_safe_ranges(self):
@@ -342,7 +342,7 @@ class TestLatencyBudget:
         assert engine._max_tokens == 64
         engine = GoalEngine(llm=_DecisionLLM({}), policy=LOAN_POLICY,
                             timeout_seconds="junk", max_tokens=None)
-        assert engine._timeout == 1.2
+        assert engine._timeout == 1.6
         assert engine._max_tokens == 200
 
     async def test_max_tokens_reaches_the_model_call(self):

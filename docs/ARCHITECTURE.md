@@ -102,7 +102,7 @@ Migrations: `env/bin/python -m backend.cli migrate` (MySQL),
   run around it: platform commands, hangup/DNC detection and deterministic fast
   paths resolve before the decision call; the legacy `TurnRouter` regex/scripted
   routing (`router.py`) is the fallback when the engine is disabled, times out
-  (1.2 s budget) or fails. Stateful multi-step flows run on the LangGraph
+  (1.6 s budget) or fails. Stateful multi-step flows run on the LangGraph
   `WorkflowEngine` (`workflow_engine.py`, PostgreSQL checkpoints). See
   [WORKFLOWS.md](WORKFLOWS.md).
 - **Post-call intelligence** (`shared/post_call/`) — durable background analysis of

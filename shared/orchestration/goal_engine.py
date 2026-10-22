@@ -66,8 +66,10 @@ logger = logging.getLogger(__name__)
 
 # Hard decision deadline: the call sits serially before every reply, so a
 # slow decision is a slow TURN. Past this budget the deterministic fallback
-# answers immediately — never a second sequential model call.
-_DEFAULT_TIMEOUT_SECONDS = 1.2
+# answers immediately — never a second sequential model call. 1.6 s: the
+# measured live decision p50 is ~1,245 ms (14-day telephony sample to
+# 2026-10-07); the earlier 1.2 s budget timed out on 75 % of first attempts.
+_DEFAULT_TIMEOUT_SECONDS = 1.6
 # Latency budget: the decision call sits serially before every reply, so its
 # payload is kept small — a short rolling history window (each turn capped)
 # and a bounded output. The full conversation lives in Stage-B's history.

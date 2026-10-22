@@ -116,7 +116,7 @@ first audio, and the total the caller actually feels.
    paths resolve without paying any LLM latency. A safety rule fires when a caller
    reads out card numbers/OTPs/passwords.
 2. **Goal Engine decision** (`shared/orchestration/goal_engine.py`) — one bounded,
-   structured LLM call per turn (default engine `gpt-4o-mini`, 1.2 s default
+   structured LLM call per turn (default engine `gpt-4o-mini`, 1.6 s default
    budget; per-bot `llmSettings.orchestration_timeout_seconds` is clamped to
    0.5–5.0 s)
    produces a validated `ConversationDecision`: intent, generic signal,
@@ -156,7 +156,7 @@ Conversation history is capped at 20 turns (`_HISTORY_MAX_TURNS`).
 | Session (transport) timeout | `VOICE_SESSION_TIMEOUT` → `FastAPIWebsocketParams.session_timeout` | 900 s |
 | Idle timeout | `silence_timeout * 4` → `PipelineWorker(idle_timeout_secs=...)` | 48 s |
 | Worker concurrency | `VOICE_WORKER_CONCURRENCY` (WS closed 4429 at capacity) | 20 |
-| Goal Engine decision budget | `llmSettings.orchestration_timeout_seconds`, clamped by `GoalEngine` | 1.2 s (allowed 0.5–5.0 s) |
+| Goal Engine decision budget | `llmSettings.orchestration_timeout_seconds`, clamped by `GoalEngine` | 1.6 s (allowed 0.5–5.0 s) |
 
 ## Providers
 
