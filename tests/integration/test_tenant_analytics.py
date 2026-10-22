@@ -52,11 +52,11 @@ def analytics_tenant():
         session.add_all([
             UsageRecord(
                 id=new_id("ur"), tenant_id=tenant.id, date=yesterday,
-                calls=10, csat_avg=1.0,
+                calls=10, minutes=5.0, csat_avg=1.0,
             ),
             UsageRecord(
                 id=new_id("ur"), tenant_id=tenant.id, date=today,
-                calls=10, csat_avg=5.0,
+                calls=10, minutes=15.0, csat_avg=5.0,
             ),
         ])
 
@@ -127,6 +127,38 @@ def test_avg_csat_ignores_unrated_conversations(analytics_tenant):
     csat = _kpi(response.json(), "Avg CSAT")
     assert csat["value"] == "—"
     assert csat["spark"] == [0] * 14
+
+
+def test_avg_call_duration_is_talk_minutes_over_calls_in_mm_ss(analytics_tenant):
+    """20 talk minutes over 20 calls = 60 s, shown as mm:ss. The sparkline
+    carries the per-day average in seconds (30 s yesterday, 90 s today), not
+    an average of the two daily averages."""
+    with TestClient(app) as client:
+        response = client.get(
+            f"{API}/analytics/tenant?days=30", headers=analytics_tenant["headers"],
+        )
+
+    assert response.status_code == 200, response.text
+    duration = _kpi(response.json(), "Avg call duration")
+    assert duration["value"] == "01:00"
+    assert duration["spark"][-2:] == [30, 90]
+    assert duration["intent"] == "neutral"
+    assert "delta" not in duration  # no calls in the previous window
+
+
+def test_avg_call_duration_is_a_dash_without_calls(analytics_tenant):
+    """The bot filter selects per-bot rollups, and the fixture only has
+    tenant-level rows: zero calls must not become 00:00."""
+    with TestClient(app) as client:
+        response = client.get(
+            f"{API}/analytics/tenant?days=30&botId={analytics_tenant['bot_id']}",
+            headers=analytics_tenant["headers"],
+        )
+
+    assert response.status_code == 200, response.text
+    duration = _kpi(response.json(), "Avg call duration")
+    assert duration["value"] == "—"
+    assert duration["spark"] == [0] * 14
 
 
 def test_character_rates_use_ratio_of_sums_over_call_minutes(analytics_tenant):

@@ -458,7 +458,7 @@ export interface Kpi {
   delta?: number; // percent vs previous period
   deltaLabel?: string;
   spark?: number[];
-  intent?: "up-good" | "down-good"; // which direction is good
+  intent?: "up-good" | "down-good" | "neutral"; // which direction is good; neutral = none
 }
 
 /* ---------- Tenancy ---------- */

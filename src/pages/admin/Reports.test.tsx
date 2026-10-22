@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Reports from "@/pages/admin/Reports";
@@ -27,7 +27,7 @@ const ANALYTICS = {
   revVsCost: [{ t: "Jul 24", revenue: 100, aiCost: 12 }],
   planMix: [],
   mrrByPlan: [{ label: "Growth", value: 3000 }],
-  topTenantsByCalls: [{ label: "Tenant", value: 10 }],
+  topTenantsByCalls: [{ label: "Tenant", value: 10, avgDurationSec: 69, avgDuration: "01:09" }],
   aiCostByProvider: [{ label: "LLM", value: 12 }],
 };
 
@@ -62,6 +62,16 @@ describe("Super Admin Reports downloads", () => {
     expect(reportApi.downloadReport).toHaveBeenLastCalledWith(
       "ai_cost", "xlsx", { days: 30 },
     );
+  });
+
+  it("lists each top tenant with its call count and average call duration in labelled columns", async () => {
+    render(<Reports />);
+    const title = await screen.findByText("Top tenants by call volume");
+    const card = within(title.closest(".card") as HTMLElement);
+    expect(card.getByText("Calls")).toBeInTheDocument();
+    expect(card.getByText("Avg duration")).toBeInTheDocument();
+    expect(card.getByText("Tenant")).toBeInTheDocument();
+    expect(card.getByText("01:09")).toBeInTheDocument();
   });
 
   it("keeps the date filter functional and exports the selected range", async () => {

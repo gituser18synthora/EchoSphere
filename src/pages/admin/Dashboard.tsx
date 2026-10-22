@@ -103,7 +103,12 @@ export default function AdminDashboard() {
 
       <div className="grid grid-3 mt-16">
         <ChartCard title="Top tenants by calls" sub="This month">
-          {a ? <HBarList data={a.topTenantsByCalls} /> : <CardSkeleton rows={5} />}
+          {a ? (
+            <HBarList
+              data={a.topTenantsByCalls.map((t) => ({ ...t, detail: t.avgDuration }))}
+              columns={{ value: "Calls", detail: "Avg duration" }}
+            />
+          ) : <CardSkeleton rows={5} />}
         </ChartCard>
         <ChartCard title="Tenant plan mix" sub={`${tenantCount} tenants`}>
           {a ? <Donut data={a.planMix} centerValue={String(tenantCount)} centerLabel="tenants" /> : <CardSkeleton rows={5} />}

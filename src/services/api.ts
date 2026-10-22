@@ -707,7 +707,12 @@ export interface PlatformAnalytics {
   revVsCost: { t: string; revenue: number; aiCost: number }[];
   planMix: { label: string; value: number }[];
   mrrByPlan: { label: string; value: number }[];
-  topTenantsByCalls: { label: string; value: number }[];
+  topTenantsByCalls: {
+    label: string;
+    value: number;
+    avgDurationSec: number | null; // talk minutes ÷ calls in the window
+    avgDuration: string; // backend-formatted mm:ss
+  }[];
   aiCostByProvider: { label: string; value: number }[];
 }
 
