@@ -221,9 +221,12 @@ class EchoDeepgramFluxSTTService(DeepgramFluxSTTService):
         await self.broadcast_frame(UserStartedSpeakingFrame)
         await self.broadcast_interruption()
 
-    async def _handle_update(self, transcript: str):
+    async def _handle_update(self, transcript: str, data: dict | None = None):
         await self._maybe_confirm_barge_in(transcript)
-        await super()._handle_update(transcript)
+        # pipecat >= 1.13 pushes an InterimTranscriptionFrame per Update (the
+        # transcript of the turn so far) and reads the detected language from
+        # ``data``; the brain treats interims as UI-only partials.
+        await super()._handle_update(transcript, data or {})
 
     async def _handle_eager_end_of_turn(self, transcript: str, data: dict):
         await self._maybe_confirm_barge_in(transcript)
