@@ -812,6 +812,8 @@ class GoalEngine:
             ("conversation_state", "Conversation state"),
             ("last_bot_question", "The bot's last utterance (the caller is answering THIS)"),
             ("pending_question", "Pending question awaiting an answer"),
+            ("expected_answer", "Expected answer type"),
+            ("options_offered", "Options just offered"),
             ("identity_state", "Identity confirmation status"),
             ("missing_slots", "Required values still missing"),
             ("known_info", "Known caller information (masked)"),
