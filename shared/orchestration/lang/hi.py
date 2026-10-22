@@ -32,6 +32,14 @@ PACK = LanguagePack(
         r"""zaroor""",
         r"""jarur""",
         r"""sahi(?: hai)?""",
+        # Roman spellings of अच्छा / पक्का / ज़रूर: heard as bare agreement on
+        # live calls, previously signal-less and routed to a canned clarify.
+        r"""accha""",
+        r"""acha""",
+        r"""achha""",
+        r"""achcha""",
+        r"""pakka""",
+        r"""jaroor""",
         r"""हाँजी""",
         r"""हांजी""",
         r"""हाँ""",

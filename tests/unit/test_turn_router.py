@@ -389,6 +389,41 @@ class TestUserSignalClassifier:
         assert self._signal("yes yesterday") is None
         assert self._signal("no news is good news") is None
 
+    def test_roman_accha_family_is_an_affirmation(self):
+        # Roman spellings of अच्छा / पक्का / ज़रूर were signal-less: a bare
+        # "accha" earned the canned too_short clarification (Phase 0 fix).
+        for text in ("accha", "acha ji", "achha", "achcha", "Accha.", "pakka",
+                     "jaroor", "accha accha", "accha theek hai"):
+            assert self._signal(text) == "affirm", text
+
+    def test_leading_particle_does_not_hide_a_refusal(self):
+        # "ji nahi" / "haan nahi" matched neither affirm nor refusal because
+        # the bare-negation clause was anchored at the utterance start.
+        for text in ("ji nahi", "nahi ji", "ji nahi ji", "haan nahi", "han nahi",
+                     "arre nahi", "are nahi ji", "na ji", "जी नहीं", "हाँ नहीं",
+                     "अरे नहीं", "ना जी", "Ji nahi."):
+            assert self._signal(text) == "refusal", text
+
+    def test_negation_wins_over_affirm_in_the_same_utterance(self):
+        for text in ("haan nahi", "ji nahi", "haan nahi nahi"):
+            assert self._signal(text) == "refusal", text
+        # ...while the particle alone, or an affirm without a negation, stays yes.
+        for text in ("ji", "haan ji", "ji haan"):
+            assert self._signal(text) == "affirm", text
+
+    def test_bare_na_and_tag_questions_are_not_refusals(self):
+        # Roman "na" doubles as a tag question ("hai na?"); only "na ji" is a no.
+        assert self._signal("hai na") is None
+        assert self._signal("haan na") != "refusal"
+        assert self._signal("na") is None
+
+    def test_short_roman_affirmations_route_to_chat(self):
+        router = make_router()
+        for text in ("accha", "acha ji", "pakka", "ji nahi", "nahi ji"):
+            decision = router.decide(text)
+            assert decision.kind == RouteKind.CHAT, text
+            assert decision.reason == "short_signal", text
+
     def test_repeated_short_confirmations_route_to_chat(self):
         router = make_router()
         for text in ("Yes yes.", "No no."):
