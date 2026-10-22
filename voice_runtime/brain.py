@@ -3187,6 +3187,13 @@ class ConversationBrain(FrameProcessor):
             # the endpoint (next final) or closes the turn (pause window).
             self._recorder.add_event("adaptive_endpoint_deferred", reason="speech_active")
             return
+        # How this turn ended, for turn_timing: the complete-thought shortcut
+        # fired while the controller still held the turn open, or an orphan
+        # final was debounced with no open turn. A controller stop (Smart
+        # Turn / pause window) marked itself first and keeps precedence.
+        self._latency.mark_endpoint_by(
+            "lexical_shortcut" if (ignore_open_turn and self._turn_active) else "finalize_grace"
+        )
         await self._consume_pending_turn()
 
     async def _on_physical_speech_resumed(self) -> None:

@@ -171,6 +171,10 @@ class Settings(BaseSettings):
     # ~1.1 s into speech) or "fast" (~0.6 s; same final latency, measured
     # 2026-10-06).
     sarvam_realtime_stream_type: str = "balanced"
+    # Smart Turn end-of-turn model (voice_runtime.smart_turn): process-wide
+    # kill switch over the tenant ``turn_detection.smart_turn`` mode. False
+    # keeps every call on the fixed pause window regardless of tenant config.
+    smart_turn_enabled: bool = True
     tts_provider: str = "sarvam"
     tts_api_key_reference: str = "env:SARVAM_API_KEY"
     tts_model: str = "bulbul:v3"

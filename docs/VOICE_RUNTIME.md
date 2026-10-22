@@ -85,6 +85,14 @@ in `stt_settings.turn_detection`):
 
 - `user_speech_timeout` — the normal pause window (defaults: 1.2 s browser,
   0.7 s telephony);
+- `smart_turn` — 0 off / 1 auto / 2 on (default auto): pipecat's bundled Smart
+  Turn v3.2 model (`voice_runtime.smart_turn`) predicts the end of turn from
+  the audio and ends the turn as soon as the final transcript lands; the pause
+  window above stays the fallback. `auto` applies only to the 23 languages on
+  the model card (Hindi, English, Marathi, Bengali…; not Tamil/Malayalam).
+  `SMART_TURN_ENABLED=false` disables it for every tenant. `turn_timing`
+  records `endpoint_by` (smart_turn | pause_timeout | lexical_shortcut |
+  finalize_grace) and the model probability;
 - `complete_endpoint` — a much shorter endpoint used when the buffered text reads
   as a finished thought;
 - `short_reply_endpoint` — shorter still for self-contained short replies

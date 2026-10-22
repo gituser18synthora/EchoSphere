@@ -813,6 +813,60 @@ def build_llm_provider(config: ResolvedBotConfig):
     )
 
 
+def build_user_turn_stop_strategies(
+    turn: dict[str, float],
+    config: ResolvedBotConfig,
+    *,
+    wait_for_final: bool,
+    tracker=None,
+    recorder=None,
+    smart_turn_enabled: bool | None = None,
+) -> list:
+    """The stop strategies for one call's ``UserTurnProcessor``.
+
+    Always the pause window (``FinalBoundedTurnStopStrategy``): the brain
+    gates the LLM on the resulting UserStoppedSpeakingFrame, so this timeout
+    IS the pause a caller gets before the bot takes the turn. With Smart Turn
+    enabled for the call (tenant ``turn_detection.smart_turn`` + the
+    SMART_TURN_ENABLED kill switch + the model's language list, see
+    voice_runtime.smart_turn) the analyzer strategy runs alongside it:
+    whichever triggers first ends the turn, so the window stays the fallback.
+    """
+    from voice_runtime.smart_turn import build_smart_turn_strategy, smart_turn_mode_from_setting
+    from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
+
+    strategies: list = []
+    smart = build_smart_turn_strategy(
+        mode=smart_turn_mode_from_setting(turn.get("smart_turn", 1)),
+        language=config.language,
+        enabled=(
+            get_settings().smart_turn_enabled
+            if smart_turn_enabled is None else bool(smart_turn_enabled)
+        ),
+        user_speech_timeout=turn["user_speech_timeout"],
+        wait_for_transcript=wait_for_final,
+        tracker=tracker,
+        recorder=recorder,
+    )
+    if smart is not None:
+        strategies.append(smart)
+    strategies.append(FinalBoundedTurnStopStrategy(
+        # The strategy's timer starts AT the VAD stop, which itself
+        # required stop_secs of silence — charging both stacked the
+        # windows (0.9 s effective on telephony where 0.7 s was
+        # configured). The caller's total pause budget IS
+        # user_speech_timeout; deduct the silence already spent.
+        user_speech_timeout=max(
+            0.2, turn["user_speech_timeout"] - turn["stop_secs"]
+        ),
+        # Bounded by the STT's advertised final latency, never by
+        # the processor's 5 s fallback (voice_runtime.turn_stop).
+        wait_for_transcript=wait_for_final,
+        tracker=tracker,
+    ))
+    return strategies
+
+
 def build_voice_pipeline(
     *,
     transport,
@@ -1127,7 +1181,6 @@ def build_voice_pipeline(
         # that never set ``finalized`` keep the transcript-free close.
         from voice_runtime.sarvam_realtime_stt import RealtimeSarvamSTTService
         from voice_runtime.sarvam_stt import EndpointedSarvamSTTService
-        from voice_runtime.turn_stop import FinalBoundedTurnStopStrategy
 
         # Both Sarvam adapters mark every final ``finalized`` (the realtime
         # socket does so natively), so the bounded wait applies to both.
@@ -1136,22 +1189,10 @@ def build_voice_pipeline(
         )
         user_turn_strategies = UserTurnStrategies(
             start=[start_strategy],
-            # The brain gates the LLM on the resulting UserStoppedSpeakingFrame,
-            # so this timeout IS the pause window a caller gets before the bot
-            # takes the turn.
-            stop=[FinalBoundedTurnStopStrategy(
-                # The strategy's timer starts AT the VAD stop, which itself
-                # required stop_secs of silence — charging both stacked the
-                # windows (0.9 s effective on telephony where 0.7 s was
-                # configured). The caller's total pause budget IS
-                # user_speech_timeout; deduct the silence already spent.
-                user_speech_timeout=max(
-                    0.2, turn["user_speech_timeout"] - turn["stop_secs"]
-                ),
-                # Bounded by the STT's advertised final latency, never by
-                # the processor's 5 s fallback (voice_runtime.turn_stop).
-                wait_for_transcript=wait_for_final,
-            )],
+            stop=build_user_turn_stop_strategies(
+                turn, config, wait_for_final=wait_for_final, tracker=tracker,
+                recorder=recorder,
+            ),
         )
     processors.append(UserTurnProcessor(user_turn_strategies=user_turn_strategies))
     processors += [brain, tts]
