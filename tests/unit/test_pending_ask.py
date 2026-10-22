@@ -33,20 +33,59 @@ class _RecorderStub:
         self.events.append((kind, data))
 
 
-def make_brain(**kwargs) -> ConversationBrain:
+class _LLMStub:
+    """Records the system prompt and streams a fixed reply."""
+
+    def __init__(self, reply="ठीक है।"):
+        self.reply = reply
+        self.systems = []
+
+    def stream(self, history, *, system, temperature, max_tokens):
+        self.systems.append(system)
+
+        async def _gen():
+            yield self.reply
+
+        return _gen()
+
+
+class _WorkflowStub:
+    def __init__(self, result):
+        self.result = result
+
+    async def handle_turn_detailed(self, **kwargs):
+        return self.result
+
+
+def make_brain(llm=None, workflow_engine=None, **kwargs) -> ConversationBrain:
     config = ResolvedBotConfig(
         tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1",
         published=True, language="hi-IN", languages=["hi-IN"],
         stt={"provider": "sarvam"}, system_prompt="You are Test.", **kwargs,
     )
-    brain = ConversationBrain(config=config, llm=None, recorder=_RecorderStub(), finalize_grace=0.05)
+    brain = ConversationBrain(config=config, llm=llm, recorder=_RecorderStub(),
+                              workflow_engine=workflow_engine, finalize_grace=0.05)
     brain._pushed = []
+    brain._notified = []
 
     async def _push(frame, direction=None):
         brain._pushed.append(frame)
 
+    async def _notify(payload):
+        brain._notified.append(payload)
+
     brain.push_frame = _push
+    brain._notify_client = _notify
     brain.create_task = lambda coro, name=None: asyncio.get_event_loop().create_task(coro)
+
+    async def _cancel_task(task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    brain.cancel_task = _cancel_task
     return brain
 
 
@@ -134,8 +173,13 @@ class TestLastReplyHeuristics:
         for reply in ("Kya aap abhi payment karenge?", "क्या आप राहुल जी हैं?",
                       "Aapka address Mumbai hai, sahi hai?", "Theek hai?",
                       "Main dobara call karun, ji?", "Haan ya nahi?",
-                      "Aapka order aa gaya. Kya sab theek tha?"):
+                      "Aapka order aa gaya. Kya sab theek tha?", "To kya aap aayenge?"):
             assert self._ask(reply).kind == "yes_no", reply
+
+    def test_wh_kya_is_not_yes_no(self):
+        # mid-sentence "kya" = "what": a name/value is expected, not yes/no.
+        for reply in ("Aapka naam kya hai?", "Aur kya chahiye?", "आपका नाम क्या है?"):
+            assert self._ask(reply).kind == "free_text", reply
 
     def test_choice_with_easy_options(self):
         pending = self._ask("Subah ya sham?")
@@ -157,6 +201,53 @@ class TestLastReplyHeuristics:
         assert pending_kind_label(PendingAsk("q", "yes_no")) == "yes/no"
         assert pending_kind_label(PendingAsk("q", "choice", ("a", "b"))) == "one of [a | b]"
         assert pending_kind_label(PENDING_ASK_NONE) == "none"
+
+
+# ── the short-reply block in every generation ────────────────────────────────
+
+class TestShortReplyRulesInPrompt:
+    async def test_plain_chat_turn_gets_the_block_with_placeholders_filled(self):
+        llm = _LLMStub()
+        brain = make_brain(llm=llm)
+        brain._last_bot_reply = "Kya aap kal subah aa sakte hain?"
+        brain._history.append({"role": "assistant", "content": brain._last_bot_reply})
+        await brain._handle_turn("haan ji")
+        system = llm.systems[-1]
+        assert "# Answering short replies (runtime rules)" in system
+        assert "Pending question: Kya aap kal subah aa sakte hain?" in system
+        assert "Expected answer: yes/no" in system
+        # after the per-call static prefix + length rule, before the language suffix
+        assert system.index("# Voice response length") < system.index("# Answering short replies")
+        assert system.index("# Answering short replies") < system.index("# Reply language")
+
+    async def test_nothing_pending_still_states_none(self):
+        llm = _LLMStub()
+        brain = make_brain(llm=llm)
+        brain._last_bot_reply = "Theek hai, dhanyavaad."
+        await brain._handle_turn("mujhe apna balance jaanna hai")
+        system = llm.systems[-1]
+        assert "Pending question: none" in system
+        assert "Expected answer: none" in system
+
+    async def test_workflow_block_already_quoting_the_question_is_not_repeated(self):
+        llm = _LLMStub()
+        workflow = _WorkflowStub({
+            "reply": "", "done": False, "status": "collecting", "source": "definition",
+            "workflowId": "wf_1", "trace": ["n_ask"], "slots": {}, "handoffQueue": None,
+            "offScript": True, "nodePrompt": "Poora ya partial?", "signal": "question",
+            "awaitingKind": "ask", "awaitingAsk": {"kind": "choice", "options": ["full", "partial"]},
+        })
+        brain = make_brain(llm=llm, workflow_engine=workflow)
+        brain._active_workflow = "wf_1"
+        brain._pending_workflow_question = "Poora ya partial?"
+        brain._pending_ask_shape = {"kind": "choice", "options": ["full", "partial"]}
+        await brain._handle_turn("iska matlab kya hai bhai")
+        system = llm.systems[-1]
+        assert 'waiting on this step: "Poora ya partial?"' in system
+        assert "Pending question: (stated above)" in system
+        assert "Expected answer: one of [full | partial]" in system
+        block = system[system.index("# Answering short replies"):system.index("# Reply language")]
+        assert "Poora ya partial?" not in block
 
 
 # ── ask_answer_shape / engine awaitingAsk ────────────────────────────────────

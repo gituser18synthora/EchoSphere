@@ -286,7 +286,10 @@ def pending_kind_label(ask: PendingAsk) -> str:
 _QUESTION_END_RE = re.compile(r"[?？]\s*[।.]*\s*$")
 _LAST_SENTENCE_RE = re.compile(r"[^.!?।॥]*[?？]\s*[।.]*\s*$")
 _YES_NO_QUESTION_RE = re.compile(
-    r"(?:(?:^|[\s,])(?:kya|क्या|can|could|do|does|did|is|are|will|would|should|shall|have|has)(?![\wऀ-ॿ])"
+    # "Kya aap …?" / "Can you …?": the yes/no marker opens the sentence. A
+    # mid-sentence "kya" is the wh-word ("aapka naam kya hai?" = what).
+    r"(?:^\W*(?:(?:haan|ji|to|toh|हाँ|जी|तो)\s+)?"
+    r"(?:kya|क्या|can|could|do|does|did|is|are|will|would|should|shall|have|has)(?![\wऀ-ॿ])"
     r"|(?:haan ya nahi|हाँ या नहीं|हां या नहीं|yes or no|sahi hai|theek hai|thik hai|ठीक है|सही है|right|correct)"
     r"\s*[?？]|(?:^|\s)(?:ji|जी)\s*[?？])",
     re.IGNORECASE,
@@ -6999,6 +7002,48 @@ class ConversationBrain(FrameProcessor):
         """Instruction for an authored workflow context-response node."""
         return CONTEXT_RESPONSE_INSTRUCTION
 
+    _SHORT_REPLY_RULES = (
+        "\n\n# Answering short replies (runtime rules)\n"
+        "- The pending question below is what the caller is answering. Read a "
+        "short reply (\"haan\", \"nahi\", \"ji\", \"theek hai\", \"ok\", \"hmm\", a bare "
+        "number, a time, a day, a name, \"wo wala\", \"pehla\") as an answer to "
+        "it, never as a new topic.\n"
+        "- Bare agreement (haan, ji, hanji, theek hai, ok, accha, bilkul, sahi "
+        "hai, hmm) means YES to a yes/no question. Any negation (nahi, na, ji "
+        "nahi, nahi nahi, mat) means NO even if a yes-word appears earlier in "
+        "the same reply.\n"
+        "- A bare number, time, day or name is the value for the pending "
+        "question. Use it; if it is incomplete (\"2 baje\" without subah/sham, "
+        "a day without a date), confirm only the missing part in one short "
+        "question.\n"
+        "- \"wo wala\", \"ye wala\", \"wahi\", \"pehla\", \"dusra\", \"aakhri wala\" "
+        "point at options you just listed, by position. If you listed "
+        "nothing, ask which one.\n"
+        "- Ask a clarifying question ONLY when the reply cannot be mapped to "
+        "the pending question at all, or when two readings would change what "
+        "you do next. Never repeat the same clarification twice; rephrase and "
+        "offer the choices.\n"
+        "- Hinglish and mixed-script replies are normal: judge meaning, not "
+        "script. Reply in the caller's current language.\n"
+    )
+
+    def _short_reply_rules(self, pending: PendingAsk, extra_system: str = "") -> str:
+        """The short-reply block for one generation, placeholders filled.
+
+        When a workflow or context block in ``extra_system`` already quotes
+        the pending question, the line says so instead of repeating it.
+        """
+        question = " ".join((pending.question or "").split())
+        if question and question in extra_system:
+            shown = "(stated above)"
+        else:
+            shown = question or "none"
+        return (
+            self._SHORT_REPLY_RULES
+            + f"Pending question: {shown}\n"
+            + f"Expected answer: {pending_kind_label(pending)}"
+        )
+
     def _pending_ask(self) -> PendingAsk:
         """The question the caller is answering right now, with its expected
         answer kind, resolved in priority order:
@@ -7110,6 +7155,12 @@ class ConversationBrain(FrameProcessor):
             + CONTEXT_QUESTION_RESPONSE
             + self._time_context_instruction()
             + f"\n\n# Voice response length\nKeep the spoken reply concise: usually one or two short sentences and never more than {self._llm_max_characters} characters. Preserve required confirmations, workflow instructions, and tool results; omit nonessential detail."
+            # Short-reply grounding on EVERY generation (not only workflow
+            # off-script and context-question turns): the pending question
+            # and its expected answer kind sit right before the language
+            # suffix, after the per-call static prefix, so prefix caching of
+            # the static part is undisturbed.
+            + self._short_reply_rules(self._pending_ask(), extra_system)
             + self._language_instruction()
         )
         # Carry the live turn's meaning into speech generation, not just a
