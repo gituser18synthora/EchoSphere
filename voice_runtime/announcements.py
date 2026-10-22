@@ -92,19 +92,25 @@ def is_recording_announcement(text: str) -> bool:
     return matched and not remainder
 
 
+def speech_words(text: str) -> list[str]:
+    """The words of the segment that are actual speech (announcements excluded)."""
+    remainder, _matched = strip_recording_announcement(text)
+    return remainder.split()
+
+
 def speech_word_count(text: str) -> int:
     """Words in the segment that are actual speech (announcements excluded).
 
     Used by the barge-in word gate so a recording notice can never confirm an
     interruption of the bot's audio on its own.
     """
-    remainder, _matched = strip_recording_announcement(text)
-    return len(remainder.split())
+    return len(speech_words(text))
 
 
 __all__ = [
     "RECORDING_ANNOUNCEMENT_RE",
     "is_recording_announcement",
     "speech_word_count",
+    "speech_words",
     "strip_recording_announcement",
 ]

@@ -75,10 +75,21 @@ class TestBotSpeaking:
         result = await strategy.process_frame(final("एक मिनट रुकिए"))
         assert fired and result == ProcessFrameResult.STOP
 
-    async def test_interim_transcript_counts(self):
+    async def test_interim_transcript_alone_does_not_count(self, monkeypatch):
+        # Since 2026-10-22 an interim needs sustained VAD speech AND stable
+        # leading words over two updates (tests/unit/test_barge_in_interims.py);
+        # a final still confirms on its own.
+        import voice_runtime.barge_in as barge_in_module
+        now = [1000.0]
+        monkeypatch.setattr(barge_in_module.time, "monotonic", lambda: now[0])
         strategy, fired = make_strategy(min_words=2)
         await strategy.process_frame(BotStartedSpeakingFrame())
         frame = InterimTranscriptionFrame(text="please stop", user_id="u", timestamp="t")
+        result = await strategy.process_frame(frame)
+        assert not fired and result == ProcessFrameResult.CONTINUE
+        await strategy.process_frame(VADUserStartedSpeakingFrame())
+        now[0] += 0.4
+        await strategy.process_frame(frame)
         result = await strategy.process_frame(frame)
         assert fired and result == ProcessFrameResult.STOP
 

@@ -77,7 +77,7 @@ from pipecat.turns.user_start.base_user_turn_start_strategy import (
     BaseUserTurnStartStrategy,
 )
 
-from voice_runtime.announcements import speech_word_count
+from voice_runtime.announcements import speech_word_count, speech_words
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,13 @@ logger = logging.getLogger(__name__)
 # while the same VAD episode continues (the caller may start talking OVER the
 # background, raising the live level), bounding the evidence events per second.
 _SUPPRESSION_RECHECK_S = 0.5
+# Interim-transcript confirmation (realtime STT partials while the bot speaks):
+# the VAD must have shown the caller speaking for at least this long, and the
+# interim's leading words must be unchanged since the previous interim of the
+# same speech episode (stable over this many consecutive updates).
+_INTERIM_VAD_MIN_S = 0.3
+_INTERIM_STABLE_UPDATES = 2
+_INTERIM_HISTORY = 8
 
 
 async def _call_hook(hook, *args) -> None:
@@ -105,8 +112,13 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
 
     Args:
         min_words: Transcribed words required for a turn start (= interruption)
-            while the bot is speaking. Interim transcripts count, so providers
-            that stream partials interrupt earlier; Sarvam only emits finals.
+            while the bot is speaking. A FINAL transcript confirms on its own.
+            An INTERIM (partial) transcript confirms only when its leading
+            words are stable across two consecutive updates AND the VAD shows
+            sustained caller speech right now (``_INTERIM_VAD_MIN_S``): on the
+            Sarvam realtime socket the partial of an always-open utterance
+            accumulates the bot's own PSTN echo word by word and, counted
+            alone, cut every long reply 2–6 s in (live, 2026-10-22).
         vad_fallback_secs: Sustained gated VAD speech that confirms a barge-in
             without any transcript. 0 disables the fallback (transcript-only
             confirmation, the pre-2026-08-11 behaviour). Used when
@@ -159,6 +171,9 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         self._enforce_background = bool(enforce_background)
         self._on_suppressed = on_suppressed
         self._last_suppressed_at: float | None = None
+        # Leading words of the interim transcripts seen in the current VAD
+        # speech episode, newest last (see _interim_confirms).
+        self._interim_words: list[tuple[str, ...]] = []
 
     @property
     def provisional(self) -> bool:
@@ -177,7 +192,36 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
         self._vad_speech_since = None
         self._last_suppressed_at = None
         self._provisional = False
+        self._interim_words = []
         await super().handle_user_turn_started()
+
+    def _interim_confirms(self, text: str) -> str | None:
+        """Why an interim transcript confirms the interruption, or None.
+
+        Interims are cumulative and arrive for whatever audio the gate let
+        through, including the bot's own echo on a phone leg; a word count
+        alone is therefore no evidence of a caller. Two things together are:
+        the caller audio gate + VAD currently report sustained speech
+        (``_INTERIM_VAD_MIN_S``), and the interim's first ``min_words`` words
+        did not change since the previous interim of this speech episode.
+        """
+        words = tuple(speech_words(text or ""))
+        if len(words) < self._min_words:
+            self._interim_words.append(words)
+            return None
+        head = words[: self._min_words]
+        previous = self._interim_words[-1][: self._min_words] if self._interim_words else None
+        self._interim_words.append(words)
+        del self._interim_words[:-_INTERIM_HISTORY]
+        sustained = self._sustained()
+        if sustained is None or sustained < _INTERIM_VAD_MIN_S:
+            return None
+        if previous != head:
+            return None
+        return (
+            f"interim transcript ({len(words)} words >= {self._min_words}, "
+            f"stable over {_INTERIM_STABLE_UPDATES} updates, VAD {sustained:.1f}s)"
+        )
 
     def _sustained(self) -> float | None:
         if self._vad_speech_since is None:
@@ -260,6 +304,7 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             self._bot_speaking = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            self._interim_words = []
             if self._vad_speech_since is not None:
                 # The caller began speaking over the bot's final syllables and
                 # the gate held the turn; with the bot now quiet there is
@@ -276,6 +321,7 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             if self._vad_speech_since is None:
                 self._vad_speech_since = time.monotonic()
                 self._last_suppressed_at = None
+                self._interim_words = []     # stability is judged per speech episode
             if self._provisional_duck and not self._background_suspect_live_for_pause():
                 await self._begin_provisional()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
@@ -285,8 +331,16 @@ class WordConfirmedBargeInStrategy(BaseUserTurnStartStrategy):
             sustained = self._sustained()
             self._vad_speech_since = None
             self._last_suppressed_at = None
+            self._interim_words = []
             await self._end_provisional(resumed=True, sustained=sustained)
-        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+        elif isinstance(frame, InterimTranscriptionFrame):
+            if self._bot_speaking:
+                why = self._interim_confirms(frame.text or "")
+                if why is not None:
+                    if self._background_suspect("transcript"):
+                        return ProcessFrameResult.CONTINUE
+                    return await self._confirm(why)
+        elif isinstance(frame, TranscriptionFrame):
             if self._bot_speaking:
                 # A telephony recording notice is not the caller interrupting:
                 # only the words left after stripping it count toward the gate.
