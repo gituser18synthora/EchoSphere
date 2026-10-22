@@ -4697,7 +4697,10 @@ class ConversationBrain(FrameProcessor):
         # stored as an event — slow turns are diagnosed, never guessed.
         timing = self._latency.structured()
         logger.info("turn_timing %s", json.dumps(timing, ensure_ascii=False))
-        self._recorder.add_event("turn_timing", **timing)
+        # Streamed now (background Mongo write, never on the audio path) so a
+        # slow turn is visible in voice_events while the call is still up; the
+        # in-memory record still reaches the transcript at finalize.
+        self._recorder.flush_event_soon("turn_timing", **timing)
 
     def _consume_speech_preface(self) -> str:
         """Take this turn's planned preface (once); "" when none remains."""
