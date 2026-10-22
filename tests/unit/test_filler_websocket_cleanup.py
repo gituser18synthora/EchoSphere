@@ -154,6 +154,12 @@ async def run_websocket_cleanup(transport_kind, acknowledgements):
     ]
 
     async def feed():
+        # pipecat 1.13 sets processors up while StartFrame is already in
+        # flight: wait until the worker has handed the filler its task
+        # manager, otherwise arming races setup under a loaded test run.
+        deadline = time.monotonic() + 5.0
+        while getattr(filler, "_task_manager", None) is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
         await asyncio.sleep(0.1)
         for index, (name, started_after, ready_after) in enumerate(scenarios):
             stopped = time.monotonic()

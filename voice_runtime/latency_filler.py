@@ -881,7 +881,21 @@ class LatencyFillerProcessor(FrameProcessor):
                     self._cue_library.warm(armed.engine, armed.language)
             except Exception:  # noqa: BLE001 — decoration must never break a turn
                 logger.debug("latency-filler: cue warm-up failed", exc_info=True)
-        self._task = self.create_task(self._run(armed))
+        try:
+            self._task = self.create_task(self._run(armed))
+        except Exception as exc:  # noqa: BLE001 — see below
+            if "TaskManager is not initialized" not in str(exc):
+                raise
+            # pipecat >= 1.13 sets processors up while StartFrame is already
+            # in flight, so a turn dispatched in the first milliseconds of a
+            # call can arm the filler before this processor owns a task
+            # manager. The reply must never fail for a missing gap-cover:
+            # record it and let the turn run without a filler.
+            logger.warning("latency-filler: armed before pipeline setup; no filler for turn %s",
+                           armed.turn_id)
+            if self._recorder is not None:
+                self._recorder.add_event("latency_filler_not_ready", turn=armed.turn_id)
+            self._armed = None
 
     async def cancel(self, reason: str = "cancelled") -> None:
         await self._cut(reason)
