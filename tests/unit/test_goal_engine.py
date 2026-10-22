@@ -345,6 +345,30 @@ class TestLatencyBudget:
         assert engine._timeout == 1.6
         assert engine._max_tokens == 200
 
+    async def test_json_mode_only_for_providers_that_support_it(self):
+        # OpenAI-style engines get response_format=json_object (the prompt
+        # names "JSON", which that mode requires); fakes/providers without
+        # the flag are called exactly as before, so nothing can raise.
+        class _JsonLLM(_DecisionLLM):
+            supports_json_output = True
+
+            async def generate(self, messages, *, system=None, temperature=None,
+                               max_tokens=None, tools=None, response_format=None):
+                self.calls.append({"response_format": response_format})
+                return await super().generate(messages, system=system,
+                                              temperature=temperature,
+                                              max_tokens=max_tokens, tools=tools)
+
+        llm = _JsonLLM({"scope": "in_scope", "next_action": "answer"})
+        engine = GoalEngine(llm=llm, policy=LOAN_POLICY, timeout_seconds=0.5)
+        assert await engine.decide("hello", []) is not None
+        assert llm.calls[0]["response_format"] == {"type": "json_object"}
+        assert "JSON" in engine._build_system()
+
+        plain, _ = make_engine({"scope": "in_scope", "next_action": "answer"})
+        assert plain._json_mode_kwargs() == {}
+        assert await plain.decide("hello", []) is not None
+
     async def test_max_tokens_reaches_the_model_call(self):
         engine, llm = make_engine({"scope": "in_scope"})
         await engine.decide("hello", [])
