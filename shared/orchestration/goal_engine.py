@@ -604,6 +604,19 @@ class GoalEngine:
         decision.latency_ms = (time.perf_counter() - started) * 1000
         return decision
 
+    def _json_mode_kwargs(self) -> dict:
+        """Provider JSON mode for the decision call, when the engine supports it.
+
+        OpenAI's ``json_object`` response format guarantees a syntactically
+        valid object (the system prompt names "JSON", which that mode
+        requires). Providers without the flag keep the prompt-only contract;
+        ``_JSON_BLOCK`` below still extracts the object either way, so a
+        model that wraps or prefixes its output degrades exactly as before.
+        """
+        if getattr(type(self._llm), "supports_json_output", False) is True:
+            return {"response_format": {"type": "json_object"}}
+        return {}
+
     async def _call_llm(self, text: str, history: list[dict], state: dict) -> dict | None:
         recent = history[-_MAX_HISTORY_TURNS:]
         convo = "\n".join(
@@ -621,6 +634,7 @@ class GoalEngine:
             system=self._build_system(),
             temperature=0.0,
             max_tokens=self._max_tokens,
+            **self._json_mode_kwargs(),
         )
         self.last_usage = (
             int(getattr(result, "input_tokens", 0) or 0),
