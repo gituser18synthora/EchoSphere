@@ -130,6 +130,18 @@ class TurnLatencyTracker:
     def mark_speech_stopped(self) -> None:
         self.speech_stopped_at = time.monotonic()
 
+    def speech_marks_stale(self) -> bool:
+        """Whether the speech marks describe an utterance already dispatched.
+
+        The VAD probe resets the turn on every VAD start; a turn that starts
+        WITHOUT the VAD (a transcript-confirmed barge-in, a final for speech
+        Silero never flagged) would otherwise inherit the previous turn's
+        marks and verdict.
+        """
+        if self.speech_started_at is None:
+            return True
+        return self.dispatched_at is not None and self.speech_started_at <= self.dispatched_at
+
     def mark_speech_stopped_ago(self, seconds_ago: float) -> None:
         """Backdated end-of-speech.
 

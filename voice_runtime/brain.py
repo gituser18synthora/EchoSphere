@@ -416,6 +416,10 @@ _DEFAULT_SHORT_REPLY_ENDPOINT = 0.12
 # brain's ``complete_endpoint`` (0.6 s on the demo tenant) AFTER the verdict
 # and the final — 600 ms p50 from final to dispatch on 151 turns.
 _DEFAULT_SMART_TURN_THRESHOLD = 0.7
+# A confident verdict whose speech episode has no STT final yet waits for it
+# this long at most (covers the Sarvam adapter's flush retry: 2 x 0.65 s);
+# then whatever is buffered dispatches.
+_SMART_TURN_FINAL_WAIT_S = 1.5
 # A too-short fragment earns a canned clarification; if the REST of the
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
@@ -1409,6 +1413,11 @@ class ConversationBrain(FrameProcessor):
             else:
                 self._speech_start_serial += 1
                 self._speech_start_kinds = {frame_kind}
+                if self._latency.speech_marks_stale():
+                    # A turn the VAD did not open (transcript-confirmed
+                    # barge-in, speech under Silero's threshold): the tracker
+                    # must not carry the previous turn's marks and verdict.
+                    self._latency.mark_speech_started()
             self._speech_start_open = True
             self._speech_start_at = now
             # Voice activity: the silence ladder waits while the caller is
@@ -1522,14 +1531,19 @@ class ConversationBrain(FrameProcessor):
             self._announcement_in_turn = False
             if self._smart_turn_says_complete() and (was_active or not self._bot_speaking):
                 # Smart Turn closed the turn with a confident COMPLETE verdict.
-                # With the final in hand there is nothing left to wait for;
-                # without it, the final dispatches the moment it lands
-                # (bounded by the controller's own STT wait, which already
-                # elapsed before this frame).
-                if self._pending_segments:
+                # With THIS speech episode's final in hand there is nothing
+                # left to wait for. Without it — older buffered text does not
+                # count: dispatching "…call" at the close while "karke bahut
+                # ulta seedha bola" was 36 ms away split one sentence into
+                # two turns (live cv_2d1119054a92 2026-10-23) — the final
+                # dispatches the moment it lands, bounded by
+                # _SMART_TURN_FINAL_WAIT_S for whatever is already buffered.
+                if self._pending_segments and self._episode_final_in():
                     await self._smart_turn_short_circuit()
                 else:
                     self._smart_turn_closed = True
+                    if self._pending_segments:
+                        await self._schedule_finalize(_SMART_TURN_FINAL_WAIT_S)
                 return
             if (
                 self._pending_segments
@@ -2987,14 +3001,25 @@ class ConversationBrain(FrameProcessor):
         The strategy marks the tracker (``endpoint_by="smart_turn"`` plus the
         prediction) before the controller emits ``UserStoppedSpeakingFrame``,
         so the marks describe the frame being handled; a pause-window close
-        or a verdict below the threshold leaves every wait as it was.
+        or a verdict below the threshold leaves every wait as it was. The
+        verdict must also be newer than the last VAD stop: a turn the VAD
+        never opened carries no verdict of its own.
         """
         latency = self._latency
-        return (
-            latency.endpoint_by == "smart_turn"
-            and bool(latency.smart_turn_complete)
-            and float(latency.smart_turn_probability or 0.0) >= self._smart_turn_threshold
-        )
+        if latency.endpoint_by != "smart_turn" or not latency.smart_turn_complete:
+            return False
+        if float(latency.smart_turn_probability or 0.0) < self._smart_turn_threshold:
+            return False
+        verdict_at = latency.verdict_at
+        if verdict_at is None:
+            return False
+        return self._last_vad_stopped_at is None or verdict_at >= self._last_vad_stopped_at
+
+    def _episode_final_in(self) -> bool:
+        """Whether an STT final arrived for the latest VAD speech episode."""
+        if self._last_final_at is None:
+            return False
+        return self._last_vad_stopped_at is None or self._last_final_at >= self._last_vad_stopped_at
 
     async def _smart_turn_short_circuit(self, *, final_after_close: bool = False) -> None:
         """Dispatch the buffered utterance now: the Smart Turn verdict and

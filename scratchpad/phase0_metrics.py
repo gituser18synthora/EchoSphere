@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
 SPANS = ("response", "endpoint", "classify", "llm_ttft", "tts_ttfb")
-ENDPOINT_KINDS = ("smart_turn", "pause_timeout", "lexical_shortcut", "finalize_grace", "unknown")
+ENDPOINT_KINDS = ("smart_turn", "pause_timeout", "lexical_shortcut", "finalize_grace", "transcript_timeout", "unknown")
 TIMEOUT_REASONS = ("timeout", "timeout_before_warmup")
 SPAN_LABELS = {
     "response": "response (caller stops -> first bot audio)",

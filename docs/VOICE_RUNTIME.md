@@ -103,6 +103,13 @@ in `stt_settings.turn_detection`):
   from final to dispatch on 151 turns. Below the threshold (or on a
   pause-window close) the waits below apply unchanged. `turn_timing` carries
   `endpoint_marks_ms` {verdict, final, dispatch} measured from the VAD stop.
+- Since 2026-10-23 the short-circuit needs the final of the CURRENT speech
+  episode (a final newer than the last VAD stop); older buffered text waits
+  for it up to 1.5 s, then dispatches. A turn the VAD never opened (a
+  transcript-confirmed barge-in, speech under Silero's threshold) ends on
+  pipecat's transcript fallback timer and is reported as
+  `endpoint_by=transcript_timeout` — never as a Smart Turn close, and never
+  with the previous turn's verdict.
 - `complete_endpoint` — a much shorter endpoint used when the buffered text reads
   as a finished thought;
 - `short_reply_endpoint` — shorter still for self-contained short replies
