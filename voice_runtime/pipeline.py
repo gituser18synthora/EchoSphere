@@ -1118,6 +1118,9 @@ def build_voice_pipeline(
         finalize_settle=turn["finalize_settle"],
         complete_endpoint=turn["complete_endpoint"],
         short_reply_endpoint=turn["short_reply_endpoint"],
+        # A Smart Turn COMPLETE verdict at or above this confidence dispatches
+        # the moment the final is in (brain._smart_turn_short_circuit).
+        smart_turn_threshold=turn["smart_turn_threshold"],
         latency=tracker,
         audio_gate=audio_gate,
         authoritative_eot=provider_owns_turns,

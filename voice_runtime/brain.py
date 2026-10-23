@@ -409,6 +409,13 @@ _DEFAULT_COMPLETE_ENDPOINT = 0.35
 # does not apply — and this is exactly the turn where a fixed pause makes the
 # bot feel like it is deliberating over the word "yes".
 _DEFAULT_SHORT_REPLY_ENDPOINT = 0.12
+# Smart Turn COMPLETE verdicts at or above this probability dispatch the
+# moment the STT final is in — no complete-thought / short-reply / grace wait
+# (tenant ``turn_detection.smart_turn_threshold``). Live 2026-10-21/22: 84 %
+# of turns ended by Smart Turn, yet every one of them still sat out the
+# brain's ``complete_endpoint`` (0.6 s on the demo tenant) AFTER the verdict
+# and the final — 600 ms p50 from final to dispatch on 151 turns.
+_DEFAULT_SMART_TURN_THRESHOLD = 0.7
 # A too-short fragment earns a canned clarification; if the REST of the
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
@@ -669,6 +676,7 @@ class ConversationBrain(FrameProcessor):
         finalize_settle: float = _DEFAULT_FINALIZE_SETTLE,
         complete_endpoint: float = _DEFAULT_COMPLETE_ENDPOINT,
         short_reply_endpoint: float = _DEFAULT_SHORT_REPLY_ENDPOINT,
+        smart_turn_threshold: float = _DEFAULT_SMART_TURN_THRESHOLD,
         latency: TurnLatencyTracker | None = None,
         audio_gate=None,
         authoritative_eot: bool = False,
@@ -1061,6 +1069,11 @@ class ConversationBrain(FrameProcessor):
         self._finalize_settle = max(0.0, float(finalize_settle))
         self._complete_endpoint = max(0.0, float(complete_endpoint))
         self._short_reply_endpoint = max(0.0, float(short_reply_endpoint))
+        self._smart_turn_threshold = min(1.0, max(0.0, float(smart_turn_threshold)))
+        # The turn controller closed the current turn on a confident Smart
+        # Turn verdict before its STT final arrived: that final dispatches
+        # the moment it lands (see _smart_turn_short_circuit).
+        self._smart_turn_closed = False
         self._finalize_task: asyncio.Task | None = None
         # Speculative Goal Engine decision for the buffered utterance, started
         # while the endpoint timer runs (dead time) — (text, task). Consumed
@@ -1357,6 +1370,7 @@ class ConversationBrain(FrameProcessor):
             self._physical_speech_active = True
             self._vad_episode += 1
             self._vad_started_at = time.monotonic()
+            self._smart_turn_closed = False
             await self._on_physical_speech_resumed()
             await self.push_frame(frame, direction)
             return
@@ -1506,6 +1520,17 @@ class ConversationBrain(FrameProcessor):
                     await self._maybe_resume_interrupted_reply()
             self._suspect_in_turn = False
             self._announcement_in_turn = False
+            if self._smart_turn_says_complete() and (was_active or not self._bot_speaking):
+                # Smart Turn closed the turn with a confident COMPLETE verdict.
+                # With the final in hand there is nothing left to wait for;
+                # without it, the final dispatches the moment it lands
+                # (bounded by the controller's own STT wait, which already
+                # elapsed before this frame).
+                if self._pending_segments:
+                    await self._smart_turn_short_circuit()
+                else:
+                    self._smart_turn_closed = True
+                return
             if (
                 self._pending_segments
                 and not self._finalize_pending()
@@ -2518,6 +2543,12 @@ class ConversationBrain(FrameProcessor):
                 "stt_segment_held_during_bot_audio", text=text[:200]
             )
             return
+        if self._smart_turn_closed:
+            # The turn controller already closed this turn on a confident
+            # Smart Turn verdict and was only missing this final.
+            self._smart_turn_closed = False
+            await self._smart_turn_short_circuit(final_after_close=True)
+            return
         # Orphan final (no open turn, bot quiet): the same adaptive endpoint
         # as the open-turn path applies — a self-contained "haan" the VAD
         # missed must not wait the full grace an incomplete thought gets.
@@ -2948,6 +2979,41 @@ class ConversationBrain(FrameProcessor):
         """Whether a finalize is already armed and still waiting to fire."""
         task = self._finalize_task
         return task is not None and not task.done()
+
+    def _smart_turn_says_complete(self) -> bool:
+        """Whether the turn controller closed this turn on a Smart Turn
+        COMPLETE verdict at or above the tenant's confidence threshold.
+
+        The strategy marks the tracker (``endpoint_by="smart_turn"`` plus the
+        prediction) before the controller emits ``UserStoppedSpeakingFrame``,
+        so the marks describe the frame being handled; a pause-window close
+        or a verdict below the threshold leaves every wait as it was.
+        """
+        latency = self._latency
+        return (
+            latency.endpoint_by == "smart_turn"
+            and bool(latency.smart_turn_complete)
+            and float(latency.smart_turn_probability or 0.0) >= self._smart_turn_threshold
+        )
+
+    async def _smart_turn_short_circuit(self, *, final_after_close: bool = False) -> None:
+        """Dispatch the buffered utterance now: the Smart Turn verdict and
+        the STT final are both in, so the complete-thought / short-reply /
+        grace timers would only add dead time."""
+        final_age_ms = (
+            round((time.monotonic() - self._last_final_at) * 1000.0, 1)
+            if self._last_final_at is not None else None
+        )
+        self._recorder.add_event(
+            "smart_turn_short_circuit",
+            probability=self._latency.smart_turn_probability,
+            threshold=self._smart_turn_threshold,
+            final_age_ms=final_age_ms,
+            endpoint_armed=self._finalize_pending(),
+            final_after_close=final_after_close,
+        )
+        self._latency.count("smart_turn_short_circuits")
+        await self._schedule_finalize(0.0)
 
     def _settled_grace(self) -> float:
         """Debounce to use when the turn controller closes the user's turn.
@@ -3465,6 +3531,7 @@ class ConversationBrain(FrameProcessor):
         await self._cancel_generation("new_turn")
         await self._maybe_switch_language(text, pending_language)
         self._latency.mark_dispatched()
+        self._smart_turn_closed = False
         # The reply for THIS turn has produced no audio yet.
         self._reply_audio_started = False
         self._begin_reply_tracking()

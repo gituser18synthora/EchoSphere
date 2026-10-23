@@ -107,6 +107,8 @@ class TurnLatencyTracker:
     smart_turn_probability: float | None = None
     smart_turn_complete: bool | None = None
     smart_turn_inference_ms: float | None = None
+    # When that verdict arrived (monotonic), for the endpoint sub-marks.
+    verdict_at: float | None = None
     # Set once the turn's spans have been reported, so a second bot-audio frame
     # (or a re-render after barge-in) does not emit the same turn twice.
     reported: bool = False
@@ -246,6 +248,7 @@ class TurnLatencyTracker:
         self.smart_turn_probability = round(float(probability), 4)
         self.smart_turn_complete = bool(is_complete)
         self.smart_turn_inference_ms = round(float(inference_ms), 1)
+        self.verdict_at = time.monotonic()
 
     def reset(self) -> None:
         self.bot_stop_gap_ms = None
@@ -268,6 +271,7 @@ class TurnLatencyTracker:
         self.smart_turn_probability = None
         self.smart_turn_complete = None
         self.smart_turn_inference_ms = None
+        self.verdict_at = None
         self.reported = False
         self.counts = {}
 
@@ -370,6 +374,14 @@ class TurnLatencyTracker:
             "smart_turn_probability": self.smart_turn_probability,
             "smart_turn_complete": self.smart_turn_complete,
             "smart_turn_inference_ms": self.smart_turn_inference_ms,
+            # Where the endpoint time went, each measured from the VAD stop
+            # (``user_speech_end_at``; the caller stopped ``stop_secs`` before
+            # it): the Smart Turn verdict, the STT final, the dispatch.
+            "endpoint_marks_ms": {
+                "verdict": _ms(self.verdict_at, self.speech_stopped_at),
+                "final": _ms(self.last_final_at, self.speech_stopped_at),
+                "dispatch": _ms(self.dispatched_at, self.speech_stopped_at),
+            },
         }
 
     def report(self) -> dict[str, float]:
