@@ -103,6 +103,10 @@ logger = logging.getLogger(__name__)
 # p90 0.45 s, worst 1.47 s. 0.8 s covers ~93 % of finals and bounds a lost
 # final to +0.1 s over the telephony pause window.
 SARVAM_TTFS_P99_S = 0.8
+# Sarvam's own default for ``min_speech_frames`` (streaming docs, 2026-10): the
+# consecutive speech frames that open a segment after the first turn.
+SARVAM_MIN_SPEECH_FRAMES_DEFAULT = 2
+
 
 # ── turn detection ──────────────────────────────────────────────────────────
 # End-of-turn = VAD silence (stop_secs, also triggers the STT flush so the
@@ -459,6 +463,21 @@ def build_stt_service(
             for key in forwarded_setting_names
             if key in settings_kwargs and settings_kwargs[key] is not None
         }
+        # Sarvam's streaming server opens the FIRST speech segment of a
+        # connection only after ``first_turn_min_speech_frames`` consecutive
+        # speech frames (server default 8 = 512 ms at 8 kHz); every later
+        # segment needs ``min_speech_frames`` (default 2). A short first
+        # answer after the greeting ("haan boliye", ~0.5 s) never reached that
+        # bar: the flush at VAD stop had nothing to finalize, no ``data``
+        # message came back and the utterance was lost (live
+        # cv_80982e36f4f5 / cv_baeaf87927cb 2026-10-22, reproduced offline
+        # with the recorded audio — the same audio transcribes once this
+        # parameter is lowered). Unless the bot sets it explicitly, the first
+        # turn is held to the same requirement as every other turn.
+        forwarded_settings.setdefault(
+            "first_turn_min_speech_frames",
+            forwarded_settings.get("min_speech_frames", SARVAM_MIN_SPEECH_FRAMES_DEFAULT),
+        )
         service_settings = SarvamSTTService.Settings(
             model=model,
             language=language,
