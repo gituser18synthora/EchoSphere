@@ -38,9 +38,22 @@ class FinalBoundedTurnStopStrategy(SpeechTimeoutUserTurnStopStrategy):
     verdict or the brain's lexical shortcut already closed it.
     """
 
-    def __init__(self, *, tracker=None, **kwargs) -> None:
+    def __init__(self, *, tracker=None, stt_retry_window: float | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._tracker = tracker
+        # The STT adapter's own recovery window after a VAD stop (the Sarvam
+        # adapter re-flushes once: 2 x 0.65 s). The safety net must not run
+        # out — and close the turn EMPTY — while that retry can still deliver
+        # the final; the caller's pause window stays the outer bound.
+        self._stt_retry_window = (
+            max(0.0, float(stt_retry_window)) if stt_retry_window else None
+        )
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        if self._stt_retry_window:
+            floor = min(self._stt_retry_window, self._user_speech_timeout + frame.stop_secs)
+            self._stt_timeout = max(self._stt_timeout, floor)
+        await super()._handle_vad_user_stopped_speaking(frame)
 
     async def trigger_user_turn_stopped(self, **kwargs):
         if self._tracker is not None:
