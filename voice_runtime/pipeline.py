@@ -325,6 +325,7 @@ def build_stt_service(
     latency=None,
     barge_in_min_words: int = 2,
     prefer_primary_language: bool | None = None,
+    spoken_text=None,
 ):
     """STT service from bot config: Deepgram Flux or Sarvam realtime WS,
     segmented fallback otherwise.
@@ -521,7 +522,6 @@ def build_stt_service(
             else:
                 endpointing = normalize_endpointing(runtime_settings.sarvam_realtime_endpointing)
                 stream_type = normalize_stream_type(runtime_settings.sarvam_realtime_stream_type)
-                realtime_settings = RealtimeSarvamSTTService.Settings(
                 # Realtime language policy. With ``language_code=auto`` the
                 # realtime socket renders Hindi speech as ENGLISH ("haan
                 # boliye" came back as "Yes, speak." live on 2026-10-22 and
@@ -548,6 +548,7 @@ def build_stt_service(
                 # Transcription only: ``translate``/``translit``/``codemix``
                 # would change the script or language of what the brain sees.
                 realtime_mode = "transcribe"
+                realtime_settings = RealtimeSarvamSTTService.Settings(
                     model=realtime_model,
                     language=realtime_language,
                     stream_type=stream_type,
@@ -557,11 +558,11 @@ def build_stt_service(
                     recorder.add_event(
                         "stt_realtime", model=realtime_model, configured_model=model,
                         endpointing=endpointing, stream_type=stream_type,
-                    )
                         language=str(realtime_language) if realtime_language else "auto",
                         language_pinned=language_pinned,
                         mode=realtime_mode,
                         mode_forced=bool(mode) and str(mode).lower() != realtime_mode,
+                    )
                 return RealtimeSarvamSTTService(
                     api_key=api_key,
                     endpointing=endpointing,
@@ -570,6 +571,7 @@ def build_stt_service(
                     keepalive_timeout=8.0,
                     recorder=recorder,
                     keyterms=keyterms or None,
+                    spoken_text=spoken_text,
                     # Same bound as the streaming adapter so the turn-stop wait
                     # is identical and the comparison isolates the socket.
                     ttfs_p99_latency=SARVAM_TTFS_P99_S,
@@ -725,8 +727,14 @@ def build_tts_service(
     latency=None,
     naturalness=None,
     filler_library=None,
+    spoken_text=None,
 ):
-    """TTS service from bot config: streaming router or segmented fallback."""
+    """TTS service from bot config: streaming router or segmented fallback.
+
+    ``spoken_text`` (voice_runtime.spoken_text.SpokenTextReference) receives
+    every text the streaming router speaks — the realtime STT adapter's echo
+    reference. The segmented REST fallback does not feed it.
+    """
     tts_conf = config.tts or {}
     provider = tts_conf.get("provider") or "sarvam"
 
@@ -750,6 +758,7 @@ def build_tts_service(
             # matched to the engine voice's gender — same clips as the
             # pre-reply latency filler.
             filler_library=filler_library if filler_library is not None else get_filler_library().new_session(),
+            spoken_text=spoken_text,
         )
 
     # Delivery tuning for the segmented REST path: canonical speed overrides
@@ -969,6 +978,13 @@ def build_voice_pipeline(
     # Local Silero owns speech boundaries in the normal pipeline. Enabling
     # Sarvam server VAD at the same time produces duplicate start/stop frames;
     # a normal pause can then look like barge-in and cancel the LLM/TTS reply.
+    # The realtime Sarvam adapter matches transcripts against what the bot
+    # is saying (its echo on the line); the TTS router feeds the reference.
+    spoken_text = None
+    if get_settings().sarvam_realtime_stt:
+        from voice_runtime.spoken_text import SpokenTextReference
+
+        spoken_text = SpokenTextReference()
     stt = build_stt_service(
         config,
         sample_rate=stt_sample_rate,
@@ -976,10 +992,11 @@ def build_voice_pipeline(
         use_provider_vad=not use_vad,
         latency=tracker,
         barge_in_min_words=barge_in_min_words,
+        spoken_text=spoken_text,
     )
     tts = build_tts_service(
         config, recorder=recorder, sample_rate=tts_sample_rate, latency=tracker,
-        naturalness=naturalness, filler_library=filler_library,
+        naturalness=naturalness, filler_library=filler_library, spoken_text=spoken_text,
     )
     llm_provider = build_llm_provider(config)
     # Latency filler: a gender-matched breath from pre-rendered audio when a

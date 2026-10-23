@@ -272,6 +272,9 @@ class TestAlwaysOpenUtterance:
 
         monkeypatch_target = type(service).__mro__[1]  # SarvamRealtimeSTTService
         original = monkeypatch_target.push_frame
+        # A transcript leaves the adapter only with VAD evidence (the caller
+        # is speaking) — see test_sarvam_realtime_echo_guard.py.
+        service._vad_open = True
         try:
             monkeypatch_target.push_frame = _push  # type: ignore[method-assign]
             await service.push_frame(InterimTranscriptionFrame("Zepto se", "u", "now"))
@@ -308,6 +311,7 @@ class TestInterimsOnPipecat113:
 
     async def test_partials_are_forwarded_and_finals_stay_finalized(self, realtime_on):
         service = build_stt_service(_config("saaras:v4"))
+        service._vad_open = True        # VAD evidence: the caller is speaking
         pushed = await self._run_messages(service, [
             {"event": "transcript.partial", "text": "Zepto se", "language": "hi-IN"},
             {"event": "transcript.partial", "text": "Zepto se mera", "language": "hi-IN"},
@@ -361,7 +365,14 @@ class TestEvidence:
                 "request_id": "req-1", "model": "saaras:v4", "endpointing": "manual",
                 "stream_type": "balanced", "keyterms": 1, "always_open": True,
             }
-            assert recorder.of("stt_realtime_session_end") == [{"audio_duration_s": 2.5}]
+            [end] = recorder.of("stt_realtime_session_end")
+            assert end["audio_duration_s"] == 2.5
+            # The guard counters ride along (nothing was skipped or dropped here).
+            assert {k: end[k] for k in ("silence_skipped_ms", "guarded_skipped_ms", "pings",
+                                        "partials_dropped", "finals_dropped", "echo_dropped")} == {
+                "silence_skipped_ms": 0.0, "guarded_skipped_ms": 0.0, "pings": 0,
+                "partials_dropped": 0, "finals_dropped": 0, "echo_dropped": 0,
+            }
         finally:
             await service.cleanup()
 

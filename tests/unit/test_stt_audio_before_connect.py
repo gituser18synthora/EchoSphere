@@ -45,14 +45,16 @@ class _Recorder:
         return [data for k, data in self.events if k == kind]
 
 
-def _frames(text: str, *, count: int) -> list[bytes]:
-    """``count`` 20 ms frames whose bytes spell ``text`` (padded with zeros),
-    so what Sarvam received can be read back as the words it was sent."""
+def _frames(text: str, *, count: int, fill: bytes = b"\x00") -> list[bytes]:
+    """``count`` 20 ms frames whose bytes spell ``text`` (padded with
+    ``fill``), so what Sarvam received can be read back as the words it was
+    sent. The realtime adapter never sends exact digital silence (the gate's
+    zeros hallucinate on the open utterance), so its tests pad with 0x01."""
     payload = text.encode("ascii")
     frames = []
     for i in range(count):
         chunk = payload[i * FRAME_BYTES:(i + 1) * FRAME_BYTES]
-        frames.append(chunk + b"\x00" * (FRAME_BYTES - len(chunk)))
+        frames.append(chunk + fill * (FRAME_BYTES - len(chunk)))
     return frames
 
 
@@ -246,7 +248,7 @@ class TestRealtimeAdapterHoldsAudioUntilReady:
 
             monkeypatch.setattr(service, "_send_audio_chunk", _send_chunk)
             monkeypatch.setattr(service, "_is_websocket_open", lambda: False)
-            frames = _frames("haan boliye", count=40)        # 800 ms before the socket opens
+            frames = _frames("haan boliye", count=40, fill=b"\x01")   # 800 ms before the socket opens
             for frame in frames:
                 await _feed(service, frame)
             assert sent == [] and len(service._held_audio) == 40 * FRAME_BYTES
@@ -258,7 +260,7 @@ class TestRealtimeAdapterHoldsAudioUntilReady:
             assert sent == [] and len(service._held_audio) == 41 * FRAME_BYTES
 
             service._utterance_open = True                   # session.begin → speech_start sent
-            tail = _frames(" ji", count=5)
+            tail = _frames(" ji", count=5, fill=b"\x01")
             for frame in tail:
                 await _feed(service, frame)
             expected = b"".join(frames) + frames[0] + b"".join(tail)
@@ -283,11 +285,11 @@ class TestRealtimeAdapterHoldsAudioUntilReady:
 
             monkeypatch.setattr(service, "_send_audio_chunk", _send_chunk)
             monkeypatch.setattr(service, "_is_websocket_open", lambda: False)
-            frames = _frames("namaste", count=10)
+            frames = _frames("namaste", count=10, fill=b"\x01")
             for frame in frames:
                 await _feed(service, frame)
             monkeypatch.setattr(service, "_is_websocket_open", lambda: True)
-            for frame in _frames("ji", count=5):
+            for frame in _frames("ji", count=5, fill=b"\x01"):
                 await _feed(service, frame)
             assert b"".join(sent).startswith(b"".join(frames))
             assert recorder.of("stt_audio_buffered_before_connect")[0]["buffered_ms"] == 200.0
