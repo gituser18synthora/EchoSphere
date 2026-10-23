@@ -296,6 +296,62 @@ def _profile_supports_language(profile, locale: str) -> bool:
     return locale in languages or locale.split("-")[0] in languages
 
 
+def _keep_unmapped_v4_locales_on_v3(
+    session, tts_engine: dict, locales: list[str], language_warnings: dict,
+    bot_id: str,
+) -> None:
+    """Keep a locale on bulbul:v3 when its voice has no bulbul:v4-flash persona.
+
+    bulbul:v4-flash speakers are persona ids and Sarvam rejects a v3 name. A
+    v3 voice maps through the reviewed table in
+    shared.providers.tts.sarvam_voices; a (voice, locale) pair the table does
+    not cover — e.g. "ashutosh" for en-IN, any voice for ml-IN/od-IN — would
+    fail on every reply. That locale stays on bulbul:v3 with the SAME voice,
+    loudly (ERROR log + a language warning surfaced to the test UI); another
+    speaker is never substituted.
+    """
+    from shared.orchestration.voice_identity import resolve_language_engine
+    from shared.providers.tts.sarvam_voices import is_v4_model, v4_persona_for
+
+    for locale in locales:
+        engine = resolve_language_engine(tts_engine.get("language_map"), locale, tts_engine)
+        if engine.get("provider") != "sarvam" or not is_v4_model(engine.get("model")):
+            continue
+        voice = str(engine.get("voice") or "").strip()
+        if not voice or v4_persona_for(voice, locale) is not None:
+            continue  # empty voice = Sarvam's default persona
+        reason = _engine_allowed(session, "tts", "sarvam", "bulbul:v3")
+        if reason is None:
+            is_default_engine = engine is tts_engine
+            tts_engine["language_map"][locale] = {
+                "provider": "sarvam",
+                "model": "bulbul:v3",
+                "voice": voice,
+                "voice_name": engine.get("voice_name") or voice,
+                "voice_gender": engine.get("voice_gender") or "neutral",
+                # v3 and v4-flash share one parameter contract, so the
+                # default engine's validated settings carry over unchanged.
+                "params": dict(
+                    (engine.get("settings") if is_default_engine else engine.get("params"))
+                    or {}
+                ),
+                "api_key_reference": engine.get("api_key_reference") or "",
+            }
+            message = (
+                f"Voice '{voice}' has no bulbul:v4-flash persona for {locale}; "
+                "this language stays on bulbul:v3 with the same voice. Pick a "
+                "v4-flash persona for it to move it."
+            )
+        else:
+            message = (
+                f"Voice '{voice}' has no bulbul:v4-flash persona for {locale} and "
+                f"bulbul:v3 is unavailable ({reason}); replies in this language "
+                "will fail until a v4-flash persona is chosen."
+            )
+        language_warnings[locale] = message
+        logger.error("bot %s: %s", bot_id, message)
+
+
 def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | None = None) -> dict:
     """Normalize language_voice_map entries to engine dicts.
 
@@ -943,6 +999,11 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         default_language = ((vbs.language_voice_map or {}).get("default") if vbs else None)
         if not default_language:
             default_language = effective_langs[0] if effective_langs else "en"
+        _keep_unmapped_v4_locales_on_v3(
+            session, tts_engine,
+            list(dict.fromkeys([default_language, *bot_languages, *effective_langs])),
+            language_warnings, bot_id,
+        )
 
         return ResolvedBotConfig(
             tenant_id=bot.tenant_id,

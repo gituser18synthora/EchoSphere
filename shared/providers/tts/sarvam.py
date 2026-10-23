@@ -17,6 +17,7 @@ import time
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
 from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
+from shared.providers.tts.sarvam_voices import NoV4Equivalent, is_v4_model, v4_speaker
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
 
@@ -47,6 +48,8 @@ logger = logging.getLogger(__name__)
 # truth — and ultimately by the Sarvam API itself; an unknown speaker surfaces
 # as a ProviderError("invalid_input"), never as a silent substitution.
 _MODEL_DEFAULT_SPEAKER = {"bulbul:v2": "anushka", "bulbul:v3": "shubh"}
+# bulbul:v4-flash speakers are persona ids; v3 names map through the reviewed
+# table in shared.providers.tts.sarvam_voices (never a guessed substitute).
 # Output rates the REST endpoint synthesizes natively (same set as streaming).
 _NATIVE_RATES = {8000, 16000, 22050, 24000}
 # Parameters forwarded from ProviderConfig.extra to the REST request.
@@ -160,6 +163,13 @@ class SarvamTTS(TTSProvider):
         started = time.perf_counter()
         language_code = _resolve_language(language or self._language or None, text)
         speaker = _normalize_speaker(voice) or _normalize_speaker(self._voice)
+        v4 = is_v4_model(self._model)
+        v3_contract = v4 or self._model.startswith("bulbul:v3")
+        if v4:
+            try:
+                speaker = v4_speaker(speaker, language_code)
+            except NoV4Equivalent as exc:
+                raise ProviderError(self.name, "invalid_input", str(exc)) from exc
         if not speaker:
             speaker = _MODEL_DEFAULT_SPEAKER.get(self._model, _FALLBACK_DEFAULT_SPEAKER)
             logger.info(
@@ -176,9 +186,9 @@ class SarvamTTS(TTSProvider):
             "output_audio_codec": "wav",
         }
         for key, value in self._params.items():
-            if key in _V3_ONLY_PARAMS and not self._model.startswith("bulbul:v3"):
+            if key in _V3_ONLY_PARAMS and not v3_contract:
                 continue
-            if key in _V2_ONLY_PARAMS and self._model.startswith("bulbul:v3"):
+            if key in _V2_ONLY_PARAMS and v3_contract:
                 continue
             request[key] = value
         # The canonical Delivery speed is authoritative over a stored pace.

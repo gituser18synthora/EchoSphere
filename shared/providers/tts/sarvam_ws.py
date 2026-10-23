@@ -39,6 +39,11 @@ from shared.providers.languages import (
     to_platform_language,
     to_provider_language,
 )
+from shared.providers.tts.sarvam_voices import (
+    NoV4Equivalent,
+    is_v4_model,
+    v4_speaker,
+)
 from shared.providers.tts.streaming import (
     StreamingTTSProvider,
     TTSStreamEvent,
@@ -65,7 +70,9 @@ _WARM_SPARE = os.environ.get("SARVAM_TTS_WARM_SPARE", "true").strip().lower() no
     "0", "false", "no", "off",
 )
 
-# Parameters the two bulbul generations accept on the config message.
+# Parameters the bulbul generations accept on the config message. bulbul:v4
+# (v4-flash) keeps the v3 contract; only its speakers changed (persona ids,
+# shared.providers.tts.sarvam_voices).
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing", "dict_id"}
 _V2_PARAMS = {"pace", "pitch", "loudness", "min_buffer_size", "max_chunk_length",
@@ -108,6 +115,10 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             if self._ws is not None and self._ws.state is State.OPEN:
                 return
             model = self._settings.model or "bulbul:v3"
+            # Validate the speaker BEFORE opening a socket: a bulbul:v4-flash
+            # voice with no persona equivalent fails loudly here instead of
+            # leaving an open, unconfigured socket behind.
+            self._build_config()
             url = f"{_WS_URL}?model={model}&send_completion_event=true"
             last_category = "timeout"
             for attempt in range(_MAX_CONNECT_ATTEMPTS):
@@ -347,7 +358,8 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
     def _build_config(self) -> dict:
         s = self._settings
         model = s.model or "bulbul:v3"
-        is_v3 = model.startswith("bulbul:v3")
+        v4 = is_v4_model(model)
+        is_v3 = v4 or model.startswith("bulbul:v3")
         allowed = _V3_PARAMS if is_v3 else _V2_PARAMS
         params = dict(s.params or {})
 
@@ -370,7 +382,21 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         # it is never silently replaced here; only a MISSING speaker falls
         # back to the model default, and that fallback is logged.
         speaker = str(s.voice or "").strip().lower()
-        if not speaker:
+        if v4:
+            # v4-flash rejects v3 short names (400): a v3 voice maps to its
+            # reviewed persona for this language, or fails loudly — another
+            # speaker is never substituted.
+            try:
+                persona = v4_speaker(speaker, language)
+            except NoV4Equivalent as exc:
+                raise ProviderError(self.name, "invalid_input", str(exc)) from exc
+            if persona != speaker:
+                logger.debug(
+                    "sarvam-tts: %s speaker '%s' -> persona '%s' (%s)",
+                    model, speaker or "(default)", persona, language,
+                )
+            speaker = persona
+        elif not speaker:
             speaker = "shubh" if is_v3 else "anushka"
             logger.info(
                 "sarvam-tts: no speaker configured; using model default '%s' for %s",
@@ -384,7 +410,7 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             "output_audio_codec": codec,
         }
         if is_v3:
-            # v3 always preprocesses; the flag is not negotiable.
+            # v3 (and v4-flash) always preprocess; the flag is not negotiable.
             params["enable_preprocessing"] = True
 
         ignored: list[str] = []

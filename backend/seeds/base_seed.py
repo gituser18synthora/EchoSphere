@@ -532,6 +532,9 @@ PROVIDER_PRICING = [
     ("deepgram", "stt", "nova-2", "audio_seconds", "per_hour", "0.35", "USD"),
     # ── TTS ──────────────────────────────────────────────────────────────
     ("sarvam", "tts", "bulbul:v3", "characters", "per_1k_characters", "1.5", "INR"),
+    # bulbul:v4-flash: public list price (sarvam.ai/api-pricing, 2026-10-23:
+    # ₹2.00/1K vs ₹3.00 for v3). No negotiated rate yet — replace when one is.
+    ("sarvam", "tts", "bulbul:v4-flash", "characters", "per_1k_characters", "2.0", "INR"),
     ("sarvam", "tts", "bulbul:v2", "characters", "per_1k_characters", "1.5", "INR"),
     ("deepgram", "tts", "aura-2", "characters", "per_1k_characters", "0.030", "USD"),
     ("deepgram", "tts", "aura", "characters", "per_1k_characters", "0.0150", "USD"),

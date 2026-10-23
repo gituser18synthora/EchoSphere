@@ -95,7 +95,7 @@ Current governed live matrix:
 | Capability | Active production providers | Platform default |
 | --- | --- | --- |
 | STT | `sarvam` (`saaras:v4` default, `saaras:v3` selectable, `saarika:v2.5`), `deepgram` | `sarvam/saaras:v4` |
-| TTS | `sarvam`, `elevenlabs`, `deepgram` | `sarvam/bulbul:v3`, voice `shubh` |
+| TTS | `sarvam` (`bulbul:v4-flash` default, `bulbul:v3` selectable), `elevenlabs`, `deepgram` | `sarvam/bulbul:v4-flash`, voice `shubh` |
 | LLM | `openai` | `openai/gpt-4o-mini` |
 | Embedding | `openai` | `openai/text-embedding-3-small` |
 
@@ -176,6 +176,38 @@ v3 and adds **key-term biasing**:
   `_audio_runs` + the resampler tail (`_clear_audio_buffer()`), and a reply's
   last partial chunk is flushed padded with silence instead of dropped.
 
+### Sarvam bulbul:v4-flash and persona voices
+
+`bulbul:v4-flash` (catalog row from migration `c2e4a6b8d0f1`) keeps bulbul:v3's
+request contract — endpoints, auth, pace 0.5–2.0, `dict_id`, preprocessing,
+`min_buffer_size`/`max_chunk_length`, 8 kHz linear16 — but its speakers are
+persona ids `<name>_<language>_<style>` and Sarvam rejects a v3 short name with
+a 400. `shared/providers/tts/sarvam_voices.py` holds the reviewed mapping for the
+37 catalog voices, built once from Sarvam's 222-persona roster by one rule: the
+same speaker name only; for hi/en a persona tagged with that language or `enhi`,
+for bn/gu/kn/mr/pa/ta/te only that tag; the style closest to a phone
+conversation (customer, conversational, conversation, companion, …). The voices
+live bots use map to:
+
+| v3 voice | hi-IN | en-IN |
+| --- | --- | --- |
+| shubh | `shubh_hi_customer` | `shubh_enhi_companion` |
+| ashutosh | `ashutosh_hi_conversational` | none — stays on v3 |
+| kavya | `kavya_hi_conversational` | none — stays on v3 |
+| priya | `priya_hi_recovery` | none — stays on v3 |
+| ritu | `ritu_hi_customer` | `ritu_en_edtech` |
+| aditya | `aditya_hi_conversational` | none — stays on v3 |
+| rahul | `rahul_hi_conversational` | none — stays on v3 |
+
+A (voice, locale) pair the table does not cover — and every `ml-IN`/`od-IN`
+locale, which has no personas — is never given a substitute speaker:
+`shared.bot_config` keeps that locale on `bulbul:v3` with the same voice and
+records a language warning (ERROR log); both adapters raise `invalid_input`
+before opening a socket if one reaches them anyway. Persona ids configured
+explicitly pass through unchanged. Voices with a hi/en persona list
+`bulbul:v4-flash` in their `model_codes`. Price: ₹2.00 per 1K characters (public
+list, 2026-10-23); no negotiated v4 rate yet (v3 is ₹1.5).
+
 ### Sarvam TTS sockets: no cold handshake after a barge-in or at start-up
 
 Sarvam cannot cancel synthesis server-side, so a barge-in closes the socket.
@@ -192,6 +224,8 @@ against the API (first audio, ms, three rounds):
 | Engine | Warm p50 | Reply right after a cancel, spare off | Spare on |
 | --- | --- | --- | --- |
 | bulbul:v3 ashutosh hi-IN | 205 | 222–281 | 171–175 |
+| bulbul:v4-flash ashutosh hi-IN | 192–198 | 222–371 | 154–178 |
+| bulbul:v4-flash shubh en-IN | 186 | — | 174–186 |
 
 ### Sarvam streaming socket: the first turn, and audio before the socket is live
 
