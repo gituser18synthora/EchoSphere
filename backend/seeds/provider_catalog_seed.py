@@ -907,6 +907,22 @@ def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) ->
                 # Safe-metadata backfill only: fills an empty description,
                 # never replaces operator-entered text or any other field.
                 exists.description = description
+            if is_default and not exists.is_default and exists.status == "active":
+                # Fills a MISSING default only. On a fresh install the catalog
+                # migrations (saaras:v4, bulbul:v4-flash) insert their model
+                # non-default before this seed runs, which left the capability
+                # with no default at all; an operator's chosen default is
+                # never replaced.
+                has_default = db.scalar(
+                    select(ProviderModel.id).where(
+                        ProviderModel.provider_code == provider,
+                        ProviderModel.capability == capability,
+                        ProviderModel.is_default.is_(True),
+                        ProviderModel.is_deleted.is_(False),
+                    ).limit(1)
+                )
+                if has_default is None:
+                    exists.is_default = True
             if is_eleven_v3 and exists.languages == _LEGACY_ELEVEN_V3_BARE_CODES and langs:
                 # One-time conversion of the pre-catalog bare-ISO list to the
                 # table-derived locale list. Only a row still exactly equal to
