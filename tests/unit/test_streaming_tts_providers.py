@@ -64,6 +64,14 @@ async def collect_until_final(provider, *, timeout=5.0, generation="g1"):
 
 
 class TestSarvamProvider:
+    """Single-socket lifecycle: the warm spare is off here (TestSarvamWarmSpare
+    covers it), so these assertions describe the reconnect path a cancel
+    takes whenever no spare is ready."""
+
+    @pytest.fixture(autouse=True)
+    def _no_warm_spare(self, monkeypatch):
+        monkeypatch.setattr(sarvam_ws, "_WARM_SPARE", False)
+
     async def test_happy_path_streams_audio_and_final(self, monkeypatch):
         async with MockSarvamTTSServer(chunks=3) as server:
             monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)

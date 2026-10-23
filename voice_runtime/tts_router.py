@@ -362,6 +362,13 @@ class StreamingTTSRouter(TTSService):
             await self._get_provider(engine, self._current_language)
         except Exception:  # noqa: BLE001 — never block call start on a warm-up
             logger.warning("tts-router: connection warm-up failed", exc_info=True)
+            return
+        # The handshake itself runs in the background: creating the provider
+        # alone (2026-08-05..10-23) opened no socket, so every greeting paid
+        # the cold connect (~130-170 ms more first-audio than a warm reply on
+        # live calls). A greeting dispatched meanwhile waits on the same
+        # connect instead of starting a second one.
+        self.create_task(self._warm_engine(engine, self._current_language))
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -495,7 +502,7 @@ class StreamingTTSRouter(TTSService):
             await provider.connect()
         except Exception:  # noqa: BLE001 — warm-up must never affect the call
             logger.warning(
-                "tts-router: language-switch warm-up failed", exc_info=True
+                "tts-router: connection warm-up failed", exc_info=True
             )
 
     def _flush_event_background(self, kind: str, **data) -> None:
@@ -1029,6 +1036,21 @@ class StreamingTTSRouter(TTSService):
                     await self._maybe_end_call_fatal(error.category)
             else:
                 logger.warning("tts-router: provider error outside generation: %s", error)
+        elif event.kind == "cold_connect":
+            # A dispatch waited for the provider socket (first use, after a
+            # barge-in cancel with no warm spare, after a server close).
+            info = dict(event.info or {})
+            engine = state.engine if state is not None else {}
+            if self._latency is not None:
+                self._latency.count("tts_cold_connects")
+            if self._recorder is not None:
+                self._recorder.add_event(
+                    "tts_cold_connect",
+                    provider=engine.get("provider") or (key[0] if key else None),
+                    model=engine.get("model") or (key[1] if len(key) > 1 else None),
+                    waited_ms=info.get("waited_ms"),
+                    reason=info.get("reason"),
+                )
         # "disconnected" events are informational — reconnects are lazy.
 
     # ── pause-aware sentence serialization (pause_ms > 0) ───────────────

@@ -61,10 +61,13 @@ class TTSStreamSettings:
 class TTSStreamEvent:
     """Event emitted on the provider's queue."""
 
-    kind: str                       # audio | final | error | disconnected
+    kind: str                       # audio | final | error | disconnected | cold_connect
     generation_id: str | None = None
     audio: bytes = b""
     error: ProviderError | None = None
+    # Small structured payload of informational events (cold_connect:
+    # waited_ms, reason).
+    info: dict[str, Any] | None = None
 
 
 class StreamingTTSProvider(ABC):
