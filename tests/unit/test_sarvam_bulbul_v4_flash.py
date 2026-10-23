@@ -206,3 +206,67 @@ def test_catalog_seed_makes_v4_flash_the_tts_default_and_keeps_v3():
     assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA)
     assert catalog_seed._SARVAM_TTS_V3_SCHEMA["pace"]["help"].startswith("Speech speed")
     assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v4-flash")
+
+
+# ── catalog migration ──────────────────────────────────────────────────────
+
+def test_v4_flash_migration_round_trip():
+    import importlib
+    import json
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    module = importlib.import_module(
+        "backend.alembic.versions.c2e4a6b8d0f1_sarvam_bulbul_v4_flash_catalog")
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(sa.text(
+            "create table provider_models (id varchar(40) primary key, provider_code varchar(50), "
+            "capability varchar(20), code varchar(80), display_name varchar(150), description text, "
+            "languages text, codecs text, sample_rates text, streaming int, params_schema text, "
+            "is_default int, status varchar(20), sort_order int, created_at datetime, "
+            "updated_at datetime, is_deleted int default 0)"))
+        conn.execute(sa.text(
+            "create table provider_pricing (id varchar(40) primary key, provider_code varchar(50), "
+            "capability varchar(20), model_code varchar(80), component varchar(40), unit varchar(30), "
+            "unit_price numeric, currency_code varchar(3), effective_from datetime, status varchar(20), "
+            "sort_order int, created_at datetime, updated_at datetime, is_deleted int default 0)"))
+        conn.execute(sa.text(
+            "create table voice_profiles (id varchar(40) primary key, provider varchar(100), "
+            "provider_voice_id varchar(100), model_codes text)"))
+        conn.execute(sa.text("create table currencies (code varchar(3) primary key)"))
+        conn.execute(sa.text("insert into currencies (code) values ('INR')"))
+        for vid, speaker, codes in (
+            ("vp-sv-shubh", "shubh", '["bulbul:v3"]'),
+            ("vp-sv-gokul", "gokul", '["bulbul:v3"]'),       # Tamil persona only
+            ("vp-tenant", "ashutosh", "[]"),                   # empty = any model
+        ):
+            conn.execute(sa.text(
+                "insert into voice_profiles (id, provider, provider_voice_id, model_codes) "
+                "values (:id, 'sarvam', :speaker, :codes)"), {"id": vid, "speaker": speaker, "codes": codes})
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()
+            module.upgrade()  # idempotent
+        row = conn.execute(sa.text(
+            "select status, is_default, languages from provider_models where code='bulbul:v4-flash'")).one()
+        assert (row[0], row[1]) == ("active", 0)
+        assert "ml-IN" not in json.loads(row[2])
+        price = conn.execute(sa.text(
+            "select unit_price, currency_code from provider_pricing where model_code='bulbul:v4-flash'")).all()
+        assert [(float(p), c) for p, c in price] == [(2.0, "INR")]
+        codes = dict(conn.execute(sa.text("select id, model_codes from voice_profiles")).all())
+        assert json.loads(codes["vp-sv-shubh"]) == ["bulbul:v3", "bulbul:v4-flash"]
+        assert json.loads(codes["vp-sv-gokul"]) == ["bulbul:v3"]
+        assert json.loads(codes["vp-tenant"]) == []
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.downgrade()
+        assert conn.execute(sa.text("select count(*) from provider_models")).scalar() == 0
+        assert conn.execute(sa.text("select count(*) from provider_pricing")).scalar() == 0
+        codes = dict(conn.execute(sa.text("select id, model_codes from voice_profiles")).all())
+        assert json.loads(codes["vp-sv-shubh"]) == ["bulbul:v3"]
