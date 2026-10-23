@@ -31,6 +31,7 @@ from shared.models import (
     VoiceBot,
     VoiceBotSetting,
     VoiceProfile,
+    Workflow,
 )
 from shared.orchestration.naturalness import resolve_human_speech_with_sources
 from shared.orchestration.voice_identity import VoiceIdentity
@@ -522,6 +523,59 @@ def select_greeting_variant(variants, language: str | None) -> str | None:
     return usable[0]["content"]
 
 
+def _derived_stt_keyterms(
+    session, bot, *, stt_model: str, stt_settings: dict, intents: list[dict],
+    goal_policy: dict | None, languages: list[str],
+) -> list[str]:
+    """Automatic Sarvam key terms for a bot with none configured.
+
+    Only for a model that accepts key terms (saaras:v4); an operator list in
+    ``stt_settings.keyterms`` always wins, and ``stt_settings.keyterms_auto =
+    false`` switches the derivation off. Sources: the bot's workflow option
+    labels and entity synonyms, its slot names and its intents' sample
+    phrases (shared.providers.stt.sarvam_keyterms.derive_keyterms). Never
+    raises — key terms are a recognition hint, not a call requirement.
+    """
+    from shared.providers.stt.sarvam_keyterms import (
+        KEYTERMS_AUTO_SETTING,
+        KEYTERMS_AUTO_YES_NO_SETTING,
+        KEYTERMS_SETTING,
+        derive_keyterms,
+        normalize_keyterms,
+        supports_keyterms,
+    )
+
+    settings = stt_settings or {}
+    if not supports_keyterms(stt_model) or normalize_keyterms(settings.get(KEYTERMS_SETTING)):
+        return []
+    if settings.get(KEYTERMS_AUTO_SETTING) is False:
+        return []
+    try:
+        rows = session.execute(
+            select(Workflow.nodes, Workflow.edges).where(
+                Workflow.tenant_id == bot.tenant_id,
+                Workflow.bot_id == bot.id,
+                Workflow.is_deleted.is_(False),
+            )
+        ).all()
+        workflows = [{"nodes": nodes or [], "edges": edges or []} for nodes, edges in rows]
+        slot_names = [
+            str(slot.get("name") or "") for slot in (goal_policy or {}).get("slots") or ()
+            if isinstance(slot, dict)
+        ]
+        for intent in intents or ():
+            for entity in list(intent.get("entities") or ()) + list(intent.get("optional_entities") or ()):
+                slot_names.append(str(entity.get("name") if isinstance(entity, dict) else entity or ""))
+        return derive_keyterms(
+            workflows=workflows, slot_names=slot_names, intents=intents,
+            languages=languages,
+            include_yes_no=settings.get(KEYTERMS_AUTO_YES_NO_SETTING) is True,
+        )
+    except Exception:  # noqa: BLE001 — a hint must never block config resolution
+        logger.exception("automatic STT key terms failed for bot %s", bot.id)
+        return []
+
+
 def _published_workflow_pins(session, bot) -> dict:
     """{workflow_id: version} frozen by the bot's published release, when the
     schema carries release pins (migration a1b2c3d4e5f6) and the release
@@ -911,6 +965,14 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "settings": stt_settings_effective,
                 "auto_detect_language": auto_detect.as_dict(),
                 "api_key_reference": _secret_ref_for(session, "stt", stt_provider),
+                # Automatic key terms (saaras:v4, no operator list): resolved
+                # once per config snapshot, used by the Sarvam adapters.
+                "derived_keyterms": _derived_stt_keyterms(
+                    session, bot, stt_model=stt_model,
+                    stt_settings=stt_settings_effective, intents=intents,
+                    goal_policy=(vbs.goal_policy if vbs else None) or {},
+                    languages=list(effective_langs),
+                ) if stt_provider == "sarvam" else [],
             },
             tts=tts_engine,
             llm={

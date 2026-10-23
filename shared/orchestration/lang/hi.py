@@ -97,6 +97,19 @@ PACK = LanguagePack(
     filler_only_openers=frozenset({
         "acha", "achha", "accha", "haa", "haan", "han", "अच्छा", "हा", "हाँ", "हां",
     }),
+    function_words=frozenset({
+        "aap", "aapka", "aapke", "aapki", "aapne", "aaya", "aayi", "apna", "apne", "aur", "baat", "bhi", "diya",
+        "diye", "gaya", "gayi", "hain", "hota", "hua", "hui", "hum", "humne", "inka", "iska", "jo", "ka", "kab",
+        "kahan", "kar", "karo", "kaun", "ke", "ki", "kiya", "ko", "koi", "kuch", "kya", "liya", "mai", "main",
+        "maine", "mein", "mera", "mere", "meri", "mujhe", "na", "ne", "par", "pe", "raha", "rahe", "rahi", "sab",
+        "se", "tha", "thi", "the", "unka", "unhone", "usko", "uska", "use", "wala", "wali", "wale", "ya",
+        "अपना", "अपने", "आप", "आपका", "आपके", "आपकी", "आपने", "आया", "आयी", "आई", "इसका", "उनका", "उन्होंने",
+        "उसका", "उसको", "उसे", "और", "कर", "करो", "का", "किया", "की", "कुछ", "के", "को", "कोई", "कौन", "क्या",
+        "गया", "गई", "जो", "तो", "था", "थी", "थे", "दिया", "दिए", "ना", "ने", "पर", "पे", "बात", "भी", "मुझे",
+        "में", "मेरा", "मेरी", "मेरे", "मैं", "मैंने", "या", "रहा", "रही", "रहे", "लिया", "वाला", "वाली", "वाले",
+        "सब", "से", "हम", "हमने", "हुआ", "हुई", "है", "हैं", "हो", "हूँ", "हूं", "hoon", "hun", "hu",
+        "bol", "bolo", "boliye", "bataiye", "बोल", "बोलो", "बोलिए", "बताइए",
+    }),
     no_tokens=(
         r"""nahi""",
         r"""nahin""",

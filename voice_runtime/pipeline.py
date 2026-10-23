@@ -67,6 +67,7 @@ from shared.providers.tts.delivery import apply_delivery_params
 from shared.bot_config import ResolvedBotConfig
 from shared.providers.stt.sarvam_keyterms import (
     KEYTERMS_SETTING,
+    MAX_KEYTERMS,
     normalize_keyterms,
     supports_keyterms,
 )
@@ -289,6 +290,7 @@ def _flux_language_hints(stt_conf: dict, config: ResolvedBotConfig) -> list:
 
 def _sarvam_keyterms_for_model(
     model: str, configured: object, *, recorder: SessionRecorder | None = None,
+    derived: object = None,
 ) -> list[str]:
     """Key terms to hand the Sarvam recognizer for this call, if any.
 
@@ -297,8 +299,14 @@ def _sarvam_keyterms_for_model(
     predate a model switch or arrive through a cached snapshot, so the
     runtime decides again here and records what it did. Nothing is sent for
     an absent/empty list, and NOTHING is ever sent for an unsupported model.
+    ``derived`` is the config snapshot's automatic list (shared.bot_config
+    _derived_stt_keyterms), used only when no operator list is configured.
     """
     terms = normalize_keyterms(configured)
+    source = "configured"
+    if not terms:
+        terms = normalize_keyterms(derived)[:MAX_KEYTERMS]
+        source = "derived"
     if not terms:
         return []
     if not supports_keyterms(model):
@@ -315,7 +323,7 @@ def _sarvam_keyterms_for_model(
     if recorder is not None:
         recorder.add_event(
             "stt_keyterms", model=model, sent=True, count=len(terms),
-            terms=terms,
+            terms=terms, source=source,
         )
     return terms
 
@@ -406,7 +414,7 @@ def build_stt_service(
                 "Sarvam STT credentials are not configured (SARVAM_API_KEY)",
             )
         settings_kwargs = stt_conf.get("settings") or {}
-        model = stt_conf.get("model") or "saaras:v3"
+        model = stt_conf.get("model") or get_settings().stt_model or "saaras:v4"
         # Language policy (shared.providers.stt_language_policy): an explicit
         # STT language always pins the recognizer; otherwise the bot's
         # auto_detect_language decides — explicit true/false when the user set
@@ -502,6 +510,7 @@ def build_stt_service(
             codec = "pcm_s16le"
         keyterms = _sarvam_keyterms_for_model(
             model, settings_kwargs.get(KEYTERMS_SETTING), recorder=recorder,
+            derived=stt_conf.get("derived_keyterms"),
         )
         runtime_settings = get_settings()
         if runtime_settings.sarvam_realtime_stt:
@@ -699,6 +708,7 @@ def build_batch_transcriber(config: ResolvedBotConfig):
         # the REST adapter only forwards it for a supporting model.
         batch_keyterms = _sarvam_keyterms_for_model(
             stt_conf.get("model") or "", (stt_conf.get("settings") or {}).get(KEYTERMS_SETTING),
+            derived=stt_conf.get("derived_keyterms"),
         )
         if batch_keyterms:
             extra[KEYTERMS_SETTING] = batch_keyterms
@@ -958,7 +968,7 @@ def build_voice_pipeline(
         from voice_runtime.sarvam_realtime_stt import normalize_endpointing, realtime_model_for
 
         if (
-            realtime_model_for((config.stt or {}).get("model") or "saaras:v3") is not None
+            realtime_model_for((config.stt or {}).get("model") or get_settings().stt_model or "saaras:v4") is not None
             and normalize_endpointing(get_settings().sarvam_realtime_endpointing) == "vad"
         ):
             provider_owns_turns = True

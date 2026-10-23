@@ -157,7 +157,10 @@ class Settings(BaseSettings):
     # STT=Sarvam, TTS=Sarvam/ElevenLabs, LLM=OpenAI, Embedding=OpenAI.
     stt_provider: str = "sarvam"
     stt_api_key_reference: str = "env:SARVAM_API_KEY"
-    stt_model: str = "saaras:v3"
+    # saaras:v4 since 2026-10-23 (Phase 3): with automatic content key terms it
+    # replaced every non-Hindi-script final on two replayed live calls
+    # (docs/VOICE_PROVIDERS.md). Bots with an explicit stt_model keep theirs.
+    stt_model: str = "saaras:v4"
     # Sarvam realtime STT (voice_runtime.sarvam_realtime_stt): route Sarvam
     # STT over ``/speech-to-text-realtime/ws`` (true partial transcripts,
     # client- or server-side endpointing) instead of the legacy streaming
