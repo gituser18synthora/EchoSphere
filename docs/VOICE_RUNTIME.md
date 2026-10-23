@@ -93,6 +93,16 @@ in `stt_settings.turn_detection`):
   `SMART_TURN_ENABLED=false` disables it for every tenant. `turn_timing`
   records `endpoint_by` (smart_turn | pause_timeout | lexical_shortcut |
   finalize_grace) and the model probability;
+- `smart_turn_threshold` (default 0.7) — a Smart Turn COMPLETE verdict at or
+  above this probability short-circuits every brain-side wait: once the
+  verdict AND the STT final for the speech episode are in, the turn dispatches
+  at once (event `smart_turn_short_circuit`); if the final is still pending,
+  it dispatches the moment the final lands. Live 2026-10-21/22: 84 % of turns
+  ended by Smart Turn, yet the brain still waited its `complete_endpoint`
+  (0.6 s on the demo tenant) AFTER the verdict and the final — p50 600 ms
+  from final to dispatch on 151 turns. Below the threshold (or on a
+  pause-window close) the waits below apply unchanged. `turn_timing` carries
+  `endpoint_marks_ms` {verdict, final, dispatch} measured from the VAD stop.
 - `complete_endpoint` — a much shorter endpoint used when the buffered text reads
   as a finished thought;
 - `short_reply_endpoint` — shorter still for self-contained short replies

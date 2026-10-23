@@ -104,6 +104,10 @@ async def collect(uri: str, database: str, days: int, channel: str,
     too_short_reasons = 0
     short_answer_routes = 0          # Phase 1: <=2-word reply answered in context
     endpoint_by: dict[str, list[float]] = {k: [] for k in ENDPOINT_KINDS}   # Phase 2
+    # Smart Turn sub-marks (ms after the VAD stop) on turns Smart Turn ended:
+    # where the endpoint time goes — the verdict, the STT final, the dispatch.
+    endpoint_marks: dict[str, list[float]] = {"verdict": [], "final": [], "dispatch": []}
+    short_circuits = 0
     warmup_latencies: list[float] = []
     warmup_hits = 0
     warmup_total = 0
@@ -131,6 +135,13 @@ async def collect(uri: str, database: str, days: int, channel: str,
                 kind_by = str(ev.get("endpoint_by") or "unknown")
                 if isinstance(ms.get("endpoint"), (int, float)):
                     endpoint_by.setdefault(kind_by, []).append(float(ms["endpoint"]))
+                if kind_by == "smart_turn":
+                    marks = ev.get("endpoint_marks_ms") or {}
+                    for name in endpoint_marks:
+                        if isinstance(marks.get(name), (int, float)):
+                            endpoint_marks[name].append(float(marks[name]))
+            elif kind == "smart_turn_short_circuit":
+                short_circuits += 1
             elif kind == "turn_latency":
                 counts = ev.get("counts") or {}
                 if counts.get("decision_prefetched"):
@@ -187,6 +198,7 @@ async def collect(uri: str, database: str, days: int, channel: str,
         "too_short_reasons": too_short_reasons,
         "short_answer_routes": short_answer_routes,
         "endpoint_by": endpoint_by, "warmup_latencies": warmup_latencies,
+        "endpoint_marks": endpoint_marks, "short_circuits": short_circuits,
         "warmup_hits": warmup_hits, "warmup_total": warmup_total,
         "filler_not_ready": filler_not_ready,
     }
@@ -210,6 +222,13 @@ def print_report(r: dict, channel: str) -> None:
             continue
         print(f"  {kind:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
     print(f"{'turns ended by smart_turn':<44}{_share(len(r['endpoint_by'].get('smart_turn', [])), total_ended)}")
+    marks = r.get("endpoint_marks") or {}
+    if any(marks.values()):
+        print(f"{'smart_turn marks after VAD stop (ms)':<44}{'p50':>9}{'p90':>9}{'n':>8}")
+        for name in ("verdict", "final", "dispatch"):
+            values = sorted(marks.get(name, []))
+            print(f"  {name:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
+        print(f"{'smart_turn_short_circuit events':<44}{r.get('short_circuits', 0)}")
     print()
     print(f"{'decision ready at dispatch (prefetch hit)':<44}{_share(r['prefetch_hits'], r['understanding_turns'])}")
     print(f"{'calls: 1st-turn decision timed out':<44}{_share(r['calls_first_timeout'], r['calls_with_engine'])}")
