@@ -90,6 +90,13 @@ PACK = LanguagePack(
         r"""हम्म+""",
         r"""हम्+""",
     ),
+    filler_only_tokens=frozenset({
+        "aur", "matlab", "mtlb", "ok", "okay", "tho", "to", "toh",
+        "ओके", "और", "तो", "मतलब",
+    }),
+    filler_only_openers=frozenset({
+        "acha", "achha", "accha", "haa", "haan", "han", "अच्छा", "हा", "हाँ", "हां",
+    }),
     no_tokens=(
         r"""nahi""",
         r"""nahin""",

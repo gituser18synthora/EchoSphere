@@ -25,6 +25,7 @@ optimistic endpoint degrades into a merge rather than a talk-over.
 
 import re
 
+from shared.orchestration import lang as _lang
 from shared.orchestration.router import detect_hangup
 
 # Words that essentially never end a finished spoken sentence in Hindi,
@@ -153,3 +154,34 @@ def utterance_looks_complete(text: str) -> bool:
     if is_short_complete_reply(stripped) or detect_hangup(stripped):
         return True
     return bool(_TERMINAL_RE.search(stripped))
+
+
+# ── filler-only utterances ──────────────────────────────────────────────────
+_FILLER_TOKEN_RE = re.compile(r"[\w" + _lang.letters() + r"]+")
+_HUM_RE = re.compile(r"^(?:" + (_lang.alternatives("hmm_forms") or "(?!)") + r")$", re.IGNORECASE)
+
+
+def is_filler_only(text: str) -> bool:
+    """Whether the utterance is nothing but discourse filler: "to", "aur",
+    "matlab", "ok", hums ("hmm", "हम्म"), or "haan to" / "achha to" (an
+    opener followed by such a filler). A bare "haan" or "achha" is NOT filler
+    — it is a reply. Language packs own the words
+    (``filler_only_tokens`` / ``filler_only_openers``)."""
+    # Danda / double danda sit inside the Devanagari letter range: drop them first.
+    tokens = [t.lower() for t in _FILLER_TOKEN_RE.findall(re.sub("[\u0964\u0965]", " ", text or ""))]
+    if not tokens:
+        return False
+    fillers = _lang.union("filler_only_tokens")
+    openers = _lang.union("filler_only_openers")
+
+    def _filler(token: str) -> bool:
+        return token in fillers or bool(_HUM_RE.match(token))
+
+    for index, token in enumerate(tokens):
+        if _filler(token):
+            continue
+        if token in openers and index + 1 < len(tokens) and _filler(tokens[index + 1]):
+            continue
+        return False
+    return True
+
