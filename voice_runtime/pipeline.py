@@ -522,20 +522,46 @@ def build_stt_service(
                 endpointing = normalize_endpointing(runtime_settings.sarvam_realtime_endpointing)
                 stream_type = normalize_stream_type(runtime_settings.sarvam_realtime_stream_type)
                 realtime_settings = RealtimeSarvamSTTService.Settings(
+                # Realtime language policy. With ``language_code=auto`` the
+                # realtime socket renders Hindi speech as ENGLISH ("haan
+                # boliye" came back as "Yes, speak." live on 2026-10-22 and
+                # "Hello, speak." when the recording was replayed on
+                # 2026-10-23; pinned to hi-IN the same audio transcribes
+                # correctly). A bot with one configured language is therefore
+                # always pinned to it on this socket, whatever the
+                # auto-detect setting says; only a multi-language bot keeps
+                # auto-detect (and inherits that behaviour — see
+                # docs/VOICE_PROVIDERS.md). pipecat >= 1.13: ``language=None``
+                # is auto; a Language reaches the handshake as its locale.
+                realtime_language = language
+                language_pinned = None
+                bot_languages = {str(code).strip() for code in (config.languages or []) if code}
+                if realtime_language is None and len(bot_languages) <= 1 and config.language:
+                    try:
+                        realtime_language = Language(config.language)
+                        language_pinned = "single_language_bot"
+                    except ValueError:
+                        logger.warning(
+                            "sarvam-realtime: cannot pin unsupported bot language %r; "
+                            "auto-detect stays on", config.language,
+                        )
+                # Transcription only: ``translate``/``translit``/``codemix``
+                # would change the script or language of what the brain sees.
+                realtime_mode = "transcribe"
                     model=realtime_model,
-                    # pipecat >= 1.13: ``language=None`` asks Sarvam to detect
-                    # the language of each utterance (``language_code`` is
-                    # deprecated); a pinned Language reaches the handshake as
-                    # its Sarvam locale code.
-                    language=language,
+                    language=realtime_language,
                     stream_type=stream_type,
-                    mode=mode or "transcribe",
+                    mode=realtime_mode,
                 )
                 if recorder is not None:
                     recorder.add_event(
                         "stt_realtime", model=realtime_model, configured_model=model,
                         endpointing=endpointing, stream_type=stream_type,
                     )
+                        language=str(realtime_language) if realtime_language else "auto",
+                        language_pinned=language_pinned,
+                        mode=realtime_mode,
+                        mode_forced=bool(mode) and str(mode).lower() != realtime_mode,
                 return RealtimeSarvamSTTService(
                     api_key=api_key,
                     endpointing=endpointing,
