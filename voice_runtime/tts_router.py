@@ -260,6 +260,7 @@ class StreamingTTSRouter(TTSService):
         naturalness=None,
         filler_library=None,
         first_audio_timeout: float = _FIRST_AUDIO_TIMEOUT_S,
+        spoken_text=None,
         **kwargs,
     ):
         """``tts_config`` is ``ResolvedBotConfig.tts`` (see shared/bot_config.py)."""
@@ -291,6 +292,9 @@ class StreamingTTSRouter(TTSService):
             "params": {},
             "api_key_reference": tts_config.get("api_key_reference") or "",
         }
+        # voice_runtime.spoken_text.SpokenTextReference (realtime STT echo
+        # matching): every text given to the engines is recorded there.
+        self._spoken_text = spoken_text
         self._language_map: dict[str, dict] = tts_config.get("language_map") or {}
         self._fallback_engine: dict | None = tts_config.get("fallback") or None
         self._base_params: dict = tts_config.get("settings") or {}
@@ -583,6 +587,8 @@ class StreamingTTSRouter(TTSService):
             self._recorder.session_id if self._recorder else "?",
             len(text), self._current_language, str(context_id)[:8],
         )
+        if self._spoken_text is not None:
+            self._spoken_text.add(text)
         guarded = sanitize_spoken_text(text)
         if guarded != text:
             # Last line of defense: an unresolved template placeholder

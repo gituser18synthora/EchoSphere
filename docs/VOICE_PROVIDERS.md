@@ -208,6 +208,57 @@ real-time paced audio, `scratchpad/realtime_probe.py`):
   times (`speech_start` after `session.begin` and again right after every
   `speech_end`); duplicates are harmless, 8 s of open silence is fine, and
   back-to-back utterances each get their own final.
+
+Guards added 2026-10-23 after live call cv_a3f4eee0d0d2 (bot with hi-IN +
+en-IN, auto-detect; its recorded audio was replayed into the socket to
+confirm each cause — `scratchpad/probe/replay_probe_rt.py`):
+
+- **Language.** With `language_code=auto` the realtime socket renders Hindi
+  speech as English ("haan boliye" → "Yes, speak." live, "Hello, speak." on
+  replay; the legacy socket's `unknown` returned Devanagari for the same
+  audio). `build_stt_service` therefore pins a bot with ONE configured
+  language to it on this socket whatever `auto_detect_language` says
+  (`stt_realtime.language_pinned = single_language_bot`), and always sends
+  `mode=transcribe` (`mode_forced` when the bot's STT mode differs). A
+  multi-language bot keeps `auto` and inherits the English rendering of
+  short Hindi answers — it is NOT ready for this socket until Sarvam's auto
+  mode transcribes rather than translates, or until it is pinned to its
+  default language.
+- **Silence hallucination.** The caller-audio gate passes exact zeros while
+  shut. On the open utterance the server decoded 18 s of zeros into
+  partials ("However, whatever happens, happens…") from 4 s on and a
+  server-initiated final at ~18 s in a random language (Tamil live, Kannada
+  on replay). Live that 2-word final confirmed a barge-in and cut a 19 s
+  reply at 16 s; the partials landed in the caller's next turn. The adapter
+  never sends exact-zero frames; while nothing is sent it pings every 8 s
+  (`stt_realtime_session_end.silence_skipped_ms`, `pings`).
+- **Echo window.** While the bot speaks and for 0.6 s after it stops, audio
+  goes to the socket only while Silero reports caller speech; the last
+  0.4 s of guarded audio is sent first so the gate's pre-roll (first
+  syllable) survives (`guarded_skipped_ms`).
+- **VAD evidence.** A partial or final leaves the adapter only while the
+  caller is speaking or while a `speech_end` we sent still awaits its final
+  (2.5 s); everything else is dropped before the barge-in word gate and the
+  brain (`stt_realtime_transcript_dropped reason=no_vad_speech`, recorded
+  for finals; partials are counted in `partials_dropped`). A final that
+  lands while the caller is still speaking is tagged mid-utterance exactly
+  like the legacy adapter's barge-in flush finals.
+- **Echo text.** In the echo window a transcript of ≥2 words that starts
+  with a word the bot recently spoke and whose words are ≥60 % recently
+  spoken words is the bot's own voice (`reason=echo_text`). The reference
+  (`voice_runtime/spoken_text.py`, fed by the streaming TTS router with
+  every text it speaks; the segmented REST TTS path does not feed it)
+  compares Devanagari and Roman spellings through a shared key. A caller
+  who answers over the bot with the bot's own words ("theek hai") is
+  dropped in that window too; "haan, bataya gaya tha" is not (it starts
+  with the caller's word).
+
+Remaining, by design: the legacy socket and barge-in word gate are untouched;
+carrier-side echo loud enough to open the gate AND trip Silero AND be
+transcribed as something other than the bot's words still reaches the brain
+(only AEC removes that); silence hallucination is prevented, not detected —
+a server that invents text from real low-level noise is still caught by the
+VAD-evidence rule only while no `speech_end` is pending.
 - `endpointing=vad`: `vad.speech_end` arrives ~1.0 s after the audio ends
   (500 ms server silence window + processing) and the final ~1.3 s after;
   the mode bypasses our pause policy, the word-confirmed barge-in gate and
