@@ -132,6 +132,9 @@ class TestBuild:
             assert rt_event == {
                 "model": "saaras:v4", "configured_model": "saaras:v4",
                 "endpointing": "manual", "stream_type": "balanced",
+                # Two configured languages: auto-detect stays; transcription only.
+                "language": "auto", "language_pinned": None,
+                "mode": "transcribe", "mode_forced": False,
             }
         finally:
             await service.cleanup()
