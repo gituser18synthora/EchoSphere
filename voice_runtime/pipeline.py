@@ -106,6 +106,10 @@ SARVAM_TTFS_P99_S = 0.8
 # Sarvam's own default for ``min_speech_frames`` (streaming docs, 2026-10): the
 # consecutive speech frames that open a segment after the first turn.
 SARVAM_MIN_SPEECH_FRAMES_DEFAULT = 2
+# The legacy Sarvam adapter's missing-final recovery after a VAD stop: a
+# retried flush at 0.65 s and a second 0.65 s wait (voice_runtime.sarvam_stt
+# _MISSING_FINAL_RETRY_S), plus the final's own transit.
+SARVAM_MISSING_FINAL_WINDOW_S = 1.5
 
 
 # ── turn detection ──────────────────────────────────────────────────────────
@@ -911,9 +915,12 @@ def build_user_turn_stop_strategies(
             0.2, turn["user_speech_timeout"] - turn["stop_secs"]
         ),
         # Bounded by the STT's advertised final latency, never by
-        # the processor's 5 s fallback (voice_runtime.turn_stop).
+        # the processor's 5 s fallback (voice_runtime.turn_stop) — and
+        # never shorter than the Sarvam adapter's missing-final retry
+        # window, so a turn is not closed empty while that retry is pending.
         wait_for_transcript=wait_for_final,
         tracker=tracker,
+        stt_retry_window=SARVAM_MISSING_FINAL_WINDOW_S,
     ))
     return strategies
 

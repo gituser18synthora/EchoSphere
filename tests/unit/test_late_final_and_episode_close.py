@@ -248,3 +248,53 @@ class TestStrategyVerdictScope:
             assert tracker.endpoint_by == "transcript_timeout"
         finally:
             await strategy.cleanup()
+
+
+# ── empty close never pre-empts the adapter's retry ─────────────────────────
+
+class TestEmptyCloseOrdering:
+    async def _run(self, monkeypatch, *, pause_window: float, retry_window: float | None, ttfs: float = 0.5):
+        tracker = TurnLatencyTracker(session_id="s")
+        strategy = FinalBoundedTurnStopStrategy(
+            user_speech_timeout=pause_window, wait_for_transcript=True, tracker=tracker,
+            stt_retry_window=retry_window)
+        await strategy.setup(FrameProcessorSetup(
+            clock=SystemClock(), task_manager=TaskManager(), audio_in_sample_rate=8000,
+            audio_out_sample_rate=8000, pipeline_worker=None))
+        triggered: list[float] = []
+        t0 = time.monotonic()
+
+        async def _trigger(self_inner, **kwargs):
+            triggered.append(time.monotonic() - t0)
+
+        async def _push(frame, direction=None):
+            pass
+
+        monkeypatch.setattr(strategy, "push_frame", _push)
+        monkeypatch.setattr(type(strategy).__mro__[1], "trigger_user_turn_stopped", _trigger)
+        strategy._stt_timeout = ttfs
+        await strategy.handle_user_turn_started()
+        try:
+            await strategy.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.25, timestamp=time.time()))
+            await asyncio.sleep(max(pause_window, retry_window or 0) + 0.3)
+        finally:
+            await strategy.cleanup()
+        return triggered, strategy
+
+    @pytest.mark.asyncio
+    async def test_stt_wait_is_floored_at_the_retry_window_within_the_pause_window(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.45, retry_window=1.5)
+        assert strategy._stt_timeout == pytest.approx(0.7)       # min(1.5, 0.45 + 0.25)
+        assert len(triggered) == 1 and triggered[0] >= 0.45 - 0.02   # closes on the pause window, never earlier
+
+    @pytest.mark.asyncio
+    async def test_a_longer_pause_window_still_bounds_the_wait(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.8, retry_window=0.6)
+        assert strategy._stt_timeout == pytest.approx(0.6)       # the retry window itself
+        assert len(triggered) == 1 and 0.78 <= triggered[0] <= 1.1
+
+    @pytest.mark.asyncio
+    async def test_without_a_retry_window_nothing_changes(self, monkeypatch):
+        triggered, strategy = await self._run(monkeypatch, pause_window=0.45, retry_window=None)
+        assert strategy._stt_timeout == pytest.approx(0.5)
+        assert len(triggered) == 1
