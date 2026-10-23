@@ -68,6 +68,12 @@ class LLMResult:
     output_tokens: int = 0
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
+    # Provider report, when available: prompt tokens served from the prompt
+    # cache (included in input_tokens), the service tier the request actually
+    # ran on, and the resolved model id.
+    cached_tokens: int = 0
+    service_tier: str | None = None
+    model: str | None = None
 
 
 @dataclass

@@ -584,6 +584,14 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
         "Deprecated quality/latency-balance model (32 languages). Superseded "
         "by Eleven Flash v2.5."
     ),
+    ("openai", "llm", "gpt-6-luna"): (
+        "Default Goal Engine decision model, run on OpenAI's fast tier with "
+        "reasoning effort none (2026-10-23 bench: routing 69 % vs 54 % for "
+        "gpt-4o-mini, harmful mislabels 5 vs 36, same ~1.3 s latency). "
+        "OpenAI's replacement for gpt-4o-mini / gpt-4.1 / gpt-4.1-mini "
+        "(shutdown 2027-01-14). As a reply model it runs at its default "
+        "reasoning effort — measure latency before choosing it for replies."
+    ),
     ("openai", "llm", "gpt-4.1"): (
         "Full GPT-4.1: strongest of the 4.1 family for instruction following "
         "and long context. Higher cost/latency than 4.1 mini — prefer it for "
@@ -772,6 +780,11 @@ PROVIDER_MODELS = [
      _OPENAI_LLM_SCHEMA, False, "active", 3),
     ("openai", "llm", "gpt-4.1-nano", "GPT-4.1 nano", [], None, None, True,
      _OPENAI_LLM_SCHEMA, False, "active", 4),
+    # Platform default Goal Engine decision model (shared.config
+    # orchestration_model). The provider sends max_completion_tokens and
+    # reasoning_effort "none" (+ temperature) for it.
+    ("openai", "llm", "gpt-6-luna", "GPT-6 Luna", [], None, None, True,
+     _OPENAI_LLM_SCHEMA, False, "active", 5),
     # GPT-5 generation — inactive by design, see _GPT5_NOTE above.
     ("openai", "llm", "gpt-5.6-sol", "GPT-5.6 Sol", [], None, None, True,
      _OPENAI_LLM_SCHEMA, False, "inactive", 5),

@@ -190,6 +190,19 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     llm_api_key_reference: str = "env:OPENAI_API_KEY"
     llm_model: str = "gpt-4o-mini"
+    # Goal Engine decision engine for every bot that does not set its own
+    # llm_settings.orchestration_model (shared.bot_config). gpt-6-luna on the
+    # fast tier — 2026-10-23 bench, 116 labelled live turns x 2: routing 69 %
+    # vs 54 % for the per-bot models it replaces (mostly gpt-4o-mini), harmful
+    # mislabels 5 vs 36, latency equal (p50 ~1.3 s); OpenAI's named
+    # replacement for gpt-4o-mini / gpt-4.1 / gpt-4.1-mini (shutdown
+    # 2027-01-14). Its standard tier is ~2x slower (p50 2.7 s), so the tier
+    # is part of the default; it applies to decision calls only, never to
+    # replies. Needs the catalog row (migration d3f5b7c9e1a2): without it the
+    # bot's conversation model decides, still on this tier.
+    orchestration_provider: str = "openai"
+    orchestration_model: str = "gpt-6-luna"
+    orchestration_service_tier: str = "fast"
 
     # ── Outbound API connections (SSRF guard) ───────────────────
     # Private/loopback targets are blocked unless explicitly allowed (dev/test).

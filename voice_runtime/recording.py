@@ -53,6 +53,9 @@ class SessionRecorder:
             "llm_input_tokens": 0, "llm_output_tokens": 0,
             "llm_cached_tokens": 0, "llm_reasoning_tokens": 0,
             "llm_requests": 0, "llm_usage_estimated": 0,
+            # Goal Engine decision calls — billed under the decision model.
+            "decision_llm_requests": 0, "decision_llm_input_tokens": 0,
+            "decision_llm_output_tokens": 0, "decision_llm_cached_tokens": 0,
             "tts_characters": 0, "kb_searches": 0,
             "stt_characters": 0,
         }
@@ -471,6 +474,24 @@ class SessionRecorder:
                 cached_tokens=int(usage.get("llm_cached_tokens") or 0),
                 reasoning_tokens=int(usage.get("llm_reasoning_tokens") or 0),
                 usage_source="estimated" if usage.get("llm_usage_estimated") else "provider",
+            )
+            if event is not None:
+                total += Decimal(str(event.cost_usd))
+        if usage.get("decision_llm_requests"):
+            # The decision model usually differs from the conversation model
+            # (platform default gpt-6-luna). Priced at the model's standard
+            # rates: the fast-tier premium is not modelled in provider_pricing.
+            decision_conf = llm_conf.get("orchestration") or {}
+            event = _record(
+                capability="llm",
+                provider_code=decision_conf.get("provider") or llm_conf.get("provider") or "openai",
+                model_code=decision_conf.get("model") or llm_conf.get("model") or "",
+                request_id=f"{self.session_id}:llm-decision",
+                requests=int(usage.get("decision_llm_requests") or 1),
+                input_tokens=int(usage.get("decision_llm_input_tokens") or 0),
+                output_tokens=int(usage.get("decision_llm_output_tokens") or 0),
+                cached_tokens=int(usage.get("decision_llm_cached_tokens") or 0),
+                usage_source="provider",
             )
             if event is not None:
                 total += Decimal(str(event.cost_usd))

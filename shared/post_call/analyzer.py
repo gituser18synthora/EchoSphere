@@ -61,14 +61,20 @@ def build_analysis_llm(config):
 
     llm_conf = dict(config.llm or {})
     orchestration = llm_conf.get("orchestration") or {}
-    chosen = orchestration if orchestration.get("provider") else llm_conf
+    reuse = bool(orchestration.get("provider")) and orchestration.get(
+        "source", "bot",
+    ) in ("bot", "reasoning_fallback")
+    chosen = orchestration if reuse else llm_conf
+    # The decision engine's service tier (e.g. "fast", billed at a premium)
+    # buys per-turn latency; post-call analysis is not latency-bound.
+    extra = {k: v for k, v in (chosen.get("extra") or {}).items() if k != "service_tier"}
     return get_llm_provider(ProviderConfig(
         provider=chosen.get("provider") or "openai",
         model=chosen.get("model") or "",
         api_key_reference=chosen.get("api_key_reference") or "",
         timeout_seconds=float(chosen.get("timeout_seconds")
                               or _DEFAULT_TIMEOUT_SECONDS),
-        extra=chosen.get("extra") or {},
+        extra=extra,
     ))
 
 

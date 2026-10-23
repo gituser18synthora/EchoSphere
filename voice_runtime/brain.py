@@ -856,11 +856,20 @@ class ConversationBrain(FrameProcessor):
             or bool(config.intents) or self._policy is not None
             or has_configured_guardrails
         )
+        orchestration_conf = (config.llm or {}).get("orchestration") or {}
+        # What decides, for the call's decision events and decision billing.
+        self._decision_engine = {
+            "provider": orchestration_conf.get("provider")
+            or (config.llm or {}).get("provider") or "openai",
+            "model": orchestration_conf.get("model") or (config.llm or {}).get("model") or "",
+            "service_tier_requested": (orchestration_conf.get("extra") or {}).get("service_tier"),
+        }
         self._goal_engine = GoalEngine(
             llm=self._build_orchestration_llm(llm),
             policy=self._goal_policy,
             intents=config.intents,
             enabled=engine_enabled,
+            include_response_text=self._decision_writes_reply_text(config, llm_settings_early),
             # Defaults come from the engine's own budget constants; per-bot
             # overrides (llm_settings) are clamped to the shared safe ranges
             # inside GoalEngine.
@@ -1281,6 +1290,25 @@ class ConversationBrain(FrameProcessor):
         # a deterministic serious signal while the caller still owns the
         # floor; the orchestrator's validated signal replaces it at turn end.
         self._latest_caller_signal = ""
+
+    def _decision_writes_reply_text(self, config, llm_settings: dict) -> bool:
+        """Whether the Goal Engine decision also writes ``response_text``.
+
+        ``llm_settings.orchestration_response_text`` (true/false) decides when
+        set. Otherwise: off for a workflow bot without a collections policy —
+        its replies are authored workflow text, and the co-written reply was
+        spoken on at most 8 of 455 live workflow-bot decisions (2026-10-09..23)
+        while costing 6-17 output tokens (60-110 ms) on every one; on for
+        collections and prompt-only bots, whose direct-reply path speaks it.
+        """
+        explicit = llm_settings.get("orchestration_response_text")
+        if isinstance(explicit, bool):
+            return explicit
+        workflow_bot = any(
+            str(intent.get("route") or "").startswith("workflow:")
+            for intent in (config.intents or [])
+        )
+        return not (workflow_bot and self._policy is None)
 
     def _build_orchestration_llm(self, default_llm):
         """The LLM the Goal Engine decides with.
@@ -5864,18 +5892,40 @@ class ConversationBrain(FrameProcessor):
         if mark:
             self._latency.mark_classified()
         usage, engine.last_usage = engine.last_usage, None
+        meta, engine.last_meta = engine.last_meta, None
+        cached = int((meta or {}).get("cached_tokens") or 0)
         if usage is not None:
+            # Decision calls are billed under the DECISION model (recording),
+            # not the conversation model the reply counters are priced at.
             counters = self._recorder.usage
-            counters["llm_requests"] = counters.get("llm_requests", 0) + 1
-            counters["llm_input_tokens"] = counters.get("llm_input_tokens", 0) + usage[0]
-            counters["llm_output_tokens"] = counters.get("llm_output_tokens", 0) + usage[1]
+            counters["decision_llm_requests"] = counters.get("decision_llm_requests", 0) + 1
+            counters["decision_llm_input_tokens"] = (
+                counters.get("decision_llm_input_tokens", 0) + usage[0]
+            )
+            counters["decision_llm_output_tokens"] = (
+                counters.get("decision_llm_output_tokens", 0) + usage[1]
+            )
+            counters["decision_llm_cached_tokens"] = (
+                counters.get("decision_llm_cached_tokens", 0) + cached
+            )
+        engine_fields = {
+            "model": (meta or {}).get("model") or self._decision_engine["model"],
+            "service_tier": (meta or {}).get("service_tier"),
+            "service_tier_requested": self._decision_engine["service_tier_requested"],
+        }
         if orchestrated is None:
             self._recorder.add_event(
                 "orchestration_fallback",
                 reason=engine.last_fallback_reason or "unknown",
+                **engine_fields,
             )
             return None
-        self._recorder.add_event("orchestration_decision", **orchestrated.as_event())
+        self._recorder.add_event(
+            "orchestration_decision", **orchestrated.as_event(), **engine_fields,
+            input_tokens=usage[0] if usage else None,
+            output_tokens=usage[1] if usage else None,
+            cached_tokens=cached if usage else None,
+        )
         return orchestrated
 
     def _orchestration_state(self) -> dict:
