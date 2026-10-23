@@ -180,7 +180,12 @@ class Settings(BaseSettings):
     smart_turn_enabled: bool = True
     tts_provider: str = "sarvam"
     tts_api_key_reference: str = "env:SARVAM_API_KEY"
-    tts_model: str = "bulbul:v3"
+    # bulbul:v4-flash: v3's contract with persona speakers — a v3 voice name
+    # maps to its reviewed persona (shared.providers.tts.sarvam_voices); a
+    # locale without one (ml-IN, od-IN, some voices' en-IN) stays on v3.
+    # Needs the catalog row (migration c2e4a6b8d0f1) wherever this default
+    # applies: the engine is governance-checked and fails closed without it.
+    tts_model: str = "bulbul:v4-flash"
     tts_voice: str = "shubh"
     llm_provider: str = "openai"
     llm_api_key_reference: str = "env:OPENAI_API_KEY"

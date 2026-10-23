@@ -1,0 +1,208 @@
+"""Sarvam bulbul:v4-flash: persona speakers, config-time fallback, catalog.
+
+bulbul:v4-flash keeps bulbul:v3's request contract but its speakers are
+persona ids and Sarvam rejects a v3 short name with a 400. These tests pin:
+
+- the reviewed v3 -> persona table (same speaker, matching language tag) and
+  its loud failure for a (voice, language) pair it does not cover;
+- both adapters (WebSocket, REST) sending the persona with v3 parameters, and
+  an unmapped voice failing before any socket is opened;
+- bot config keeping an uncovered locale on bulbul:v3 with the SAME voice and
+  a language warning (never a substitute speaker);
+- the catalog seed rows.
+"""
+
+import pytest
+
+import shared.bot_config as bot_config
+import shared.providers.tts.sarvam_ws as sarvam_ws
+from backend.seeds import provider_catalog_seed as catalog_seed
+from shared.providers.base import ProviderError
+from shared.providers.tts.sarvam_voices import (
+    V3_TO_V4_PERSONA,
+    V4_DEFAULT_PERSONA,
+    NoV4Equivalent,
+    is_v4_model,
+    is_v4_persona,
+    v4_persona_for,
+    v4_speaker,
+)
+from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
+from tests.mock_tts_servers import MockSarvamTTSServer
+from tests.unit.test_sarvam_rest_tts_language_kwarg import _NewSdkTTS, _provider
+from tests.unit.test_streaming_tts_providers import sarvam_settings
+
+
+# ── persona table ───────────────────────────────────────────────────────────
+
+class TestPersonaTable:
+    def test_v3_voice_maps_to_its_reviewed_persona_per_language(self):
+        assert v4_speaker("shubh", "hi-IN") == "shubh_hi_customer"
+        assert v4_speaker("Shubh", "en-IN") == "shubh_enhi_companion"
+        assert v4_speaker("ashutosh", "hi-IN") == "ashutosh_hi_conversational"
+        assert v4_speaker("ritu", "en-IN") == "ritu_en_edtech"
+        assert v4_speaker("ritu", "mr-IN") == "ritu_mr_insurance"
+
+    def test_persona_ids_pass_through(self):
+        assert v4_speaker("ritu_hi_customer", "en-IN") == "ritu_hi_customer"
+        assert is_v4_persona("shubh_enhi_ads")
+        assert not is_v4_persona("shubh")
+
+    @pytest.mark.parametrize("voice,language", [
+        ("ashutosh", "en-IN"),   # only a Hindi persona exists
+        ("kavya", "ml-IN"),      # no Malayalam personas at all
+        ("shubh", "od-IN"),      # no Odia personas at all
+        ("anushka", "hi-IN"),    # bulbul:v2 speaker, no persona
+    ])
+    def test_uncovered_pair_fails_loudly(self, voice, language):
+        assert v4_persona_for(voice, language) is None
+        with pytest.raises(NoV4Equivalent, match=voice):
+            v4_speaker(voice, language)
+
+    def test_empty_voice_is_sarvams_default_persona(self):
+        assert v4_speaker("", "hi-IN") == V4_DEFAULT_PERSONA == "shubh_enhi_ads"
+
+    def test_every_entry_is_the_same_speaker_in_a_matching_language(self):
+        for speaker, row in V3_TO_V4_PERSONA.items():
+            for language, persona in row.items():
+                name, tag, _style = persona.split("_", 2)
+                assert name == speaker, persona
+                assert tag in ({language, "enhi"} if language in ("hi", "en") else {language}), persona
+                assert is_v4_persona(persona)
+        assert not any({"ml", "od"} & set(row) for row in V3_TO_V4_PERSONA.values())
+
+    def test_model_family(self):
+        assert is_v4_model("bulbul:v4-flash")
+        assert not is_v4_model("bulbul:v3")
+        assert not is_v4_model(None)
+
+
+# ── WebSocket adapter ───────────────────────────────────────────────────────
+
+class TestWebSocketAdapter:
+    @pytest.fixture(autouse=True)
+    def _no_warm_spare(self, monkeypatch):
+        monkeypatch.setattr(sarvam_ws, "_WARM_SPARE", False)
+
+    async def test_v4_flash_sends_the_persona_with_v3_parameters(self, monkeypatch):
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings(
+                model="bulbul:v4-flash", voice="shubh", language="hi-IN",
+                params={"pace": 1.1, "temperature": 0.3, "min_buffer_size": 40, "pitch": 0.2},
+            ))
+            await provider.connect()
+            await provider.close()
+        config = server.configs[0]
+        assert server.queries[0]["model"] == "bulbul:v4-flash"
+        assert config["speaker"] == "shubh_hi_customer"
+        assert config["pace"] == 1.1 and config["temperature"] == 0.3
+        assert config["enable_preprocessing"] is True
+        assert "pitch" not in config  # v2-only
+
+    async def test_v3_keeps_the_short_name(self, monkeypatch):
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings(model="bulbul:v3", voice="ashutosh"))
+            await provider.connect()
+            await provider.close()
+        assert server.configs[0]["speaker"] == "ashutosh"
+
+    async def test_unmapped_voice_fails_before_any_socket_opens(self, monkeypatch):
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings(
+                model="bulbul:v4-flash", voice="ashutosh", language="en-IN",
+            ))
+            with pytest.raises(ProviderError) as info:
+                await provider.connect()
+            await provider.close()
+        assert info.value.category == "invalid_input"
+        assert server.connections == 0
+
+# ── REST adapter ───────────────────────────────────────────────────────────
+
+class TestRestAdapter:
+    async def test_v4_flash_maps_the_persona_and_drops_v2_parameters(self, monkeypatch):
+        tts = _NewSdkTTS()
+        provider = _provider(monkeypatch, tts, language="hi-IN")
+        provider._model = "bulbul:v4-flash"
+        provider._params = {"temperature": 0.3, "pitch": 0.2, "loudness": 1.1}
+        await provider.synthesize("नमस्ते", voice="kavya", language="hi-IN")
+        call = tts.calls[0]
+        assert call["model"] == "bulbul:v4-flash"
+        assert call["speaker"] == "kavya_hi_conversational"
+        assert call["temperature"] == 0.3
+        assert "pitch" not in call and "loudness" not in call
+
+    async def test_v4_flash_unmapped_voice_raises_invalid_input(self, monkeypatch):
+        tts = _NewSdkTTS()
+        provider = _provider(monkeypatch, tts, language="en-IN")
+        provider._model = "bulbul:v4-flash"
+        with pytest.raises(ProviderError) as info:
+            await provider.synthesize("Hello", voice="kavya", language="en-IN")
+        assert info.value.category == "invalid_input"
+        assert tts.calls == []
+
+
+# ── bot config ─────────────────────────────────────────────────────────────
+
+def _engine(model, voice="ashutosh", **extra):
+    return {"provider": "sarvam", "model": model, "voice": voice,
+            "voice_name": voice.title(), "voice_gender": "male",
+            "api_key_reference": "env:SARVAM_API_KEY", **extra}
+
+
+class TestConfigFallback:
+    def test_uncovered_locale_stays_on_v3_with_the_same_voice(self, monkeypatch):
+        monkeypatch.setattr(bot_config, "_engine_allowed", lambda *a, **k: None)
+        tts = {**_engine("bulbul:v4-flash", settings={"pace": 1.05}), "language_map": {
+            "hi-IN": {**_engine("bulbul:v4-flash"), "params": {}},
+            "en-IN": {**_engine("bulbul:v4-flash"), "params": {"pace": 0.9}},
+        }}
+        warnings: dict = {}
+        bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["hi-IN", "en-IN"], warnings, "bot_x")
+        assert tts["language_map"]["hi-IN"]["model"] == "bulbul:v4-flash"
+        en = tts["language_map"]["en-IN"]
+        assert (en["model"], en["voice"], en["params"]) == ("bulbul:v3", "ashutosh", {"pace": 0.9})
+        assert set(warnings) == {"en-IN"} and "ashutosh" in warnings["en-IN"]
+
+    def test_default_engine_locale_gets_a_v3_entry_with_its_settings(self, monkeypatch):
+        monkeypatch.setattr(bot_config, "_engine_allowed", lambda *a, **k: None)
+        tts = {**_engine("bulbul:v4-flash", voice="kavya", settings={"pace": 1.05}),
+               "language_map": {}}
+        warnings: dict = {}
+        bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["hi-IN", "ml-IN"], warnings, "bot_x")
+        assert "hi-IN" not in tts["language_map"]
+        ml = tts["language_map"]["ml-IN"]
+        assert (ml["model"], ml["voice"], ml["params"]) == ("bulbul:v3", "kavya", {"pace": 1.05})
+        assert set(warnings) == {"ml-IN"}
+
+    def test_v3_unavailable_leaves_a_warning_only(self, monkeypatch):
+        monkeypatch.setattr(bot_config, "_engine_allowed", lambda *a, **k: "inactive")
+        tts = {**_engine("bulbul:v4-flash"), "language_map": {}}
+        warnings: dict = {}
+        bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["en-IN"], warnings, "bot_x")
+        assert tts["language_map"] == {}
+        assert "will fail" in warnings["en-IN"]
+
+    def test_v3_and_mapped_engines_are_untouched(self, monkeypatch):
+        monkeypatch.setattr(bot_config, "_engine_allowed", lambda *a, **k: None)
+        tts = {**_engine("bulbul:v3"), "language_map": {"hi-IN": _engine("bulbul:v4-flash", "shubh")}}
+        warnings: dict = {}
+        bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["hi-IN", "en-IN"], warnings, "bot_x")
+        assert tts["language_map"] == {"hi-IN": _engine("bulbul:v4-flash", "shubh")}
+        assert warnings == {}
+
+
+# ── catalog seed ───────────────────────────────────────────────────────────
+
+def test_catalog_seed_makes_v4_flash_the_tts_default_and_keeps_v3():
+    rows = {r[2]: r for r in catalog_seed.PROVIDER_MODELS if r[:2] == ("sarvam", "tts")}
+    v4, v3 = rows["bulbul:v4-flash"], rows["bulbul:v3"]
+    assert v4[9] is True and v4[10] == "active"
+    assert v3[9] is False and v3[10] == "active"
+    assert "ml-IN" not in v4[4] and "od-IN" not in v4[4] and "ml-IN" in v3[4]
+    assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA)
+    assert catalog_seed._SARVAM_TTS_V3_SCHEMA["pace"]["help"].startswith("Speech speed")
+    assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v4-flash")
