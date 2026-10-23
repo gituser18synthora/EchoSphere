@@ -363,7 +363,17 @@ def _requeue_or_fail_sync(row_id: str, error: str) -> str:
 def _analysis_engine_conf(config) -> dict:
     llm_conf = dict(config.llm or {})
     orchestration = llm_conf.get("orchestration") or {}
-    return orchestration if orchestration.get("provider") else llm_conf
+    return orchestration if _reuses_orchestration_engine(orchestration) else llm_conf
+
+
+def _reuses_orchestration_engine(orchestration: dict) -> bool:
+    """Post-call analysis runs on the decision engine only when the bot chose
+    it (or the reasoning-class fallback picked it); the platform's default
+    decision engine is for the hard-deadline per-turn call. Snapshots cached
+    before the engine carried a source keep the old rule."""
+    if not orchestration.get("provider"):
+        return False
+    return orchestration.get("source", "bot") in ("bot", "reasoning_fallback")
 
 
 def _load_row_sync(row_id: str) -> dict | None:

@@ -516,11 +516,21 @@ structured Goal Engine decision.
 | `intent_timeout_seconds` | number | no | 0.5–5.0. |
 | `memory_greeting_timeout_seconds` | number | no | 1.0–10.0. |
 | `orchestration_max_tokens` | integer | no | 64–340; resolver default is 200. |
+| `orchestration_service_tier` | string | no | Max 20; OpenAI tier for the decision call only. Unset = platform default `ORCHESTRATION_SERVICE_TIER` (`fast`); `default` opts the bot out. |
+| `orchestration_response_text` | boolean | no | Whether the decision also writes a short reply. Unset = automatic: off for bots with a `workflow:` intent and no collections policy, on otherwise. |
 
-When the configured conversation model is reasoning-class and no usable
-dedicated orchestration engine is set, the resolver prefers the governed fast
-engine `openai/gpt-4o-mini`. This changes only the structured decision call,
-not the main conversation model.
+The decision call always runs on a dedicated engine, resolved in this order:
+the bot's `orchestration_provider`/`orchestration_model`; the platform default
+`ORCHESTRATION_MODEL` (`openai/gpt-6-luna`, fast tier — 2026-10-23 bench:
+routing 69 % vs 54 % for gpt-4o-mini, harmful mislabels 5 vs 36, same
+latency); for a reasoning-class conversation model, the platform's
+non-reasoning conversation default and then `openai/gpt-4o-mini`; finally the
+conversation model itself. Governance applies to each candidate. Decision-only
+request options: the service tier above, the lowest reasoning effort the model
+accepts, and `prompt_cache_key` = bot id (replies send the same key). Decision
+usage is billed under the decision model (`<session>:llm-decision`; standard
+rates, the fast-tier premium is not modelled). Post-call analysis reuses the
+decision engine only when the bot chose it, without the service tier.
 
 **`sttSettings.turn_detection`** — platform-owned end-of-turn timing. All keys optional
 numbers; unknown keys are rejected. Bounds (defaults differ per transport — browser /

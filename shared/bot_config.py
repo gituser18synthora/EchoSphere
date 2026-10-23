@@ -296,6 +296,80 @@ def _profile_supports_language(profile, locale: str) -> bool:
     return locale in languages or locale.split("-")[0] in languages
 
 
+def _resolve_decision_engine(
+    session, settings, *, bot_id: str, llm_provider: str, llm_model: str,
+    llm_settings: dict,
+) -> dict | None:
+    """The Goal Engine decision engine for one bot (see comments inside)."""
+    # Goal Engine decision engine — always a DEDICATED engine, so the
+    # decision-only request options below never ride on reply calls.
+    # Candidate order:
+    # 1. the bot's own llm_settings.orchestration_provider/_model;
+    # 2. the platform decision default (settings.orchestration_model:
+    #    gpt-6-luna, benchmarked 2026-10-23 — see shared.config);
+    # 3. when the CONVERSATION model is reasoning-class (wrong latency
+    #    profile for a hard-deadline JSON call: gpt-5-mini measured 3-4 s
+    #    vs the 1.6 s budget): the platform's non-reasoning conversation
+    #    default, then the pinned fast engine;
+    # 4. the conversation model itself.
+    # Governance applies to every candidate; a refused one is skipped —
+    # decisions degrade, calls never drop.
+    orch_provider = str(llm_settings.get("orchestration_provider") or "").strip()
+    orch_model = str(llm_settings.get("orchestration_model") or "").strip()
+    # (provider, model) -> where the candidate came from; the post-call
+    # analyzer reuses only a bot-chosen or reasoning-fallback engine.
+    candidates: dict[tuple[str, str], str] = {}
+    if orch_provider:
+        candidates.setdefault((orch_provider, orch_model), "bot")
+    if settings.orchestration_model:
+        candidates.setdefault(
+            (settings.orchestration_provider or "openai", settings.orchestration_model),
+            "platform",
+        )
+    if _is_reasoning_class(llm_model):
+        if settings.llm_model and not _is_reasoning_class(settings.llm_model):
+            candidates.setdefault((settings.llm_provider, settings.llm_model), "reasoning_fallback")
+        candidates.setdefault(_FAST_ORCHESTRATION_ENGINE, "reasoning_fallback")
+    candidates.setdefault((llm_provider, llm_model), "conversation")
+    # Decision-only request options. service_tier: the bot's
+    # orchestration_service_tier wins (e.g. "default" opts out), else the
+    # platform default ("fast"). reasoning_effort "lowest": the lowest
+    # effort the model accepts (none for gpt-6-luna; ignored by
+    # non-reasoning models). prompt_cache_key: one per bot, so its calls
+    # share the cached system-prompt prefix.
+    decision_extra = {
+        k: v for k, v in {
+            "service_tier": str(
+                llm_settings.get("orchestration_service_tier")
+                or settings.orchestration_service_tier or ""
+            ).strip(),
+            "reasoning_effort": "lowest",
+            "prompt_cache_key": bot_id,
+        }.items() if v
+    }
+    for (candidate_provider, candidate_model), source in candidates.items():
+        reason = _engine_allowed(
+            session, "llm", candidate_provider, candidate_model or None
+        )
+        if reason is not None:
+            logger.warning(
+                "orchestration LLM %s/%s skipped for bot %s: %s",
+                candidate_provider, candidate_model, bot_id, reason,
+            )
+            continue
+        orchestration_engine = {
+            "provider": candidate_provider,
+            "model": candidate_model,
+            "source": source,
+            "extra": dict(decision_extra),
+            "api_key_reference": _secret_ref_for(
+                session, "llm", candidate_provider
+            ),
+        }
+        return orchestration_engine
+    return None
+
+
 def _keep_unmapped_v4_locales_on_v3(
     session, tts_engine: dict, locales: list[str], language_warnings: dict,
     bot_id: str,
@@ -803,59 +877,11 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
         _ensure_engine_allowed(session, "tts", tts_provider, tts_model)
         _ensure_engine_allowed(session, "llm", llm_provider, llm_model)
 
-        # Optional dedicated orchestration (Goal Engine) LLM. Governance
-        # applies like any engine, but a misconfigured orchestration model is
-        # dropped (the engine falls back to the conversation LLM) instead of
-        # failing the call — decisions degrade, calls don't.
         llm_settings_blob = (vbs.llm_settings if vbs else None) or {}
-        orchestration_engine = None
-        orch_provider = str(llm_settings_blob.get("orchestration_provider") or "").strip()
-        orch_model = str(llm_settings_blob.get("orchestration_model") or "").strip()
-        # Candidate order: the bot's configured orchestration engine wins;
-        # when the CONVERSATION model is reasoning-class the fast defaults
-        # follow. The per-turn decision call is a small, hard-deadline JSON
-        # task; reasoning-era conversation models routinely blow that deadline
-        # (measured: gpt-5-mini ~3-4s vs the 1.6 s budget, falling back to
-        # regex every turn) — so a reasoning conversation model never decides
-        # by default: the platform's non-reasoning default (or, failing that,
-        # the pinned fast engine) does, and the reasoning model keeps the
-        # spoken replies. If NO candidate is allowed under governance the
-        # engine degrades to the conversation LLM — decisions degrade, calls
-        # never drop.
-        candidates: list[tuple[str, str]] = []
-        if orch_provider:
-            candidates.append((orch_provider, orch_model))
-        if _is_reasoning_class(llm_model):
-            if settings.llm_model and not _is_reasoning_class(settings.llm_model):
-                candidates.append((settings.llm_provider, settings.llm_model))
-            candidates.append(_FAST_ORCHESTRATION_ENGINE)
-        for candidate_provider, candidate_model in dict.fromkeys(candidates):
-            reason = _engine_allowed(
-                session, "llm", candidate_provider, candidate_model or None
-            )
-            if reason is not None:
-                logger.warning(
-                    "orchestration LLM %s/%s skipped for bot %s: %s",
-                    candidate_provider, candidate_model, bot_id, reason,
-                )
-                continue
-            orchestration_engine = {
-                "provider": candidate_provider,
-                "model": candidate_model,
-                # Optional request options for the decision call (OpenAI
-                # service_tier, e.g. "priority").
-                "extra": {
-                    k: v for k, v in {
-                        "service_tier": str(
-                            llm_settings_blob.get("orchestration_service_tier") or ""
-                        ).strip(),
-                    }.items() if v
-                },
-                "api_key_reference": _secret_ref_for(
-                    session, "llm", candidate_provider
-                ),
-            }
-            break
+        orchestration_engine = _resolve_decision_engine(
+            session, settings, bot_id=bot_id, llm_provider=llm_provider,
+            llm_model=llm_model, llm_settings=llm_settings_blob,
+        )
 
         default_voice_value = (
             (
@@ -1041,6 +1067,9 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "model": llm_model,
                 "settings": llm_settings_blob,
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
+                # Reply calls share the bot's prompt-cache routing key with its
+                # decision calls (OpenAI prompt_cache_key).
+                "extra": {"prompt_cache_key": bot_id},
                 "orchestration": orchestration_engine,
             },
             speed=clamp_speed(vbs.speed if vbs else None),

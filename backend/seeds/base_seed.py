@@ -420,6 +420,7 @@ MODELS = [
     ("gpt-4o-mini", "OpenAI", "conversation", "approved", 0.0006, 320),
     ("gpt-4o", "OpenAI", "conversation", "approved", 0.005, 640),
     ("gpt-4.1-mini", "OpenAI", "classification", "approved", 0.0007, 300),
+    ("gpt-6-luna", "OpenAI", "classification", "approved", 0.0005, 1300),
     ("text-embedding-3-small", "OpenAI", "embedding", "approved", 0.00002, 45),
     ("text-embedding-3-large", "OpenAI", "embedding", "approved", 0.00013, 60),
 ]
@@ -486,6 +487,10 @@ CURRENCIES = [
 # (model_code, input, cached input, output). A None cached rate means the
 # model has no discounted cached-input tier — no row is created for it.
 OPENAI_LLM_PRICES = [
+    # gpt-6-luna standard-tier list price (developers.openai.com pricing,
+    # 2026-10-23); the fast tier it runs on for decisions is billed at 2x by
+    # OpenAI — that premium is not modelled here.
+    ("gpt-6-luna", "0.10", "0.01", "0.50"),
     ("gpt-5.6-sol", "5.00", "0.50", "30.00"),
     ("gpt-5.6-terra", "2.00", "0.20", "12.00"),
     ("gpt-5.6-luna", "0.20", "0.02", "1.20"),

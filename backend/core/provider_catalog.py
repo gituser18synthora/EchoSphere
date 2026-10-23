@@ -293,12 +293,16 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
     # Injects a "# Current date and time" section (tenant timezone) into
     # every generation — shared.orchestration.time_context.
     "time_context_enabled",
+    # Whether the Goal Engine decision also writes a short reply
+    # (response_text). Unset = automatic: off for workflow bots without a
+    # collections policy, on otherwise (voice_runtime.brain).
+    "orchestration_response_text",
 )
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,
     "orchestration_model": 80,
-    # OpenAI request option for the decision call ("priority" buys lower
-    # generation latency on the hard-deadline Goal Engine call).
+    # OpenAI request option for the decision call only. Unset = the platform
+    # default (ORCHESTRATION_SERVICE_TIER, "fast"); "default" opts a bot out.
     "orchestration_service_tier": 20,
 }
 _PLATFORM_LLM_NUMBER_BOUNDS = {
