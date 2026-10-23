@@ -109,7 +109,10 @@ in `stt_settings.turn_detection`):
   transcript-confirmed barge-in, speech under Silero's threshold) ends on
   pipecat's transcript fallback timer and is reported as
   `endpoint_by=transcript_timeout` — never as a Smart Turn close, and never
-  with the previous turn's verdict.
+  with the previous turn's verdict. A final with no open turn that lands more
+  than 1.5 s after the last turn closed, with no caller audio seen since by
+  the VAD or the caller-audio gate, is the provider's old speech: logged as
+  `stt_final_late` (delay_ms, text) and dropped.
 - `complete_endpoint` — a much shorter endpoint used when the buffered text reads
   as a finished thought;
 - `short_reply_endpoint` — shorter still for self-contained short replies

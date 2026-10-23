@@ -163,6 +163,10 @@ class CallerAudioGate(FrameProcessor):
         self._segment_ms = 0.0
         self._segment_during_bot_audio = False
         self._last_segment: dict | None = None
+        # Monotonic time caller audio last passed the gate (open or close):
+        # the brain's evidence that a final belongs to recent speech, not to
+        # an utterance the provider is delivering seconds late.
+        self._last_speech_at: float | None = None
         # Backchannel window: the bot is murmuring a short "hmm/ji" WHILE the
         # caller holds the floor. For a segment that is already passing, that
         # audio must be treated as decoration, not as the bot taking the
@@ -313,7 +317,12 @@ class CallerAudioGate(FrameProcessor):
         if self._echo_guarded():
             self._segment_during_bot_audio = True
 
+    def last_speech_at(self) -> float | None:
+        """Monotonic time caller audio last opened or closed the gate."""
+        return self._last_speech_at
+
     def _close_segment(self) -> None:
+        self._last_speech_at = time.monotonic()
         self._last_segment = self.speech_snapshot()
         self._segment_power = 0.0
         self._segment_ms = 0.0
@@ -483,6 +492,7 @@ class CallerAudioGate(FrameProcessor):
             self._above_ms = 0.0
             self._below_ms = 0.0
             self._stats["opens"] += 1
+            self._last_speech_at = time.monotonic()
             self._begin_segment()
             self._accumulate_segment(level, duration_ms)
             for buffered in self._preroll:
