@@ -420,6 +420,12 @@ _DEFAULT_SMART_TURN_THRESHOLD = 0.7
 # this long at most (covers the Sarvam adapter's flush retry: 2 x 0.65 s);
 # then whatever is buffered dispatches.
 _SMART_TURN_FINAL_WAIT_S = 1.5
+# A final with no open turn is the caller's ONLY while it arrives soon after
+# the last turn closed or after caller audio the VAD/gate saw since. Later
+# than this with no such evidence it is the provider delivering old speech
+# (live cv_0f224432545d 2026-10-23: finals 14-43 s after the last VAD stop
+# answered a newer question) and is dropped, not spoken to.
+_LATE_FINAL_WINDOW_S = 1.5
 # A too-short fragment earns a canned clarification; if the REST of the
 # utterance lands within this window, the clarify exchange is rewound so the
 # LLM sees one complete user message instead of fragment + clarify + rest.
@@ -1078,6 +1084,8 @@ class ConversationBrain(FrameProcessor):
         # Turn verdict before its STT final arrived: that final dispatches
         # the moment it lands (see _smart_turn_short_circuit).
         self._smart_turn_closed = False
+        # When the turn controller last closed a user turn (monotonic).
+        self._last_turn_closed_at: float | None = None
         self._finalize_task: asyncio.Task | None = None
         # Speculative Goal Engine decision for the buffered utterance, started
         # while the endpoint timer runs (dead time) — (text, task). Consumed
@@ -1510,6 +1518,7 @@ class ConversationBrain(FrameProcessor):
             # the utterance has settled and waiting again is pure dead time.
             self._speech_start_open = False
             was_active, self._turn_active = self._turn_active, False
+            self._last_turn_closed_at = time.monotonic()
             await self._stop_backchannel_monitor()
             await self.push_frame(frame, direction)
             if not self._pending_segments:
@@ -2451,6 +2460,21 @@ class ConversationBrain(FrameProcessor):
                 await self._hold_multiword_segment(text)
                 return
             await self._supersede_held_multiword()
+        if not self._turn_active:
+            late_by = self._final_is_late(time.monotonic())
+            if late_by is not None:
+                # Old speech delivered long after its turn closed, with no
+                # caller audio since: it would answer a newer question.
+                self._latency.count("late_finals_dropped")
+                self._recorder.add_event(
+                    "stt_final_late", delay_ms=round(late_by * 1000.0, 1),
+                    text=text[:200], words=len(text.split()),
+                )
+                logger.info(
+                    "turn[%s] late final dropped %.1fs after the turn closed: %r",
+                    self._recorder.session_id, late_by, text[:80],
+                )
+                return
         self._append_segment(text, provenance)
         live_signal = classify_user_signal(" ".join(self._pending_segments).strip())
         if is_serious_caller_state(live_signal):
@@ -3020,6 +3044,26 @@ class ConversationBrain(FrameProcessor):
         if self._last_final_at is None:
             return False
         return self._last_vad_stopped_at is None or self._last_final_at >= self._last_vad_stopped_at
+
+    def _final_is_late(self, now: float) -> float | None:
+        """Seconds since the last turn closed, when a final with no open turn
+        arrives too late to be that turn's — or None when it is recent enough,
+        or when the VAD or the caller-audio gate saw caller audio since."""
+        closed_at = self._last_turn_closed_at
+        if closed_at is None or self._physical_speech_active:
+            return None
+        delay = now - closed_at
+        if delay <= _LATE_FINAL_WINDOW_S:
+            return None
+        if self._last_vad_stopped_at is not None and self._last_vad_stopped_at > closed_at:
+            return None
+        gate = self._audio_gate
+        last_speech_at = getattr(gate, "last_speech_at", None)
+        if callable(last_speech_at):
+            seen_at = last_speech_at()
+            if seen_at is not None and seen_at > closed_at:
+                return None
+        return delay
 
     async def _smart_turn_short_circuit(self, *, final_after_close: bool = False) -> None:
         """Dispatch the buffered utterance now: the Smart Turn verdict and

@@ -56,6 +56,22 @@ async def _speech(brain, tracker):
     await brain.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
 
+class _Gate:
+    """Caller-audio gate stub: when caller audio last passed it."""
+
+    def __init__(self):
+        self.last = None
+
+    def speech_snapshot(self):
+        return {"snr_db": 25.0, "during_bot_audio": False}
+
+    def stats(self):
+        return {"opens": 1, "suppressed_ms": 0.0}
+
+    def last_speech_at(self):
+        return self.last
+
+
 class TestEpisodeFinal:
     @pytest.mark.asyncio
     async def test_a_confident_close_waits_for_its_own_episodes_final(self, monkeypatch):
@@ -111,6 +127,66 @@ class TestEpisodeFinal:
         assert await _dispatched(dispatched)
         events = [k for k, _ in brain._recorder.events if k == "smart_turn_short_circuit"]
         assert len(events) == 1                                 # only turn 1's
+
+
+class TestLateFinal:
+    @pytest.mark.asyncio
+    async def test_old_speech_after_the_window_is_logged_and_dropped(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.2)
+        brain, tracker, dispatched = make_brain()
+        gate = _Gate()
+        brain._audio_gate = gate
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        gate.last = time.monotonic()
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        dispatched.clear()
+        await asyncio.sleep(0.35)                               # past the window, nothing heard since
+        await brain.process_frame(transcript("पुरानी बात जो कभी नहीं पूछी गई"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.3)
+        assert dispatched == [] and brain._pending_segments == []
+        late = brain._recorder.event("stt_final_late")
+        assert late["delay_ms"] >= 200 and late["words"] == 7
+        assert tracker.counts.get("late_finals_dropped") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_final_inside_the_window_still_runs(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.5)
+        brain, tracker, dispatched = make_brain()
+        brain._audio_gate = _Gate()
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)   # closed empty
+        await asyncio.sleep(0.1)
+        await brain.process_frame(transcript("हाँ बोलिए।"), FrameDirection.DOWNSTREAM)     # the retry's final
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "हाँ बोलिए।"
+        assert "stt_final_late" not in brain._recorder.event_kinds()
+
+    @pytest.mark.asyncio
+    async def test_speech_the_gate_saw_after_the_close_is_never_late(self, monkeypatch):
+        # The "hmm" case: Silero stays shut, the gate opens, Sarvam segments
+        # it on its own seconds later — that IS the caller, not old speech.
+        monkeypatch.setattr(brain_module, "_LATE_FINAL_WINDOW_S", 0.2)
+        brain, tracker, dispatched = make_brain()
+        gate = _Gate()
+        brain._audio_gate = gate
+        await _speech(brain, tracker)
+        await _vad_stop(brain, tracker)
+        await brain.process_frame(transcript("हाँ"), FrameDirection.DOWNSTREAM)
+        _verdict(tracker, 0.9)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        dispatched.clear()
+        await asyncio.sleep(0.35)
+        gate.last = time.monotonic()                            # caller audio passed the gate just now
+        await brain.process_frame(transcript("हम्म।"), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert "stt_final_late" not in brain._recorder.event_kinds()
 
 
 # ── the strategy reports a verdict only for the turn it was computed in ─────
