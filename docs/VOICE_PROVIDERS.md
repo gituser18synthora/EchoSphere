@@ -141,6 +141,22 @@ codes, modes and VAD controls as v3 and adds **key-term biasing**:
   `_audio_runs` + the resampler tail (`_clear_audio_buffer()`), and a reply's
   last partial chunk is flushed padded with silence instead of dropped.
 
+### Sarvam streaming socket: the first turn, and audio before the socket is live
+
+- **First-turn speech requirement.** Sarvam's streaming server opens the FIRST
+  speech segment of a connection only after `first_turn_min_speech_frames`
+  consecutive speech frames (server default 8; one frame = 512 samples =
+  64 ms at 8 kHz, i.e. ~0.5 s of speech above `positive_speech_threshold`),
+  while every later segment needs `min_speech_frames` (default 2). A short
+  first answer after the greeting ("haan boliye", ~0.5 s) never reached that
+  bar: the flush at VAD stop had nothing to finalize, no `data` message came
+  back, the adapter logged `stt_missing_final_retry` + `stt_final_missing`,
+  the turn ended empty and the silence prompt spoke 15 s later (live
+  2026-10-22, cv_80982e36f4f5 / cv_baeaf87927cb; reproduced offline by
+  replaying the recorded audio — the same audio transcribes once the parameter
+  is lowered). `build_stt_service` therefore sends
+  `first_turn_min_speech_frames` = the bot's `min_speech_frames` (or Sarvam's
+  default 2) unless the bot's STT settings set it explicitly.
 ### Sarvam realtime STT (`SARVAM_REALTIME_STT`, evaluation flag, OFF)
 
 Partials from this socket reach the barge-in word gate; since 2026-10-22 an
