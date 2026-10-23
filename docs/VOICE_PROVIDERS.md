@@ -94,7 +94,7 @@ Current governed live matrix:
 
 | Capability | Active production providers | Platform default |
 | --- | --- | --- |
-| STT | `sarvam` (`saaras:v3` default, `saaras:v4` selectable, `saarika:v2.5`), `deepgram` | `sarvam/saaras:v3` |
+| STT | `sarvam` (`saaras:v4` default, `saaras:v3` selectable, `saarika:v2.5`), `deepgram` | `sarvam/saaras:v4` |
 | TTS | `sarvam`, `elevenlabs`, `deepgram` | `sarvam/bulbul:v3`, voice `shubh` |
 | LLM | `openai` | `openai/gpt-4o-mini` |
 | Embedding | `openai` | `openai/text-embedding-3-small` |
@@ -175,6 +175,23 @@ v3 and adds **key-term biasing**:
   playback into a burst. The media sender's partial PCM lives in
   `_audio_runs` + the resampler tail (`_clear_audio_buffer()`), and a reply's
   last partial chunk is flushed padded with silence instead of dropped.
+
+### Sarvam TTS sockets: no cold handshake after a barge-in or at start-up
+
+Sarvam cannot cancel synthesis server-side, so a barge-in closes the socket.
+The WebSocket adapter keeps a second, configured socket warm
+(`SARVAM_TTS_WARM_SPARE`, default on — one extra idle socket per call, pinged with
+the primary) and promotes it at once on cancel; without a ready spare the old
+background reconnect still applies. A reply that has to wait for a socket emits
+`tts_cold_connect` (`waited_ms`, `reason` = first / after_cancel / disconnected)
+and counts `tts_cold_connects` in the turn's latency counts. The router now
+also opens the socket at pipeline start (it only created the provider since
+2026-08-05, so every greeting paid the handshake). Measured from this machine
+against the API (first audio, ms, three rounds):
+
+| Engine | Warm p50 | Reply right after a cancel, spare off | Spare on |
+| --- | --- | --- | --- |
+| bulbul:v3 ashutosh hi-IN | 205 | 222–281 | 171–175 |
 
 ### Sarvam streaming socket: the first turn, and audio before the socket is live
 
