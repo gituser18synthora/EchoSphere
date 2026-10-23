@@ -157,6 +157,16 @@ codes, modes and VAD controls as v3 and adds **key-term biasing**:
   is lowered). `build_stt_service` therefore sends
   `first_turn_min_speech_frames` = the bot's `min_speech_frames` (or Sarvam's
   default 2) unless the bot's STT settings set it explicitly.
+- **Audio before the socket is live.** Both Sarvam adapters hold inbound audio
+  that arrives while no socket is live — the handshake at call start, the
+  legacy adapter's dead-socket window before its bounded reconnect, and (on
+  the realtime socket under manual endpointing) the gap until the always-open
+  utterance has been announced with `speech_start` — and send it as soon as
+  the socket is ready, oldest first, bounded to the newest 6 s. The call
+  records `stt_audio_buffered_before_connect` with `buffered_ms` /
+  `dropped_ms` (legacy: plus `reconnect`) whenever that happened. Invariant:
+  no caller audio is dropped because a downstream service was not ready.
+
 ### Sarvam realtime STT (`SARVAM_REALTIME_STT`, evaluation flag, OFF)
 
 Partials from this socket reach the barge-in word gate; since 2026-10-22 an

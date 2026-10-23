@@ -81,6 +81,14 @@ _BARGE_IN_FLUSH_INTERVAL_S = 0.7
 # up loudly instead of looping.
 _MAX_STT_RECONNECTS = 3
 
+# Audio that arrives while there is no live socket (the handshake at call
+# start, or the dead-socket window before a bounded reconnect) is held and
+# replayed as soon as a socket is live, so no caller audio is dropped because
+# the provider was not ready. Bounded: older audio is discarded beyond this.
+_PRECONNECT_BUFFER_S = 6.0
+# Replayed in chunks this long (one message each), like the live stream.
+_PRECONNECT_REPLAY_CHUNK_MS = 200
+
 # A VAD stop normally causes the upstream adapter to flush Sarvam immediately.
 # If no transcript follows, retry once: a lost/early flush should not force a
 # phone caller to repeat an otherwise valid short answer.
@@ -192,6 +200,8 @@ class EndpointedSarvamSTTService(SarvamSTTService):
         self._stt_stopping = False
         self._reconnect_attempts = 0
         self._socket_send_failed = False
+        self._held_audio = bytearray()
+        self._held_dropped_bytes = 0
 
     @property
     def keyterms(self) -> list[str]:
@@ -243,6 +253,11 @@ class EndpointedSarvamSTTService(SarvamSTTService):
                 yield frame
             return
         if not self._socket_client or self._socket_send_failed:
+            # No live socket (still connecting, or dead and awaiting the
+            # bounded reconnect): hold the audio instead of dropping it; it
+            # is replayed the moment a socket is live again (``_connect``).
+            if not self._stt_stopping:
+                self._hold_audio(audio)
             yield None
             return
         try:
@@ -269,6 +284,53 @@ class EndpointedSarvamSTTService(SarvamSTTService):
                 self._note_closed_socket(exc)
             return
         await super()._send_keepalive(silence)
+
+    def _hold_audio(self, audio: bytes) -> None:
+        """Keep audio for replay while no socket is live (bounded)."""
+        self._held_audio.extend(audio)
+        cap = int((self.sample_rate or 8000) * 2 * _PRECONNECT_BUFFER_S)
+        excess = len(self._held_audio) - cap
+        if excess > 0:
+            del self._held_audio[:excess]
+            self._held_dropped_bytes += excess
+
+    def _held_audio_ms(self, byte_count: int) -> float:
+        return byte_count / 2 / (self.sample_rate or 8000) * 1000.0
+
+    async def _connect(self):
+        await super()._connect()
+        if self._socket_client is not None:
+            await self._replay_held_audio()
+
+    async def _replay_held_audio(self) -> None:
+        """Send the audio held while no socket was live, oldest first."""
+        if not self._held_audio:
+            return
+        held = bytes(self._held_audio)
+        self._held_audio.clear()
+        dropped = self._held_dropped_bytes
+        self._held_dropped_bytes = 0
+        buffered_ms = round(self._held_audio_ms(len(held)), 1)
+        dropped_ms = round(self._held_audio_ms(dropped), 1)
+        logger.info(
+            "sarvam-stt: replaying %.0f ms of caller audio held before the socket "
+            "opened (dropped %.0f ms beyond the %.0f s bound)",
+            buffered_ms, dropped_ms, _PRECONNECT_BUFFER_S,
+        )
+        if self._recorder is not None:
+            self._recorder.add_event(
+                "stt_audio_buffered_before_connect",
+                buffered_ms=buffered_ms, dropped_ms=dropped_ms,
+                reconnect=self._reconnect_attempts > 0,
+            )
+        chunk = int((self.sample_rate or 8000) * 2 * _PRECONNECT_REPLAY_CHUNK_MS / 1000)
+        try:
+            for start in range(0, len(held), chunk):
+                await self._send_stream_audio(held[start:start + chunk])
+        except ConnectionClosed as exc:
+            self._note_closed_socket(exc)
+        except Exception:  # noqa: BLE001 — a failed replay must not break the connect
+            logger.warning("sarvam-stt: replay of held audio failed", exc_info=True)
 
     async def _send_stream_audio(self, audio: bytes) -> None:
         client = self._socket_client

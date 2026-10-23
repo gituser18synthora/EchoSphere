@@ -53,6 +53,8 @@ from pipecat.frames.frames import InterimTranscriptionFrame, VADUserStoppedSpeak
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.sarvam.stt import SarvamRealtimeSTTService
 
+from voice_runtime.sarvam_stt import _PRECONNECT_BUFFER_S
+
 from shared.providers.stt.sarvam_keyterms import (
     normalize_keyterms,
     supports_keyterms,
@@ -131,6 +133,12 @@ class RealtimeSarvamSTTService(SarvamRealtimeSTTService):
         self._recorder = recorder
         self._utterance_open = False
         self._reopen_count = 0
+        # Audio that arrives before the socket is open — and, under manual
+        # endpointing, before the always-open utterance has been announced
+        # (the server only transcribes audio sent after ``speech_start``) —
+        # is held and sent with the first frame once both are true. Bounded.
+        self._held_audio = bytearray()
+        self._held_dropped_bytes = 0
 
     @property
     def keyterms(self) -> list[str]:
@@ -154,6 +162,49 @@ class RealtimeSarvamSTTService(SarvamRealtimeSTTService):
         if await self._send_json({"event": "speech_start"}):
             self._utterance_open = True
             self._reopen_count += 1
+
+    def _ready_for_audio(self) -> bool:
+        if not self._is_websocket_open():
+            return False
+        return self._endpointing != "manual" or self._utterance_open
+
+    def _hold_audio(self, audio: bytes) -> None:
+        self._held_audio.extend(audio)
+        cap = int((self.sample_rate or 16000) * 2 * _PRECONNECT_BUFFER_S)
+        excess = len(self._held_audio) - cap
+        if excess > 0:
+            del self._held_audio[:excess]
+            self._held_dropped_bytes += excess
+
+    def _release_held_audio(self) -> bytes:
+        held = bytes(self._held_audio)
+        self._held_audio.clear()
+        dropped, self._held_dropped_bytes = self._held_dropped_bytes, 0
+        rate = self.sample_rate or 16000
+        buffered_ms = round(len(held) / 2 / rate * 1000.0, 1)
+        dropped_ms = round(dropped / 2 / rate * 1000.0, 1)
+        logger.info(
+            "sarvam-realtime: sending %.0f ms of caller audio held before the "
+            "socket/utterance was ready (dropped %.0f ms beyond the %.0f s bound)",
+            buffered_ms, dropped_ms, _PRECONNECT_BUFFER_S,
+        )
+        if self._recorder is not None:
+            self._recorder.add_event(
+                "stt_audio_buffered_before_connect",
+                buffered_ms=buffered_ms, dropped_ms=dropped_ms,
+            )
+        return held
+
+    async def run_stt(self, audio: bytes):
+        if not self._ready_for_audio():
+            if audio:
+                self._hold_audio(audio)
+            yield None
+            return
+        if self._held_audio:
+            audio = self._release_held_audio() + audio
+        async for frame in super().run_stt(audio):
+            yield frame
 
     async def process_frame(self, frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
