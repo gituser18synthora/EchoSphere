@@ -150,19 +150,34 @@ class EndpointReportingSmartTurnStrategy(TurnAnalyzerUserTurnStopStrategy):
         super().__init__(**kwargs)
         self._tracker = tracker
         self._recorder = recorder
+        # Whether the analyzer produced a verdict IN THIS TURN. A turn that
+        # began from a transcript the VAD never saw (the bot's echo, a short
+        # "haan" under Silero's threshold) ends on pipecat's transcript
+        # fallback timer with no verdict at all; reporting it as a Smart
+        # Turn close let the brain short-circuit on the PREVIOUS turn's
+        # verdict (live cv_0f224432545d 2026-10-23, turn 2).
+        self._verdict_in_turn = False
+
+    async def handle_user_turn_started(self) -> None:
+        self._verdict_in_turn = False
+        await super().handle_user_turn_started()
 
     async def _handle_prediction_result(self, result) -> None:
-        if result is not None and self._tracker is not None:
-            self._tracker.note_smart_turn(
-                probability=float(getattr(result, "probability", 0.0) or 0.0),
-                is_complete=bool(getattr(result, "is_complete", False)),
-                inference_ms=float(getattr(result, "e2e_processing_time_ms", 0.0) or 0.0),
-            )
+        if result is not None:
+            self._verdict_in_turn = True
+            if self._tracker is not None:
+                self._tracker.note_smart_turn(
+                    probability=float(getattr(result, "probability", 0.0) or 0.0),
+                    is_complete=bool(getattr(result, "is_complete", False)),
+                    inference_ms=float(getattr(result, "e2e_processing_time_ms", 0.0) or 0.0),
+                )
         await super()._handle_prediction_result(result)
 
     async def trigger_user_turn_stopped(self, **kwargs) -> None:
         if self._tracker is not None:
-            self._tracker.mark_endpoint_by("smart_turn")
+            self._tracker.mark_endpoint_by(
+                "smart_turn" if self._verdict_in_turn else "transcript_timeout"
+            )
         await super().trigger_user_turn_stopped(**kwargs)
 
 
