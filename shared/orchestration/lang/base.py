@@ -65,6 +65,12 @@ class LanguagePack:
     handoff_words: str = ""                         # "human|agent|…"
     kb_question_words: tuple[str, ...] = ()         # "what", "how", "can i", …
     hmm_forms: tuple[str, ...] = ()                 # listening hums ("hmm", "हम्म")
+    # Discourse fillers that carry no answer on their own ("to", "aur",
+    # "matlab", "ok") and words that are filler only when such a filler
+    # follows them ("haan to", "achha to"): an utterance made only of these
+    # (and hums) is never an answer to the pending question.
+    filler_only_tokens: frozenset[str] = frozenset()
+    filler_only_openers: frozenset[str] = frozenset()
     # Extra alternatives this language contributes to a named SIGNAL pattern
     # ("hardship", "payment_intent", …) — the semantic pattern is owned by the
     # signal pack; the pack only adds how this language says it.

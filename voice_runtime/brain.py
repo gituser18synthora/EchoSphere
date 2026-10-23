@@ -188,6 +188,7 @@ from voice_runtime.call_policy import (
     is_valid_transaction_reference,
 )
 from voice_runtime.endpointing import (
+    is_filler_only,
     is_short_complete_reply,
     utterance_looks_complete,
 )
@@ -1672,6 +1673,8 @@ class ConversationBrain(FrameProcessor):
                 and not self._turn_active
                 and not self._finalize_pending()
             ):
+                if self._drop_filler_only_held_text():
+                    return
                 # Segments held while the bot was audibly speaking (below the
                 # barge-in word threshold) get their turn now that the caller
                 # has heard the reply out. They settled while the bot spoke,
@@ -1956,6 +1959,36 @@ class ConversationBrain(FrameProcessor):
     def _captured_during_bot_audio(self) -> bool:
         snapshot = self._last_gate_snapshot or {}
         return bool(self._bot_speaking or snapshot.get("during_bot_audio"))
+
+    def _drop_filler_only_held_text(self) -> bool:
+        """Text held during the bot's playback that is ONLY filler ("to",
+        "aur", "matlab", "haan to", "achha to", "hmm", "ok") is not an answer
+        to the question the reply just asked: drop it instead of dispatching
+        it at reply end (live cv_2d1119054a92, 2026-10-23: a "to" said over
+        "service ki zaroorat hai? haan ya nahi" was dispatched as the answer,
+        judged ambiguous and the workflow's else edge re-dispatched the
+        technician). A bare hum stays the caller's yes ONLY where the existing
+        yes/no rule reads it so — the whole reply to a pending yes/no
+        question (PendingAsk + router.is_bare_hmm) — so it is dispatched.
+        Returns True when the held text was dropped."""
+        held = " ".join(self._pending_segments).strip()
+        if not held or not is_filler_only(held):
+            return False
+        pending = self._pending_ask()
+        if pending.kind == "yes_no" and is_bare_hmm(held):
+            return False
+        self._recorder.add_event(
+            "filler_only_dropped", text=held[:120], pending_kind=pending.kind,
+        )
+        self._latency.count("filler_only_dropped")
+        self._pending_segments.clear()
+        self._last_buffered_final = None
+        self._pending_level_samples.clear()
+        self._pending_turn_audio.clear()
+        self._pending_language = None
+        # Nothing was answered: the no-response ladder resumes.
+        self._arm_silence_timer()
+        return True
 
     def _should_hold_multiword(self, text: str) -> bool:
         """Multi-word, unconfirmed (no open turn), captured while the bot

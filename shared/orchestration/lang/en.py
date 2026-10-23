@@ -20,6 +20,7 @@ PACK = LanguagePack(
         r"""h+m+""",
         r"""m+h+m+""",
     ),
+    filler_only_tokens=frozenset({"ok", "okay"}),
     affirm_tokens=(
         r"""yes""",
         r"""yeah""",
