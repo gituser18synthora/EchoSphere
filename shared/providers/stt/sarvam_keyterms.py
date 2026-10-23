@@ -22,7 +22,8 @@ never receives the parameter.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
 
 #: Sarvam STT models that accept ``keyterms``.
 KEYTERMS_SUPPORTED_MODELS: frozenset[str] = frozenset({"saaras:v4"})
@@ -107,3 +108,127 @@ def encode_keyterms_query(terms: Iterable[str]) -> str:
     URL-encodes the query value, and the endpoint accepted them in the probe.
     """
     return json.dumps(list(terms), ensure_ascii=False)
+
+
+# ── automatic key terms (no operator list configured) ────────────────────────
+#: The ``stt_settings`` switch for automatic key terms (default on).
+KEYTERMS_AUTO_SETTING = "keyterms_auto"
+#: Opt-in: also bias toward the bot's yes/no words. OFF by default — replaying
+#: two live calls (cv_0f224432545d, cv_2d1119054a92; 2026-10-23, two passes)
+#: through saaras:v4 with the yes/no lexicon in the list produced 8 false
+#: "हाँ" / "जी हाँ" / "Yes." finals per pass on hums, "तो" and line noise
+#: (3 without it, 1–2 on saaras:v3) — a false yes confirms a yes/no question.
+KEYTERMS_AUTO_YES_NO_SETTING = "keyterms_auto_yes_no"
+#: Edge labels that are routing words, not something a caller says.
+_ROUTING_LABELS = frozenset({"else", "true", "false", "default", "fallback", "otherwise"})
+#: Alternatives inside one authored label ("haan/haan ji/yes").
+_LABEL_SPLIT = re.compile(r"\s*[/|]\s*")
+#: "yes (reached the location)" → "yes"
+_PARENTHETICAL = re.compile(r"\s*\([^)]*\)")
+
+
+def _phrases_of(
+    workflows: Iterable[Mapping], slot_names: Iterable[str], intents: Iterable[Mapping] = (),
+) -> list[str]:
+    """Everything a caller is expected to SAY to this bot: the alternatives of
+    every authored option label (intent-hub edges, node ``options``), every
+    entity synonym and canonical value of ask nodes (including ``alsoCapture``
+    entities), the slot names in words, and — so a bot without workflows still
+    gets its vocabulary — the sample phrases of its configured intents."""
+    phrases: list[str] = []
+
+    def _add(text: object) -> None:
+        for part in _LABEL_SPLIT.split(str(text or "")):
+            part = " ".join(_PARENTHETICAL.sub("", part).split())
+            if part and part.lower() not in _ROUTING_LABELS:
+                phrases.append(part)
+
+    for workflow in workflows or ():
+        for edge in workflow.get("edges") or ():
+            if isinstance(edge, Mapping):
+                _add(edge.get("label"))
+        for node in workflow.get("nodes") or ():
+            if not isinstance(node, Mapping):
+                continue
+            config = node.get("config") or {}
+            if not isinstance(config, Mapping):
+                continue
+            for option in config.get("options") or ():
+                _add(option.get("label") if isinstance(option, Mapping) else option)
+            entities = [config.get("entity")] + [
+                extra.get("entity") for extra in config.get("alsoCapture") or ()
+                if isinstance(extra, Mapping)
+            ]
+            for entity in entities:
+                if not isinstance(entity, Mapping):
+                    continue
+                for canonical, synonyms in (entity.get("synonyms") or {}).items():
+                    _add(canonical)
+                    for synonym in synonyms or ():
+                        _add(synonym)
+    for name in slot_names or ():
+        _add(str(name or "").replace("_", " "))
+    for intent in intents or ():
+        if isinstance(intent, Mapping):
+            for sample in intent.get("samples") or ():
+                _add(sample)
+    return phrases
+
+
+def derive_keyterms(
+    *,
+    workflows: Iterable[Mapping] = (),
+    slot_names: Iterable[str] = (),
+    intents: Iterable[Mapping] = (),
+    languages: Iterable[str] = (),
+    include_yes_no: bool = False,
+    limit: int = MAX_KEYTERMS,
+) -> list[str]:
+    """Key terms for a bot that has none configured.
+
+    The content words that recur most often across what callers are expected
+    to say to the bot (:func:`_phrases_of`), ranked by how many distinct
+    phrases use them. Grammatical glue, fillers and generic answer words of
+    the bot's languages never qualify; nor do digits or one-/two-letter Latin
+    tokens. ``include_yes_no`` (opt-in, see ``KEYTERMS_AUTO_YES_NO_SETTING``)
+    puts the canonical yes/no forms of the bot's language packs first.
+    Deterministic, within Sarvam's limits.
+    """
+    from shared.orchestration import lang as language_packs
+
+    packs = language_packs.packs([str(code) for code in languages or ()] or None)
+    lexicon: list[str] = []
+    if include_yes_no:
+        for pack in packs:
+            for form in sorted(pack.canonical_yes) + sorted(pack.canonical_no):
+                if form not in lexicon:
+                    lexicon.append(form)
+    noise: set[str] = set()
+    for pack in packs:
+        for attr in ("fillers", "strip_fillers", "stop_tokens", "generic_answer_tokens",
+                     "bare_yes", "bare_no", "canonical_yes", "canonical_no", "function_words"):
+            noise.update(word.lower() for word in getattr(pack, attr, ()) or ())
+    token = re.compile(r"[\w" + language_packs.letters() + r"]+")
+    document_frequency: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
+    surface: dict[str, str] = {}
+    for phrase in dict.fromkeys(_phrases_of(workflows, slot_names, intents)):
+        for word in dict.fromkeys(token.findall(phrase)):
+            key = word.lower()
+            if key in noise or any(ch.isdigit() for ch in key) or "_" in key:
+                continue
+            if key.isascii() and len(key) < 3:
+                continue
+            document_frequency[key] = document_frequency.get(key, 0) + 1
+            first_seen.setdefault(key, len(first_seen))
+            surface.setdefault(key, word if not word.isascii() else key)
+    ranked = sorted(document_frequency, key=lambda k: (-document_frequency[k], first_seen[k]))
+    terms = [t for t in lexicon if len(t) <= MAX_KEYTERM_CHARS]
+    for key in ranked:
+        if len(terms) >= limit:
+            break
+        word = surface[key]
+        if len(word) <= MAX_KEYTERM_CHARS and word not in terms:
+            terms.append(word)
+    return normalize_keyterms(terms[:limit])
+

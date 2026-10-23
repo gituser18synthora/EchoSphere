@@ -65,6 +65,9 @@ class LanguagePack:
     handoff_words: str = ""                         # "human|agent|…"
     kb_question_words: tuple[str, ...] = ()         # "what", "how", "can i", …
     hmm_forms: tuple[str, ...] = ()                 # listening hums ("hmm", "हम्म")
+    # Grammatical glue (postpositions, auxiliaries, pronouns, conjunctions):
+    # never worth biasing a recognizer toward (STT key-term derivation).
+    function_words: frozenset[str] = frozenset()
     # Discourse fillers that carry no answer on their own ("to", "aur",
     # "matlab", "ok") and words that are filler only when such a filler
     # follows them ("haan to", "achha to"): an utterance made only of these

@@ -193,7 +193,24 @@ _SAARAS_V4_SCHEMA = {
         "help": "Up to 50 names, places, brands or technical terms (64 characters "
                 "each) that recognition is biased toward — one term or phrase per "
                 "line, e.g. Zepto / New Delhi. Biasing only: a term is not "
-                "guaranteed to appear in the transcript.",
+                "guaranteed to appear in the transcript. Left empty, the bot's own "
+                "vocabulary is used automatically (see the two switches below).",
+    },
+    # Automatic key terms when the list above is empty: the bot's workflow
+    # option labels, entity synonyms, slot names and intent samples
+    # (shared.bot_config._derived_stt_keyterms). The yes/no words are opt-in:
+    # biasing toward them produced false "haan"/"yes" finals on replayed calls.
+    "keyterms_auto": {
+        "type": "boolean", "default": True, "advanced": True,
+        "label": "Automatic key terms",
+        "help": "With no key terms entered, bias recognition toward the bot's own "
+                "vocabulary (workflow options, synonyms, slot names, intent samples).",
+    },
+    "keyterms_auto_yes_no": {
+        "type": "boolean", "default": False, "advanced": True,
+        "label": "Include yes/no words in automatic key terms",
+        "help": "Off by default: biasing toward 'haan'/'yes' turned hums and noise "
+                "into false yes transcripts on replayed calls.",
     },
 }
 
@@ -573,12 +590,13 @@ MODEL_DESCRIPTIONS: dict[tuple[str, str, str], str] = {
     ("sarvam", "stt", "saaras:v3"): (
         "Sarvam Saaras v3 realtime STT: 22 Indic languages + Indian English, "
         "auto-detect, output modes (transcribe/verbatim/translit/codemix/"
-        "translate). Platform default."
+        "translate). Selectable per bot."
     ),
     ("sarvam", "stt", "saaras:v4"): (
         "Sarvam Saaras v4 realtime STT: v3 coverage plus global English, "
         "better noise/accent robustness, and key-term biasing (up to 50 "
-        "names/brands/terms). Not the default — select it per bot."
+        "names/brands/terms; the bot's own vocabulary automatically when none "
+        "are entered). Platform default."
     ),
     ("deepgram", "tts", "aura-2"): (
         "Deepgram Aura-2 low-latency neural voices over /v1/speak (REST and "
@@ -617,12 +635,13 @@ PROVIDER_MODELS = [
      _SARVAM_STT_COMMON, False, "active", 1),
     ("sarvam", "stt", "saaras:v3", "Saaras v3 (streaming)",
      _SAARAS_V3_LANGS, ["linear16"], [8000, 16000], True,
-     _SAARAS_V3_SCHEMA, True, "active", 0),
-    # saaras:v4 is selectable but NOT the default — v3 stays the platform and
-    # provider default until an operator explicitly chooses v4 for a bot.
+     _SAARAS_V3_SCHEMA, False, "active", 1),
+    # saaras:v4 is the platform default since 2026-10-23 (Phase 3): with the
+    # automatic content key terms (shared.bot_config._derived_stt_keyterms) it
+    # beat v3 on replayed live calls; v3 stays selectable per bot.
     ("sarvam", "stt", "saaras:v4", "Saaras v4 (streaming)",
      _SAARAS_V4_LANGS, ["linear16"], [8000, 16000], True,
-     _SAARAS_V4_SCHEMA, False, "active", 1),
+     _SAARAS_V4_SCHEMA, True, "active", 0),
     ("mock", "stt", "mock", "Mock STT", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # ── TTS ──────────────────────────────────────────────────────────────
@@ -984,7 +1003,7 @@ _SEEDED_PROFILE_CODES = {
     "low_cost", "balanced", "high_accuracy", "low_latency", "enterprise", "custom",
 }
 _PROFILE_REMAP: dict[str, tuple[str, str]] = {
-    "stt": ("sarvam", "saaras:v3"),
+    "stt": ("sarvam", "saaras:v4"),
     "tts": ("sarvam", "bulbul:v3"),
     "llm": ("openai", "gpt-4o-mini"),
     "embedding": ("openai", "text-embedding-3-small"),

@@ -21,6 +21,12 @@ PACK = LanguagePack(
         r"""m+h+m+""",
     ),
     filler_only_tokens=frozenset({"ok", "okay"}),
+    function_words=frozenset({
+        "about", "after", "all", "any", "are", "but", "came", "can", "come", "did", "didn", "does", "don", "get",
+        "got", "had", "has", "have", "her", "him", "his", "how", "into", "its", "just", "let", "may", "more", "nothing",
+        "now", "off", "out", "please", "she", "some", "than", "them", "then", "there", "they", "too", "want", "was",
+        "what", "when", "where", "which", "who", "why", "would", "yes", "you",
+    }),
     affirm_tokens=(
         r"""yes""",
         r"""yeah""",

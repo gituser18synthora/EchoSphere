@@ -81,7 +81,7 @@ class SarvamSTT(STTProvider):
         self._client = AsyncSarvamAI(
             api_subscription_key=key, timeout=config.timeout_seconds
         )
-        self._model = config.model or "saaras:v3"
+        self._model = config.model or "saaras:v4"
         self._language = config.language or "en"
         self._timeout = config.timeout_seconds
         # Key-term biasing (``extra.keyterms``): forwarded on the REST call

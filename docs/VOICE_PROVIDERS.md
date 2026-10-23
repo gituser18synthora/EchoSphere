@@ -106,10 +106,45 @@ a development/test pseudo-provider and is excluded in production.
 ### Sarvam saaras:v4 and key terms
 
 `saaras:v4` (catalog row from migration `a9c1e3b5d7f9`, or pre-staged with
-`backend/scripts/stage_saaras_v4_catalog.py`) is selectable per bot; `saaras:v3`
-keeps `is_default` and remains the platform default, so nothing changes for a
-bot that never picked a model. v4 uses the same WebSocket endpoint, language
-codes, modes and VAD controls as v3 and adds **key-term biasing**:
+`backend/scripts/stage_saaras_v4_catalog.py`) is the **platform default since
+Phase 3 (2026-10-23)**: `Settings.stt_model`, the catalog `is_default` flag, the
+profile remap and the runtime fallbacks all say `saaras:v4`; `saaras:v3` stays
+selectable per bot. A bot with an explicit `voice_bot_settings.stt_model`
+keeps it, and a deployment's `.env` `STT_MODEL` overrides the code default —
+both live and local `.env` still pin `saaras:v3` until changed at deploy time.
+v4 uses the same WebSocket endpoint, language codes, modes and VAD controls as
+v3 and adds **key-term biasing**:
+
+- **Automatic key terms.** With no operator list, config resolution
+  (`shared/bot_config.py` `_derived_stt_keyterms`) derives up to 50 terms from
+  the bot's own vocabulary — workflow option labels (intent-hub edge
+  alternatives, node options), ask-node entity synonyms and canonical values,
+  slot names and intent sample phrases — ranked by how many distinct phrases
+  use a word, with each language pack's glue words (`function_words`),
+  fillers and generic answers excluded. Stored as `stt.derived_keyterms` in the
+  config snapshot; the runtime sends them like an operator list and records
+  `stt_keyterms source=derived`. Switches (v4 schema): `keyterms_auto`
+  (default true) and `keyterms_auto_yes_no` (default **false**: the bot's
+  yes/no words are left out).
+- Why v4 only with key terms, and why without yes/no words — two live calls
+  (cv_0f224432545d MDND, cv_2d1119054a92 Haier) replayed at real-time pace
+  through the production adapter with the live VAD boundaries
+  (`scratchpad/probe/replay_calls.py`), two passes each:
+
+  | config | non-Hindi-script finals | English finals on Hindi speech | false "haan/ji/yes" | utterances without a final |
+  |---|---|---|---|---|
+  | saaras:v3 (today) | 6 / 9 | 2 / 5 | 2 / 1 | 3 / 5 |
+  | saaras:v4 | 4 / 5 | 4 / 5 | 0 / 0 | 7 / 7 |
+  | saaras:v4 + content key terms | 0 / 0 | 2 / 1 | 3 / 3 | 5 / 8 |
+  | saaras:v4 + key terms incl. yes/no words | 0 / 0 | 3 / 3 | 8 / 8 | 6 / 6 |
+
+  v4 alone swapped v3's Bengali/Gurmukhi/Malayalam finals for Odia, Santali and
+  Gujarati ones ("अरे हाँ भाई हाँ" → "અરે હા ભાઈ હા", "हम्म" → "ᱦᱮᱸ") and heard
+  "CX support" as "share support"; with the bot's vocabulary it fixed the
+  domain words ("गार्ड को हैंडओवर कर दिया" where v3 wrote "Guard Co-hand
+  Worker", "मैंने गार्ड को ही दे दिया" vs "में डॉट को", "और उसे कॉल भी" vs "और
+  उसे कौन भी"). Biasing toward "haan/yes" turned hums, "to" and line noise
+  into false "हाँ" / "Yes." finals — a false yes confirms a yes/no question.
 
 - `voice_bot_settings.stt_settings.keyterms` — a list of up to 50 terms
   (≤ 64 characters each, one term or phrase per entry). The key exists only in

@@ -111,10 +111,12 @@ class TestKeytermRules:
 # ── catalog / seed ───────────────────────────────────────────────────────────
 
 class TestCatalogSeed:
-    def test_v3_stays_default_and_v4_is_selectable_not_default(self):
+    def test_v4_is_the_default_and_v3_stays_selectable(self):
+        # Phase 3 (2026-10-23): saaras:v4 + automatic content key terms beat v3
+        # on replayed live calls, so v4 became the platform default.
         v3, v4 = _seed_row("saaras:v3"), _seed_row("saaras:v4")
-        assert v3[9] is True and v3[10] == "active"
-        assert v4[9] is False and v4[10] == "active"
+        assert v4[9] is True and v4[10] == "active"
+        assert v3[9] is False and v3[10] == "active"
         assert v4[4] == v3[4]  # same language codes
 
     def test_keyterms_exist_only_in_the_v4_schema(self):
