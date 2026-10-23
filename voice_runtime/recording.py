@@ -181,6 +181,22 @@ class SessionRecorder:
         self.usage["stt_requests"] = int(self.usage.get("stt_requests", 0)) + 1
         return True
 
+    def configured_models(self) -> dict:
+        """provider/model of each engine in this call's config snapshot."""
+        def label(conf: dict | None) -> str | None:
+            conf = conf or {}
+            if not conf.get("model"):
+                return None
+            return f"{conf.get('provider') or '?'}/{conf['model']}"
+
+        llm = self.config.llm or {}
+        return {
+            "stt": label(self.config.stt),
+            "tts": label(self.config.tts),
+            "llm": label(llm),
+            "decision": label(llm.get("orchestration")) or label(llm),
+        }
+
     def add_tts_usage(self, *, provider: str, model: str, voice: str, characters: int) -> None:
         """Called by the TTS router once per completed generation."""
         self.usage["tts_characters"] += characters
@@ -293,6 +309,10 @@ class SessionRecorder:
                 "usage": self.usage,
                 "tts_usage": list(self.tts_usage.values()),
                 "bot_version": self.config.version,
+                # The engines this call was configured with (metrics: STT model
+                # per call, decision model); per-turn TTS engines are on
+                # turn_timing.tts_model, per-engine characters on tts_usage.
+                "models": self.configured_models(),
                 "language": self.language,
                 "disposition": self.disposition,
                 "customer_context_id": self.customer_context_id,

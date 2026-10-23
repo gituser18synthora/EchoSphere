@@ -980,6 +980,9 @@ class StreamingTTSRouter(TTSService):
                 # provider's own time and `playout` isolates ours.
                 if self._latency is not None:
                     self._latency.mark_tts_first_byte()
+                    note = getattr(self._latency, "note_tts_engine", None)
+                    if note is not None:
+                        note(state.engine.get("provider"), state.engine.get("model"))
                 await self.stop_ttfb_metrics()
                 if state.watchdog is not None:
                     state.watchdog.cancel()
