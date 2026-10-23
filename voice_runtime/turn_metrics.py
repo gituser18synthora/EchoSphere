@@ -98,6 +98,7 @@ class TurnLatencyTracker:
     llm_completed_at: float | None = None
     tts_request_at: float | None = None
     tts_first_byte_at: float | None = None
+    tts_engine: str | None = None
     bot_started_at: float | None = None
     # How the turn ended (first decision wins): smart_turn (model verdict),
     # pause_timeout (fixed window), lexical_shortcut (brain's complete-thought
@@ -182,6 +183,7 @@ class TurnLatencyTracker:
         self.llm_completed_at = None
         self.tts_request_at = None
         self.tts_first_byte_at = None
+        self.tts_engine = None
         self.bot_started_at = None
         self.reported = False
 
@@ -226,6 +228,12 @@ class TurnLatencyTracker:
             return
         if self.tts_first_byte_at is None:
             self.tts_first_byte_at = time.monotonic()
+
+    def note_tts_engine(self, provider: str | None, model: str | None) -> None:
+        """The engine that produced this turn's first audio (``tts_ttfb`` per
+        model in the metrics); the first one of the turn stands."""
+        if self.tts_request_at is not None and self.tts_engine is None and model:
+            self.tts_engine = f"{provider or '?'}/{model}"
 
     def mark_bot_started_speaking(self) -> None:
         # Ownership guard: bot audio with neither a dispatched turn nor a
@@ -278,6 +286,7 @@ class TurnLatencyTracker:
         self.llm_completed_at = None
         self.tts_request_at = None
         self.tts_first_byte_at = None
+        self.tts_engine = None
         self.bot_started_at = None
         self.endpoint_by = None
         self.smart_turn_probability = None
@@ -378,6 +387,8 @@ class TurnLatencyTracker:
             "tts_started_at": _epoch_ms(self.tts_request_at),
             "first_audio_generated_at": _epoch_ms(self.tts_first_byte_at),
             "first_audio_sent_at": _epoch_ms(self.bot_started_at),
+            # provider/model that produced the first audio (tts_ttfb per model).
+            "tts_model": self.tts_engine,
             "total_response_latency_ms": spans.get("response", 0),
             "spans_ms": spans,
             "slowest_stage": self.slowest_stage(spans),

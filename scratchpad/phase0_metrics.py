@@ -16,6 +16,14 @@ Event shapes used (all written by voice_runtime/brain.py):
                       timeout | disabled_after_timeouts | provider_error |
                       unparseable_output | engine_disabled | empty_turn)
 - ``route_decision`` — ``route`` + ``reason`` (``too_short`` = canned CLARIFY)
+- Phase 3: ``orchestration_decision`` / ``_fallback`` carry ``model``,
+  ``service_tier`` (reported), ``service_tier_requested``; decisions also
+  ``latency_ms``, ``input_tokens``, ``output_tokens``, ``cached_tokens``,
+  ``has_response_text``. ``turn_timing.tts_model`` = provider/model of the
+  turn's first audio; the call document's ``models`` = configured engines
+  (stt/tts/llm/decision) and ``usage.llm_cached_tokens`` / ``llm_input_tokens``
+  the reply calls' prompt-cache share. ``tts_cold_connect`` (``reason``,
+  ``waited_ms``) and ``filler_only_dropped`` are counted.
 
 Usage:
     env/bin/python scratchpad/phase0_metrics.py --days 14
@@ -86,7 +94,8 @@ async def collect(uri: str, database: str, days: int, channel: str,
         elif channel != "all":
             query["channel"] = channel
         projection = {"session_id": 1, "channel": 1, "bot_id": 1, "events": 1,
-                      "turns.role": 1, "turns.text": 1, "turns.route": 1}
+                      "turns.role": 1, "turns.text": 1, "turns.route": 1,
+                      "models": 1, "usage": 1, "tts_usage": 1}
         docs = [d async for d in db["conversation_transcripts"].find(query, projection)]
     finally:
         client.close()
@@ -113,10 +122,33 @@ async def collect(uri: str, database: str, days: int, channel: str,
     warmup_total = 0
     filler_not_ready = 0
     channels: dict[str, int] = {}
+    # Phase 3 — models.
+    decision_ms: dict[str, list[float]] = {}        # "model @ tier" -> decision latency
+    decision_timeouts: dict[str, int] = {}          # "model @ tier" -> timeout fallbacks
+    decision_out_tokens: list[float] = []
+    decision_in = decision_cached = 0
+    decisions_with_text = decisions_total = 0
+    reply_in = reply_cached = 0
+    ttfb_by_model: dict[str, list[float]] = {}
+    stt_models: dict[str, int] = {}
+    cold_connects: dict[str, list[float]] = {}      # reason -> waited_ms
+    filler_only_dropped = 0
 
     for doc in docs:
         channels[str(doc.get("channel"))] = channels.get(str(doc.get("channel")), 0) + 1
         events = doc.get("events") or []
+        models = doc.get("models") or {}
+        stt_label = models.get("stt") or "unrecorded (pre-Phase 3 document)"
+        stt_models[stt_label] = stt_models.get(stt_label, 0) + 1
+        usage = doc.get("usage") or {}
+        reply_in += int(usage.get("llm_input_tokens") or 0)
+        reply_cached += int(usage.get("llm_cached_tokens") or 0)
+        # Older documents carry no per-turn TTS model: fall back to the engine
+        # that spoke the most characters on the call.
+        call_tts = None
+        if doc.get("tts_usage"):
+            top = max(doc["tts_usage"], key=lambda e: e.get("characters") or 0)
+            call_tts = f"{top.get('provider')}/{top.get('model')}"
         first_attempt: str | None = None
         decided = False
         disabled = False
@@ -135,6 +167,9 @@ async def collect(uri: str, database: str, days: int, channel: str,
                 kind_by = str(ev.get("endpoint_by") or "unknown")
                 if isinstance(ms.get("endpoint"), (int, float)):
                     endpoint_by.setdefault(kind_by, []).append(float(ms["endpoint"]))
+                if isinstance(ms.get("tts_ttfb"), (int, float)):
+                    label = ev.get("tts_model") or call_tts or "unknown"
+                    ttfb_by_model.setdefault(label, []).append(float(ms["tts_ttfb"]))
                 if kind_by == "smart_turn":
                     marks = ev.get("endpoint_marks_ms") or {}
                     for name in endpoint_marks:
@@ -151,11 +186,25 @@ async def collect(uri: str, database: str, days: int, channel: str,
                 decided = True
                 if first_attempt is None:
                     first_attempt = "decision"
+                engine = (f"{ev.get('model') or 'unrecorded'} @ "
+                          f"{ev.get('service_tier') or ev.get('service_tier_requested') or 'default'}")
+                if isinstance(ev.get("latency_ms"), (int, float)):
+                    decision_ms.setdefault(engine, []).append(float(ev["latency_ms"]))
+                if isinstance(ev.get("output_tokens"), (int, float)):
+                    decision_out_tokens.append(float(ev["output_tokens"]))
+                    decision_in += int(ev.get("input_tokens") or 0)
+                    decision_cached += int(ev.get("cached_tokens") or 0)
+                decisions_total += 1
+                decisions_with_text += bool(ev.get("has_response_text"))
             elif kind == "orchestration_fallback":
                 reason = str(ev.get("reason") or "")
                 if reason in ("engine_disabled", "empty_turn"):
                     continue
                 attempted = True
+                if reason in TIMEOUT_REASONS:
+                    engine = (f"{ev.get('model') or 'unrecorded'} @ "
+                              f"{ev.get('service_tier_requested') or 'default'}")
+                    decision_timeouts[engine] = decision_timeouts.get(engine, 0) + 1
                 if first_attempt is None:
                     first_attempt = "timeout" if reason in TIMEOUT_REASONS else reason
                 if reason == "disabled_after_timeouts":
@@ -172,6 +221,11 @@ async def collect(uri: str, database: str, days: int, channel: str,
                     warmup_hits += 1
             elif kind == "latency_filler_not_ready":
                 filler_not_ready += 1
+            elif kind == "tts_cold_connect":
+                cold_connects.setdefault(str(ev.get("reason") or "unknown"), []).append(
+                    float(ev.get("waited_ms") or 0))
+            elif kind == "filler_only_dropped":
+                filler_only_dropped += 1
         if attempted:
             calls_with_engine += 1
             if first_attempt == "timeout":
@@ -201,6 +255,13 @@ async def collect(uri: str, database: str, days: int, channel: str,
         "endpoint_marks": endpoint_marks, "short_circuits": short_circuits,
         "warmup_hits": warmup_hits, "warmup_total": warmup_total,
         "filler_not_ready": filler_not_ready,
+        "decision_ms": decision_ms, "decision_timeouts": decision_timeouts,
+        "decision_out_tokens": decision_out_tokens,
+        "decision_in": decision_in, "decision_cached": decision_cached,
+        "decisions_total": decisions_total, "decisions_with_text": decisions_with_text,
+        "reply_in": reply_in, "reply_cached": reply_cached,
+        "ttfb_by_model": ttfb_by_model, "stt_models": stt_models,
+        "cold_connects": cold_connects, "filler_only_dropped": filler_only_dropped,
     }
 
 
@@ -240,6 +301,30 @@ def print_report(r: dict, channel: str) -> None:
     print(f"{'<=2-word caller turns routed to CLARIFY':<44}{_share(r['short_clarify_routes'], r['short_turns'])}")
     print(f"{'route_decision reason=too_short events':<44}{r['too_short_reasons']}")
     print(f"{'route_decision reason=short_answer_to_pending':<44}{r['short_answer_routes']}")
+    print()
+    print("Phase 3 — models")
+    print(f"{'decision latency (ms) by model @ tier':<44}{'p50':>9}{'p90':>9}{'n':>8}{'timeouts':>10}")
+    engines = sorted(set(r["decision_ms"]) | set(r["decision_timeouts"]),
+                     key=lambda k: -len(r["decision_ms"].get(k, [])))
+    for engine in engines:
+        values = sorted(r["decision_ms"].get(engine, []))
+        print(f"  {engine:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}"
+              f"{len(values):>8}{r['decision_timeouts'].get(engine, 0):>10}")
+    out = sorted(r["decision_out_tokens"])
+    print(f"{'decision output tokens p50 / p90':<44}{_fmt(_pct(out, 0.5)):>9}{_fmt(_pct(out, 0.9)):>9}{len(out):>8}")
+    print(f"{'decisions that wrote response_text':<44}{_share(r['decisions_with_text'], r['decisions_total'])}")
+    print(f"{'decision prompt tokens served from cache':<44}{_share(r['decision_cached'], r['decision_in'])}")
+    print(f"{'reply prompt tokens served from cache':<44}{_share(r['reply_cached'], r['reply_in'])}")
+    print(f"{'tts_ttfb (ms) by TTS model':<44}{'p50':>9}{'p90':>9}{'n':>8}")
+    for label in sorted(r["ttfb_by_model"], key=lambda k: -len(r["ttfb_by_model"][k])):
+        values = sorted(r["ttfb_by_model"][label])
+        print(f"  {label:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
+    print(f"{'calls by STT model':<44}" + ", ".join(
+        f"{k}={v}" for k, v in sorted(r["stt_models"].items(), key=lambda kv: -kv[1])))
+    total_cold = sum(len(v) for v in r["cold_connects"].values())
+    print(f"{'tts_cold_connect events (waited ms p50)':<44}{total_cold}  " + ", ".join(
+        f"{k}={len(v)} ({_fmt(_pct(sorted(v), 0.5))} ms)" for k, v in sorted(r["cold_connects"].items())))
+    print(f"{'filler_only_dropped events':<44}{r['filler_only_dropped']}")
     print()
     print("notes: the route reason IS recorded (route_decision.reason); turns.route='clarify' on a <=2-word")
     print("       user turn is the canned too_short path outside a workflow. Medians per span do not sum to the")
