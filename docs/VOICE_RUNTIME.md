@@ -112,7 +112,9 @@ in `stt_settings.turn_detection`):
   with the previous turn's verdict. A final with no open turn that lands more
   than 1.5 s after the last turn closed, with no caller audio seen since by
   the VAD or the caller-audio gate, is the provider's old speech: logged as
-  `stt_final_late` (delay_ms, text) and dropped.
+  `stt_final_late` (delay_ms, text) and dropped. The bounded turn-stop's STT
+  wait is floored at the Sarvam adapter's flush-retry window (1.5 s) inside
+  the pause window, so a turn is not closed empty while that retry is pending.
 - `complete_endpoint` — a much shorter endpoint used when the buffered text reads
   as a finished thought;
 - `short_reply_endpoint` — shorter still for self-contained short replies
