@@ -1,0 +1,14 @@
+[
+  {
+    "content": "नमस्ते! मैं Manappuram Finance Limited से {voice_speaker_name} बोल रहा हूँ। ये call quality और training purposes के लिए record की जा रही है। क्या मेरी बात {customer_name} जी से हो रही है?",
+    "language": "hi-IN"
+  },
+  {
+    "content": "Hello! I’m {voice_speaker_name}, calling from Manappuram Finance Limited. This call is being recorded for quality and training purposes. Am I speaking with {customer_name}?",
+    "language": "en-IN"
+  },
+  {
+    "content": "നമസ്കാരം, Manappuram Finance Limited-ൽ നിന്ന് {voice_speaker_name} ആണ് സംസാരിക്കുന്നത്. ഈ call quality check-നും training-നും വേണ്ടി record ചെയ്യുന്നുണ്ട്. {customer_name} ആണോ സംസാരിക്കുന്നത്?",
+    "language": "ml-IN"
+  }
+]
