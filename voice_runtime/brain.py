@@ -1061,6 +1061,10 @@ class ConversationBrain(FrameProcessor):
         # (workflow name, previously active workflow, the turn's text) for the
         # dispatched turn that reached the workflow this turn — None otherwise.
         self._open_turn_workflow: tuple[str, str | None, str] | None = None
+        # Whether the open turn's workflow step has COMMITTED (the engine
+        # returned): until then the caller's answer lives only in the turn
+        # text, and a newer utterance must merge with it, never supersede it.
+        self._open_turn_workflow_committed = False
         # Turn taking: STT segments buffered until the turn controller closes
         # the user's turn (see module docstring). Finalization is debounced by
         # ``finalize_grace`` so straggler STT finals merge into ONE turn.
@@ -1474,8 +1478,27 @@ class ConversationBrain(FrameProcessor):
             # bot's first audio kept merging into the previous one.
             gap = self._gap_since_last_speech()
             continuation = gap is None or gap <= self._continuation_gap_s
-            resumed_before_reply = unheard_reply_pending and continuation
-            superseded_unheard = unheard_reply_pending and not continuation
+            # A workflow turn whose engine step has not committed yet holds
+            # the caller's answer nowhere but in its text: superseding it
+            # would drop the answer and leave the flow at the same ask (live
+            # cv_0f224432545d 2026-10-23: "haan, main customer ke location
+            # par pahuncha tha" superseded 70 ms after its decision, the ask
+            # repeated eight times). Such a turn is merged whatever the gap.
+            uncommitted_workflow_turn = (
+                unheard_reply_pending
+                and self._active_workflow is not None
+                and not self._open_turn_workflow_committed
+            )
+            if uncommitted_workflow_turn and not continuation:
+                self._recorder.add_event(
+                    "unheard_turn_merged_uncommitted",
+                    gap_s=None if gap is None else round(gap, 2),
+                    workflow=self._active_workflow,
+                )
+            resumed_before_reply = unheard_reply_pending and (
+                continuation or uncommitted_workflow_turn
+            )
+            superseded_unheard = unheard_reply_pending and not resumed_before_reply
             # Claim the turn's markers NOW, before any await: the generation
             # may finish (and clear them) while the cancel below is pending.
             claimed = self._claim_open_turn() if unheard_reply_pending else None
@@ -3601,6 +3624,7 @@ class ConversationBrain(FrameProcessor):
         await self._maybe_switch_language(text, pending_language)
         self._latency.mark_dispatched()
         self._smart_turn_closed = False
+        self._open_turn_workflow_committed = False
         # The reply for THIS turn has produced no audio yet.
         self._reply_audio_started = False
         self._begin_reply_tracking()
@@ -6475,6 +6499,7 @@ class ConversationBrain(FrameProcessor):
             **({"pause_for_context": True} if classification is not None
                and classification.context_question else {}),
         )
+        self._open_turn_workflow_committed = True
         if (
             not result.get("offScript")
             and result.get("trace")

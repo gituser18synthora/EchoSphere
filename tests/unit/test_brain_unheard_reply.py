@@ -425,6 +425,70 @@ class TestContinuationVersusNewTurn:
         assert [t.role for t in brain._recorder.turns] == ["user"]
         assert brain._pending_segments == []
 
+    async def test_long_gap_merges_into_a_workflow_turn_that_has_not_committed(self):
+        # Live cv_0f224432545d (2026-10-23): "haan, main customer ke location
+        # par pahuncha tha" was dispatched, the caller went on 2 s later, and
+        # the turn was superseded 70 ms after its decision — before the
+        # workflow step ran. The answer existed only in the turn text and was
+        # dropped; the ask was repeated eight times. An uncommitted workflow
+        # turn merges with the continuation, whatever the gap.
+        import time
+        brain = make_brain()
+        brain._workflows = _Workflows()
+        brain._active_workflow = "mdnd"
+        release = asyncio.Event()
+        record = TurnRecord(role="user", text=USER, timestamp=1.0, route="workflow")
+
+        async def _slow_generation():
+            brain._recorder.add_turn(record)
+            brain._history.append({"role": "user", "content": USER})
+            brain._open_turn_record = record
+            await release.wait()
+
+        brain._pending_segments.append(USER)
+        brain._handle_turn = lambda t: _slow_generation()
+        await brain._consume_pending_turn()
+        await settle()
+        assert brain._generation_in_flight() and brain._open_turn_workflow_committed is False
+        brain._last_vad_stopped_at = time.monotonic() - 3.0        # well past the continuation gap
+        await brain.process_frame(UserStartedSpeakingFrame(), DOWN)
+        await settle()
+        kinds = brain._recorder.event_kinds()
+        assert "unheard_turn_merged_uncommitted" in kinds
+        assert "turn_merged_late_final" in kinds and "unheard_reply_superseded" not in kinds
+        assert any(
+            e[1].get("reason") == "late_transcript_merge"
+            for e in brain._recorder.events if e[0] == "generation_cancelled"
+        )
+        assert brain._pending_segments == [USER]                   # the answer is re-queued, not lost
+        assert brain._recorder.turns == []                         # and runs again as ONE turn
+
+    async def test_long_gap_still_supersedes_once_the_workflow_step_committed(self):
+        import time
+        brain = make_brain()
+        brain._workflows = _Workflows()
+        brain._active_workflow = "mdnd"
+        release = asyncio.Event()
+        record = TurnRecord(role="user", text=USER, timestamp=1.0, route="workflow")
+
+        async def _slow_generation():
+            brain._recorder.add_turn(record)
+            brain._history.append({"role": "user", "content": USER})
+            brain._open_turn_record = record
+            brain._open_turn_workflow_committed = True             # the engine consumed the answer
+            await release.wait()
+
+        brain._pending_segments.append(USER)
+        brain._handle_turn = lambda t: _slow_generation()
+        await brain._consume_pending_turn()
+        await settle()
+        brain._last_vad_stopped_at = time.monotonic() - 3.0
+        await brain.process_frame(UserStartedSpeakingFrame(), DOWN)
+        await settle()
+        kinds = brain._recorder.event_kinds()
+        assert "unheard_reply_superseded" in kinds and "unheard_turn_merged_uncommitted" not in kinds
+        assert brain._pending_segments == []
+
     async def test_first_speech_of_the_call_has_no_gap_and_still_merges(self):
         brain = make_brain()
         brain._workflows = _Workflows()
