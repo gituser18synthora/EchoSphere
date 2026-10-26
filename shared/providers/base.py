@@ -74,6 +74,8 @@ class LLMResult:
     cached_tokens: int = 0
     service_tier: str | None = None
     model: str | None = None
+    # Reasoning tokens (already included in output_tokens) — observability.
+    reasoning_tokens: int = 0
 
 
 @dataclass

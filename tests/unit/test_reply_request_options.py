@@ -114,7 +114,8 @@ class _FakeCompletions:
             service_tier="fast", model="gpt-6-luna-2026-10-01",
             choices=[SimpleNamespace(message=SimpleNamespace(content="{}", tool_calls=None), finish_reason="stop")],
             usage=SimpleNamespace(prompt_tokens=900, completion_tokens=40,
-                                  prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
+                                  prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+                                  completion_tokens_details=SimpleNamespace(reasoning_tokens=7)),
         )
 
 
@@ -132,7 +133,8 @@ async def test_the_bot_settings_reach_every_request(monkeypatch):
     _, llm = _luna(monkeypatch, {"reply_service_tier": "fast", "reply_reasoning_effort": "lowest"})
     fake = _FakeCompletions()
     llm._client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
-    await llm.generate([{"role": "user", "content": "x"}], system="s", temperature=0.0, max_tokens=400)
+    result = await llm.generate([{"role": "user", "content": "x"}], system="s", temperature=0.0, max_tokens=400)
+    assert (result.cached_tokens, result.reasoning_tokens, result.service_tier) == (0, 7, "fast")
     assert [t async for t in llm.stream([{"role": "user", "content": "x"}], system="s")] == ["Ji"]
     for call in fake.calls:
         assert (call["service_tier"], call["reasoning_effort"], call["prompt_cache_key"]) == ("fast", "none", "bot_1")
@@ -179,8 +181,9 @@ async def test_the_extractor_reports_the_tier_of_each_reader():
             self.calls += 1
             if self.calls == 4:
                 raise RuntimeError("one reader failed")
-            return LLMResult(text='{"patch": {}, "evidence": {}}', input_tokens=800,
-                             output_tokens=20, service_tier="fast")
+            return LLMResult(text='{"patch": {}, "evidence": {}}', input_tokens=1200,
+                             output_tokens=20, service_tier="fast", cached_tokens=1024,
+                             reasoning_tokens=0)
 
     result = await extract_mdnd_slots(
         _Readers(), text="haan maine call kiya tha", slots={},
@@ -188,6 +191,8 @@ async def test_the_extractor_reports_the_tier_of_each_reader():
     )
     assert result.requests == 4
     assert result.service_tiers == {"fast": 3}      # the failed reader reports nothing
+    # Cached prompt tokens of each completed reader reach the call's usage.
+    assert (result.input_tokens, result.cached_tokens) == (3600, 3072)
 
 
 def test_the_brain_tallies_the_tiers_of_its_call():
@@ -199,3 +204,19 @@ def test_the_brain_tallies_the_tiers_of_its_call():
     ConversationBrain._note_llm_call(fake, tier=None)
     ConversationBrain._note_llm_call(fake, tier="default")
     assert recorder.llm_service_tiers == {"fast": 3, "unreported": 1, "default": 1}
+
+
+def test_non_streamed_calls_fold_cached_and_reasoning_tokens():
+    """Rewrites, the memory greeting, the classifier and the extractor never
+    added their cached prompt tokens to the call (only streamed replies did):
+    MDND's reply path read cached=0 whatever OpenAI served from the cache."""
+    from voice_runtime.brain import ConversationBrain
+
+    recorder = SimpleNamespace(usage={"llm_cached_tokens": 100, "llm_reasoning_tokens": 0},
+                               llm_service_tiers={})
+    fake = SimpleNamespace(_recorder=recorder)
+    ConversationBrain._note_llm_call(fake, tier="fast", cached=1024, reasoning=12)
+    ConversationBrain._note_llm_call(fake, tier="fast")     # a stream: its site folded them
+    assert recorder.usage == {"llm_cached_tokens": 1124, "llm_reasoning_tokens": 12}
+    assert recorder.llm_service_tiers == {"fast": 2}
+

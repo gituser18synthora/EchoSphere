@@ -150,7 +150,10 @@ class MDNDExtraction:
     input_tokens: int = 0
     output_tokens: int = 0
     requests: int = 0
-    # Service tier the provider reported per completed reader call.
+    # Provider report per completed reader call: prompt tokens served from
+    # the prompt cache, reasoning tokens, and the service tier it ran on.
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
     service_tiers: dict[str, int] = field(default_factory=dict)
 
 
@@ -501,6 +504,8 @@ async def extract_mdnd_slots(
                        evidence={name: validated.evidence[name]} if name in validated.evidence else {},
                        explicit_retractions=tuple(k for k in validated.explicit_retractions if k == name),
                        requests=1,
+                       cached_tokens=int(getattr(result, "cached_tokens", 0) or 0),
+                       reasoning_tokens=int(getattr(result, "reasoning_tokens", 0) or 0),
                        service_tiers={str(getattr(result, "service_tier", None) or "unreported"): 1})
 
     # Independent readers run concurrently under the same bounded timeout.
@@ -520,5 +525,7 @@ async def extract_mdnd_slots(
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         requests=sum(result.requests for result in results),
+        cached_tokens=sum(result.cached_tokens for result in results),
+        reasoning_tokens=sum(result.reasoning_tokens for result in results),
         service_tiers=_sum_tiers(results),
     )

@@ -244,3 +244,22 @@ def test_summary_fallback_names_the_recorded_relative_not_a_generic_member():
     assert "customer के घर के किसी member" in summary_fallback(slots, "hi-IN")
     slots["m_handover_recipient"] = "guard / security"
     assert "order guard को सौंपा था" in summary_fallback(slots, "hi-IN")
+
+
+async def test_the_extractors_provider_report_reaches_the_turn_result(collector):
+    """Cached prompt tokens, reasoning tokens and the served tier of the four
+    readers travel with the turn (the brain folds them into the call usage)."""
+    engine, llm, _ = collector
+    llm.generate.side_effect = None
+    llm.generate.return_value = LLMResult(
+        text=json.dumps({"patch": {}, "evidence": {}}), input_tokens=1200, output_tokens=20,
+        cached_tokens=1024, reasoning_tokens=0, service_tier="fast",
+    )
+    result = await engine.handle_turn_detailed(
+        session_id="usage", tenant_id="tn_x", bot_id="bot_x", workflow_name="mdnd",
+        user_text="haan ji bolo", language="hi-IN", context_values=CONTEXT, llm=llm,
+    )
+    assert result["extractionUsage"] == {
+        "input_tokens": 4800, "output_tokens": 80, "requests": 4,
+        "cached_tokens": 4096, "reasoning_tokens": 0, "service_tiers": {"fast": 4},
+    }

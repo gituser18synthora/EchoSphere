@@ -6185,7 +6185,11 @@ class ConversationBrain(FrameProcessor):
             counters["llm_input_tokens"] = counters.get("llm_input_tokens", 0) + usage[0]
             counters["llm_output_tokens"] = counters.get("llm_output_tokens", 0) + usage[1]
             meta = usage[2] if len(usage) > 2 else {}
-            self._note_llm_call(tier=meta.get("service_tier"))
+            self._note_llm_call(
+                tier=meta.get("service_tier"),
+                cached=int(meta.get("cached_tokens") or 0),
+                reasoning=int(meta.get("reasoning_tokens") or 0),
+            )
         self._recorder.add_event("intent_classified", **classification.as_event())
         return classification
 
@@ -6609,7 +6613,7 @@ class ConversationBrain(FrameProcessor):
         if extraction_usage:
             counters = self._recorder.usage
             counters["llm_requests"] = counters.get("llm_requests", 0) + extraction_usage.get("requests", 1)
-            for key in ("input_tokens", "output_tokens"):
+            for key in ("input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens"):
                 usage_key = "llm_" + key
                 counters[usage_key] = counters.get(usage_key, 0) + extraction_usage.get(key, 0)
             for tier, count in (extraction_usage.get("service_tiers") or {}).items():
@@ -6984,7 +6988,11 @@ class ConversationBrain(FrameProcessor):
             usage.get("llm_output_tokens", 0)
             + int(getattr(result, "output_tokens", 0) or 0)
         )
-        self._note_llm_call(tier=getattr(result, "service_tier", None))
+        self._note_llm_call(
+            tier=getattr(result, "service_tier", None),
+            cached=int(getattr(result, "cached_tokens", 0) or 0),
+            reasoning=int(getattr(result, "reasoning_tokens", 0) or 0),
+        )
         return (getattr(result, "text", "") or "").strip() or None
 
     async def _deliver_grounded_workflow_reply(
@@ -8104,10 +8112,21 @@ class ConversationBrain(FrameProcessor):
             json.dumps(sent, sort_keys=True),
         )
 
-    def _note_llm_call(self, *, tier: str | None, requests: int = 1) -> None:
+    def _note_llm_call(
+        self, *, tier: str | None, requests: int = 1, cached: int = 0, reasoning: int = 0,
+    ) -> None:
         """Provider-reported facts of conversation-model calls the call site
-        has already counted (requests, tokens): the service tier each one
-        actually ran on, per call ("unreported" when the provider said none)."""
+        has already counted (requests, input/output tokens): the service tier
+        each one actually ran on ("unreported" when the provider said none),
+        and — for non-streamed calls, whose sites never folded them — the
+        prompt tokens served from the prompt cache and the reasoning tokens
+        (already inside output_tokens; observability, never billed apart)."""
+        usage = getattr(self._recorder, "usage", None)
+        if isinstance(usage, dict):
+            if cached:
+                usage["llm_cached_tokens"] = usage.get("llm_cached_tokens", 0) + int(cached)
+            if reasoning:
+                usage["llm_reasoning_tokens"] = usage.get("llm_reasoning_tokens", 0) + int(reasoning)
         tiers = getattr(self._recorder, "llm_service_tiers", None)
         if not isinstance(tiers, dict) or requests <= 0:
             return
@@ -8209,7 +8228,11 @@ class ConversationBrain(FrameProcessor):
             usage.get("llm_output_tokens", 0)
             + int(getattr(result, "output_tokens", 0) or 0)
         )
-        self._note_llm_call(tier=getattr(result, "service_tier", None))
+        self._note_llm_call(
+            tier=getattr(result, "service_tier", None),
+            cached=int(getattr(result, "cached_tokens", 0) or 0),
+            reasoning=int(getattr(result, "reasoning_tokens", 0) or 0),
+        )
         self._recorder.add_event(
             "memory_greeting_spoken",
             previous_memory_source_conversation_id=(

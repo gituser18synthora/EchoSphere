@@ -197,6 +197,7 @@ class OpenAILLM(LLMProvider):
             for call in (choice.message.tool_calls or [])
         ]
         usage = response.usage
+        completion_details = getattr(usage, "completion_tokens_details", None) if usage else None
         return LLMResult(
             text=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
@@ -206,6 +207,7 @@ class OpenAILLM(LLMProvider):
             cached_tokens=int((self.last_response_meta or {}).get("cached_tokens") or 0),
             service_tier=(self.last_response_meta or {}).get("service_tier"),
             model=(self.last_response_meta or {}).get("model"),
+            reasoning_tokens=int(getattr(completion_details, "reasoning_tokens", 0) or 0),
         )
 
     async def stream(
