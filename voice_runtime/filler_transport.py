@@ -32,6 +32,14 @@ from voice_runtime.frames import (
 # Timer slack when deciding that an ambience chunk is due.
 _AMBIENCE_DUE_TOLERANCE_S = 0.001
 
+# Bot-ended telephony call: after the last audio leaves, the media socket stays
+# open until the far end has played what it still has queued, plus this tail
+# (its 20 ms tick and the network leg), but never longer than the cap — a
+# stuck estimate must not hold the call open.
+END_PLAYOUT_TAIL_S = 0.3
+END_PLAYOUT_MAX_WAIT_S = 3.0
+_END_PLAYOUT_POLL_S = 0.02
+
 
 class FillerOutputTransportMixin:
     """Small extension of Pipecat's sender, also usable by local test devices."""
@@ -354,6 +362,9 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
         self._cleared_fillers = set()
         self._echo_reference = None
         self._ambience = None
+        # What the end-of-call playout wait did (see _play_out_before_end);
+        # None until an EndFrame reaches a serializer that tracks playout.
+        self.end_playout: dict | None = None
 
     def attach_ambience(self, ambience) -> None:
         """Background ambience (voice_runtime.ambience.AmbienceMixer) for this
@@ -468,12 +479,60 @@ class FillerWebsocketOutputTransport(FillerOutputTransportMixin, FastAPIWebsocke
             await super()._write_frame(FillerClearFrame(owner))
             self._cleared_fillers.add(owner.token)
 
+    async def _play_out_before_end(self) -> None:
+        """Hold the socket open until the far end has played the last audio.
+
+        ``stop()`` writes the EndFrame after the media sender has drained and
+        closes the socket right after it; the session then hangs up the call.
+        Writing paces audio at real time, but the provider plays it from its
+        own queue behind that (the last ~200 ms packet at least), so the end
+        of a goodbye was still queued when the socket closed and the channel
+        was killed 80-400 ms after the last write (demo 2026-10-26: the final
+        word of every bot-ended call was lost). Flush the serializer's last
+        partial packet, then wait out its playout estimate plus a short tail,
+        bounded, and stop early if the far end goes away.
+        """
+        serializer = self._params.serializer
+        remaining_of = getattr(serializer, "playout_remaining_s", None)
+        if remaining_of is None or self._client.is_closing or not self._client.is_connected:
+            return
+        flushed = len(getattr(serializer, "_pending_audio", b"") or b"")
+        if flushed:
+            await self._write_frame(OutputTransportMessageFrame(
+                message={"type": AUDIO_FLUSH_MESSAGE_TYPE},
+            ))
+        remaining = remaining_of()
+        wait = min(remaining + END_PLAYOUT_TAIL_S, END_PLAYOUT_MAX_WAIT_S)
+        started = time.monotonic()
+        deadline = started + wait
+        disconnected = False
+        while (now := time.monotonic()) < deadline:
+            if self._client.is_closing or not self._client.is_connected:
+                disconnected = True
+                break
+            await asyncio.sleep(min(_END_PLAYOUT_POLL_S, deadline - now))
+        self.end_playout = {
+            "flushed_bytes": flushed,
+            "playout_remaining_ms": round(remaining * 1000.0, 1),
+            "tail_ms": round(END_PLAYOUT_TAIL_S * 1000.0),
+            "waited_ms": round((time.monotonic() - started) * 1000.0, 1),
+            "capped": remaining + END_PLAYOUT_TAIL_S > END_PLAYOUT_MAX_WAIT_S,
+            "far_end_closed": disconnected,
+        }
+        logger.info("end of call: held the media socket %.0f ms for far-end playout "
+                    "(estimate %.0f ms + tail %.0f ms, cap %.0f ms)",
+                    self.end_playout["waited_ms"], remaining * 1000.0,
+                    END_PLAYOUT_TAIL_S * 1000.0, END_PLAYOUT_MAX_WAIT_S * 1000.0)
+
     async def _write_frame(self, frame) -> bool:
         # Returns whether the transport took the frame. pipecat >= 1.7 reads
         # this in ``write_audio_frame``: a falsy result skips the realtime
         # pacing sleep AND tells the media sender not to push the frame
         # downstream — so a bare ``return`` here silently turned paced
         # playback into a burst and starved the recorder / echo reference.
+        if isinstance(frame, EndFrame):
+            # stop(): the media sender has drained, the socket closes next.
+            await self._play_out_before_end()
         async with self._filler_send_lock:
             ambience = self._ambience
             if ambience is not None:

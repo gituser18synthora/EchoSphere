@@ -481,6 +481,11 @@ async def _run_call(
     media_serializer = serializer or RawPCMSerializer()
     from voice_runtime.filler_transport import FillerWebsocketTransport
 
+    # A serializer that tracks the far end's playout gets its bot-ended calls
+    # held open until the last audio has played (FillerWebsocketOutputTransport
+    # ._play_out_before_end). Pipecat's default 2 s of end silence would only
+    # lengthen that wait: it goes out as one packet just before the close.
+    tracks_playout = hasattr(media_serializer, "playout_remaining_s")
     transport = FillerWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -489,6 +494,7 @@ async def _run_call(
             add_wav_header=False,
             serializer=media_serializer,
             session_timeout=settings.voice_session_timeout,
+            **({"audio_out_end_silence_secs": 0} if tracks_playout else {}),
         ),
     )
 
@@ -683,6 +689,12 @@ async def _run_call(
         except Exception:  # noqa: BLE001 — evidence must never fail teardown
             logger.debug("inbound media stats unavailable", exc_info=True)
 
+    def _record_end_playout() -> None:
+        # How long a bot-ended call was held open for its last audio to play.
+        end_playout = getattr(transport.output(), "end_playout", None)
+        if end_playout:
+            recorder.add_event("end_call_playout_wait", **end_playout)
+
     # pipecat >= 1.3: register the pipeline worker, then run; with the default
     # auto_end the runner returns once this single root worker has finished
     # (PipelineRunner and run(worker) are deprecated, removed in 2.0).
@@ -695,6 +707,7 @@ async def _run_call(
     try:
         await runner.run()
         _record_inbound_media_stats()
+        _record_end_playout()
         await recorder.finalize(reason=_final_end_reason("completed"))
     except asyncio.CancelledError:
         _record_inbound_media_stats()

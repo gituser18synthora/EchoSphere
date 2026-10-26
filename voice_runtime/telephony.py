@@ -72,6 +72,8 @@ _RAMP_THRESHOLDS = (640, 1280, 2560)
 # Outbound audio quiet for longer than this is a new utterance: the ramp
 # resets so the next reply's first packet is fast again.
 _RAMP_RESET_IDLE_S = 0.5
+# Outbound PCM of every serializer below: 8 kHz, 16-bit mono.
+_OUTBOUND_BYTES_PER_SECOND = 8000 * 2
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +96,40 @@ class _RampedAudioMixin:
         # the transport-level session timer fires (pipecat's session_timeout
         # is absolute call age, not inactivity).
         self.last_media_at = 0.0
+        # Monotonic time at which the far end will have played everything
+        # sent so far (see playout_remaining_s).
+        self._playout_until = 0.0
 
     def _note_inbound_media(self) -> None:
         self.last_media_at = time.monotonic()
+
+    def _note_sent_audio(self, nbytes: int) -> None:
+        """Advance the far-end playout clock by one outbound packet.
+
+        The provider queues what it receives and plays it in real time from
+        the moment it arrives (FreeSWITCH: mod_audio_fork's playout buffer,
+        drained one 20 ms tick at a time), so a packet ends playing
+        ``duration`` after the later of its arrival and the end of the
+        audio queued before it.
+        """
+        now = time.monotonic()
+        self._playout_until = (
+            max(self._playout_until, now) + nbytes / _OUTBOUND_BYTES_PER_SECOND
+        )
+
+    def _note_playout_cleared(self) -> None:
+        """A kill/clear message emptied the provider's playout queue."""
+        self._playout_until = 0.0
+
+    def playout_remaining_s(self) -> float:
+        """Seconds of already-sent audio the far end has still to play.
+
+        The output transport waits this out before closing the media socket
+        on a bot-ended call: the socket close is followed by the hangup, and
+        whatever the provider still had queued — the end of the goodbye —
+        was never heard.
+        """
+        return max(0.0, self._playout_until - time.monotonic())
 
     def _note_audio(self) -> None:
         """Record inbound-from-TTS audio, restarting the ramp after a gap.
@@ -296,6 +329,7 @@ class FreeSwitchAudioStreamSerializer(
             self._pending_audio.clear()
             self._reset_ramp()
             if self._send_kill_audio:
+                self._note_playout_cleared()
                 return json.dumps({"type": "killAudio"})
             return None
         # Both message variants must be accepted (the urgent one is a
@@ -337,6 +371,7 @@ class FreeSwitchAudioStreamSerializer(
         return self._audio_message(audio)
 
     def _audio_message(self, audio: bytes) -> str:
+        self._note_sent_audio(len(audio))
         return json.dumps({
             "type": "streamAudio",
             "data": {
@@ -555,6 +590,7 @@ class FreeSwitchAudioForkSerializer(
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
             self._reset_ramp()
+            self._note_playout_cleared()
             return json.dumps({"type": "killAudio"})
         if isinstance(
             frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
@@ -591,6 +627,7 @@ class FreeSwitchAudioForkSerializer(
         return self._audio_message(audio)
 
     def _audio_message(self, audio: bytes) -> str:
+        self._note_sent_audio(len(audio))
         return json.dumps({
             "type": "playAudio",
             "data": {
@@ -705,6 +742,7 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
         if isinstance(frame, InterruptionFrame):
             self._pending_audio.clear()
             self._reset_ramp()
+            self._note_playout_cleared()
             return json.dumps({
                 "event": "clear",
                 "streamSid": self._stream_sid,
@@ -834,6 +872,7 @@ class VaaniFrameSerializer(_RampedAudioMixin, FrameSerializer):
         return self._audio_message(chunk)
 
     def _audio_message(self, chunk: bytes) -> str:
+        self._note_sent_audio(len(chunk))
         self._out_chunk += 1
         return json.dumps({
             "event": "media",
