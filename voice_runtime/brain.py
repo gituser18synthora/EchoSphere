@@ -712,6 +712,11 @@ class ConversationBrain(FrameProcessor):
             max(_CONTINUATION_GAP_MIN_S, float(user_speech_timeout) + _CONTINUATION_GAP_SLACK_S),
         )
         self._last_vad_stopped_at: float | None = None
+        # Start of the latest VAD speech episode, and the stop window the VAD
+        # waited before declaring its stop (the caller's last voiced audio is
+        # ``stop_secs`` before the stop) — see _episode_final_in.
+        self._last_vad_started_at: float | None = None
+        self._last_vad_stop_secs = 0.0
         self._llm = llm
         self._recorder = recorder
         self._record_llm_request_options(config, llm, recorder)
@@ -1419,6 +1424,7 @@ class ConversationBrain(FrameProcessor):
             self._physical_speech_active = True
             self._vad_episode += 1
             self._vad_started_at = time.monotonic()
+            self._last_vad_started_at = self._vad_started_at
             self._smart_turn_closed = False
             await self._on_physical_speech_resumed()
             await self.push_frame(frame, direction)
@@ -1427,6 +1433,7 @@ class ConversationBrain(FrameProcessor):
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._physical_speech_active = False
             self._last_vad_stopped_at = time.monotonic()
+            self._last_vad_stop_secs = max(0.0, float(getattr(frame, "stop_secs", 0.0) or 0.0))
             if self._vad_started_at is not None:
                 # Physical speech duration of the segment whose final is
                 # about to arrive — evidence for the caller-level record.
@@ -3128,10 +3135,30 @@ class ConversationBrain(FrameProcessor):
         return self._last_vad_stopped_at is None or verdict_at >= self._last_vad_stopped_at
 
     def _episode_final_in(self) -> bool:
-        """Whether an STT final arrived for the latest VAD speech episode."""
-        if self._last_final_at is None:
+        """Whether an STT final arrived for the latest VAD speech episode.
+
+        A final after the VAD stop is this episode's. So is one that lands
+        inside the stop window — after the caller's last voiced audio (the VAD
+        declares the stop ``stop_secs`` later) and within this episode: the
+        STT's own endpointing answered before our VAD did, so nothing was said
+        after it. Live Manappuram 2026-10-26: finals 55-161 ms before the VAD
+        stop were buffered as mid-utterance segments and the turn sat out the
+        1.5 s wait for a second final that never comes. A final from before
+        the episode started, or from while the caller was still speaking
+        (more speech followed it — its rest is still in flight, cv_2d1119054a92),
+        is not.
+        """
+        final_at = self._last_final_at
+        if final_at is None:
             return False
-        return self._last_vad_stopped_at is None or self._last_final_at >= self._last_vad_stopped_at
+        stopped_at = self._last_vad_stopped_at
+        if stopped_at is None or final_at >= stopped_at:
+            return True
+        started_at = self._last_vad_started_at
+        return (
+            final_at >= stopped_at - self._last_vad_stop_secs
+            and (started_at is None or final_at >= started_at)
+        )
 
     def _final_is_late(self, now: float) -> float | None:
         """Seconds since the last turn closed, when a final with no open turn
@@ -3161,11 +3188,20 @@ class ConversationBrain(FrameProcessor):
             round((time.monotonic() - self._last_final_at) * 1000.0, 1)
             if self._last_final_at is not None else None
         )
+        # How long before the VAD stop the final landed (inside the stop
+        # window, see _episode_final_in); None when it came after the stop.
+        stopped_at = self._last_vad_stopped_at
+        final_before_stop_ms = (
+            round((stopped_at - self._last_final_at) * 1000.0, 1)
+            if stopped_at is not None and self._last_final_at is not None
+            and self._last_final_at < stopped_at else None
+        )
         self._recorder.add_event(
             "smart_turn_short_circuit",
             probability=self._latency.smart_turn_probability,
             threshold=self._smart_turn_threshold,
             final_age_ms=final_age_ms,
+            final_before_stop_ms=final_before_stop_ms,
             endpoint_armed=self._finalize_pending(),
             final_after_close=final_after_close,
         )

@@ -92,6 +92,66 @@ class TestEpisodeFinal:
         assert brain._recorder.event("smart_turn_short_circuit")["final_after_close"] is True
 
     @pytest.mark.asyncio
+    async def test_a_final_inside_the_stop_window_dispatches_on_the_verdict(self):
+        # Live Manappuram 2026-10-26 (cv_0bc0c91206ce turn 3): Sarvam's final
+        # landed 110 ms before the VAD stop (stop_secs 0.25 — the caller had
+        # already stopped), was buffered as a mid-utterance segment, and the
+        # COMPLETE verdict (p 0.97) at +176 ms still sat out the 1.5 s wait:
+        # dispatch at +1,681 ms. It is this episode's final.
+        brain, tracker, dispatched = make_brain()          # the real 1.5 s wait
+        await _speech(brain, tracker)
+        await asyncio.sleep(0.2)                            # the caller speaks
+        await brain.process_frame(transcript("दो की रख लो।"), FrameDirection.DOWNSTREAM)
+        assert "stt_mid_utterance_segment_buffered" in brain._recorder.event_kinds()
+        await asyncio.sleep(0.11)
+        await _vad_stop(brain, tracker)                     # stop window 0.25 s: final was inside it
+        await asyncio.sleep(0.05)
+        _verdict(tracker, 0.972)
+        closed_at = time.monotonic()
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "दो की रख लो।"
+        assert dispatched[0][1] - closed_at < 0.1           # on the verdict, not 1.5 s later
+        event = brain._recorder.event("smart_turn_short_circuit")
+        assert 90 <= event["final_before_stop_ms"] <= 250
+        assert event["final_after_close"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_final_the_caller_kept_speaking_past_still_waits(self, monkeypatch):
+        # A flush while the caller is mid-sentence: they speak on for longer
+        # than the stop window, so the rest of the sentence is still in flight
+        # when the verdict closes the turn — it must not be cut off.
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.4)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await brain.process_frame(transcript("मैंने customer को call"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.4)                            # ...and kept speaking 400 ms
+        await _vad_stop(brain, tracker)
+        _verdict(tracker, 0.97)
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+        assert dispatched == [] and brain._smart_turn_closed is True
+        await brain.process_frame(transcript("किया था।"), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][0] == "मैंने customer को call किया था।"
+        assert brain._recorder.event("smart_turn_short_circuit")["final_after_close"] is True
+
+    @pytest.mark.asyncio
+    async def test_without_a_stop_window_a_pre_stop_final_keeps_the_old_rule(self, monkeypatch):
+        monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.3)
+        brain, tracker, dispatched = make_brain()
+        await _speech(brain, tracker)
+        await brain.process_frame(transcript("हाँ जी"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+        tracker.mark_speech_stopped()
+        await brain.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)  # no stop_secs
+        _verdict(tracker, 0.95)
+        closed_at = time.monotonic()
+        await brain.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert await _dispatched(dispatched)
+        assert dispatched[0][1] - closed_at >= 0.25         # the bounded wait, as before
+
+    @pytest.mark.asyncio
     async def test_buffered_text_still_dispatches_when_no_final_ever_comes(self, monkeypatch):
         monkeypatch.setattr(brain_module, "_SMART_TURN_FINAL_WAIT_S", 0.3)
         brain, tracker, dispatched = make_brain()
