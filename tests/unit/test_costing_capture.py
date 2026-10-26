@@ -410,8 +410,9 @@ class TestTtsDispatchBilling:
         # let the scheduled task run before asserting on it.
         await asyncio.sleep(0)
         assert recorder.billed == []
-        assert ("tts_provider_used", {"provider": "sarvam", "voice": "anushka",
-                                      "fallback_used": False, "failed": True}) \
+        assert ("tts_provider_used", {"provider": "sarvam", "model": "bulbul:v3",
+                                      "voice": "anushka", "fallback_used": False,
+                                      "failed": True, "loudness": None}) \
             in recorder.events
 
     async def test_interrupted_generation_bills_only_dispatched_text(self):

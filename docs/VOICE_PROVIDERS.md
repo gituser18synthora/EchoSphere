@@ -216,6 +216,22 @@ model alone was switched. `bulbul:v3` remains the default model. Fresh installs 
 the personas from the catalog seed (also run by the API at start-up where
 `startup_seed_enabled`), existing databases from migration `c2e4a6b8d0f1`.
 
+### Sarvam loudness: bulbul:v2 only
+
+Sarvam's TTS API reference documents `loudness` as 0.3–3.0, default 1.0, and
+"only supported for bulbul:v2. It is NOT supported for bulbul:v3 or
+bulbul:v4-flash" (the sarvamai SDK's WebSocket config adds "Will be ignored if
+provided"). So it lives in the bulbul:v2 catalog schema only: the Studio shows
+a Loudness slider next to Pitch for v2 and never for v3 / v4-flash, saving
+`tts_settings` or a `language_voice_map` entry validates it against the model's
+range (0.3–3.0) and rejects it as an unknown parameter for the other models,
+and both adapters send it only to v2 and never at the API default, so a bot
+that never set it renders exactly as before. Delivery Energy still maps onto it
+for v2. Every reply's `tts_provider_used` event records `model` and the
+`loudness` it rendered with (null for an engine without the control).
+bulbul:v2 is inactive in the demo and local catalogs, so no bot can use it
+there until the model is re-activated.
+
 ### Sarvam TTS sockets: no cold handshake after a barge-in or at start-up
 
 Sarvam cannot cancel synthesis server-side, so a barge-in closes the socket.

@@ -51,6 +51,7 @@ from shared.providers.base import ProviderError
 from shared.providers.tts.delivery import (
     apply_delivery_params,
     delivery_capabilities,
+    effective_loudness,
     provider_speed,
     resolve_engine_params,
 )
@@ -1288,12 +1289,20 @@ class StreamingTTSRouter(TTSService):
             # transient-failure categories are not charged by the providers.
             if not failed:
                 self._bill_generation(state)
+            settings = getattr(state.provider, "settings", None)
             self._flush_event_background(
                 "tts_provider_used",
                 provider=state.engine.get("provider"),
+                model=state.engine.get("model"),
                 voice=state.engine.get("voice"),
                 fallback_used=state.fallback_used,
                 failed=failed,
+                # Sarvam loudness this reply rendered with (bulbul:v2 only);
+                # None for an engine without a loudness control.
+                loudness=effective_loudness(
+                    state.engine.get("provider"), state.engine.get("model"),
+                    getattr(settings, "params", None),
+                ),
             )
         if self.audio_context_available(context_id):
             await self.append_to_audio_context(

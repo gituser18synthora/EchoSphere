@@ -39,6 +39,7 @@ from shared.providers.languages import (
     to_platform_language,
     to_provider_language,
 )
+from shared.providers.tts.delivery import omit_default_loudness
 from shared.providers.tts.sarvam_voices import (
     NoV4Equivalent,
     is_v4_model,
@@ -413,6 +414,9 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             # v3 (and v4-flash) always preprocess; the flag is not negotiable.
             params["enable_preprocessing"] = True
 
+        # ``loudness`` (bulbul:v2 only — not in the v3/v4-flash set above) is
+        # never sent at the API default of 1.0: unchanged audio, minimal config.
+        params = omit_default_loudness(params)
         ignored: list[str] = []
         for key, value in params.items():
             if value is None or key in ("send_completion_event",):

@@ -45,6 +45,40 @@ _ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 _ELEVEN_STABILITY_ONLY_MODELS = {"eleven_v3_conversational"}
 # Sarvam models that accept the v2-only pitch/loudness controls.
 _SARVAM_PITCH_LOUDNESS_MODELS = {"bulbul:v2"}
+#: Sarvam ``loudness``: 0.3-3.0, API default 1.0, accepted by bulbul:v2 ONLY —
+#: Sarvam's TTS API reference: "This parameter is only supported for
+#: bulbul:v2. It is NOT supported for bulbul:v3 or bulbul:v4-flash"; the
+#: sarvamai SDK's WebSocket config: "NOT supported for bulbul:v3. Will be
+#: ignored if provided". The value is omitted on the wire at the default, so
+#: a bot that never set it renders exactly as before.
+SARVAM_LOUDNESS_DEFAULT = 1.0
+
+
+def sarvam_accepts_loudness(model: str | None) -> bool:
+    """Whether a Sarvam bulbul model takes the ``loudness`` parameter."""
+    return str(model or "").strip() in _SARVAM_PITCH_LOUDNESS_MODELS
+
+
+def effective_loudness(
+    provider: str | None, model: str | None, params: dict | None,
+) -> float | None:
+    """Loudness a reply is rendered with: the configured value, else the API
+    default — None when the engine has no loudness control at all."""
+    if (provider or "") != "sarvam" or not sarvam_accepts_loudness(model):
+        return None
+    value = (params or {}).get("loudness")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return SARVAM_LOUDNESS_DEFAULT
+
+
+def omit_default_loudness(params: dict) -> dict:
+    """Drop ``loudness`` when it equals the API default (no wire change)."""
+    value = params.get("loudness")
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and float(value) == SARVAM_LOUDNESS_DEFAULT):
+        params = {k: v for k, v in params.items() if k != "loudness"}
+    return params
 
 # Conservative native Energy mappings, keyed by the band's upper bound.
 # ElevenLabs: ``style`` is the documented expressiveness control; kept well

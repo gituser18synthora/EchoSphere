@@ -17,6 +17,7 @@ import time
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
 from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
+from shared.providers.tts.delivery import omit_default_loudness
 from shared.providers.tts.sarvam_voices import NoV4Equivalent, is_v4_model, v4_speaker
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
@@ -185,7 +186,7 @@ class SarvamTTS(TTSProvider):
             "speech_sample_rate": self.output_sample_rate,
             "output_audio_codec": "wav",
         }
-        for key, value in self._params.items():
+        for key, value in omit_default_loudness(self._params).items():
             if key in _V3_ONLY_PARAMS and not v3_contract:
                 continue
             if key in _V2_ONLY_PARAMS and v3_contract:
