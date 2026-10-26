@@ -38,6 +38,21 @@ VOICE_IDENTITY_CONTEXT_KEYS = (
 )
 
 
+# A catalog display name may describe the voice after the speaker's name:
+# the bulbul:v4-flash personas are "Kavya · Hindi · Conversational"
+# (backend/seeds/provider_catalog_seed.py sarvam_v4_persona_voices). The
+# speaker is the part before the first separator — the whole display name
+# made a bot introduce itself as "Kavya · Hindi · Conversational" (demo
+# 2026-10-26, Manappuram's greeting and every {voice_speaker_name}).
+_DISPLAY_NAME_DESCRIPTOR_SEPARATOR = "·"
+
+
+def speaker_name(display_name: object) -> str:
+    """The name the voice answers to, from its catalog display name."""
+    name = str(display_name or "").strip()
+    return name.split(_DISPLAY_NAME_DESCRIPTOR_SEPARATOR, 1)[0].strip() or name
+
+
 def _gender(value: object) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in ("male", "female") else "neutral"
@@ -84,7 +99,7 @@ def active_voice_identity(tts: dict | None, locale: str | None) -> VoiceIdentity
     even when a stale language map is present.
     """
     engine = resolve_tts_engine(tts, locale)
-    name = str(engine.get("voice_name") or engine.get("voice") or "").strip()
+    name = speaker_name(engine.get("voice_name") or engine.get("voice"))
     return VoiceIdentity(name=name, gender=_gender(engine.get("voice_gender")))
 
 

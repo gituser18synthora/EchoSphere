@@ -25,6 +25,24 @@ def test_default_voice_name_and_gender_are_catalog_driven():
     assert "grammatically male forms" in instruction
 
 
+def test_a_persona_display_name_speaks_only_the_speaker_name():
+    # bulbul:v4-flash personas are catalogued as "Speaker · Language · Style";
+    # Manappuram (demo 2026-10-26) introduced itself with all three parts.
+    tts = {
+        "voice": "kavya_hi_conversational",
+        "voice_name": "Kavya · Hindi · Conversational",
+        "voice_gender": "female",
+    }
+    identity = active_voice_identity(tts, "hi-IN")
+
+    assert identity == VoiceIdentity("Kavya", "female")
+    assert voice_context_values(identity)["voice_speaker_name"] == "Kavya"
+    assert "·" not in voice_identity_instruction(identity, "hi-IN")
+    # Plain catalog names are untouched.
+    assert active_voice_identity({"voice_name": "Ritu"}, "hi-IN").name == "Ritu"
+    assert active_voice_identity({"voice": "shubh"}, "hi-IN").name == "shubh"
+
+
 def test_female_language_override_changes_the_active_identity():
     tts = {
         "streaming": True,
