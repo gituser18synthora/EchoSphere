@@ -1945,8 +1945,9 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
-            "extractionUsage": ({key: invocation["semantic_extraction"].get(key, 0)
-                                 for key in ("input_tokens", "output_tokens", "requests")}
+            "extractionUsage": ({**{key: invocation["semantic_extraction"].get(key, 0)
+                                    for key in ("input_tokens", "output_tokens", "requests")},
+                                 "service_tiers": dict(invocation["semantic_extraction"].get("service_tiers") or {})}
                                 if invocation.get("semantic_extraction") is not None else None),
             "handoffQueue": state.get("handoff_queue"),
             # Off-script: the turn was NOT consumed — the workflow stays at

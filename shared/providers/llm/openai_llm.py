@@ -130,9 +130,24 @@ class OpenAILLM(LLMProvider):
         }
         effort = str(extra.get("reasoning_effort") or "").strip().lower()
         self._reasoning_effort = effort if effort in REASONING_EFFORT_OPTIONS else None
-        # What the most recent generate() call actually ran on (provider
-        # report), for the call's metrics: tier, cached prompt tokens, model.
+        # What the most recent call actually ran on (provider report), for
+        # the call's metrics: tier, cached prompt tokens, model. Providers
+        # are cached per config and shared by a bot's calls: callers read it
+        # right after their own call, and per-call tallies live in the call.
         self.last_response_meta: dict | None = None
+
+    def request_options(self) -> dict:
+        """The request options every call of this engine sends: tier,
+        prompt-cache key and the reasoning effort as resolved for the model
+        ("lowest" is sent as "none" to gpt-6-luna). Observability only."""
+        options = dict(getattr(self, "_request_extra", {}))
+        resolved = _chat_generation_params(
+            self._model, temperature=0.0, max_tokens=1,
+            reasoning_effort=getattr(self, "_reasoning_effort", None),
+        )
+        if "reasoning_effort" in resolved:
+            options["reasoning_effort"] = resolved["reasoning_effort"]
+        return options
 
     def _build_messages(self, messages: list[dict], system: str | None) -> list[dict]:
         out: list[dict] = []
@@ -222,7 +237,10 @@ class OpenAILLM(LLMProvider):
                 stream_options={"include_usage": True},
                 **kwargs,
             )
+            tier = model = None
             async for chunk in stream:
+                tier = getattr(chunk, "service_tier", None) or tier
+                model = getattr(chunk, "model", None) or model
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
                 usage = getattr(chunk, "usage", None)
@@ -237,5 +255,11 @@ class OpenAILLM(LLMProvider):
                             getattr(completion_details, "reasoning_tokens", 0) or 0
                         ),
                     )
+            # A completed stream (a reply cut by barge-in never gets here).
+            self.last_response_meta = {
+                "service_tier": tier,
+                "cached_tokens": self.last_stream_usage.cached_tokens if self.last_stream_usage else 0,
+                "model": model or self._model,
+            }
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(self.name, "upstream", str(exc)[:200]) from exc

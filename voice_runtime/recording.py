@@ -71,6 +71,11 @@ class SessionRecorder:
         # Per-engine TTS breakdown ("provider|model|voice" → counters) so a
         # mid-call fallback bills each provider for what it actually spoke.
         self.tts_usage: dict[str, dict] = {}
+        # Conversation-model calls of THIS call: the request options they
+        # sent (set at call start) and the service tier OpenAI reported per
+        # completed call ({"fast": 21}) — see ConversationBrain._note_llm_call.
+        self.llm_request_options: dict | None = None
+        self.llm_service_tiers: dict[str, int] = {}
         self.end_reason: str | None = None
         # finalize() must run exactly once per call — a duplicate teardown
         # path (or a replayed hangup signal) must never re-bill, re-summarize
@@ -190,12 +195,19 @@ class SessionRecorder:
             return f"{conf.get('provider') or '?'}/{conf['model']}"
 
         llm = self.config.llm or {}
-        return {
+        models = {
             "stt": label(self.config.stt),
             "tts": label(self.config.tts),
             "llm": label(llm),
             "decision": label(llm.get("orchestration")) or label(llm),
         }
+        # What the conversation-model calls (replies, rewrites, extractors,
+        # classifier) actually sent, and the tier OpenAI reported for them.
+        if self.llm_request_options:
+            models["llm_options"] = dict(self.llm_request_options)
+        if self.llm_service_tiers:
+            models["llm_service_tiers"] = dict(self.llm_service_tiers)
+        return models
 
     def add_tts_usage(self, *, provider: str, model: str, voice: str, characters: int) -> None:
         """Called by the TTS router once per completed generation."""

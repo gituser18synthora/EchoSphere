@@ -150,6 +150,16 @@ class MDNDExtraction:
     input_tokens: int = 0
     output_tokens: int = 0
     requests: int = 0
+    # Service tier the provider reported per completed reader call.
+    service_tiers: dict[str, int] = field(default_factory=dict)
+
+
+def _sum_tiers(results) -> dict[str, int]:
+    tiers: dict[str, int] = {}
+    for result in results:
+        for tier, count in result.service_tiers.items():
+            tiers[tier] = tiers.get(tier, 0) + count
+    return tiers
 
 
 def _normalized(text: str) -> str:
@@ -490,7 +500,8 @@ async def extract_mdnd_slots(
                        patch={name: validated.patch[name]} if name in validated.patch else {},
                        evidence={name: validated.evidence[name]} if name in validated.evidence else {},
                        explicit_retractions=tuple(k for k in validated.explicit_retractions if k == name),
-                       requests=1)
+                       requests=1,
+                       service_tiers={str(getattr(result, "service_tier", None) or "unreported"): 1})
 
     # Independent readers run concurrently under the same bounded timeout.
     # Each reads the whole utterance; no field is limited to the current ask.
@@ -509,4 +520,5 @@ async def extract_mdnd_slots(
         input_tokens=sum(result.input_tokens for result in results),
         output_tokens=sum(result.output_tokens for result in results),
         requests=sum(result.requests for result in results),
+        service_tiers=_sum_tiers(results),
     )

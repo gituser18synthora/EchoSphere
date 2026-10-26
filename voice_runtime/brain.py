@@ -714,6 +714,7 @@ class ConversationBrain(FrameProcessor):
         self._last_vad_stopped_at: float | None = None
         self._llm = llm
         self._recorder = recorder
+        self._record_llm_request_options(config, llm, recorder)
         # Tenant-effective guardrail enforcement. A brain constructed without
         # one (tests, tooling) still enforces the mandatory platform floor.
         self._guardrails = guardrails or GuardrailEngine(
@@ -3291,8 +3292,9 @@ class ConversationBrain(FrameProcessor):
 
     async def _speculative_classification(
         self, text: str,
-    ) -> tuple[IntentClassification, tuple[int, int] | None]:
-        """The classifier's verdict for ``text`` plus the tokens it cost.
+    ) -> tuple[IntentClassification, tuple | None]:
+        """The classifier's verdict for ``text`` plus the tokens it cost
+        (input, output[, provider report]).
 
         Usage is captured here, by the task that spent it, so a prefetch
         consumed turns later (or never) can neither lose its tokens nor have
@@ -3302,6 +3304,10 @@ class ConversationBrain(FrameProcessor):
             text, self._history, active_workflow=self._active_workflow,
         )
         usage, self._intent_pipeline.last_usage = self._intent_pipeline.last_usage, None
+        meta = getattr(self._intent_pipeline, "last_meta", None)
+        self._intent_pipeline.last_meta = None
+        if usage is not None and isinstance(meta, dict):
+            usage = (*usage, meta)
         return classification, usage
 
     async def _take_decision(self, text: str) -> ConversationDecision | None:
@@ -6178,6 +6184,8 @@ class ConversationBrain(FrameProcessor):
             counters["llm_requests"] = counters.get("llm_requests", 0) + 1
             counters["llm_input_tokens"] = counters.get("llm_input_tokens", 0) + usage[0]
             counters["llm_output_tokens"] = counters.get("llm_output_tokens", 0) + usage[1]
+            meta = usage[2] if len(usage) > 2 else {}
+            self._note_llm_call(tier=meta.get("service_tier"))
         self._recorder.add_event("intent_classified", **classification.as_event())
         return classification
 
@@ -6604,6 +6612,8 @@ class ConversationBrain(FrameProcessor):
             for key in ("input_tokens", "output_tokens"):
                 usage_key = "llm_" + key
                 counters[usage_key] = counters.get(usage_key, 0) + extraction_usage.get(key, 0)
+            for tier, count in (extraction_usage.get("service_tiers") or {}).items():
+                self._note_llm_call(tier=tier, requests=int(count))
         workflow_slots = result.get("slots") or {}
         # Snapshot for the post-call structured summary: scalar slots only,
         # replaced (not merged) so a cleared/corrected answer is reflected.
@@ -6974,6 +6984,7 @@ class ConversationBrain(FrameProcessor):
             usage.get("llm_output_tokens", 0)
             + int(getattr(result, "output_tokens", 0) or 0)
         )
+        self._note_llm_call(tier=getattr(result, "service_tier", None))
         return (getattr(result, "text", "") or "").strip() or None
 
     async def _deliver_grounded_workflow_reply(
@@ -7727,6 +7738,7 @@ class ConversationBrain(FrameProcessor):
         elif reply:
             usage["llm_output_tokens"] += len(reply) // 4
             usage["llm_usage_estimated"] = 1
+        self._note_llm_call(tier=(getattr(self._llm, "last_response_meta", None) or {}).get("service_tier"))
 
     def _generation_messages(self, turn_instruction: str = "") -> list[dict]:
         """The message list one generation runs on.
@@ -8067,6 +8079,41 @@ class ConversationBrain(FrameProcessor):
         )
         await self._say(self._config.greeting)
 
+    @staticmethod
+    def _record_llm_request_options(config, llm, recorder) -> None:
+        """Log and keep what every conversation-model call sends.
+
+        Replies, grounded rewrites, the workflow fact extractor and intent
+        classification all run on this engine with the bot's reply options
+        (tier, reasoning effort, prompt-cache key). The journal had no record
+        of them; the call document's models now carries the options sent
+        (and, via _note_llm_call, the tiers OpenAI reported).
+        """
+        options = getattr(llm, "request_options", None) if llm is not None else None
+        try:
+            sent = options() if callable(options) else None
+        except Exception:  # noqa: BLE001 — observability only
+            sent = None
+        if not isinstance(sent, dict):
+            return
+        recorder.llm_request_options = sent
+        logger.info(
+            "llm[%s] conversation engine %s/%s request options %s",
+            getattr(recorder, "session_id", "?"),
+            (config.llm or {}).get("provider"), (config.llm or {}).get("model"),
+            json.dumps(sent, sort_keys=True),
+        )
+
+    def _note_llm_call(self, *, tier: str | None, requests: int = 1) -> None:
+        """Provider-reported facts of conversation-model calls the call site
+        has already counted (requests, tokens): the service tier each one
+        actually ran on, per call ("unreported" when the provider said none)."""
+        tiers = getattr(self._recorder, "llm_service_tiers", None)
+        if not isinstance(tiers, dict) or requests <= 0:
+            return
+        key = str(tier or "unreported")
+        tiers[key] = tiers.get(key, 0) + requests
+
     def _start_decision_warmup(self) -> None:
         """Start the Goal Engine prompt warm-up once per call (no-op otherwise)."""
         engine = self._goal_engine
@@ -8162,6 +8209,7 @@ class ConversationBrain(FrameProcessor):
             usage.get("llm_output_tokens", 0)
             + int(getattr(result, "output_tokens", 0) or 0)
         )
+        self._note_llm_call(tier=getattr(result, "service_tier", None))
         self._recorder.add_event(
             "memory_greeting_spoken",
             previous_memory_source_conversation_id=(

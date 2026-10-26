@@ -170,6 +170,8 @@ class HybridIntentPipeline:
         # Token usage of the most recent LLM classification (input, output) —
         # the caller folds it into the call's billable LLM usage.
         self.last_usage: tuple[int, int] | None = None
+        # Provider report of that classification (service tier).
+        self.last_meta: dict | None = None
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -310,6 +312,7 @@ class HybridIntentPipeline:
             int(getattr(result, "input_tokens", 0) or 0),
             int(getattr(result, "output_tokens", 0) or 0),
         )
+        self.last_meta = {"service_tier": getattr(result, "service_tier", None)}
         raw = (result.text or "").strip()
         match = _JSON_BLOCK.search(raw)
         if match is None:
