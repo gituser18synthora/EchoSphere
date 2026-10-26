@@ -6,8 +6,10 @@ the next reply used to wait for a fresh handshake (measured against the API:
 pin the warm spare socket that is promoted on cancel, the ``cold_connect``
 events a dispatch emits whenever it still has to wait (reason first /
 after_cancel), the router's start-up connect (it only created the provider
-since 2026-08-05, so every greeting paid the handshake) and its
-``tts_cold_connect`` recording.
+since 2026-08-05, so every greeting paid the handshake; then it connected in
+the background and the greeting, dispatched meanwhile, still logged a
+"first" cold connect on 38/38 live calls — now it starts in setup() and the
+StartFrame waits for it, bounded) and its ``tts_cold_connect`` recording.
 """
 
 import asyncio
@@ -15,9 +17,10 @@ import asyncio
 import pytest
 
 import shared.providers.tts.sarvam_ws as sarvam_ws
+import voice_runtime.tts_router as tts_router
 from shared.providers.tts.sarvam_ws import SarvamWebSocketTTSProvider
 from shared.providers.tts.streaming import TTSStreamEvent
-from tests.mock_tts_servers import MockSarvamTTSServer
+from tests.mock_tts_servers import API_KEY, MockSarvamTTSServer
 from tests.unit.test_streaming_tts_providers import sarvam_settings
 from tests.unit.test_tts_router_flush_finals import (
     KEY,
@@ -31,6 +34,19 @@ async def _wait_for(predicate, timeout=2.0):
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.01)
+
+
+def _with_cancel(router):
+    """make_router routes create_task to plain asyncio; cancel_task likewise."""
+    async def cancel_task(task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    router.cancel_task = cancel_task
+    return router
 
 
 def _drain(provider) -> list:
@@ -161,20 +177,92 @@ class TestRouter:
         assert (event["waited_ms"], event["reason"], event["provider"]) == (182.5, "after_cancel", "sarvam")
         assert counted == ["tts_cold_connects"]
 
-    async def test_start_opens_the_socket_in_the_background(self, monkeypatch):
+    @pytest.fixture
+    def _bare_parents(self, monkeypatch):
+        """TTSService's own setup/start need a live pipeline; the router's
+        start-up logic runs on top of them."""
         from pipecat.services.tts_service import TTSService
 
-        async def parent_start(self, frame):
+        async def parent(self, arg):
             return None
 
-        monkeypatch.setattr(TTSService, "start", parent_start)
-        router = make_router()
-        provider = FakeProvider()
+        monkeypatch.setattr(TTSService, "setup", parent)
+        monkeypatch.setattr(TTSService, "start", parent)
+
+    def _router(self, provider, *, recorder=None):
+        router = make_router(recorder=recorder)
 
         async def get_provider(engine, locale):
             return provider
 
         router._get_provider = get_provider
+        return _with_cancel(router)
+
+    async def test_setup_starts_the_connect_before_the_start_frame(self, _bare_parents):
+        provider = FakeProvider()
+        router = self._router(provider)
+        await router.setup(object())
+        assert router._startup_connect is not None
+        await _wait_for(lambda: ("connect",) in provider.calls)
         await router.start(object())
-        await asyncio.gather(*router.tasks)
+        assert provider.calls.count(("connect",)) == 1   # start reuses it
+
+    async def test_start_holds_until_the_socket_is_open(self, _bare_parents):
+        class Slow(FakeProvider):
+            async def connect(self):
+                await asyncio.sleep(0.15)
+                await super().connect()
+
+        recorder = FakeRecorder()
+        provider = Slow()
+        router = self._router(provider, recorder=recorder)
+        await router.setup(object())
+        await router.start(object())
+        # The greeting's frames queue behind this StartFrame: by the time
+        # they are processed the socket is open.
         assert ("connect",) in provider.calls
+        event = next(e for e in recorder.events if e["kind"] == "tts_startup_connect")
+        assert event["timed_out"] is False and event["held_ms"] >= 100
+
+    async def test_a_slow_handshake_stops_holding_the_start(self, _bare_parents, monkeypatch):
+        monkeypatch.setattr(tts_router, "_STARTUP_CONNECT_WAIT_S", 0.05)
+
+        class Hung(FakeProvider):
+            async def connect(self):
+                await asyncio.sleep(1)
+                await super().connect()
+
+        recorder = FakeRecorder()
+        router = self._router(Hung(), recorder=recorder)
+        await router.setup(object())
+        await router.start(object())
+        event = next(e for e in recorder.events if e["kind"] == "tts_startup_connect")
+        assert event["timed_out"] is True and event["held_ms"] < 500
+        assert not router._startup_connect.done()        # still connecting, not cancelled
+        await router._shutdown_providers()
+        assert router._startup_connect is None
+
+    async def test_start_without_setup_still_connects(self, _bare_parents):
+        provider = FakeProvider()
+        router = self._router(provider)
+        await router.start(object())
+        assert ("connect",) in provider.calls
+
+    async def test_the_greeting_finds_an_open_socket(self, _bare_parents, monkeypatch):
+        """End to end with the real Sarvam adapter: setup() + start(), then the
+        greeting's synthesis reports no cold connect."""
+        monkeypatch.setattr(sarvam_ws, "_WARM_SPARE", False)
+        monkeypatch.setenv("SARVAM_UNIT_TEST_KEY", API_KEY)
+        async with MockSarvamTTSServer(behavior="silent") as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            router = _with_cancel(make_router())
+            router._default_engine["api_key_reference"] = "env:SARVAM_UNIT_TEST_KEY"
+            await router.setup(object())
+            await router.start(object())
+            engine = router._engine_for_language("hi-IN")
+            provider = await router._get_provider(engine, "hi-IN")
+            await provider.synthesize_stream("Namaste.", generation_id="greeting")
+            cold = [e for e in _drain(provider) if e.kind == "cold_connect"]
+            await router._shutdown_providers()
+        assert cold == []
+        assert server.connections == 1

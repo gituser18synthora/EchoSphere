@@ -108,6 +108,13 @@ _SUPPORTED_RATES = {
 # dialer hangs up.
 _FIRST_AUDIO_TIMEOUT_S = 4.0
 
+# Longest the router's start waits for the call's first TTS socket. The
+# greeting's text queues behind the StartFrame, so it is synthesized on an
+# open socket instead of paying the handshake as a "first" cold connect
+# (38/38 live demo calls 2026-10-26, waited p50 96 ms). A slower handshake
+# stops holding the start here and the greeting waits on the same connect.
+_STARTUP_CONNECT_WAIT_S = 1.5
+
 # Failure categories that no retry, fallback or later turn can heal: the
 # credentials or the engine configuration are wrong. Leaving the call up
 # after one of these means the caller sits in dead air until they hang up
@@ -324,6 +331,8 @@ class StreamingTTSRouter(TTSService):
 
         self._providers: dict[tuple, StreamingTTSProvider] = {}
         self._pumps: dict[tuple, asyncio.Task] = {}
+        # The call's first socket, opened from setup() (see start()).
+        self._startup_connect: asyncio.Task | None = None
         self._generations: dict[str, _Generation] = {}
         # Pause mode: provider sub-generation id → pipecat audio-context id.
         self._subgenerations: dict[str, str] = {}
@@ -344,32 +353,67 @@ class StreamingTTSRouter(TTSService):
         # reply would fail too, so the dead-air protection applies again.
         self._invalid_input_streak = 0
 
+    async def setup(self, setup):
+        """Open the call's first TTS socket as early as the pipeline allows.
+
+        setup() runs for every processor when the pipeline worker starts —
+        before the StartFrame walks the pipeline (the STT handshake alone
+        precedes this router's start by ~150 ms) — and is the first point
+        where the output rate and the task manager are known.
+        """
+        await super().setup(setup)
+        self._startup_connect = self._begin_startup_connect()
+
     async def start(self, frame: StartFrame):
-        """Open the provider connection before the first word needs speaking.
+        """Hold the StartFrame until the first socket is open (bounded).
 
         Measured against Sarvam bulbul:v3: ~715ms to first audio on a cold
-        WebSocket versus ~35ms once it is up. Left lazy, that handshake lands
-        inside the greeting of every single call — the one turn where the
-        caller is already waiting through ring and pickup. Connecting here
-        moves it into pipeline startup, which overlaps call setup.
+        WebSocket versus ~35ms once it is up. The greeting's text frames
+        queue behind this StartFrame, so waiting here means the greeting is
+        synthesized on an open socket: no "first" cold connect inside the
+        one turn where the caller is already waiting through ring and pickup
+        (before, the handshake ran in the background and the greeting,
+        dispatched meanwhile, waited on it on 38/38 live calls).
 
         Best-effort by construction: a failure is logged and left to the
-        normal synthesis path, which has fallback and retry. Warm-up must
-        never be able to stop a call from starting.
+        normal synthesis path, which has fallback and retry; a handshake
+        slower than _STARTUP_CONNECT_WAIT_S stops holding the start. Warm-up
+        must never be able to stop a call from starting.
         """
         await super().start(frame)
+        task = self._startup_connect or self._begin_startup_connect()
+        if task is None:
+            return
+        started = asyncio.get_running_loop().time()
+        timed_out = False
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_STARTUP_CONNECT_WAIT_S)
+        except asyncio.TimeoutError:
+            timed_out = True
+            logger.warning(
+                "tts-router: start-up connect still pending after %.1fs; the "
+                "first reply waits on it", _STARTUP_CONNECT_WAIT_S,
+            )
+        held_ms = round((asyncio.get_running_loop().time() - started) * 1000, 1)
+        logger.info("tts-router: start-up connect held the start %.0f ms", held_ms)
+        if self._recorder is not None:
+            self._recorder.add_event(
+                "tts_startup_connect", held_ms=held_ms, timed_out=timed_out,
+            )
+
+    def _begin_startup_connect(self) -> asyncio.Task | None:
+        """Start connecting the engine the call opens with; None on failure."""
+        if self._startup_connect is not None:
+            return self._startup_connect
         try:
             engine = self._engine_for_language(self._current_language)
-            await self._get_provider(engine, self._current_language)
         except Exception:  # noqa: BLE001 — never block call start on a warm-up
             logger.warning("tts-router: connection warm-up failed", exc_info=True)
-            return
-        # The handshake itself runs in the background: creating the provider
-        # alone (2026-08-05..10-23) opened no socket, so every greeting paid
-        # the cold connect (~130-170 ms more first-audio than a warm reply on
-        # live calls). A greeting dispatched meanwhile waits on the same
-        # connect instead of starting a second one.
-        self.create_task(self._warm_engine(engine, self._current_language))
+            return None
+        self._startup_connect = self.create_task(
+            self._warm_engine(engine, self._current_language)
+        )
+        return self._startup_connect
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -938,6 +982,9 @@ class StreamingTTSRouter(TTSService):
             self._bill_generation(state, interrupted=True)
         self._generations.clear()
         self._subgenerations.clear()
+        startup, self._startup_connect = self._startup_connect, None
+        if startup is not None and not startup.done():
+            await self.cancel_task(startup)
         pumps, self._pumps = self._pumps, {}
         for task in pumps.values():
             await self.cancel_task(task)
