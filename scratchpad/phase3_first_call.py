@@ -3,14 +3,18 @@
 
 For the newest call of a bot since ``--since`` (default: the last 2 hours) prints:
 - the configured engines (call document ``models``: stt / tts / llm / decision);
-- ``decision_warmup``: ok, latency, finished before the first decision;
+- the conversation engine's request options and the tiers OpenAI reported
+  (``models.llm_options`` / ``models.llm_service_tiers``);
+- ``decision_warmup``: ok, latency, finished before the first decision and
+  while the greeting was still playing;
 - every decision: reported model id, service tier reported / requested,
-  latency, input / output / cached tokens, whether it wrote response_text;
-  decision fallbacks (timeouts) with model and tier;
+  latency, budget, input / output / cached tokens, whether it wrote
+  response_text; decision fallbacks (timeouts) with model, tier and budget;
 - ``stt_keyterms``: model, sent, source, count;
 - per turn: the TTS engine of the first audio (``turn_timing.tts_model``),
   tts_ttfb and response time;
-- ``tts_cold_connect`` (reason, waited ms) and ``filler_only_dropped`` events;
+- ``tts_startup_connect`` (how long the start waited for the first socket),
+  ``tts_cold_connect`` (reason, waited ms) and ``filler_only_dropped`` events;
 - usage counters for reply and decision calls.
 
 Usage (on the server, from the checkout):
@@ -79,17 +83,19 @@ def main() -> int:
 
     for ev in by_kind.get("decision_warmup", []):
         print(f"decision_warmup: ok={ev.get('ok')} latency={_ms(ev.get('latency_ms'))} ms "
-              f"before_first_decision={ev.get('before_first_decision')} error={ev.get('error')}")
+              f"before_first_decision={ev.get('before_first_decision')} "
+              f"greeting_playing={ev.get('greeting_playing')} error={ev.get('error')}")
     decisions = by_kind.get("orchestration_decision", [])
     print(f"decisions: {len(decisions)}")
     for i, ev in enumerate(decisions, 1):
         print(f"  #{i} model={ev.get('model')} tier={ev.get('service_tier')} "
               f"requested={ev.get('service_tier_requested')} latency={_ms(ev.get('latency_ms'))} ms "
+              f"budget={_ms(ev.get('budget_ms'))} ms "
               f"tokens in/out/cached={ev.get('input_tokens')}/{ev.get('output_tokens')}/{ev.get('cached_tokens')} "
               f"response_text={ev.get('has_response_text')} signal={ev.get('signal')} intent={ev.get('intent')}")
     for ev in by_kind.get("orchestration_fallback", []):
         print(f"  fallback reason={ev.get('reason')} model={ev.get('model')} "
-              f"requested_tier={ev.get('service_tier_requested')}")
+              f"requested_tier={ev.get('service_tier_requested')} budget={_ms(ev.get('budget_ms'))} ms")
     for ev in by_kind.get("stt_keyterms", []):
         print(f"stt_keyterms: model={ev.get('model')} sent={ev.get('sent')} source={ev.get('source')} "
               f"count={ev.get('count')} reason={ev.get('reason')}")
@@ -99,6 +105,8 @@ def main() -> int:
         print(f"  turn {ev.get('turn_id')}: tts_model={ev.get('tts_model')} "
               f"tts_ttfb={_ms(spans.get('tts_ttfb'))} ms response={_ms(spans.get('response'))} ms "
               f"endpoint_by={ev.get('endpoint_by')}")
+    for ev in by_kind.get("tts_startup_connect", []):
+        print(f"tts_startup_connect: held the start {_ms(ev.get('held_ms'))} ms timed_out={ev.get('timed_out')}")
     cold = by_kind.get("tts_cold_connect", [])
     print(f"tts_cold_connect: {len(cold)}" + "".join(
         f"\n  reason={ev.get('reason')} waited={_ms(ev.get('waited_ms'))} ms model={ev.get('model')}" for ev in cold))
