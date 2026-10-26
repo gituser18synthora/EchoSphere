@@ -450,11 +450,13 @@ describe("VoiceTab — ElevenLabs model selection", () => {
 });
 
 describe("VoiceTab — Sarvam loudness", () => {
-  /* Loudness is offered by bulbul:v2 (0.3–3.0, documented) and by
-     bulbul:v4-flash with its own range (0.1–2.5: the Sarvam playground's, and
-     the API rejects anything outside it), never by bulbul:v3. The slider and
-     its bounds come from each model's catalog schema: next to Pitch on v2,
-     next to Pace on v4-flash. Schemas mirror the catalog seed. */
+  /* Every bulbul model offers loudness with its own range: bulbul:v2 0.3–3.0
+     (documented), bulbul:v3 and bulbul:v4-flash 0.1–2.5 (the API rejects
+     anything outside it). The slider and its bounds come from each model's
+     catalog schema: next to Pitch on v2, next to Pace on v3 / v4-flash; a
+     model whose schema has none (ElevenLabs) never shows one. Schemas mirror
+     the catalog seed. */
+  const LOUDNESS_V3 = { type: "number", min: 0.1, max: 2.5, step: 0.1, default: 1, label: "Loudness" };
   const V2_SCHEMA = {
     pace: { type: "number", min: 0.3, max: 3, step: 0.05, default: 1, label: "Pace" },
     pitch: { type: "number", min: -0.75, max: 0.75, step: 0.05, default: 0, label: "Pitch" },
@@ -462,36 +464,30 @@ describe("VoiceTab — Sarvam loudness", () => {
   };
   const V3_SCHEMA = {
     pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
-    temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
-  };
-  const V4_FLASH_SCHEMA = {
-    pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
-    loudness: { type: "number", min: 0.1, max: 2.5, step: 0.1, default: 1, label: "Loudness" },
+    loudness: LOUDNESS_V3,
     temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
   };
   const V2_SETTINGS = {
     ...SETTINGS, ttsModel: "bulbul:v2", ttsVoice: "vp-anushka2",
     ttsSettings: { pitch: 0, loudness: 1.1 }, languageVoiceMap: { default: "en-IN" },
   };
-  const V4_FLASH_SETTINGS = {
-    ...SETTINGS, ttsModel: "bulbul:v4-flash", ttsVoice: "vp-sv4-shubh_hi_customer",
-    ttsSettings: { loudness: 0.6 }, languageVoiceMap: { default: "en-IN" },
-  };
 
   function installSarvamModels(settings: Record<string, unknown>) {
     installDefaultMocks(settings);
-    vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
-      Promise.resolve(provider === "sarvam" ? [
+    const defaults = vi.mocked(api.listProviderModels).getMockImplementation()!;
+    vi.mocked(api.listProviderModels).mockImplementation(((cap: VoiceCapability, provider: string) =>
+      provider === "sarvam" ? Promise.resolve([
         { code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
-        { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash", isDefault: false, capability: "tts", streaming: true, paramsSchema: V4_FLASH_SCHEMA },
+        { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash", isDefault: false, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
         { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false, capability: "tts", streaming: true, paramsSchema: V2_SCHEMA },
-      ] : [])) as never);
+      ]) : defaults(cap, provider)) as never);
+    const defaultVoices = vi.mocked(api.listProviderVoices).getMockImplementation()!;
     vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
-      Promise.resolve(provider === "sarvam" ? [
+      provider === "sarvam" ? Promise.resolve([
         voice("vp-shubh", "Shubh", ["en-IN", "hi-IN"], ["bulbul:v3"]),
         voice("vp-anushka2", "Anushka", ["en-IN", "hi-IN"], ["bulbul:v2"]),
         voice("vp-sv4-shubh_hi_customer", "Shubh · Hindi · Customer", ["en-IN", "hi-IN"], ["bulbul:v4-flash"]),
-      ] : [])) as never);
+      ]) : defaultVoices(provider)) as never);
   }
 
   beforeEach(() => {
@@ -513,18 +509,25 @@ describe("VoiceTab — Sarvam loudness", () => {
     expect(screen.getByLabelText("Pitch")).toBeInTheDocument();
   });
 
-  it("shows a bulbul:v4-flash bot's saved loudness on its own 0.1–2.5 slider", async () => {
-    installSarvamModels(V4_FLASH_SETTINGS);
+  it.each([
+    ["bulbul:v3", "vp-shubh"],
+    ["bulbul:v4-flash", "vp-sv4-shubh_hi_customer"],
+  ])("shows a %s bot's saved loudness on its own 0.1–2.5 slider", async (model, voiceId) => {
+    installSarvamModels({
+      ...SETTINGS, ttsModel: model, ttsVoice: voiceId,
+      ttsSettings: { loudness: 0.6, temperature: 0.4 }, languageVoiceMap: { default: "en-IN" },
+    });
     render(<VoiceTab bot={BOT} />);
-    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v4-flash"));
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue(model));
     const slider = await screen.findByLabelText("Loudness") as HTMLInputElement;
     expect(slider.type).toBe("range");
     expect([slider.min, slider.max]).toEqual(["0.1", "2.5"]);
     expect(slider).toHaveValue("0.6");
+    expect(screen.getByLabelText("Temperature")).toBeInTheDocument();
     expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
   });
 
-  it("hides Loudness on bulbul:v3 and offers it again on bulbul:v4-flash", async () => {
+  it("keeps an in-range loudness across v2 → v3 → v4-flash and drops Pitch", async () => {
     const user = userEvent.setup();
     installSarvamModels(V2_SETTINGS);
     render(<VoiceTab bot={BOT} />);
@@ -533,35 +536,38 @@ describe("VoiceTab — Sarvam loudness", () => {
 
     await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v3/ });
     await user.selectOptions(ttsModelSelect(), ["bulbul:v3"]);
-    await waitFor(() => expect(screen.queryByLabelText("Loudness")).not.toBeInTheDocument());
-    expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
     expect(await screen.findByLabelText("Temperature")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
+    expect([loudness().min, loudness().max]).toEqual(["0.1", "2.5"]);
+    expect(loudness()).toHaveValue("1.1");
 
     await user.selectOptions(ttsModelSelect(), ["bulbul:v4-flash"]);
     expect(ttsModelSelect()).toHaveValue("bulbul:v4-flash");
-    expect(await screen.findByLabelText("Loudness")).toBeInTheDocument();
     expect([loudness().min, loudness().max]).toEqual(["0.1", "2.5"]);
-    expect(loudness()).toHaveValue("1"); // v3 dropped the value: the default
+    expect(loudness()).toHaveValue("1.1");
   });
 
-  it("clamps a bulbul:v2 loudness above 2.5 into the v4-flash range", async () => {
+  it("clamps a bulbul:v2 loudness above 2.5 into the v3 range", async () => {
     const user = userEvent.setup();
     installSarvamModels({ ...V2_SETTINGS, ttsSettings: { pitch: 0, loudness: 2.8 } });
     render(<VoiceTab bot={BOT} />);
     await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v2"));
     expect(await screen.findByLabelText("Loudness")).toHaveValue("2.8");
 
-    await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v4 Flash/ });
-    await user.selectOptions(ttsModelSelect(), ["bulbul:v4-flash"]);
+    await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v3/ });
+    await user.selectOptions(ttsModelSelect(), ["bulbul:v3"]);
     await waitFor(() => expect(loudness().max).toBe("2.5"));
     expect(loudness()).toHaveValue("2.5");
   });
 
-  it("never offers Loudness to a bot on bulbul:v3", async () => {
-    installSarvamModels({ ...SETTINGS, ttsSettings: { temperature: 0.4 } });
+  it("never offers Loudness for a model whose schema has none", async () => {
+    installSarvamModels({
+      ...SETTINGS, ttsProvider: "elevenlabs", ttsModel: "eleven_flash_v2_5", ttsVoice: "vp-rachel",
+      ttsSettings: { stability: 0 }, languageVoiceMap: { default: "en-IN" },
+    });
     render(<VoiceTab bot={BOT} />);
-    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v3"));
-    expect(await screen.findByLabelText("Temperature")).toBeInTheDocument();
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("eleven_flash_v2_5"));
+    expect(await screen.findByLabelText("Stability")).toBeInTheDocument();
     expect(screen.queryByLabelText("Loudness")).not.toBeInTheDocument();
   });
 });

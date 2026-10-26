@@ -74,8 +74,8 @@ _WARM_SPARE = os.environ.get("SARVAM_TTS_WARM_SPARE", "true").strip().lower() no
 # Parameters the bulbul generations accept on the config message. bulbul:v4
 # (v4-flash) keeps the v3 contract; only its speakers changed (persona ids,
 # shared.providers.tts.sarvam_voices). ``loudness`` is added for the models
-# that offer it (bulbul:v2, bulbul:v4-flash — never bulbul:v3), its range
-# validated per model from the catalog schema before it reaches a config.
+# that offer it (shared.providers.tts.delivery), its range validated per
+# model from the catalog schema before it reaches a config.
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing", "dict_id"}
 _V2_PARAMS = {"pace", "pitch", "min_buffer_size", "max_chunk_length",

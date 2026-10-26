@@ -2,8 +2,9 @@
 
    The settings shown are driven entirely by the selected provider/model's
    catalog paramsSchema, so these tests pin the behaviour that depends on it:
-   - only the selected model's settings render (Sarvam v2 pitch/loudness vs v3
-     temperature; ElevenLabs speed/speaker-boost vs Eleven v3)
+   - only the selected model's settings render (Sarvam v2 pitch vs v3
+     temperature, loudness with each model's range; ElevenLabs
+     speed/speaker-boost vs Eleven v3)
    - switching model drops unsupported settings, clamps carried ones into the
      new range and reveals the new model's controls
    - Preview synthesizes the unsaved draft
@@ -42,8 +43,9 @@ vi.mock("@/state/AppContext", () => ({
 
 const BOT = { id: "bot_1", languages: ["en-IN", "hi-IN"] } as unknown as VoiceBot;
 
-/* Mirrors the seeded catalog: v2 documents pitch/loudness and a wider pace
-   range, v3 documents temperature instead; eleven_v3 has no speed control. */
+/* Mirrors the seeded catalog: v2 documents pitch and wider pace/loudness
+   ranges, v3 documents temperature instead and loudness 0.1–2.5; eleven_v3
+   has no speed control. */
 /* min_buffer_size mirrors the corrected catalog: Sarvam documents 30–200
    (default 50) for WebSocket streaming. dict_id is a widget-backed entry —
    rendered as the dictionary selector, never a raw text input. */
@@ -53,6 +55,7 @@ const SARVAM_MODELS = [
     streaming: true, speedRange: [0.5, 2] as [number, number],
     paramsSchema: {
       pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
+      loudness: { type: "number", min: 0.1, max: 2.5, step: 0.1, default: 1, label: "Loudness" },
       temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
       min_buffer_size: { type: "integer", min: 30, max: 200, default: 50, label: "Min buffer size" },
       dict_id: {
@@ -220,12 +223,12 @@ describe("Voice preview — provider/model-specific settings", () => {
     const dialog = await openPreview(user);
 
     expect(within(dialog).getByText("Voice settings")).toBeInTheDocument();
-    // bulbul:v3 controls.
+    // bulbul:v3 controls (loudness too, at its default).
     expect(paramInput(dialog, "Temperature")).toHaveValue(0.6);
     expect(paramInput(dialog, "Min buffer size")).toHaveValue(50);
-    // v2-only controls are absent, not merely disabled.
+    expect(paramInput(dialog, "Loudness")).toHaveValue(1);
+    // The v2-only control is absent, not merely disabled.
     expect(within(dialog).queryByLabelText("Pitch value")).not.toBeInTheDocument();
-    expect(within(dialog).queryByLabelText("Loudness value")).not.toBeInTheDocument();
   });
 
   it("renders numeric settings as sliders with the model's min, max and step", async () => {
@@ -273,7 +276,7 @@ describe("Voice preview — provider/model-specific settings", () => {
 });
 
 describe("Voice preview — provider/model switching", () => {
-  it("v2 → v3 drops pitch/loudness, clamps pace-range values and adds temperature", async () => {
+  it("v2 → v3 drops pitch, clamps loudness into v3's range and adds temperature", async () => {
     const user = userEvent.setup();
     const dialog = await openPreview(user);
 
@@ -285,13 +288,15 @@ describe("Voice preview — provider/model switching", () => {
     expect(within(dialog).getByRole("slider", { name: "Speaking speed" }))
       .toHaveAttribute("max", "2"); // clamped by the canonical platform maximum
     setParam(dialog, "Pitch", 0.5);
+    setParam(dialog, "Loudness", 2.8); // legal on v2 (0.3–3.0)
     setParam(dialog, "Min buffer size", 180);
 
     // 4–8: back to v3.
     await user.selectOptions(within(dialog).getByLabelText("Preview model"), ["bulbul:v3"]);
     await waitFor(() =>
       expect(within(dialog).queryByLabelText("Pitch value")).not.toBeInTheDocument());
-    expect(within(dialog).queryByLabelText("Loudness value")).not.toBeInTheDocument();
+    // v3 takes loudness too, but only up to 2.5.
+    expect(paramInput(dialog, "Loudness")).toHaveValue(2.5);
     // A setting both models share is carried over, not reset.
     expect(paramInput(dialog, "Min buffer size")).toHaveValue(180);
     // v3-only control appears with its documented default.
@@ -332,7 +337,7 @@ describe("Voice preview — provider/model switching", () => {
     await waitFor(() => expect(api.generateTtsPreview).toHaveBeenCalledTimes(1));
     const params = vi.mocked(api.generateTtsPreview).mock.calls[0][0].params!;
     expect(params).not.toHaveProperty("pitch");
-    expect(params).not.toHaveProperty("loudness");
+    expect(params).toHaveProperty("loudness", 1); // shared, within v3's range
     expect(params).toHaveProperty("temperature");
   });
 
@@ -392,7 +397,9 @@ describe("Voice preview — draft, apply and save", () => {
     await user.click(screen.getByRole("button", { name: "Save voice settings" }));
     await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
-    expect(payload.ttsSettings).toEqual({ temperature: 0.42, min_buffer_size: 70 });
+    // The untouched loudness rides along at its 1.0 default, which the
+    // adapters never send to Sarvam.
+    expect(payload.ttsSettings).toEqual({ temperature: 0.42, min_buffer_size: 70, loudness: 1 });
     expect(payload.ttsProvider).toBe("sarvam");
     expect(payload.ttsModel).toBe("bulbul:v3");
   });

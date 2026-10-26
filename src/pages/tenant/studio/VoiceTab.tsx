@@ -1663,9 +1663,8 @@ function PreviewVoiceModal({ ctx, onClose, ttsProviders, modelsFor, voicesFor, e
   };
 
   /* A model switch keeps settings the new model also defines (clamped into its
-     range) and drops the rest — v2's pitch/loudness disappear on v3 (v4-flash
-     keeps loudness, clamped into its 0.1–2.5), and v3's temperature appears
-     with its default. */
+     range) and drops the rest — v2's pitch disappears on v3, its loudness is
+     clamped into v3's 0.1–2.5, and v3's temperature appears with its default. */
   const changeModel = (model: string) => {
     setEnginePinned(true);
     const schema = stripDeliverySpeedParams(

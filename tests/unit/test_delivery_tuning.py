@@ -129,8 +129,9 @@ class TestEnergyMapping:
         assert low == {"pitch": -0.1, "loudness": 0.85}
 
     def test_sarvam_v3_never_gets_v2_only_fields(self):
-        # bulbul:v3 does not document pitch/loudness — nothing native is sent
-        # for ANY energy level (the LLM instruction is the fallback).
+        # bulbul:v3 has no pitch, and Energy never sets its loudness (v3 bots
+        # keep their sound) — nothing native is sent for ANY energy level (the
+        # LLM instruction is the fallback).
         for level in (0, 25, 75, 100):
             assert energy_params("sarvam", "bulbul:v3", level) == {}
 

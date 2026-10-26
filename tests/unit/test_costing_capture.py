@@ -412,7 +412,7 @@ class TestTtsDispatchBilling:
         assert recorder.billed == []
         assert ("tts_provider_used", {"provider": "sarvam", "model": "bulbul:v3",
                                       "voice": "anushka", "fallback_used": False,
-                                      "failed": True, "loudness": None}) \
+                                      "failed": True, "loudness": 1.0}) \
             in recorder.events
 
     async def test_interrupted_generation_bills_only_dispatched_text(self):

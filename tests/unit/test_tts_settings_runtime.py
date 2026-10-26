@@ -156,14 +156,14 @@ class TestAdapterDropsUnsupportedParameters:
         ))
         return client._build_config()
 
-    def test_v3_config_omits_v2_only_pitch_and_loudness(self):
+    def test_v3_config_carries_loudness_but_omits_v2_only_pitch(self):
         config = self._sarvam_config(
             "bulbul:v3", {"pace": 1.1, "pitch": 0.4, "loudness": 1.5, "temperature": 0.5},
         )
         assert config["pace"] == pytest.approx(1.1)
         assert config["temperature"] == pytest.approx(0.5)
+        assert config["loudness"] == pytest.approx(1.5)
         assert "pitch" not in config
-        assert "loudness" not in config
 
     def test_v4_flash_config_carries_loudness_but_not_v2_only_pitch(self):
         config = self._sarvam_config(

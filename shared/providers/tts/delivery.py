@@ -45,20 +45,20 @@ _ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 # operator would see an Energy control that provably changes nothing.
 _ELEVEN_STABILITY_ONLY_MODELS = {"eleven_v3_conversational"}
 # Sarvam models with the v2-only pitch control. Delivery Energy maps onto
-# pitch + loudness for these only: bulbul:v4-flash takes loudness too, but
-# Energy never sets it there, so its bots keep the sound they had.
+# pitch + loudness for these only: bulbul:v3 / v4-flash take loudness too,
+# but Energy never sets it there, so their bots keep the sound they had.
 _SARVAM_PITCH_MODELS = {"bulbul:v2"}
 #: Sarvam ``loudness``: a gain multiplier, API default 1.0, omitted on the
 #: wire at the default so a bot that never set it renders exactly as before.
-#: Offered on bulbul:v2 and bulbul:v4-flash, each with its own range in its
-#: catalog schema, which is what validation reads: v2 0.3-3.0, v4-flash
-#: 0.1-2.5 (the Sarvam playground's range; the API 400s outside it). Measured
-#: 2026-10-26, REST and WebSocket alike, v4-flash renders 0.1 about 20 dB
-#: quieter and 2.5 about 6 dB louder (peaks limited just under 0 dBFS).
-#: bulbul:v3 never gets it (decision 2026-10-26): no schema field, and both
-#: adapters drop it.
+#: Offered on every bulbul model, each with its own range in its catalog
+#: schema, which is what validation reads: v2 0.3-3.0 (API reference), v3 and
+#: v4-flash 0.1-2.5 (the API 400s outside it: "For the Bulbul V3 and V4
+#: models, loudness should be between 0.1 and 2.5"). The reference calls it
+#: v2-only; measured 2026-10-26, REST and WebSocket alike, v3 and v4-flash
+#: render 0.1 about 20 dB quieter and 2.5 about 6 dB louder (peaks limited
+#: just under 0 dBFS).
 SARVAM_LOUDNESS_DEFAULT = 1.0
-_SARVAM_LOUDNESS_MODELS = {"bulbul:v2", "bulbul:v4-flash"}
+_SARVAM_LOUDNESS_MODELS = {"bulbul:v2", "bulbul:v3", "bulbul:v4-flash"}
 
 
 def sarvam_accepts_loudness(model: str | None) -> bool:

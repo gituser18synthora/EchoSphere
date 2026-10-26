@@ -98,8 +98,8 @@ class TestSarvamProvider:
     async def test_delivery_energy_mapping_respects_model_capabilities(self, monkeypatch):
         """apply_delivery_params + the adapter together guarantee the wire
         contract: bulbul:v2 receives the conservative pitch/loudness energy
-        mapping, bulbul:v3 (which does not document them) receives neither —
-        even if a stale value sneaks into stored params."""
+        mapping, bulbul:v3 receives neither — Energy never sets its loudness,
+        and pitch is v2-only even if a stale value sneaks into stored params."""
         from shared.providers.tts.delivery import apply_delivery_params
 
         async with MockSarvamTTSServer() as server:
@@ -128,7 +128,8 @@ class TestSarvamProvider:
             await provider.close()
         v3_config = server.configs[0]
         assert v3_config["pace"] == 1.2
-        # The stale v2-only field is filtered at the adapter — never on the wire.
+        # The stale v2-only pitch is filtered at the adapter — never on the
+        # wire — and Energy adds no loudness for v3.
         assert "pitch" not in v3_config and "loudness" not in v3_config
 
     async def test_odia_language_alias(self, monkeypatch):

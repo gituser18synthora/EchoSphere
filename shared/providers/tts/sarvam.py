@@ -192,7 +192,7 @@ class SarvamTTS(TTSProvider):
             if key in _V2_ONLY_PARAMS and v3_contract:
                 continue
             if key == "loudness" and not sarvam_accepts_loudness(self._model):
-                continue  # bulbul:v2 and bulbul:v4-flash only
+                continue  # bulbul models only (shared.providers.tts.delivery)
             request[key] = value
         # The canonical Delivery speed is authoritative over a stored pace.
         pace = speed if speed and speed != 1.0 else request.get("pace", speed or 1.0)

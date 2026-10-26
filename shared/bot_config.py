@@ -426,8 +426,9 @@ def _keep_unmapped_v4_locales_on_v3(
                 "voice": voice,
                 "voice_name": engine.get("voice_name") or voice,
                 "voice_gender": engine.get("voice_gender") or "neutral",
-                # v3 and v4-flash share one parameter contract, so the
-                # default engine's validated settings carry over unchanged.
+                # v3 and v4-flash share one parameter contract (loudness
+                # included), so the default engine's validated settings
+                # carry over unchanged.
                 "params": dict(
                     (engine.get("settings") if is_default_engine else engine.get("params"))
                     or {}

@@ -133,7 +133,7 @@ class TestRestAdapter:
         assert call["model"] == "bulbul:v4-flash"
         assert call["speaker"] == "kavya_hi_conversational"
         assert call["temperature"] == 0.3
-        # v4-flash takes loudness (0.1-2.5) like bulbul:v2; pitch is v2-only.
+        # loudness (0.1-2.5 on v4-flash) is sent; pitch is v2-only.
         assert call["loudness"] == 1.1
         assert "pitch" not in call
 
@@ -205,8 +205,7 @@ def test_catalog_seed_keeps_v3_the_tts_default_and_offers_v4_flash():
     assert v3[9] is True and v3[10] == "active"
     assert v4[9] is False and v4[10] == "active"
     assert "ml-IN" not in v4[4] and "od-IN" not in v4[4] and "ml-IN" in v3[4]
-    # The v3 contract plus loudness, which v4-flash offers and v3 does not.
-    assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA) | {"loudness"}
+    assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA)
     assert catalog_seed._SARVAM_TTS_V3_SCHEMA["pace"]["help"].startswith("Speech speed")
     assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v3")
 

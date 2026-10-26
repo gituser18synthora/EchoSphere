@@ -119,14 +119,16 @@ class TestModelCapabilityMetadata:
     """The UI renders from these schemas, so the per-model differences that
     drive show/hide behaviour are asserted here rather than in the frontend."""
 
-    def test_sarvam_v3_exposes_pace_and_temperature_but_not_pitch_or_loudness(
+    def test_sarvam_v3_exposes_pace_temperature_and_loudness_but_not_pitch(
         self, client, tenant_admin
     ):
         schema = model_entry(client, tenant_admin, "sarvam", "bulbul:v3")["paramsSchema"]
         assert "pace" in schema and "temperature" in schema
-        # v3 has no pitch/loudness controls at all — they must not be offered.
+        # v3 has no pitch control at all — it must not be offered.
         assert "pitch" not in schema
-        assert "loudness" not in schema
+        # loudness with v3's own range (the API 400s outside 0.1–2.5).
+        loudness = schema["loudness"]
+        assert (loudness["min"], loudness["max"], loudness["default"]) == (0.1, 2.5, 1.0)
         assert schema["pace"]["min"] == 0.5 and schema["pace"]["max"] == 2.0
         assert schema["temperature"]["default"] == pytest.approx(0.6)
         # v3 always preprocesses server-side: shown, but not a live toggle.
@@ -156,8 +158,8 @@ class TestModelCapabilityMetadata:
 
     def test_sarvam_v4_flash_exposes_loudness_with_its_own_range(self, client, tenant_admin):
         schema = model_entry(client, tenant_admin, "sarvam", "bulbul:v4-flash")["paramsSchema"]
-        # The Sarvam playground's 0.1–2.5 (the API 400s outside it), not v2's
-        # 0.3–3.0; v4-flash has no pitch.
+        # 0.1–2.5 like v3 (the Sarvam playground's range; the API 400s
+        # outside it), not v2's 0.3–3.0; v4-flash has no pitch.
         loudness = schema["loudness"]
         assert (loudness["min"], loudness["max"], loudness["default"]) == (0.1, 2.5, 1.0)
         assert "pitch" not in schema
@@ -200,13 +202,17 @@ def _preview(client, headers, **overrides):
 
 
 class TestPreviewValidatesDraftSettings:
-    def test_v3_rejects_v2_only_pitch_and_loudness(self, client, tenant_admin):
+    def test_v3_rejects_v2_only_pitch_and_a_v2_only_loudness(self, client, tenant_admin):
         """The exact provider/model-switching hazard: settings left over from
-        bulbul:v2 must not be previewed against bulbul:v3."""
-        for stale in ({"pitch": 0.3}, {"loudness": 1.4}, {"pitch": 0.3, "loudness": 1.4}):
+        bulbul:v2 must not be previewed against bulbul:v3 — pitch is v2-only,
+        and a v2 loudness above 2.5 is outside v3's range."""
+        for stale in ({"pitch": 0.3}, {"pitch": 0.3, "loudness": 1.4}):
             response = _preview(client, tenant_admin, params=stale)
             assert response.status_code == 422, stale
             assert "unknown parameter" in response.json()["message"].lower()
+        response = _preview(client, tenant_admin, params={"loudness": 2.8})
+        assert response.status_code == 422
+        assert "between 0.1 and 2.5" in response.json()["message"]
 
     def test_v2_accepts_pitch_and_loudness(self, client, tenant_admin, sarvam_v2_active):
         response = _preview(
@@ -257,22 +263,23 @@ class TestPreviewValidatesDraftSettings:
         )
         assert accepted.status_code != 422
 
-    def test_v4_flash_loudness_is_validated_against_its_own_range(
-        self, client, tenant_admin, bot
+    @pytest.mark.parametrize("model,voice", [
+        ("bulbul:v3", "vp-sv-aayan"), ("bulbul:v4-flash", "vp-sv4-shubh_hi_customer"),
+    ])
+    def test_v3_contract_loudness_is_validated_against_its_own_range(
+        self, client, tenant_admin, bot, model, voice
     ):
-        """3.0 is legal on bulbul:v2 and a 400 on bulbul:v4-flash: preview and
+        """3.0 is legal on bulbul:v2 and a 400 on v3 / v4-flash: preview and
         save both reject it per model, and an in-range value is persisted."""
         for bad in (0.05, 2.6, 3.0):
             response = _preview(
-                client, tenant_admin, model="bulbul:v4-flash",
-                voice="vp-sv4-shubh_hi_customer", params={"loudness": bad},
+                client, tenant_admin, model=model, voice=voice, params={"loudness": bad},
             )
             assert response.status_code == 422, bad
             assert "between 0.1 and 2.5" in response.json()["message"]
 
         bot_id, session = bot
-        engine = {"ttsProvider": "sarvam", "ttsModel": "bulbul:v4-flash",
-                  "ttsVoice": "vp-sv4-shubh_hi_customer"}
+        engine = {"ttsProvider": "sarvam", "ttsModel": model, "ttsVoice": voice}
         rejected = client.put(f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin,
                               json={**engine, "ttsSettings": {"loudness": 3.0}})
         assert rejected.status_code == 422
