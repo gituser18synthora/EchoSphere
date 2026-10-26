@@ -613,8 +613,9 @@ async def tts_preview(
     # The draft settings are unsaved, so the save path's validation has not run
     # on them — validate here against the SAME catalog schema before any of it
     # reaches a provider. This is what stops a stale parameter from a
-    # previously selected model (bulbul:v2 pitch/loudness on bulbul:v3, speed
-    # on eleven_v3) being previewed with settings a real call could never use.
+    # previously selected model (bulbul:v2 pitch/loudness on bulbul:v3, a v2
+    # loudness above v4-flash's 2.5, speed on eleven_v3) being previewed with
+    # settings a real call could never use.
     # Delivery owns pace/speed, so those are stripped rather than rejected —
     # the canonical `speed` field below is the one authoritative control.
     # Capability check before anything is synthesized: a model that cannot

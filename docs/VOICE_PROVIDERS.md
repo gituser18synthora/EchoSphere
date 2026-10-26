@@ -216,21 +216,45 @@ model alone was switched. `bulbul:v3` remains the default model. Fresh installs 
 the personas from the catalog seed (also run by the API at start-up where
 `startup_seed_enabled`), existing databases from migration `c2e4a6b8d0f1`.
 
-### Sarvam loudness: bulbul:v2 only
+### Sarvam loudness: bulbul:v2 and bulbul:v4-flash
 
-Sarvam's TTS API reference documents `loudness` as 0.3–3.0, default 1.0, and
-"only supported for bulbul:v2. It is NOT supported for bulbul:v3 or
-bulbul:v4-flash" (the sarvamai SDK's WebSocket config adds "Will be ignored if
-provided"). So it lives in the bulbul:v2 catalog schema only: the Studio shows
-a Loudness slider next to Pitch for v2 and never for v3 / v4-flash, saving
-`tts_settings` or a `language_voice_map` entry validates it against the model's
-range (0.3–3.0) and rejects it as an unknown parameter for the other models,
-and both adapters send it only to v2 and never at the API default, so a bot
-that never set it renders exactly as before. Delivery Energy still maps onto it
-for v2. Every reply's `tts_provider_used` event records `model` and the
-`loudness` it rendered with (null for an engine without the control).
-bulbul:v2 is inactive in the demo and local catalogs, so no bot can use it
-there until the model is re-activated.
+`loudness` is a gain multiplier, API default 1.0, offered on two models, each
+with its own range in its catalog schema: bulbul:v2 0.3–3.0 (Sarvam's API
+reference) and bulbul:v4-flash 0.1–2.5 (the Sarvam playground's range; the API
+answers anything outside it with 400 "For the Bulbul V3 and V4 models,
+loudness should be between 0.1 and 2.5"). The API reference calls the
+parameter v2-only, so it was measured (2026-10-26: one Hindi sentence, speaker
+`shubh_hi_customer`, 24 kHz, two takes per cell, mean RMS / peak dBFS):
+
+| bulbul:v4-flash | unset | 0.1 | 1.0 | 2.5 |
+| --- | --- | --- | --- | --- |
+| REST `convert` | −14.9 / −0.5 | −35.9 / −20.6 | −15.8 / −0.6 | −9.9 / −0.2 |
+| REST `convert_stream` | −17.6 / −1.9 | −37.0 / −21.3 | −16.9 / −0.9 | −10.2 / −0.3 |
+| WebSocket (`sarvam_ws.py` config) | −17.8 / −1.3 | −36.2 / −20.8 | −17.0 / −1.1 | −10.6 / −0.3 |
+
+REST and WebSocket honour it alike: 0.1 is a plain −20 dB gain; above 1.0 the
+server holds peaks just under 0 dBFS (no clipped samples at 2.5), so 2.5 adds
+about 6 dB of RMS rather than 8. Unset and 1.0 differ only by take-to-take
+variation.
+
+bulbul:v3 does not offer it (decision 2026-10-26): no schema field, both
+adapters drop it, and its reply events record null. The same probe found the
+API applying it on v3 as well (0.1 about 20 dB quieter, same 0.1–2.5
+bounds), so this is a product choice, not an API limit.
+
+The Studio renders the slider from the schema — next to Pitch on v2, next to
+Pace on v4-flash — and a model switch clamps a carried value into the new
+range (a v2 2.8 becomes 2.5 on v4-flash, and is dropped on v3). Saving
+`tts_settings` or a `language_voice_map` entry validates it against that
+model's schema range; v3 rejects it as an unknown parameter. Both adapters
+send it only to v2 and v4-flash and never at the API default, so a bot that
+never set it renders exactly as before (no v4-flash bot stored a loudness
+before this change; local and demo checked). Delivery Energy maps onto it for
+v2 only. Every reply's `tts_provider_used` event records `model` and the
+`loudness` it rendered with (null for an engine without the control). Existing
+databases get the v4-flash schema field from migration `e4b6d8f0a2c4`, fresh
+installs from the catalog seed. bulbul:v2 is inactive in the demo and local
+catalogs, so no bot can use it there until the model is re-activated.
 
 ### Sarvam TTS sockets: no cold handshake after a barge-in or at start-up
 

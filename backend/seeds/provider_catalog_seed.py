@@ -277,7 +277,7 @@ _SARVAM_TTS_V2_SCHEMA = {
     },
     "loudness": {
         "type": "number", "min": 0.3, "max": 3.0, "default": 1.0, "step": 0.1,
-        "label": "Loudness", "help": "Volume multiplier (bulbul:v2 only).",
+        "label": "Loudness", "help": "Volume multiplier (bulbul:v2 range 0.3–3.0).",
     },
     "enable_preprocessing": {
         "type": "boolean", "default": False, "label": "Preprocessing",
@@ -430,6 +430,19 @@ _SARVAM_TTS_V4_FLASH_SCHEMA = {
     key: dict(spec) for key, spec in _SARVAM_TTS_V3_SCHEMA.items()
 }
 _SARVAM_TTS_V4_FLASH_SCHEMA["pace"]["help"] = "Speech speed multiplier (range 0.5–2.0)."
+# Unlike bulbul:v3, v4-flash offers ``loudness`` like bulbul:v2, with its own
+# range: 0.1–2.5 in the Sarvam playground, and the API rejects anything
+# outside it with 400 (measured 2026-10-26: 0.1 renders about 20 dB quieter,
+# 2.5 about 6 dB louder, REST and WebSocket alike). Never sent at the 1.0
+# default (shared.providers.tts.delivery). Placed right after pace.
+_SARVAM_TTS_V4_FLASH_SCHEMA = {
+    "pace": _SARVAM_TTS_V4_FLASH_SCHEMA.pop("pace"),
+    "loudness": {
+        "type": "number", "min": 0.1, "max": 2.5, "default": 1.0, "step": 0.1,
+        "label": "Loudness", "help": "Volume multiplier (bulbul:v4-flash range 0.1–2.5).",
+    },
+    **_SARVAM_TTS_V4_FLASH_SCHEMA,
+}
 _SARVAM_TTS_V4_FLASH_SCHEMA["temperature"]["help"] = (
     "Synthesis randomness. Sarvam documents bulbul:v4-flash as ignoring it; "
     "kept so bulbul:v3 settings carry over."

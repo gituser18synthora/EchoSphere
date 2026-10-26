@@ -39,7 +39,7 @@ from shared.providers.languages import (
     to_platform_language,
     to_provider_language,
 )
-from shared.providers.tts.delivery import omit_default_loudness
+from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
 from shared.providers.tts.sarvam_voices import (
     NoV4Equivalent,
     is_v4_model,
@@ -73,10 +73,12 @@ _WARM_SPARE = os.environ.get("SARVAM_TTS_WARM_SPARE", "true").strip().lower() no
 
 # Parameters the bulbul generations accept on the config message. bulbul:v4
 # (v4-flash) keeps the v3 contract; only its speakers changed (persona ids,
-# shared.providers.tts.sarvam_voices).
+# shared.providers.tts.sarvam_voices). ``loudness`` is added for the models
+# that offer it (bulbul:v2, bulbul:v4-flash — never bulbul:v3), its range
+# validated per model from the catalog schema before it reaches a config.
 _V3_PARAMS = {"pace", "temperature", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing", "dict_id"}
-_V2_PARAMS = {"pace", "pitch", "loudness", "min_buffer_size", "max_chunk_length",
+_V2_PARAMS = {"pace", "pitch", "min_buffer_size", "max_chunk_length",
               "enable_preprocessing"}
 
 
@@ -362,6 +364,8 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
         v4 = is_v4_model(model)
         is_v3 = v4 or model.startswith("bulbul:v3")
         allowed = _V3_PARAMS if is_v3 else _V2_PARAMS
+        if sarvam_accepts_loudness(model):
+            allowed = allowed | {"loudness"}
         params = dict(s.params or {})
 
         # Canonical language mapping shared with the REST implementation: bare
@@ -414,8 +418,8 @@ class SarvamWebSocketTTSProvider(StreamingTTSProvider):
             # v3 (and v4-flash) always preprocess; the flag is not negotiable.
             params["enable_preprocessing"] = True
 
-        # ``loudness`` (bulbul:v2 only — not in the v3/v4-flash set above) is
-        # never sent at the API default of 1.0: unchanged audio, minimal config.
+        # ``loudness`` is never sent at the API default of 1.0: unchanged
+        # audio, minimal config.
         params = omit_default_loudness(params)
         ignored: list[str] = []
         for key, value in params.items():

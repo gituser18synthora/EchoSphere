@@ -17,7 +17,7 @@ import time
 from shared.config import get_settings
 from shared.providers.base import ProviderConfig, ProviderError, TTSProvider, TTSResult
 from shared.providers.languages import SARVAM_SUPPORTED_LOCALES, short_code_to_locale
-from shared.providers.tts.delivery import omit_default_loudness
+from shared.providers.tts.delivery import omit_default_loudness, sarvam_accepts_loudness
 from shared.providers.tts.sarvam_voices import NoV4Equivalent, is_v4_model, v4_speaker
 from shared.audio.pcm import resample_pcm, wav_to_pcm
 from shared.audio.text import sanitize_for_tts
@@ -56,7 +56,7 @@ _NATIVE_RATES = {8000, 16000, 22050, 24000}
 # Parameters forwarded from ProviderConfig.extra to the REST request.
 _REST_PARAMS = {"pace", "temperature", "pitch", "loudness", "enable_preprocessing"}
 _V3_ONLY_PARAMS = {"temperature"}
-_V2_ONLY_PARAMS = {"pitch", "loudness"}
+_V2_ONLY_PARAMS = {"pitch"}
 _FALLBACK_DEFAULT_SPEAKER = "shubh"
 
 
@@ -191,6 +191,8 @@ class SarvamTTS(TTSProvider):
                 continue
             if key in _V2_ONLY_PARAMS and v3_contract:
                 continue
+            if key == "loudness" and not sarvam_accepts_loudness(self._model):
+                continue  # bulbul:v2 and bulbul:v4-flash only
             request[key] = value
         # The canonical Delivery speed is authoritative over a stored pace.
         pace = speed if speed and speed != 1.0 else request.get("pace", speed or 1.0)

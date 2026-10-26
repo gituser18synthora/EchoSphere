@@ -13,8 +13,9 @@ Precedence rules (tested in tests/unit/test_delivery_tuning.py):
   applied with ``setdefault``.
 - Energy is best-effort and conservative: it only fills provider fields the
   operator has NOT explicitly configured, and only fields the selected model
-  documents (never Sarvam v2-only pitch/loudness on bulbul:v3, never speed on
-  eleven_v3). Unrelated provider settings are passed through untouched.
+  documents (Sarvam pitch/loudness on bulbul:v2 only — never on bulbul:v3 or
+  bulbul:v4-flash — and never speed on eleven_v3). Unrelated provider settings
+  are passed through untouched.
 """
 
 from __future__ import annotations
@@ -43,20 +44,26 @@ _ELEVEN_NO_SPEED_MODELS = {"eleven_v3", "eleven_v3_conversational"}
 # anything else, so Energy must not synthesize a ``style`` for them: the
 # operator would see an Energy control that provably changes nothing.
 _ELEVEN_STABILITY_ONLY_MODELS = {"eleven_v3_conversational"}
-# Sarvam models that accept the v2-only pitch/loudness controls.
-_SARVAM_PITCH_LOUDNESS_MODELS = {"bulbul:v2"}
-#: Sarvam ``loudness``: 0.3-3.0, API default 1.0, accepted by bulbul:v2 ONLY —
-#: Sarvam's TTS API reference: "This parameter is only supported for
-#: bulbul:v2. It is NOT supported for bulbul:v3 or bulbul:v4-flash"; the
-#: sarvamai SDK's WebSocket config: "NOT supported for bulbul:v3. Will be
-#: ignored if provided". The value is omitted on the wire at the default, so
-#: a bot that never set it renders exactly as before.
+# Sarvam models with the v2-only pitch control. Delivery Energy maps onto
+# pitch + loudness for these only: bulbul:v4-flash takes loudness too, but
+# Energy never sets it there, so its bots keep the sound they had.
+_SARVAM_PITCH_MODELS = {"bulbul:v2"}
+#: Sarvam ``loudness``: a gain multiplier, API default 1.0, omitted on the
+#: wire at the default so a bot that never set it renders exactly as before.
+#: Offered on bulbul:v2 and bulbul:v4-flash, each with its own range in its
+#: catalog schema, which is what validation reads: v2 0.3-3.0, v4-flash
+#: 0.1-2.5 (the Sarvam playground's range; the API 400s outside it). Measured
+#: 2026-10-26, REST and WebSocket alike, v4-flash renders 0.1 about 20 dB
+#: quieter and 2.5 about 6 dB louder (peaks limited just under 0 dBFS).
+#: bulbul:v3 never gets it (decision 2026-10-26): no schema field, and both
+#: adapters drop it.
 SARVAM_LOUDNESS_DEFAULT = 1.0
+_SARVAM_LOUDNESS_MODELS = {"bulbul:v2", "bulbul:v4-flash"}
 
 
 def sarvam_accepts_loudness(model: str | None) -> bool:
     """Whether a Sarvam bulbul model takes the ``loudness`` parameter."""
-    return str(model or "").strip() in _SARVAM_PITCH_LOUDNESS_MODELS
+    return str(model or "").strip() in _SARVAM_LOUDNESS_MODELS
 
 
 def effective_loudness(
@@ -151,7 +158,7 @@ def delivery_capabilities(
             phrase_boundaries=True,
         )
     if provider == "sarvam":
-        v2 = model in _SARVAM_PITCH_LOUDNESS_MODELS
+        v2 = model in _SARVAM_PITCH_MODELS
         return DeliveryCapabilities(
             speaking_rate=True,
             # Re-sending Sarvam WS config force-flushes the socket. REST calls
@@ -262,7 +269,7 @@ def energy_params(provider: str, model: str, energy: int | None) -> dict[str, An
             return {}
         style = _band_value(_ELEVEN_ENERGY_STYLE, level)
         return {} if style is None else {"style": style}
-    if provider == "sarvam" and model in _SARVAM_PITCH_LOUDNESS_MODELS:
+    if provider == "sarvam" and model in _SARVAM_PITCH_MODELS:
         mapped = _band_value(_SARVAM_V2_ENERGY, level)
         return dict(mapped) if mapped else {}
     return {}

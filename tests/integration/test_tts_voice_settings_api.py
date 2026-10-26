@@ -154,6 +154,14 @@ class TestModelCapabilityMetadata:
         buffer_spec = schema["min_buffer_size"]
         assert (buffer_spec["min"], buffer_spec["max"], buffer_spec["default"]) == (30, 200, 50)
 
+    def test_sarvam_v4_flash_exposes_loudness_with_its_own_range(self, client, tenant_admin):
+        schema = model_entry(client, tenant_admin, "sarvam", "bulbul:v4-flash")["paramsSchema"]
+        # The Sarvam playground's 0.1–2.5 (the API 400s outside it), not v2's
+        # 0.3–3.0; v4-flash has no pitch.
+        loudness = schema["loudness"]
+        assert (loudness["min"], loudness["max"], loudness["default"]) == (0.1, 2.5, 1.0)
+        assert "pitch" not in schema
+
     def test_elevenlabs_models_differ_on_speed_and_speaker_boost(
         self, client, tenant_admin
     ):
@@ -248,6 +256,34 @@ class TestPreviewValidatesDraftSettings:
             voice="vp-el-monika", params={"stability": 1.0},
         )
         assert accepted.status_code != 422
+
+    def test_v4_flash_loudness_is_validated_against_its_own_range(
+        self, client, tenant_admin, bot
+    ):
+        """3.0 is legal on bulbul:v2 and a 400 on bulbul:v4-flash: preview and
+        save both reject it per model, and an in-range value is persisted."""
+        for bad in (0.05, 2.6, 3.0):
+            response = _preview(
+                client, tenant_admin, model="bulbul:v4-flash",
+                voice="vp-sv4-shubh_hi_customer", params={"loudness": bad},
+            )
+            assert response.status_code == 422, bad
+            assert "between 0.1 and 2.5" in response.json()["message"]
+
+        bot_id, session = bot
+        engine = {"ttsProvider": "sarvam", "ttsModel": "bulbul:v4-flash",
+                  "ttsVoice": "vp-sv4-shubh_hi_customer"}
+        rejected = client.put(f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin,
+                              json={**engine, "ttsSettings": {"loudness": 3.0}})
+        assert rejected.status_code == 422
+        assert any("between 0.1 and 2.5" in e for e in rejected.json()["errors"])
+        data(client.put(f"{API}/bots/{bot_id}/voice-settings", headers=tenant_admin,
+                        json={**engine, "ttsSettings": {"loudness": 2.5}}))
+        session.expire_all()
+        stored = session.scalar(
+            select(VoiceBotSetting).where(VoiceBotSetting.bot_id == bot_id)
+        )
+        assert stored.tts_settings["loudness"] == 2.5
 
     def test_min_buffer_size_out_of_documented_range_is_rejected_before_sarvam(
         self, client, tenant_admin

@@ -450,10 +450,11 @@ describe("VoiceTab — ElevenLabs model selection", () => {
 });
 
 describe("VoiceTab — Sarvam loudness", () => {
-  /* Sarvam's TTS API reference: loudness 0.3-3.0, default 1.0, "only supported
-     for bulbul:v2. It is NOT supported for bulbul:v3 or bulbul:v4-flash". The
-     catalog schema decides: v2 shows a Loudness slider next to Pitch, the
-     other bulbul models never offer it. Schemas mirror the catalog seed. */
+  /* Loudness is offered by bulbul:v2 (0.3–3.0, documented) and by
+     bulbul:v4-flash with its own range (0.1–2.5: the Sarvam playground's, and
+     the API rejects anything outside it), never by bulbul:v3. The slider and
+     its bounds come from each model's catalog schema: next to Pitch on v2,
+     next to Pace on v4-flash. Schemas mirror the catalog seed. */
   const V2_SCHEMA = {
     pace: { type: "number", min: 0.3, max: 3, step: 0.05, default: 1, label: "Pace" },
     pitch: { type: "number", min: -0.75, max: 0.75, step: 0.05, default: 0, label: "Pitch" },
@@ -463,9 +464,18 @@ describe("VoiceTab — Sarvam loudness", () => {
     pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
     temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
   };
+  const V4_FLASH_SCHEMA = {
+    pace: { type: "number", min: 0.5, max: 2, step: 0.05, default: 1, label: "Pace" },
+    loudness: { type: "number", min: 0.1, max: 2.5, step: 0.1, default: 1, label: "Loudness" },
+    temperature: { type: "number", min: 0.01, max: 1, step: 0.01, default: 0.6, label: "Temperature" },
+  };
   const V2_SETTINGS = {
     ...SETTINGS, ttsModel: "bulbul:v2", ttsVoice: "vp-anushka2",
     ttsSettings: { pitch: 0, loudness: 1.1 }, languageVoiceMap: { default: "en-IN" },
+  };
+  const V4_FLASH_SETTINGS = {
+    ...SETTINGS, ttsModel: "bulbul:v4-flash", ttsVoice: "vp-sv4-shubh_hi_customer",
+    ttsSettings: { loudness: 0.6 }, languageVoiceMap: { default: "en-IN" },
   };
 
   function installSarvamModels(settings: Record<string, unknown>) {
@@ -473,7 +483,7 @@ describe("VoiceTab — Sarvam loudness", () => {
     vi.mocked(api.listProviderModels).mockImplementation(((_cap: string, provider: string) =>
       Promise.resolve(provider === "sarvam" ? [
         { code: "bulbul:v3", displayName: "Bulbul v3", isDefault: true, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
-        { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash", isDefault: false, capability: "tts", streaming: true, paramsSchema: V3_SCHEMA },
+        { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash", isDefault: false, capability: "tts", streaming: true, paramsSchema: V4_FLASH_SCHEMA },
         { code: "bulbul:v2", displayName: "Bulbul v2", isDefault: false, capability: "tts", streaming: true, paramsSchema: V2_SCHEMA },
       ] : [])) as never);
     vi.mocked(api.listProviderVoices).mockImplementation(((provider: string) =>
@@ -489,6 +499,7 @@ describe("VoiceTab — Sarvam loudness", () => {
   });
 
   const ttsModelSelect = () => screen.getByLabelText("TTS model") as HTMLSelectElement;
+  const loudness = () => screen.getByLabelText("Loudness") as HTMLInputElement;
 
   it("shows a Loudness slider for bulbul:v2 next to Pitch, with the saved value", async () => {
     installSarvamModels(V2_SETTINGS);
@@ -502,7 +513,18 @@ describe("VoiceTab — Sarvam loudness", () => {
     expect(screen.getByLabelText("Pitch")).toBeInTheDocument();
   });
 
-  it("hides Loudness for bulbul:v3 and bulbul:v4-flash", async () => {
+  it("shows a bulbul:v4-flash bot's saved loudness on its own 0.1–2.5 slider", async () => {
+    installSarvamModels(V4_FLASH_SETTINGS);
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v4-flash"));
+    const slider = await screen.findByLabelText("Loudness") as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect([slider.min, slider.max]).toEqual(["0.1", "2.5"]);
+    expect(slider).toHaveValue("0.6");
+    expect(screen.queryByLabelText("Pitch")).not.toBeInTheDocument();
+  });
+
+  it("hides Loudness on bulbul:v3 and offers it again on bulbul:v4-flash", async () => {
     const user = userEvent.setup();
     installSarvamModels(V2_SETTINGS);
     render(<VoiceTab bot={BOT} />);
@@ -517,8 +539,22 @@ describe("VoiceTab — Sarvam loudness", () => {
 
     await user.selectOptions(ttsModelSelect(), ["bulbul:v4-flash"]);
     expect(ttsModelSelect()).toHaveValue("bulbul:v4-flash");
-    expect(await screen.findByLabelText("Temperature")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Loudness")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Loudness")).toBeInTheDocument();
+    expect([loudness().min, loudness().max]).toEqual(["0.1", "2.5"]);
+    expect(loudness()).toHaveValue("1"); // v3 dropped the value: the default
+  });
+
+  it("clamps a bulbul:v2 loudness above 2.5 into the v4-flash range", async () => {
+    const user = userEvent.setup();
+    installSarvamModels({ ...V2_SETTINGS, ttsSettings: { pitch: 0, loudness: 2.8 } });
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(ttsModelSelect()).toHaveValue("bulbul:v2"));
+    expect(await screen.findByLabelText("Loudness")).toHaveValue("2.8");
+
+    await within(ttsModelSelect()).findByRole("option", { name: /Bulbul v4 Flash/ });
+    await user.selectOptions(ttsModelSelect(), ["bulbul:v4-flash"]);
+    await waitFor(() => expect(loudness().max).toBe("2.5"));
+    expect(loudness()).toHaveValue("2.5");
   });
 
   it("never offers Loudness to a bot on bulbul:v3", async () => {

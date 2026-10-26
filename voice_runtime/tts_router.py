@@ -1297,8 +1297,8 @@ class StreamingTTSRouter(TTSService):
                 voice=state.engine.get("voice"),
                 fallback_used=state.fallback_used,
                 failed=failed,
-                # Sarvam loudness this reply rendered with (bulbul:v2 only);
-                # None for an engine without a loudness control.
+                # Sarvam loudness this reply rendered with (bulbul:v2 and
+                # bulbul:v4-flash); None for an engine without the control.
                 loudness=effective_loudness(
                     state.engine.get("provider"), state.engine.get("model"),
                     getattr(settings, "params", None),

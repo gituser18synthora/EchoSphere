@@ -123,7 +123,7 @@ class TestWebSocketAdapter:
 # ── REST adapter ───────────────────────────────────────────────────────────
 
 class TestRestAdapter:
-    async def test_v4_flash_maps_the_persona_and_drops_v2_parameters(self, monkeypatch):
+    async def test_v4_flash_maps_the_persona_and_drops_v2_pitch(self, monkeypatch):
         tts = _NewSdkTTS()
         provider = _provider(monkeypatch, tts, language="hi-IN")
         provider._model = "bulbul:v4-flash"
@@ -133,7 +133,9 @@ class TestRestAdapter:
         assert call["model"] == "bulbul:v4-flash"
         assert call["speaker"] == "kavya_hi_conversational"
         assert call["temperature"] == 0.3
-        assert "pitch" not in call and "loudness" not in call
+        # v4-flash takes loudness (0.1-2.5) like bulbul:v2; pitch is v2-only.
+        assert call["loudness"] == 1.1
+        assert "pitch" not in call
 
     async def test_v4_flash_unmapped_voice_raises_invalid_input(self, monkeypatch):
         tts = _NewSdkTTS()
@@ -203,7 +205,8 @@ def test_catalog_seed_keeps_v3_the_tts_default_and_offers_v4_flash():
     assert v3[9] is True and v3[10] == "active"
     assert v4[9] is False and v4[10] == "active"
     assert "ml-IN" not in v4[4] and "od-IN" not in v4[4] and "ml-IN" in v3[4]
-    assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA)
+    # The v3 contract plus loudness, which v4-flash offers and v3 does not.
+    assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA) | {"loudness"}
     assert catalog_seed._SARVAM_TTS_V3_SCHEMA["pace"]["help"].startswith("Speech speed")
     assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v3")
 
