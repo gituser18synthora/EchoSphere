@@ -349,7 +349,8 @@ class TestLatencyBudget:
         engine, llm = make_engine({"scope": "in_scope", "next_action": "answer"})
         first = await engine.warm_up()
         assert await engine.warm_up() is None            # once per call
-        assert len(llm.calls) == 1 and llm.calls[0]["max_tokens"] == 1
+        # 16, not 1: gpt-6-luna answers a <8-token JSON completion with 400.
+        assert len(llm.calls) == 1 and llm.calls[0]["max_tokens"] == 16
         assert "JSON" in llm.calls[0]["system"]          # the real system prompt
         assert first["ok"] is True and first["before_first_decision"] is True
         assert first["latency_ms"] >= 0 and engine.warmup is first

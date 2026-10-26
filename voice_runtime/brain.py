@@ -8089,7 +8089,11 @@ class ConversationBrain(FrameProcessor):
             logger.debug("decision warm-up crashed", exc_info=True)
             return
         if outcome is not None:
-            self._recorder.add_event("decision_warmup", **outcome)
+            # greeting_playing: the warm-up finished while the opening was
+            # still being spoken — its latency was hidden behind it.
+            self._recorder.add_event(
+                "decision_warmup", **outcome, greeting_playing=self._bot_speaking,
+            )
 
     async def _speak_memory_greeting(self) -> bool:
         """Open a repeat-contact call as a continuation, not a restart.

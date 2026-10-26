@@ -30,6 +30,7 @@ import asyncio
 import json
 
 from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.goal_engine import _WARMUP_MAX_TOKENS
 from shared.runtime_context import build_runtime_context
 from voice_runtime.brain import ConversationBrain
 from voice_runtime.call_policy import canned
@@ -59,7 +60,7 @@ class _AgenticLLMStub(_StreamingLLMStub):
                        max_tokens=None, tools=None, response_format=None):
         self.generate_calls.append({"messages": messages, "system": system,
                                     "max_tokens": max_tokens})
-        if max_tokens == 1:
+        if max_tokens == _WARMUP_MAX_TOKENS:
             # The call-start prompt warm-up (Phase 2): discarded by the
             # engine, so it must not consume a scripted decision.
             payload = {}

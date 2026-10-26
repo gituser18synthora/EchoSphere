@@ -3,6 +3,7 @@ path, recorded as a decision_warmup event, never blocking and never a
 decision attempt."""
 import asyncio
 
+from shared.orchestration.goal_engine import _WARMUP_MAX_TOKENS
 from tests.unit.test_agentic_orchestration import _AgenticLLMStub, make_agentic_brain
 
 INTENTS = [{"name": "pay_now", "description": "wants to pay", "samples": ["payment karna hai"]}]
@@ -31,7 +32,7 @@ class TestDecisionWarmup:
         warmups = [data for kind, data in brain._recorder.events if kind == "decision_warmup"]
         assert len(warmups) == 1
         assert warmups[0]["ok"] is True and warmups[0]["before_first_decision"] is True
-        assert [c["max_tokens"] for c in llm.generate_calls] == [1]
+        assert [c["max_tokens"] for c in llm.generate_calls] == [_WARMUP_MAX_TOKENS]
         assert brain._goal_engine.warmup is not None and not brain._goal_engine.warmup_pending
         # the scripted decision is still queued for the first real turn
         assert llm._decisions == [{"scope": "in_scope", "next_action": "answer"}]
@@ -40,7 +41,7 @@ class TestDecisionWarmup:
     async def test_warm_up_failure_never_reaches_the_call(self):
         class _Broken(_AgenticLLMStub):
             async def generate(self, messages, *, max_tokens=None, **kwargs):
-                if max_tokens == 1:
+                if max_tokens == _WARMUP_MAX_TOKENS:
                     raise RuntimeError("provider down")
                 return await super().generate(messages, max_tokens=max_tokens, **kwargs)
 
@@ -54,7 +55,8 @@ class TestDecisionWarmup:
         await _settle()
         warmups = [data for kind, data in brain._recorder.events if kind == "decision_warmup"]
         assert warmups == [{"ok": False, "error": "RuntimeError",
-                            "latency_ms": warmups[0]["latency_ms"], "before_first_decision": True}]
+                            "latency_ms": warmups[0]["latency_ms"], "before_first_decision": True,
+                            "greeting_playing": False}]
         assert brain._goal_engine.enabled and not brain._goal_engine._disabled_after_timeouts
 
     async def test_engine_off_bots_do_not_warm_up(self):
@@ -75,7 +77,7 @@ class TestDecisionWarmup:
     async def test_cleanup_cancels_a_pending_warm_up(self):
         class _Slow(_AgenticLLMStub):
             async def generate(self, messages, *, max_tokens=None, **kwargs):
-                if max_tokens == 1:
+                if max_tokens == _WARMUP_MAX_TOKENS:
                     await asyncio.sleep(5)
                 return await super().generate(messages, max_tokens=max_tokens, **kwargs)
 

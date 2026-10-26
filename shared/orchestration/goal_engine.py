@@ -92,6 +92,14 @@ _DEFAULT_MAX_TOKENS = 200
 # the call (one GoalEngine instance per ConversationBrain/call) so later
 # turns fall back immediately instead of stalling first.
 _MAX_CONSECUTIVE_TIMEOUTS = 3
+# Warm-up completion cap. gpt-6-luna will not end a completion under 8 tokens
+# in JSON mode (4 in plain text): the API answers 400 "Could not finish the
+# message because max_tokens or model output limit was reached", so the old
+# 1-token warm-up failed on every live call (38/38, demo 2026-10-26) — its
+# prompt was still cached, but the outcome read as an error. 16 tokens: 200,
+# finish_reason "length", and the next decision is served from the cache
+# (measured 2026-10-26).
+_WARMUP_MAX_TOKENS = 16
 # Bounds shared with API validation (backend.core.provider_catalog).
 TIMEOUT_BOUNDS = (0.5, 5.0)
 MAX_TOKENS_BOUNDS = (64, 340)
@@ -602,8 +610,9 @@ class GoalEngine:
         """Prime the provider's prompt cache with the call's real system prompt.
 
         One request per call: the full decision system prompt, a one-line
-        placeholder user message, ``max_tokens=1`` and the same JSON mode as
-        a real decision, result discarded. Never raises, never counts as a
+        placeholder user message, a 16-token completion cap
+        (``_WARMUP_MAX_TOKENS``) and the same JSON mode as a real decision,
+        result discarded. Never raises, never counts as a
         decision attempt or a timeout. Returns the outcome also stored on
         ``self.warmup``: ``ok``, ``latency_ms``, ``error``,
         ``before_first_decision`` (True when no real decision had been
@@ -618,7 +627,7 @@ class GoalEngine:
                 [{"role": "user", "content": "Caller's latest utterance:\n(warm-up, ignore)"}],
                 system=self._build_system(),
                 temperature=0.0,
-                max_tokens=1,
+                max_tokens=_WARMUP_MAX_TOKENS,
                 **self._json_mode_kwargs(),
             )
         except asyncio.CancelledError:
