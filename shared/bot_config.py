@@ -456,6 +456,9 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
     Entries may be legacy voice_profiles id strings or objects
     {"provider","model","voice","params"?}. The reserved "default" key (the
     default locale) is excluded — it lives in ResolvedBotConfig.language.
+    Every locale runs on exactly the model stored for it — the entry's own
+    model, else the bot's tts_model — never one picked by language:
+    bulbul:v4-flash is opt-in.
     """
     mapping = {}
     for locale, entry in ((vbs.language_voice_map if vbs else None) or {}).items():
@@ -478,9 +481,20 @@ def _normalize_voice_map(session, vbs, default_engine: dict, tenant_id: str | No
             if profile is None:
                 continue
             provider = profile.provider or default_engine["provider"]
+            codes = list(profile.model_codes or [])
+            if provider == default_engine["provider"] and (
+                not codes or default_engine["model"] in codes
+            ):
+                # The bot's stored model whenever the voice runs on it: the
+                # order of a voice's model_codes never moves a bot to another
+                # model (bulbul:v4-flash is opt-in — a persona voice, which
+                # runs on nothing else, is the explicit choice).
+                model = default_engine["model"]
+            else:
+                model = codes[0] if codes else default_engine["model"]
             engine = {
                 "provider": provider,
-                "model": (profile.model_codes or [default_engine["model"]])[0],
+                "model": model,
                 "voice": profile.provider_voice_id or profile.name,
                 "voice_name": profile.name,
                 "voice_gender": (

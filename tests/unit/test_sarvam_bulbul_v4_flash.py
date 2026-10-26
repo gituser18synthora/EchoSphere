@@ -12,6 +12,8 @@ persona ids and Sarvam rejects a v3 short name with a 400. These tests pin:
 - the catalog seed rows.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 import shared.bot_config as bot_config
@@ -195,6 +197,84 @@ class TestConfigFallback:
         bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["hi-IN", "en-IN"], warnings, "bot_x")
         assert tts["language_map"] == {"hi-IN": _engine("bulbul:v4-flash", "shubh")}
         assert warnings == {}
+
+
+# ── v4-flash is opt-in ─────────────────────────────────────────────────────
+
+class TestV4FlashIsOptIn:
+    """The runtime plays exactly the stored model: bulbul:v3 unless the bot's
+    tts_model or a language_voice_map entry names bulbul:v4-flash (or a
+    persona voice, which runs on nothing else). No language-based upgrade."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        profiles = {
+            # A v3 voice that also lists v4-flash — first, the order that must
+            # never move a bot.
+            "vp-sv-shubh": SimpleNamespace(provider="sarvam", provider_voice_id="shubh", name="Shubh",
+                                           gender="male", provider_settings={},
+                                           model_codes=["bulbul:v4-flash", "bulbul:v3"]),
+            "vp-sv4-shubh_hi_customer": SimpleNamespace(
+                provider="sarvam", provider_voice_id="shubh_hi_customer", name="Shubh · Hindi · Customer",
+                gender="male", provider_settings={}, model_codes=["bulbul:v4-flash"]),
+        }
+        monkeypatch.setattr(bot_config, "_tenant_profile", lambda session, voice, tenant: profiles.get(voice))
+        monkeypatch.setattr(bot_config, "_engine_allowed", lambda *a, **k: None)
+        monkeypatch.setattr(bot_config, "_secret_ref_for", lambda *a, **k: "")
+        monkeypatch.setattr(bot_config, "_wire_voice", lambda session, provider, voice, tenant=None: (
+            profiles[voice].provider_voice_id if voice in profiles else voice))
+        monkeypatch.setattr(bot_config, "_voice_identity", lambda *a, **k: SimpleNamespace(name="Shubh", gender="male"))
+
+    def _tts(self, *, model="bulbul:v3", voice_map=None) -> dict:
+        tts = {**_engine(model, "shubh"), "settings": {}}
+        vbs = SimpleNamespace(language_voice_map={"default": "hi-IN", **(voice_map or {})})
+        tts["language_map"] = bot_config._normalize_voice_map(None, vbs, tts, "tn_x")
+        bot_config._keep_unmapped_v4_locales_on_v3(None, tts, ["hi-IN", "en-IN"], {}, "bot_x")
+        return tts
+
+    async def test_a_hi_in_bot_stored_on_v3_plays_v3(self, monkeypatch):
+        from shared.orchestration.voice_identity import resolve_tts_engine
+
+        for voice_map in ({}, {"hi-IN": "vp-sv-shubh"},
+                          {"hi-IN": {"provider": "sarvam", "model": "bulbul:v3", "voice": "vp-sv-shubh"}}):
+            engine = resolve_tts_engine(self._tts(voice_map=voice_map), "hi-IN")
+            assert (engine["model"], engine["voice"]) == ("bulbul:v3", "shubh"), voice_map
+        # ...and that is what reaches Sarvam: model and v3 speaker on the wire.
+        monkeypatch.setattr(sarvam_ws, "_WARM_SPARE", False)
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings(model="bulbul:v3", voice="shubh", language="hi-IN"))
+            await provider.connect()
+            await provider.close()
+        assert (server.configs[0]["model"], server.configs[0]["speaker"]) == ("bulbul:v3", "shubh")
+        assert "model=bulbul:v3" in server.queries[0]["_raw"]
+        tts = _NewSdkTTS()
+        rest = _provider(monkeypatch, tts, language="hi-IN")
+        await rest.synthesize("Namaste", voice="shubh", language="hi-IN")
+        assert (tts.calls[0]["model"], tts.calls[0]["speaker"]) == ("bulbul:v3", "shubh")
+
+    def test_a_voices_model_order_never_upgrades_a_legacy_entry(self):
+        tts = self._tts(voice_map={"hi-IN": "vp-sv-shubh"})
+        assert tts["language_map"]["hi-IN"]["model"] == "bulbul:v3"
+        # A bot stored on v4-flash keeps v4-flash for the same entry.
+        tts = self._tts(model="bulbul:v4-flash", voice_map={"hi-IN": "vp-sv-shubh"})
+        assert tts["language_map"]["hi-IN"]["model"] == "bulbul:v4-flash"
+
+    def test_choosing_v4_flash_stays_explicit_and_keeps_the_voice_mapping(self):
+        # A persona voice (runs on nothing else) and an entry naming the model.
+        for entry in ("vp-sv4-shubh_hi_customer",
+                      {"provider": "sarvam", "model": "bulbul:v4-flash", "voice": "vp-sv-shubh"}):
+            engine = self._tts(voice_map={"hi-IN": entry})["language_map"]["hi-IN"]
+            assert engine["model"] == "bulbul:v4-flash"
+        # The v3 -> persona mapping still applies on the wire for such bots.
+        assert v4_speaker("shubh", "hi-IN") == "shubh_hi_customer"
+
+    def test_nothing_defaults_to_v4_flash(self):
+        from shared.config import Settings
+
+        assert Settings.model_fields["tts_model"].default == "bulbul:v3"
+        defaults = [r[2] for r in catalog_seed.PROVIDER_MODELS if r[:2] == ("sarvam", "tts") and r[9]]
+        assert defaults == ["bulbul:v3"]
 
 
 # ── catalog seed ───────────────────────────────────────────────────────────
