@@ -70,6 +70,13 @@ logger = logging.getLogger(__name__)
 # measured live decision p50 is ~1,245 ms (14-day telephony sample to
 # 2026-10-07); the earlier 1.2 s budget timed out on 75 % of first attempts.
 _DEFAULT_TIMEOUT_SECONDS = 1.6
+# Per decision model, when the bot sets no orchestration_timeout_seconds: the
+# budget follows the model's measured latency, not one shared figure.
+# gpt-6-luna on the fast tier, live demo 2026-10-26 (38 calls, 169 completed
+# decisions): p50 1,453 ms, p90 1,689 ms, max 2,213 ms. The 1.6 s default
+# timed out 31 of ~90 decisions on bots without an override (34 %); MDND's
+# 2.0 s override timed out 1 of 49.
+_MODEL_TIMEOUT_SECONDS = {"gpt-6-luna": 2.0}
 # Latency budget: the decision call sits serially before every reply, so its
 # payload is kept small — a short rolling history window (each turn capped)
 # and a bounded output. The full conversation lives in Stage-B's history.
@@ -89,6 +96,17 @@ _MAX_CONSECUTIVE_TIMEOUTS = 3
 TIMEOUT_BOUNDS = (0.5, 5.0)
 MAX_TOKENS_BOUNDS = (64, 340)
 _MAX_PROMPT_EXCERPT_CHARS = 1200
+
+
+def default_timeout_seconds(model: str | None) -> float:
+    """The decision budget for ``model`` when the bot sets none (dated
+    snapshots such as ``gpt-6-luna-2026-…`` count as their model)."""
+    normalized = str(model or "").strip().lower()
+    for name, seconds in _MODEL_TIMEOUT_SECONDS.items():
+        if normalized == name or normalized.startswith(name + "-"):
+            return seconds
+    return _DEFAULT_TIMEOUT_SECONDS
+
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 # Decision rules added 2026-10-09 from a 120-turn labeled live benchmark (four
 # generic bots, adjudicated against this rulebook). The model labelled
@@ -567,6 +585,11 @@ class GoalEngine:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def timeout_seconds(self) -> float:
+        """The decision budget in effect (clamped)."""
+        return self._timeout
 
     # ── prompt warm-up ───────────────────────────────────────────────────
 

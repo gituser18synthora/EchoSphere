@@ -111,7 +111,7 @@ from shared.orchestration.decision_schema import (
 )
 from shared.orchestration.goal_engine import (
     _DEFAULT_MAX_TOKENS as GOAL_ENGINE_DEFAULT_MAX_TOKENS,
-    _DEFAULT_TIMEOUT_SECONDS as GOAL_ENGINE_DEFAULT_TIMEOUT,
+    default_timeout_seconds as goal_engine_default_timeout,
     GoalEngine,
     GoalSession,
     compile_goal_policy,
@@ -870,11 +870,14 @@ class ConversationBrain(FrameProcessor):
             intents=config.intents,
             enabled=engine_enabled,
             include_response_text=self._decision_writes_reply_text(config, llm_settings_early),
-            # Defaults come from the engine's own budget constants; per-bot
-            # overrides (llm_settings) are clamped to the shared safe ranges
+            # Defaults come from the engine's own budget constants — the
+            # decision budget per decision model; per-bot overrides
+            # (llm_settings) win and are clamped to the shared safe ranges
             # inside GoalEngine.
-            timeout_seconds=llm_settings_early.get(
-                "orchestration_timeout_seconds", GOAL_ENGINE_DEFAULT_TIMEOUT
+            timeout_seconds=(
+                llm_settings_early.get("orchestration_timeout_seconds")
+                if llm_settings_early.get("orchestration_timeout_seconds") is not None
+                else goal_engine_default_timeout(self._decision_engine["model"])
             ),
             max_tokens=llm_settings_early.get(
                 "orchestration_max_tokens", GOAL_ENGINE_DEFAULT_MAX_TOKENS
@@ -5912,6 +5915,8 @@ class ConversationBrain(FrameProcessor):
             "model": (meta or {}).get("model") or self._decision_engine["model"],
             "service_tier": (meta or {}).get("service_tier"),
             "service_tier_requested": self._decision_engine["service_tier_requested"],
+            # The budget this decision ran under (per model / per bot).
+            "budget_ms": round(engine.timeout_seconds * 1000),
         }
         if orchestrated is None:
             self._recorder.add_event(

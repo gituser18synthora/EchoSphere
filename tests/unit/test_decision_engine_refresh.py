@@ -23,7 +23,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 import shared.bot_config as bot_config
-from shared.orchestration.goal_engine import BotGoalPolicy, GoalEngine
+from shared.bot_config import ResolvedBotConfig
+from shared.orchestration.goal_engine import BotGoalPolicy, GoalEngine, default_timeout_seconds
 from shared.providers.base import ProviderConfig
 from shared.providers.llm.openai_llm import (
     OpenAILLM,
@@ -31,7 +32,9 @@ from shared.providers.llm.openai_llm import (
     lowest_reasoning_effort,
 )
 from tests.unit.test_agentic_orchestration import (
+    GRACE,
     _AgenticLLMStub,
+    _RecorderStub,
     events,
     make_agentic_brain,
 )
@@ -254,6 +257,64 @@ class TestDecisionEventsAndUsage:
         assert decision["model_code"] == "gpt-6-luna"
         assert (decision["requests"], decision["input_tokens"], decision["cached_tokens"]) == (3, 7200, 6900)
         assert by_request["vs_test:llm"]["model_code"] == "gpt-4o-mini"
+
+
+# ── decision budget per decision model ─────────────────────────────────────
+
+class TestDecisionBudget:
+    """gpt-6-luna on the fast tier decides in p50 1.45 s / p90 1.69 s (live
+    demo 2026-10-26): the 1.6 s default cut 34 % of its decisions on bots
+    without an override, so its default budget is 2.0 s. A bot's own
+    orchestration_timeout_seconds still wins."""
+
+    def _brain(self, monkeypatch, *, model="gpt-4o-mini", orchestration=None, settings=None):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        llm = {"provider": "openai", "model": model, "settings": settings or {},
+               "api_key_reference": "env:OPENAI_API_KEY"}
+        if orchestration:
+            llm["orchestration"] = {"provider": "openai", "model": orchestration,
+                                    "api_key_reference": "env:OPENAI_API_KEY", "source": "platform"}
+        config = ResolvedBotConfig(
+            tenant_id="tn-x", bot_id="bot-x", bot_name="Test", version="v1", published=True,
+            language="hi-IN", languages=["hi-IN"], stt={"provider": "sarvam"},
+            system_prompt="You are a support bot.", intents=PLAIN_INTENTS, llm=llm,
+        )
+        return ConversationBrain(config=config, llm=_AgenticLLMStub([]), recorder=_RecorderStub(),
+                                 finalize_grace=GRACE, complete_endpoint=GRACE)
+
+    def test_default_budget_per_model(self):
+        assert default_timeout_seconds("gpt-6-luna") == 2.0
+        assert default_timeout_seconds("GPT-6-Luna-2026-10-01") == 2.0
+        assert default_timeout_seconds("gpt-4o-mini") == 1.6
+        assert default_timeout_seconds("gpt-6-lunar") == 1.6
+        assert default_timeout_seconds(None) == 1.6
+
+    def test_the_decision_models_budget_applies(self, monkeypatch):
+        assert self._brain(monkeypatch, orchestration="gpt-6-luna")._goal_engine.timeout_seconds == 2.0
+        # No dedicated engine: the conversation model decides, on its budget.
+        assert self._brain(monkeypatch, model="gpt-6-luna")._goal_engine.timeout_seconds == 2.0
+        assert self._brain(monkeypatch, model="gpt-4o-mini")._goal_engine.timeout_seconds == 1.6
+
+    def test_the_bots_own_budget_wins_and_stays_clamped(self, monkeypatch):
+        brain = self._brain(monkeypatch, orchestration="gpt-6-luna",
+                            settings={"orchestration_timeout_seconds": 1.2})
+        assert brain._goal_engine.timeout_seconds == 1.2
+        brain = self._brain(monkeypatch, orchestration="gpt-6-luna",
+                            settings={"orchestration_timeout_seconds": 9})
+        assert brain._goal_engine.timeout_seconds == 5.0
+        brain = self._brain(monkeypatch, orchestration="gpt-6-luna",
+                            settings={"orchestration_timeout_seconds": None})
+        assert brain._goal_engine.timeout_seconds == 2.0
+
+    async def test_decision_events_carry_the_budget(self):
+        brain = make_agentic_brain(
+            context=None, intents=PLAIN_INTENTS,
+            llm=_AgenticLLMStub([{"scope": "in_scope", "next_action": "answer"}]),
+        )
+        await turn(brain, "bill galat aaya hai")
+        if brain._generation is not None:
+            await brain._generation
+        assert events(brain, "orchestration_decision")[-1]["budget_ms"] == 1600
 
 
 # ── post-call analysis keeps its engine ───────────────────────────────────
