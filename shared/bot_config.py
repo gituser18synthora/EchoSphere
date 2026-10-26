@@ -370,6 +370,29 @@ def _resolve_decision_engine(
     return None
 
 
+def _reply_request_options(bot_id: str, llm_settings: dict) -> dict:
+    """Request options for the bot's conversation-model calls.
+
+    The conversation model serves replies AND everything else that runs on
+    it during a call: grounded workflow rewrites, the workflow's semantic
+    fact extractor (e.g. Zepto MDND's four parallel readers) and intent
+    classification. Always the bot's prompt-cache key (shared with its
+    decision calls); optionally ``llm_settings.reply_service_tier`` (OpenAI
+    service tier, e.g. "fast") and ``reply_reasoning_effort`` ("lowest" =
+    the lowest effort the model accepts — none for gpt-6-luna, whose default
+    medium effort is far too slow for a live call). Post-call analysis drops
+    the tier, as it does for the decision engine.
+    """
+    extra = {"prompt_cache_key": bot_id}
+    tier = str(llm_settings.get("reply_service_tier") or "").strip()
+    if tier:
+        extra["service_tier"] = tier
+    effort = str(llm_settings.get("reply_reasoning_effort") or "").strip().lower()
+    if effort:
+        extra["reasoning_effort"] = effort
+    return extra
+
+
 def _keep_unmapped_v4_locales_on_v3(
     session, tts_engine: dict, locales: list[str], language_warnings: dict,
     bot_id: str,
@@ -1067,9 +1090,7 @@ def _load_config_sync(bot_id: str, require_published: bool) -> ResolvedBotConfig
                 "model": llm_model,
                 "settings": llm_settings_blob,
                 "api_key_reference": _secret_ref_for(session, "llm", llm_provider),
-                # Reply calls share the bot's prompt-cache routing key with its
-                # decision calls (OpenAI prompt_cache_key).
-                "extra": {"prompt_cache_key": bot_id},
+                "extra": _reply_request_options(bot_id, llm_settings_blob),
                 "orchestration": orchestration_engine,
             },
             speed=clamp_speed(vbs.speed if vbs else None),

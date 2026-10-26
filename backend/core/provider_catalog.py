@@ -304,6 +304,17 @@ _PLATFORM_LLM_STRING_KEYS = {
     # OpenAI request option for the decision call only. Unset = the platform
     # default (ORCHESTRATION_SERVICE_TIER, "fast"); "default" opts a bot out.
     "orchestration_service_tier": 20,
+    # Request options for every call on the bot's CONVERSATION model (replies,
+    # grounded rewrites, workflow fact extraction, intent classification).
+    # Unset = standard tier / the model's default reasoning effort.
+    "reply_service_tier": 20,
+    "reply_reasoning_effort": 10,
+}
+# Values the request-option keys accept (OpenAI service tiers; reasoning
+# efforts, "lowest" = the lowest the model accepts).
+_PLATFORM_LLM_STRING_CHOICES = {
+    "reply_service_tier": frozenset({"auto", "default", "flex", "priority", "fast", "scale"}),
+    "reply_reasoning_effort": frozenset({"lowest", "none", "minimal", "low", "medium", "high"}),
 }
 _PLATFORM_LLM_NUMBER_BOUNDS = {
     "orchestration_timeout_seconds": (0.5, 5.0),
@@ -345,6 +356,13 @@ def validate_llm_settings(
             errors.append(f"{prefix}: '{key}' must be a string.")
         elif len(value) > max_length:
             errors.append(f"{prefix}: '{key}' is too long.")
+        elif key in _PLATFORM_LLM_STRING_CHOICES and value.strip().lower() not in (
+            _PLATFORM_LLM_STRING_CHOICES[key]
+        ):
+            errors.append(
+                f"{prefix}: '{key}' must be one of "
+                + ", ".join(sorted(_PLATFORM_LLM_STRING_CHOICES[key])) + "."
+            )
     for key, (low, high) in _PLATFORM_LLM_NUMBER_BOUNDS.items():
         value = params.get(key)
         if value is None:

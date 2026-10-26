@@ -518,6 +518,8 @@ structured Goal Engine decision.
 | `orchestration_max_tokens` | integer | no | 64–340; resolver default is 200. |
 | `orchestration_service_tier` | string | no | Max 20; OpenAI tier for the decision call only. Unset = platform default `ORCHESTRATION_SERVICE_TIER` (`fast`); `default` opts the bot out. |
 | `orchestration_response_text` | boolean | no | Whether the decision also writes a short reply. Unset = automatic: off for bots with a `workflow:` intent and no collections policy, on otherwise. |
+| `reply_service_tier` | string | no | OpenAI tier for every call on the bot's conversation model (replies, grounded rewrites, workflow fact extraction, intent classification): `auto`, `default`, `flex`, `priority`, `fast`, `scale`. Unset = standard. Post-call analysis ignores it. |
+| `reply_reasoning_effort` | string | no | Reasoning effort for those calls: `lowest` (the lowest the model accepts — `none` for gpt-6-luna), `none`, `minimal`, `low`, `medium`, `high`. Unset = the model's default; set `lowest` when the conversation model is gpt-6-luna. |
 
 The decision call always runs on a dedicated engine, resolved in this order:
 the bot's `orchestration_provider`/`orchestration_model`; the platform default
