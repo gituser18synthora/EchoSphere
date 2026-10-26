@@ -112,16 +112,19 @@ function withVoiceIdentity(values: Record<string, unknown>, voice: VoiceOption |
    full schema. */
 const DELIVERY_SPEED_PARAMS = ["pace", "speed"];
 
-/* Platform-owned llmSettings keys (backend PLATFORM_LLM_SETTING_KEYS). They
-   configure the EchoSphere runtime, not the LLM provider, so they are never
-   in a provider's params schema — reconcileSettings would silently drop them
-   on every provider/model switch. */
+/* Platform-owned llmSettings keys (backend PLATFORM_LLM_SETTING_KEYS — kept
+   equal by tests/unit/test_provider_validation.py). They configure the
+   EchoSphere runtime, not the LLM provider, so they are never in a provider's
+   params schema — reconcileSettings would silently drop them on every
+   provider/model switch. */
 const PLATFORM_LLM_SETTING_KEYS = [
   "goal_engine_enabled", "intent_llm_enabled", "memory_greeting_enabled",
-  "orchestration_provider", "orchestration_model",
+  "time_context_enabled",
+  "orchestration_provider", "orchestration_model", "orchestration_service_tier",
+  "orchestration_response_text",
   "orchestration_timeout_seconds", "intent_timeout_seconds",
   "memory_greeting_timeout_seconds", "orchestration_max_tokens",
-  "max_output_characters",
+  "max_output_characters", "reply_service_tier", "reply_reasoning_effort",
 ];
 
 function preservePlatformLlmSettings(next: ProviderSettings, previous: ProviderSettings): ProviderSettings {

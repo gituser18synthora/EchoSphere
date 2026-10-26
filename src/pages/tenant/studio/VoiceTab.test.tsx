@@ -833,6 +833,34 @@ describe("VoiceTab — LLM output length", () => {
     expect(payload.llmSettings).toMatchObject({ max_output_characters: 500, temperature: 0.3 });
   });
 
+  it("switching the LLM model keeps the decision and reply request options", async () => {
+    /* Not in any provider schema and not shown in the form — before the fix
+       a model switch silently dropped them on the next save (demo,
+       2026-10-26: three bots lost their reply tier and effort). */
+    const runtime = {
+      orchestration_service_tier: "default",
+      orchestration_response_text: false,
+      reply_service_tier: "fast",
+      reply_reasoning_effort: "lowest",
+      time_context_enabled: true,
+    };
+    vi.mocked(api.getVoiceSettings).mockResolvedValue(
+      { ...LLM_SETTINGS, llmSettings: { ...LLM_SETTINGS.llmSettings, ...runtime } } as never);
+    const user = userEvent.setup();
+    render(<VoiceTab bot={BOT} />);
+    await waitFor(() => expect(llmModelSelect()).toHaveValue("gpt-4o-mini"));
+
+    await within(llmModelSelect()).findByRole("option", { name: /GPT-4.1 mini/ });
+    await user.selectOptions(llmModelSelect(), ["gpt-4.1-mini"]);
+    expect(llmModelSelect()).toHaveValue("gpt-4.1-mini");
+
+    await user.click(screen.getByRole("button", { name: "Save voice settings" }));
+    await waitFor(() => expect(api.saveVoiceSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.saveVoiceSettings).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.llmModel).toBe("gpt-4.1-mini");
+    expect(payload.llmSettings).toMatchObject({ ...runtime, max_output_characters: 500 });
+  });
+
   it("defaults Goal Engine to enabled and saves the disabled override without losing LLM settings", async () => {
     const user = userEvent.setup();
     render(<VoiceTab bot={BOT} />);

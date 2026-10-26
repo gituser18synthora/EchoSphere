@@ -1,8 +1,12 @@
 """Parameter-schema validation, language mapping helpers, sentence buffering."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from backend.core.provider_catalog import (
+    PLATFORM_LLM_SETTING_KEYS,
     validate_llm_settings,
     validate_params,
     validate_stt_settings,
@@ -167,6 +171,16 @@ class TestValidateLlmSettings:
         assert self.check({"orchestration_timeout_seconds": 5.0}) == []
         assert self.check({"orchestration_max_tokens": 64}) == []
         assert self.check({"orchestration_max_tokens": 340}) == []
+
+    def test_the_studio_keeps_every_platform_key_on_a_model_switch(self):
+        # The Studio's copy of the list is what survives an LLM provider /
+        # model switch; a key missing there is silently dropped on the next
+        # save (reply_service_tier / reply_reasoning_effort were, on demo).
+        source = (Path(__file__).resolve().parents[2]
+                  / "src/pages/tenant/studio/VoiceTab.tsx").read_text()
+        block = re.search(r"const PLATFORM_LLM_SETTING_KEYS = \[(.*?)\];", source, re.S)
+        assert block is not None
+        assert set(re.findall(r'"([a-z_]+)"', block.group(1))) == set(PLATFORM_LLM_SETTING_KEYS)
 
 
 class TestLanguageMapping:
