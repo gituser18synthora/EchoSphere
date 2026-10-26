@@ -197,15 +197,15 @@ class TestConfigFallback:
 
 # ── catalog seed ───────────────────────────────────────────────────────────
 
-def test_catalog_seed_makes_v4_flash_the_tts_default_and_keeps_v3():
+def test_catalog_seed_keeps_v3_the_tts_default_and_offers_v4_flash():
     rows = {r[2]: r for r in catalog_seed.PROVIDER_MODELS if r[:2] == ("sarvam", "tts")}
     v4, v3 = rows["bulbul:v4-flash"], rows["bulbul:v3"]
-    assert v4[9] is True and v4[10] == "active"
-    assert v3[9] is False and v3[10] == "active"
+    assert v3[9] is True and v3[10] == "active"
+    assert v4[9] is False and v4[10] == "active"
     assert "ml-IN" not in v4[4] and "od-IN" not in v4[4] and "ml-IN" in v3[4]
     assert set(v4[8]) == set(catalog_seed._SARVAM_TTS_V3_SCHEMA)
     assert catalog_seed._SARVAM_TTS_V3_SCHEMA["pace"]["help"].startswith("Speech speed")
-    assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v4-flash")
+    assert catalog_seed._PROFILE_REMAP["tts"] == ("sarvam", "bulbul:v3")
 
 
 # ── catalog migration ──────────────────────────────────────────────────────
@@ -234,39 +234,92 @@ def test_v4_flash_migration_round_trip():
             "unit_price numeric, currency_code varchar(3), effective_from datetime, status varchar(20), "
             "sort_order int, created_at datetime, updated_at datetime, is_deleted int default 0)"))
         conn.execute(sa.text(
-            "create table voice_profiles (id varchar(40) primary key, provider varchar(100), "
-            "provider_voice_id varchar(100), model_codes text)"))
+            "create table voice_profiles (id varchar(40) primary key, source varchar(20), "
+            "name varchar(100), gender varchar(10), languages text, locale varchar(15), "
+            "accent varchar(100), styles text, latency_ms int, premium int, sample_text text, "
+            "provider varchar(100), provider_voice_id varchar(100), speaking_rate float, "
+            "pitch float, model_codes text, provider_settings text, is_default int, "
+            "status varchar(20), sort_order int, created_at datetime, updated_at datetime, "
+            "is_deleted int default 0)"))
         conn.execute(sa.text("create table currencies (code varchar(3) primary key)"))
         conn.execute(sa.text("insert into currencies (code) values ('INR')"))
-        for vid, speaker, codes in (
-            ("vp-sv-shubh", "shubh", '["bulbul:v3"]'),
-            ("vp-sv-gokul", "gokul", '["bulbul:v3"]'),       # Tamil persona only
-            ("vp-tenant", "ashutosh", "[]"),                   # empty = any model
-        ):
+        # Long-lived database: bulbul:v3 default, and the start-up seed of
+        # 683187650 already created bulbul:v4-flash as a SECOND default.
+        for pid, code in (("pm_v3", "bulbul:v3"), ("pm_v4", "bulbul:v4-flash")):
             conn.execute(sa.text(
-                "insert into voice_profiles (id, provider, provider_voice_id, model_codes) "
-                "values (:id, 'sarvam', :speaker, :codes)"), {"id": vid, "speaker": speaker, "codes": codes})
+                "insert into provider_models (id, provider_code, capability, code, is_default, "
+                "status, is_deleted) values (:id, 'sarvam', 'tts', :code, 1, 'active', 0)"),
+                {"id": pid, "code": code})
+        conn.execute(sa.text(
+            "insert into voice_profiles (id, provider, provider_voice_id, model_codes) "
+            "values ('vp-sv-shubh', 'sarvam', 'shubh', '[\"bulbul:v3\"]')"))
     with engine.begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
             module.upgrade()
             module.upgrade()  # idempotent
-        row = conn.execute(sa.text(
-            "select status, is_default, languages from provider_models where code='bulbul:v4-flash'")).one()
-        assert (row[0], row[1]) == ("active", 0)
-        assert "ml-IN" not in json.loads(row[2])
+        defaults = dict(conn.execute(sa.text(
+            "select code, is_default from provider_models where capability='tts'")).all())
+        assert defaults == {"bulbul:v3": 1, "bulbul:v4-flash": 0}
         price = conn.execute(sa.text(
             "select unit_price, currency_code from provider_pricing where model_code='bulbul:v4-flash'")).all()
         assert [(float(p), c) for p, c in price] == [(2.0, "INR")]
-        codes = dict(conn.execute(sa.text("select id, model_codes from voice_profiles")).all())
-        assert json.loads(codes["vp-sv-shubh"]) == ["bulbul:v3", "bulbul:v4-flash"]
-        assert json.loads(codes["vp-sv-gokul"]) == ["bulbul:v3"]
-        assert json.loads(codes["vp-tenant"]) == []
+        personas = conn.execute(sa.text(
+            "select id, provider_voice_id, model_codes, languages, locale from voice_profiles "
+            "where id like 'vp-sv4-%' order by sort_order")).all()
+        assert len(personas) == len(module._PERSONA_VOICES) == 36
+        assert personas[0][:2] == ("vp-sv4-shubh_hi_customer", "shubh_hi_customer")
+        for _id, wire, codes, languages, locale in personas:
+            assert json.loads(codes) == ["bulbul:v4-flash"]
+            assert "ml-IN" not in json.loads(languages) and len(json.loads(languages)) == 9
+            assert locale in ("hi-IN", "en-IN")
+        shubh_v3 = conn.execute(sa.text(
+            "select model_codes from voice_profiles where id='vp-sv-shubh'")).scalar()
+        assert json.loads(shubh_v3) == ["bulbul:v3"]   # v3 voices are not touched
     with engine.begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
             module.downgrade()
-        assert conn.execute(sa.text("select count(*) from provider_models")).scalar() == 0
+        assert conn.execute(sa.text(
+            "select count(*) from voice_profiles where id like 'vp-sv4-%'")).scalar() == 0
+        assert conn.execute(sa.text(
+            "select count(*) from provider_models where code='bulbul:v4-flash'")).scalar() == 0
         assert conn.execute(sa.text("select count(*) from provider_pricing")).scalar() == 0
-        codes = dict(conn.execute(sa.text("select id, model_codes from voice_profiles")).all())
-        assert json.loads(codes["vp-sv-shubh"]) == ["bulbul:v3"]
+        assert conn.execute(sa.text("select count(*) from voice_profiles")).scalar() == 1
+
+
+def test_v4_flash_migration_on_an_empty_catalog_creates_a_non_default_row():
+    import importlib
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    module = importlib.import_module(
+        "backend.alembic.versions.c2e4a6b8d0f1_sarvam_bulbul_v4_flash_catalog")
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(sa.text(
+            "create table provider_models (id varchar(40) primary key, provider_code varchar(50), "
+            "capability varchar(20), code varchar(80), display_name varchar(150), description text, "
+            "languages text, codecs text, sample_rates text, streaming int, params_schema text, "
+            "is_default int, status varchar(20), sort_order int, created_at datetime, "
+            "updated_at datetime, is_deleted int default 0)"))
+        conn.execute(sa.text(
+            "create table voice_profiles (id varchar(40) primary key, source varchar(20), "
+            "name varchar(100), gender varchar(10), languages text, locale varchar(15), "
+            "accent varchar(100), styles text, latency_ms int, premium int, sample_text text, "
+            "provider varchar(100), provider_voice_id varchar(100), speaking_rate float, "
+            "pitch float, model_codes text, provider_settings text, is_default int, "
+            "status varchar(20), sort_order int, created_at datetime, updated_at datetime, "
+            "is_deleted int default 0)"))
+        conn.execute(sa.text("create table currencies (code varchar(3) primary key)"))
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()  # fresh install: no currencies yet, so no price row
+        row = conn.execute(sa.text(
+            "select status, is_default, sort_order from provider_models where code='bulbul:v4-flash'")).one()
+        assert tuple(row) == ("active", 0, 1)
+        assert conn.execute(sa.text(
+            "select count(*) from voice_profiles where id like 'vp-sv4-%'")).scalar() == 36

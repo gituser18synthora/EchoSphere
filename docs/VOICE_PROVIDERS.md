@@ -95,7 +95,7 @@ Current governed live matrix:
 | Capability | Active production providers | Platform default |
 | --- | --- | --- |
 | STT | `sarvam` (`saaras:v4` default, `saaras:v3` selectable, `saarika:v2.5`), `deepgram` | `sarvam/saaras:v4` |
-| TTS | `sarvam` (`bulbul:v4-flash` default, `bulbul:v3` selectable), `elevenlabs`, `deepgram` | `sarvam/bulbul:v4-flash`, voice `shubh` |
+| TTS | `sarvam` (`bulbul:v3` default, `bulbul:v4-flash` selectable), `elevenlabs`, `deepgram` | `sarvam/bulbul:v3`, voice `shubh` |
 | LLM | `openai` | `openai/gpt-4o-mini` |
 | Embedding | `openai` | `openai/text-embedding-3-small` |
 
@@ -204,9 +204,17 @@ locale, which has no personas — is never given a substitute speaker:
 `shared.bot_config` keeps that locale on `bulbul:v3` with the same voice and
 records a language warning (ERROR log); both adapters raise `invalid_input`
 before opening a socket if one reaches them anyway. Persona ids configured
-explicitly pass through unchanged. Voices with a hi/en persona list
-`bulbul:v4-flash` in their `model_codes`. Price: ₹2.00 per 1K characters (public
+explicitly pass through unchanged. Price: ₹2.00 per 1K characters (public
 list, 2026-10-23); no negotiated v4 rate yet (v3 is ₹1.5).
+
+The Studio lists v4-flash voices from the catalog: the 36 Hindi and English
+personas of that table (`v4_catalog_personas()`) are their own voice profiles
+`vp-sv4-<persona>` (model_codes `["bulbul:v4-flash"]`, named e.g. "Shubh · Hindi ·
+Customer"), offered for all nine v4-flash languages, never Malayalam or Odia.
+The v3 voices stay v3-only; the runtime mapping above still covers a bot whose
+model alone was switched. `bulbul:v3` remains the default model. Fresh installs get
+the personas from the catalog seed (also run by the API at start-up where
+`startup_seed_enabled`), existing databases from migration `c2e4a6b8d0f1`.
 
 ### Sarvam TTS sockets: no cold handshake after a barge-in or at start-up
 

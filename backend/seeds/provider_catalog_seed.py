@@ -29,7 +29,11 @@ from typing import Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared.providers.tts.sarvam_voices import V3_TO_V4_PERSONA
+from shared.providers.tts.sarvam_voices import (
+    V4_TAG_LABELS,
+    persona_parts,
+    v4_catalog_personas,
+)
 
 from shared.ids import new_id
 from shared.models import (
@@ -686,16 +690,16 @@ PROVIDER_MODELS = [
     ("mock", "stt", "mock", "Mock STT", [], ["linear16"], [8000, 16000, 24000], True,
      {}, True, "active", 99),
     # ── TTS ──────────────────────────────────────────────────────────────
-    # bulbul:v4-flash is the default for new bots (same contract as v3,
-    # persona speakers mapped per voice in shared.providers.tts.sarvam_voices).
-    # v3 stays active: Malayalam/Odia have no v4 personas, and existing bots
-    # keep running on it until switched.
-    ("sarvam", "tts", "bulbul:v4-flash", "Bulbul v4 Flash (streaming)",
-     _SARVAM_TTS_V4_FLASH_LANGS, ["linear16"], [8000, 16000, 22050, 24000], True,
-     _SARVAM_TTS_V4_FLASH_SCHEMA, True, "active", 0),
+    # bulbul:v3 stays the default: nothing changes for existing or new bots
+    # unless an operator picks bulbul:v4-flash (persona voices below).
     ("sarvam", "tts", "bulbul:v3", "Bulbul v3 (streaming)",
      _SARVAM_TTS_LANGS, ["linear16", "mulaw", "alaw"], [8000, 16000, 22050, 24000], True,
-     _SARVAM_TTS_V3_SCHEMA, False, "active", 0),
+     _SARVAM_TTS_V3_SCHEMA, True, "active", 0),
+    # Same contract as v3; speakers are personas (shared.providers.tts.
+    # sarvam_voices). Selectable, never the default.
+    ("sarvam", "tts", "bulbul:v4-flash", "Bulbul v4 Flash (streaming)",
+     _SARVAM_TTS_V4_FLASH_LANGS, ["linear16"], [8000, 16000, 22050, 24000], True,
+     _SARVAM_TTS_V4_FLASH_SCHEMA, False, "active", 1),
     ("sarvam", "tts", "bulbul:v2", "Bulbul v2 (legacy)",
      _SARVAM_TTS_LANGS, ["linear16", "mulaw", "alaw"], [8000, 16000, 22050, 24000], True,
      _SARVAM_TTS_V2_SCHEMA, False, "inactive", 1),
@@ -913,6 +917,34 @@ SARVAM_SPEAKERS = [
 
 _SAMPLE_TEXT = "Hello! I can help you book your next appointment in just a minute."
 
+# bulbul:v4-flash persona voices: the Hindi and English personas of the reviewed
+# v3 -> v4 mapping (shared.providers.tts.sarvam_voices.v4_catalog_personas), as
+# their own catalog voices for that model only. Offered for every language
+# v4-flash speaks; Malayalam and Odia have no personas and are never listed.
+_SARVAM_V4_VOICE_LOCALES = [
+    code for code in _SARVAM_VOICE_LOCALES if code not in ("ml-IN", "or-IN")
+]
+_PERSONA_TAG_LOCALE = {"hi": "hi-IN", "enhi": "hi-IN", "en": "en-IN"}
+
+
+def sarvam_v4_persona_voices() -> list[dict]:
+    """Catalog rows (id, name, gender, locale, style, wire id) of the
+    bulbul:v4-flash persona voices. Shared with the catalog migration
+    c2e4a6b8d0f1, which inserts the same rows on existing databases."""
+    voices = []
+    for persona in v4_catalog_personas():
+        speaker, tag, style = persona_parts(persona)
+        style_label = style.replace("_", " ").capitalize()
+        voices.append({
+            "id": f"vp-sv4-{persona}",
+            "name": f"{speaker.title()} · {V4_TAG_LABELS[tag]} · {style_label}",
+            "gender": "female" if speaker in _SARVAM_FEMALE else "male",
+            "locale": _PERSONA_TAG_LOCALE[tag],
+            "style": style_label,
+            "provider_voice_id": persona,
+        })
+    return voices
+
 
 def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) -> dict:
     """Idempotent catalog seed; never overwrites operator edits.
@@ -947,12 +979,24 @@ def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) ->
             )
         )
         if exists is None:
+            # A new row is created as the default only while its capability
+            # has none: on a long-lived database the seed must never add a
+            # SECOND default next to the operator's (683187650 created
+            # bulbul:v4-flash as a second TTS default on startup-seeded DBs).
+            make_default = bool(is_default) and db.scalar(
+                select(ProviderModel.id).where(
+                    ProviderModel.provider_code == provider,
+                    ProviderModel.capability == capability,
+                    ProviderModel.is_default.is_(True),
+                    ProviderModel.is_deleted.is_(False),
+                ).limit(1)
+            ) is None
             db.add(ProviderModel(
                 id=new_id("pm"), provider_code=provider, capability=capability,
                 code=code, display_name=display, description=description,
                 languages=langs, codecs=codecs,
                 sample_rates=rates, streaming=streaming, params_schema=schema,
-                is_default=is_default, status=status, sort_order=sort,
+                is_default=make_default, status=status, sort_order=sort,
             ))
             created["provider_models"] += 1
         else:
@@ -1033,15 +1077,26 @@ def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) ->
                 sample_text=_SAMPLE_TEXT, provider="sarvam",
                 # Wire code sent to the Sarvam API (lowercase, exact form).
                 provider_voice_id=speaker,
-                # bulbul:v4-flash maps the speaker to its reviewed persona;
-                # offered only where a Hindi or English persona exists.
-                model_codes=["bulbul:v3", *(
-                    ["bulbul:v4-flash"] if {"hi", "en"} & set(V3_TO_V4_PERSONA.get(speaker, {}))
-                    else []
-                )],
+                model_codes=["bulbul:v3"],
                 provider_settings={"pace": 1.0},
                 is_default=(speaker == "shubh"),
                 sort_order=i,
+            ))
+            created["provider_voices"] += 1
+
+    for i, voice in enumerate(sarvam_v4_persona_voices()):
+        if db.get(VoiceProfile, voice["id"]) is None:
+            db.add(VoiceProfile(
+                id=voice["id"], name=voice["name"], gender=voice["gender"],
+                languages=list(_SARVAM_V4_VOICE_LOCALES), locale=voice["locale"],
+                accent="Indian", styles=[voice["style"]], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="sarvam",
+                # The persona id IS the wire speaker for bulbul:v4-flash.
+                provider_voice_id=voice["provider_voice_id"],
+                model_codes=["bulbul:v4-flash"],
+                provider_settings={"pace": 1.0},
+                is_default=False,
+                sort_order=len(SARVAM_SPEAKERS) + i,
             ))
             created["provider_voices"] += 1
 
@@ -1078,7 +1133,7 @@ _SEEDED_PROFILE_CODES = {
 }
 _PROFILE_REMAP: dict[str, tuple[str, str]] = {
     "stt": ("sarvam", "saaras:v4"),
-    "tts": ("sarvam", "bulbul:v4-flash"),
+    "tts": ("sarvam", "bulbul:v3"),
     "llm": ("openai", "gpt-4o-mini"),
     "embedding": ("openai", "text-embedding-3-small"),
 }
