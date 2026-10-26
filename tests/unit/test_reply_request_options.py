@@ -123,10 +123,33 @@ def test_request_options_report_what_is_sent(monkeypatch):
     _, luna = _luna(monkeypatch, {"reply_service_tier": "fast", "reply_reasoning_effort": "lowest"})
     assert luna.request_options() == {
         "prompt_cache_key": "bot_1", "service_tier": "fast", "reasoning_effort": "none"}
-    _, default = _luna(monkeypatch, {})
-    assert default.request_options() == {"prompt_cache_key": "bot_1"}   # model-default effort
     _, mini = _luna(monkeypatch, {"reply_reasoning_effort": "lowest"}, model="gpt-4o-mini")
     assert mini.request_options() == {"prompt_cache_key": "bot_1"}      # not a reasoning model
+
+
+def test_a_live_call_defaults_to_the_lowest_effort(monkeypatch):
+    # Manappuram (demo 2026-10-26): gpt-6-luna without reply options ran at
+    # its default medium effort, first token p90 3.8 s against the brain's
+    # 3 s deadline -> six "kuch gadbad ho gayi" replies in four calls.
+    _, unset = _luna(monkeypatch, {})
+    assert unset.request_options() == {"prompt_cache_key": "bot_1", "reasoning_effort": "none"}
+    # The bot's own choice still wins, the tier stays opt-in.
+    _, chosen = _luna(monkeypatch, {"reply_reasoning_effort": "medium"})
+    assert chosen.request_options() == {"prompt_cache_key": "bot_1", "reasoning_effort": "medium"}
+    _, mini = _luna(monkeypatch, {}, model="gpt-4o-mini")
+    assert mini.request_options() == {"prompt_cache_key": "bot_1"}
+    # The resolved config (and with it post-call analysis) is unchanged.
+    config, _ = _luna(monkeypatch, {})
+    assert config.llm["extra"] == {"prompt_cache_key": "bot_1"}
+
+
+async def test_an_unset_effort_reaches_the_stream_request(monkeypatch):
+    _, llm = _luna(monkeypatch, {})
+    fake = _FakeCompletions()
+    llm._client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    assert [t async for t in llm.stream([{"role": "user", "content": "x"}], system="s")] == ["Ji"]
+    assert fake.calls[-1]["reasoning_effort"] == "none"
+    assert "service_tier" not in fake.calls[-1]
 
 
 async def test_the_bot_settings_reach_every_request(monkeypatch):

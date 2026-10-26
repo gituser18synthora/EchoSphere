@@ -865,6 +865,18 @@ def build_latency_filler(
 
 def build_llm_provider(config: ResolvedBotConfig):
     llm_conf = config.llm or {}
+    # A live reply must start streaming within the brain's first-token
+    # deadline (3 s). At its default (medium) effort a reasoning model thinks
+    # first: Manappuram on gpt-6-luna reached its first token at p90 3.8 s,
+    # max 7.5 s (demo 2026-10-26) and missed the deadline on the attempt and
+    # the retry six times — "kuch gadbad ho gayi" instead of a reply. A bot
+    # that does not choose llm_settings.reply_reasoning_effort therefore runs
+    # its call-time conversation-model work at the lowest effort the model
+    # accepts, as its decision calls always do ("none" on gpt-6-luna; models
+    # without reasoning ignore it). Post-call analysis builds its own engine
+    # and keeps the model default.
+    extra = dict(llm_conf.get("extra") or {})
+    extra.setdefault("reasoning_effort", "lowest")
     return get_llm_provider(
         ProviderConfig(
             provider=llm_conf.get("provider", "openai"),
@@ -873,7 +885,7 @@ def build_llm_provider(config: ResolvedBotConfig):
             timeout_seconds=float(
                 (llm_conf.get("settings") or {}).get("timeout_seconds", 15.0)
             ),
-            extra=llm_conf.get("extra", {}),
+            extra=extra,
         )
     )
 
