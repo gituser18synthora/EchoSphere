@@ -86,7 +86,7 @@ class TestTheBuffer:
         await asyncio.sleep(0)
         assert speculation._task.cancelled()
 
-    def test_only_the_identical_request_matches(self):
+    async def test_only_the_identical_request_matches(self):
         speculation = self._speculation(_Stream())
         speculation.cancel()
         assert speculation.matches([{"role": "user", "content": "hi"}], "S", 0.3, 100)
