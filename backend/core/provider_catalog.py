@@ -304,6 +304,9 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
     "decision_fast_output",
     # the reply LLM starts at dispatch, in parallel with the decision.
     "speculative_reply",
+    # the workflow's semantic extraction starts with the decision; grounded
+    # rewrites stream sentence by sentence.
+    "parallel_extraction",
 )
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,

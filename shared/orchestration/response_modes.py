@@ -316,6 +316,40 @@ def _collapsed_to_question(script: str, generated: str) -> bool:
     return len(generated or "") < _MAX_SHRINK_RATIO * len(script or "")
 
 
+def grounded_sentence_ok(
+    sentence: str,
+    language: str | None = None,
+    *,
+    language_check=None,
+    verified_context: dict | None = None,
+) -> bool:
+    """The checks of :func:`validate_grounded_reply` that hold for one
+    sentence on its own — no formatting, no contradiction of a verified
+    identifier, the conversation language. A grounded rewrite streamed into
+    TTS releases a sentence only when it passes; the whole reply is still
+    validated before its last sentence is spoken."""
+    sentence = (sentence or "").strip()
+    if not sentence or _MARKDOWNISH.search(sentence):
+        return False
+    if (
+        isinstance(verified_context, dict)
+        and verified_context.get("customer_verified") is True
+        and _VERIFIED_IDENTITY_CONTRADICTION.search(sentence)
+    ):
+        return False
+    if language and callable(language_check):
+        try:
+            return bool(language_check(sentence, language))
+        except Exception:  # noqa: BLE001 — a checker bug must fail closed
+            return False
+    return True
+
+
+def grounded_reply_cap(script: str) -> int:
+    """The longest grounded rewrite :func:`validate_grounded_reply` accepts."""
+    return max(400, 3 * len((script or "").strip()))
+
+
 def validate_grounded_reply(
     script: str,
     generated: str,
@@ -347,7 +381,7 @@ def validate_grounded_reply(
     script = (script or "").strip()
     if not generated:
         return False
-    if len(generated) > max(400, 3 * len(script)):
+    if len(generated) > grounded_reply_cap(script):
         return False
     if _MARKDOWNISH.search(generated):
         return False

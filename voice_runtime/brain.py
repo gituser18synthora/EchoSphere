@@ -155,6 +155,8 @@ from shared.orchestration.response_modes import (
     RESPONSE_MODE_GROUNDED,
     collected_facts_block,
     grounded_delivery_instruction,
+    grounded_reply_cap,
+    grounded_sentence_ok,
     language_label,
     validate_grounded_reply,
 )
@@ -939,6 +941,16 @@ class ConversationBrain(FrameProcessor):
         # (llm_settings.speculative_reply, default off).
         self._speculative_reply = llm_settings_early.get("speculative_reply") is True
         self._speculation: SpeculativeReply | None = None
+        # The workflow's semantic extraction (MDND's four fact readers) starts
+        # at dispatch with the decision instead of after it, and grounded
+        # rewrites stream into TTS sentence by sentence
+        # (llm_settings.parallel_extraction, default off).
+        self._parallel_extraction = (
+            llm_settings_early.get("parallel_extraction") is True
+        )
+        # (text, workflow name, task resolving to the engine's prepared
+        # extraction) for the turn being decided.
+        self._extraction_ahead: tuple[str, str, asyncio.Task] | None = None
         # Guarded goal state for bots WITHOUT a dedicated domain policy —
         # identity, required slots and scope counters move only through
         # validated decisions (the collections policy keeps its own machine).
@@ -4143,6 +4155,7 @@ class ConversationBrain(FrameProcessor):
         generation, self._generation = self._generation, None
         self._discard_kb_prefetch()
         self._discard_speculation("cancelled")
+        self._discard_extraction_ahead()
         # No reply will come from the cancelled turn: nothing to cover.
         await self._cancel_latency_filler(reason)
         if reason != "late_transcript_merge":
@@ -5071,6 +5084,7 @@ class ConversationBrain(FrameProcessor):
         self._end_backchannel_window()
         await self._cancel_finalize()
         self._discard_speculation("cleanup")
+        self._discard_extraction_ahead()
         for slot in ("_decision_prefetch", "_classify_prefetch"):
             prefetch = getattr(self, slot)
             setattr(self, slot, None)
@@ -5342,6 +5356,7 @@ class ConversationBrain(FrameProcessor):
             # Retrieval runs concurrently with the decision stage below; the
             # embedding + pgvector round trip is otherwise pure serial time.
             self._start_kb_prefetch(text)
+        self._start_extraction_ahead(text, decision)
         # Business understanding of the COMPLETED turn: deterministic platform
         # commands were already decided above (and hang-up/DNC even earlier,
         # per segment). Everything else runs Stage A — ONE structured Goal
@@ -6054,6 +6069,7 @@ class ConversationBrain(FrameProcessor):
         # The turn was answered without the reply LLM (direct decision reply,
         # workflow, re-ask, …): the speculation was never needed.
         self._discard_speculation("not_reply_turn")
+        self._discard_extraction_ahead()
         # Deliberately NOT in a finally: when the generation is cancelled the
         # markers must survive so a late-final merge can rewind this turn.
         # A record of None means this turn errored before its record was
@@ -6994,23 +7010,87 @@ class ConversationBrain(FrameProcessor):
             "reason": decision.reason or "transfer",
         })
 
+    def _workflow_turn_inputs(self, text: str) -> tuple[bool, dict | None]:
+        """(reset_state, initial_slots) the workflow turn runs with: a caller
+        switching away from the verified subject resets the flow, otherwise
+        the verified runtime-context values seed it."""
+        if self._runtime_context is None:
+            return False, None
+        if self._runtime_context.should_reset_verified_subject(text):
+            return True, None
+        return False, self._runtime_context.workflow_values() or None
+
+    def _start_extraction_ahead(self, text: str, route: RouteDecision) -> None:
+        """Start the active workflow's semantic extraction for this turn now,
+        in parallel with the decision (parallel_extraction). The engine uses
+        it only when the turn reaches the same workflow with the same inputs;
+        otherwise it is cancelled. Flows without LLM extraction start nothing."""
+        engine = self._workflows
+        if (
+            not self._parallel_extraction
+            or engine is None
+            or not hasattr(engine, "start_extraction")
+            or self._llm is None
+            or self._active_workflow is None
+            or route.kind != RouteKind.WORKFLOW
+        ):
+            return
+        self._discard_extraction_ahead()
+        workflow_name = route.action or self._active_workflow or "default"
+        reset_state, initial_slots = self._workflow_turn_inputs(text)
+        history = [*self._history, {"role": "user", "content": text}][-_HISTORY_MAX_TURNS:]
+        self._extraction_ahead = (text, workflow_name, self.create_task(engine.start_extraction(
+            session_id=self._recorder.session_id,
+            tenant_id=self._config.tenant_id,
+            bot_id=self._config.bot_id,
+            workflow_name=workflow_name,
+            user_text=text,
+            language=self._conversation_language,
+            initial_slots=initial_slots,
+            reset_state=reset_state,
+            history=history,
+            llm=self._llm,
+            pinned_versions=getattr(self._config, "workflow_pins", None) or None,
+        )))
+
+    def _discard_extraction_ahead(self) -> None:
+        """Cancel an extraction started ahead that no workflow turn used."""
+        ahead, self._extraction_ahead = self._extraction_ahead, None
+        if ahead is None:
+            return
+
+        def _cancel_prepared(task: asyncio.Task) -> None:
+            if task.cancelled() or task.exception() is not None:
+                return
+            prepared = task.result()
+            if prepared is not None:
+                prepared.task.cancel()
+                self._recorder.add_event("extraction_ahead", outcome="unused")
+
+        task = ahead[2]
+        if task.done():
+            _cancel_prepared(task)
+        else:
+            task.add_done_callback(_cancel_prepared)
+            task.cancel()
+
     async def _handle_workflow(
         self, decision: RouteDecision, text: str, started: float,
         signal: str | None = None,
         classification: IntentClassification | None = None,
     ) -> None:
         workflow_name = decision.action or self._active_workflow or "default"
-        reset_state = False
-        initial_slots = None
-        if self._runtime_context is not None:
-            if self._runtime_context.should_reset_verified_subject(text):
-                self._runtime_context.clear_workflow_values()
-                self._verified_runtime_context_block = ""
-                reset_state = True
-            else:
-                verified_slots = self._runtime_context.workflow_values()
-                if verified_slots:
-                    initial_slots = verified_slots
+        reset_state, initial_slots = self._workflow_turn_inputs(text)
+        if reset_state:
+            self._runtime_context.clear_workflow_values()
+            self._verified_runtime_context_block = ""
+        ahead, self._extraction_ahead = self._extraction_ahead, None
+        extraction_ahead = None
+        if ahead is not None and ahead[:2] == (text, workflow_name):
+            extraction_ahead = ahead[2]
+        elif ahead is not None:
+            self._extraction_ahead = ahead
+            self._discard_extraction_ahead()
         self._open_turn_workflow = (workflow_name, self._active_workflow, text)
         self._open_turn_pending_question = self._pending_workflow_question
         self._open_turn_pending_ask_shape = self._pending_ask_shape
@@ -7035,8 +7115,13 @@ class ConversationBrain(FrameProcessor):
             history=self._history,
             **({"pause_for_context": True} if classification is not None
                and classification.context_question else {}),
+            **({"extraction_ahead": extraction_ahead} if extraction_ahead is not None else {}),
         )
         self._open_turn_workflow_committed = True
+        if extraction_ahead is not None and result.get("extractionAhead"):
+            self._recorder.add_event(
+                "extraction_ahead", outcome=result["extractionAhead"],
+            )
         if (
             not result.get("offScript")
             and result.get("trace")
@@ -7486,6 +7571,13 @@ class ConversationBrain(FrameProcessor):
                 + instruction
                 + (f"\nRespond in natural spoken {label}." if label else "")
             )
+            if self._parallel_extraction and self._llm is not None:
+                await self._stream_grounded_rewrite(
+                    reply, system, workflow_name=workflow_name,
+                    pending_question=pending_question, must_include=must_include,
+                    verified_context=result.get("slots") or {},
+                )
+                return
             generated = await self._constrained_generate(reply, system)
             if generated is not None and validate_grounded_reply(
                 reply, generated, self._conversation_language,
@@ -7525,6 +7617,121 @@ class ConversationBrain(FrameProcessor):
             extra_system=instruction,
             fallback_text=reply,
         )
+
+    async def _stream_grounded_rewrite(
+        self, script: str, system: str, *, workflow_name: str,
+        pending_question: str, must_include: list, verified_context: dict,
+    ) -> None:
+        """Speak a constrained grounded rewrite while it streams
+        (parallel_extraction) instead of after the whole generation.
+
+        A finished sentence is spoken once the next one has started and it
+        passes the per-sentence checks; the last sentence — normally the
+        pending question — waits until the whole reply passes
+        ``validate_grounded_reply``, the gate the non-streamed rewrite applies.
+        A rewrite that fails before anything was spoken falls back to the
+        authored text as before; one that fails after a sentence was spoken
+        ends with the authored pending question, so the flow stays answerable
+        without repeating what was already said.
+        """
+        language = self._conversation_language
+        identity = active_voice_identity(self._config.tts, language)
+        full_system = (
+            system
+            + spoken_reply_instruction(language)
+            + voice_identity_instruction(identity, language)
+        )
+        cap = grounded_reply_cap(script)
+        generated = ""
+        cursor = 0          # generated characters already spoken
+        spoken: list[str] = []
+        failure: str | None = None
+        opened = False
+
+        async def _speak(piece: str) -> None:
+            nonlocal opened
+            text = self._spoken_form(piece)
+            if not text:
+                return
+            if not opened:
+                opened = True
+                self._turn_reply_queued = True
+                await self._push_reply_marker()
+                await self.push_frame(LLMFullResponseStartFrame())
+            spoken.append(text)
+            await self.push_frame(TextFrame(text + " "))
+
+        try:
+            try:
+                async with asyncio.timeout(_ADAPTATION_TIMEOUT_SECONDS):
+                    async for chunk in self._llm.stream(
+                        [{"role": "user", "content": script}],
+                        system=full_system,
+                        temperature=0.0,
+                        max_tokens=_ADAPTATION_MAX_TOKENS,
+                    ):
+                        generated += chunk
+                        while True:
+                            boundary = _SENTENCE_BOUNDARY_RE.search(generated, cursor)
+                            if boundary is None or not generated[boundary.end():].strip():
+                                break
+                            sentence = generated[cursor:boundary.end()].strip()
+                            if boundary.end() > cap or not grounded_sentence_ok(
+                                sentence, language,
+                                language_check=script_supports_language,
+                                verified_context=verified_context,
+                            ):
+                                failure = "validation"
+                                break
+                            await _speak(sentence)
+                            cursor = boundary.end()
+                        if failure is not None:
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — provider failure / timeout: authored text
+                logger.exception(
+                    "turn[%s] streamed grounded rewrite failed", self._recorder.session_id,
+                )
+                failure = "provider"
+            if failure is None and not validate_grounded_reply(
+                script, generated, language,
+                require_question=bool(pending_question),
+                must_include=must_include,
+                language_check=script_supports_language,
+                verified_context=verified_context,
+            ):
+                failure = "validation"
+            if failure is None:
+                rest = generated[cursor:].strip()
+                if rest:
+                    await _speak(rest)
+            elif spoken and pending_question:
+                question = pending_question
+                if (language != self._config.language
+                        or self._conversation_uses_other_indic_script()):
+                    question = await self._adapt_scripted_ask(question) or question
+                await _speak(question)
+        finally:
+            if opened:
+                await self.push_frame(LLMFullResponseEndFrame())
+        self._record_llm_usage(generated)
+        if failure is not None:
+            self._recorder.add_event(
+                "workflow_grounded_fallback", workflow=workflow_name,
+                reason=failure if not spoken else f"{failure}_after_release",
+            )
+            # The flow's directive was not delivered as promised: never count
+            # these nodes as heard.
+            self._reply_nodes = []
+            if not spoken:
+                await self._say(script)
+                return
+        else:
+            self._recorder.add_event(
+                "workflow_reply_grounded", workflow=workflow_name, mode="constrained_stream",
+            )
+        await self._record_bot_text(" ".join(spoken))
 
     # ── generation ────────────────────────────────────────────────────────
 
@@ -8459,6 +8666,42 @@ class ConversationBrain(FrameProcessor):
         safe replies (they mention 'card numbers'/'OTP' and would otherwise
         trip the very pattern that produced them).
         """
+        text = self._spoken_form(
+            text, guardrail_exempt=guardrail_exempt, authored=authored,
+        )
+        if not text:
+            return None
+        record = await self._record_bot_text(text)
+        # Delivery decoration for decision-co-generated replies only: an
+        # optional planned preface, and (config-gated, off by default) a rare
+        # self-correction. History/turn record above keep the SEMANTIC text —
+        # delivery variants are spoken, never persisted. Authored phrases
+        # (greeting, canned, compliance) are never decorated.
+        preface, spoken = "", text
+        if not authored and not guardrail_exempt:
+            preface = self._consume_speech_preface()
+            plan = self._turn_speech_plan
+            if plan is not None and plan.allow_self_correction:
+                spoken = self._naturalness.maybe_self_correct(
+                    text, language=self._conversation_language,
+                    identity=self._active_identity(),
+                )
+        self._turn_reply_queued = True
+        await self._push_reply_marker()
+        await self.push_frame(LLMFullResponseStartFrame())
+        if preface:
+            await self.push_frame(TextFrame(preface + " "))
+        await self.push_frame(TextFrame(spoken))
+        await self.push_frame(LLMFullResponseEndFrame())
+        return record
+
+    def _spoken_form(
+        self, text: str, *, guardrail_exempt: bool = False, authored: bool = True,
+    ) -> str:
+        """``text`` as it may be spoken: approved wordings substituted,
+        placeholders resolved, authored speaker grammar applied, a third
+        verbatim identity question re-worded, output guardrails enforced
+        ("" = nothing to say)."""
         if self._guardrails.compliance and text and "{{" in text:
             # Approved legal wordings substitute VERBATIM before any other
             # processing — the exact template version spoken is recorded.
@@ -8499,8 +8742,11 @@ class ConversationBrain(FrameProcessor):
                 text = guardrail_reply(check.reply_key, self._conversation_language)
             else:
                 text = check.text
-        if not text:
-            return None
+        return text or ""
+
+    async def _record_bot_text(self, text: str) -> TurnRecord:
+        """One spoken bot utterance into the call state: last reply, policy
+        and identity observers, LLM history, the transcript and the client."""
         logger.info(
             "turn[%s] bot response queued (chars=%d words=%d)",
             self._recorder.session_id, len(text), len(text.split()),
@@ -8517,27 +8763,6 @@ class ConversationBrain(FrameProcessor):
             "text": text,
             "at": turn_time_iso(record.timestamp),
         })
-        # Delivery decoration for decision-co-generated replies only: an
-        # optional planned preface, and (config-gated, off by default) a rare
-        # self-correction. History/turn record above keep the SEMANTIC text —
-        # delivery variants are spoken, never persisted. Authored phrases
-        # (greeting, canned, compliance) are never decorated.
-        preface, spoken = "", text
-        if not authored and not guardrail_exempt:
-            preface = self._consume_speech_preface()
-            plan = self._turn_speech_plan
-            if plan is not None and plan.allow_self_correction:
-                spoken = self._naturalness.maybe_self_correct(
-                    text, language=self._conversation_language,
-                    identity=self._active_identity(),
-                )
-        self._turn_reply_queued = True
-        await self._push_reply_marker()
-        await self.push_frame(LLMFullResponseStartFrame())
-        if preface:
-            await self.push_frame(TextFrame(preface + " "))
-        await self.push_frame(TextFrame(spoken))
-        await self.push_frame(LLMFullResponseEndFrame())
         return record
 
     async def _open_session(self) -> None:

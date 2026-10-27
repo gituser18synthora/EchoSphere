@@ -11,11 +11,13 @@ same session resumes from the last checkpoint.
 """
 
 import asyncio
+import json
 import logging
 import re
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -285,6 +287,41 @@ def _awaiting_edge_signals(definition: dict | None, node: dict | None) -> list[s
         if str(e.get("from") or "") == node_id and str(e.get("to") or "") in ids
     ]
     return sorted({s for _edge, _tokens, signals in _edge_meta(edges) for s in signals})
+
+
+@dataclass(frozen=True)
+class PreparedExtraction:
+    """A semantic extraction started before the turn reached the workflow:
+    the key of its inputs and the task computing it."""
+
+    key: str
+    task: asyncio.Task
+
+
+def _semantic_extraction_kwargs(
+    definition: dict | None, provider, previous: dict, *, reset_state: bool,
+    initial_slots: dict | None, user_text: str, history, language: str | None,
+) -> dict | None:
+    """The semantic provider's ``extract`` arguments for one turn, or None
+    when the definition runs no LLM extraction for this language."""
+    if provider is None or not provider.llm_extraction_enabled(definition, language or ""):
+        return None
+    prior = {} if reset_state else previous
+    pending = next((n for n in definition.get("nodes") or []
+                    if n.get("id") == prior.get("awaiting")), {})
+    return {
+        "text": user_text,
+        "slots": provider.canonical_slots(dict(initial_slots or prior.get("slots") or {})),
+        "pending_question": _node_text(pending, "question", "prompt", "text", fallback_label=False),
+        "pending_variable": str(_node_config(pending).get("variable") or ""),
+        "joint_variables": [str(v) for v in (_node_config(pending).get("jointYesNo") or [])],
+        "history": history,
+        "language": language or "",
+    }
+
+
+def _extraction_key(kwargs: dict) -> str:
+    return json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
@@ -1790,6 +1827,58 @@ class WorkflowEngine:
         )
         return result["reply"], result["done"]
 
+    async def start_extraction(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        bot_id: str,
+        workflow_name: str,
+        user_text: str,
+        language: str | None = None,
+        initial_slots: dict | None = None,
+        reset_state: bool = False,
+        history: list[dict] | None = None,
+        llm=None,
+        pinned_versions: dict | None = None,
+    ) -> PreparedExtraction | None:
+        """Start this turn's semantic extraction now, before the turn is
+        known to reach the workflow (the voice brain calls it at dispatch, in
+        parallel with the decision). Same definition, checkpointed state and
+        inputs :meth:`handle_turn_detailed` would use; None when the flow runs
+        no LLM extraction. Read-only: the graph state is not touched."""
+        if llm is None:
+            return None
+        try:
+            definition = await to_thread_abandonable(
+                load_workflow_definition, tenant_id, bot_id, workflow_name,
+                *((pinned_versions,) if pinned_versions else ()),
+            )
+        except Exception:  # noqa: BLE001 — the turn extracts as before
+            logger.exception("workflow definition lookup failed for %s", workflow_name)
+            return None
+        provider = _extensions.semantic_provider_for(definition)
+        if definition is None or provider is None:
+            return None
+        graph = await self._get_definition_graph(definition)
+        thread = {"configurable": {"thread_id": f"{session_id}:{workflow_name}"}}
+        try:
+            snapshot = await graph.aget_state(thread)
+            previous = dict(getattr(snapshot, "values", None) or {})
+        except Exception:  # noqa: BLE001 — the turn extracts as before
+            return None
+        kwargs = _semantic_extraction_kwargs(
+            definition, provider, previous, reset_state=reset_state,
+            initial_slots=initial_slots, user_text=user_text,
+            history=history, language=language,
+        )
+        if kwargs is None:
+            return None
+        return PreparedExtraction(
+            _extraction_key(kwargs),
+            asyncio.ensure_future(provider.extract(llm, **kwargs)),
+        )
+
     async def handle_turn_detailed(
         self,
         *,
@@ -1810,6 +1899,7 @@ class WorkflowEngine:
         history: list[dict] | None = None,
         pause_for_context: bool = False,
         pinned_versions: dict | None = None,
+        extraction_ahead: "asyncio.Future[PreparedExtraction | None] | None" = None,
     ) -> dict:
         """Advance one turn and return the full execution detail.
 
@@ -1825,6 +1915,11 @@ class WorkflowEngine:
         ``heard_nodes`` is the delivery channel's report of which nodes'
         replies the caller heard to completion (see ``WorkflowState``).
         Leave it None for text channels, where everything spoken is heard.
+
+        ``extraction_ahead`` is :meth:`start_extraction` for this turn, started
+        before the caller knew the turn would reach the workflow: its semantic
+        extraction is used only when its inputs equal this turn's, else it is
+        cancelled and the extraction runs here as before.
         """
         definition: dict | None = None
         try:
@@ -1902,20 +1997,42 @@ class WorkflowEngine:
             "semantic_extraction": None,
         }
         provider = _extensions.semantic_provider_for(definition)
-        if (llm is not None and provider is not None
-                and provider.llm_extraction_enabled(definition, language or "")):
-            prior = {} if reset_state else previous
-            pending = next((n for n in definition.get("nodes") or []
-                            if n.get("id") == prior.get("awaiting")), {})
-            invocation["semantic_extraction"] = await provider.extract(
-                llm, text=user_text,
-                slots=provider.canonical_slots(dict(initial_slots or prior.get("slots") or {})),
-                pending_question=_node_text(pending, "question", "prompt", "text", fallback_label=False),
-                pending_variable=str(_node_config(pending).get("variable") or ""),
-                joint_variables=[str(v) for v in (_node_config(pending).get("jointYesNo") or [])],
-                history=history,
-                language=language or "",
-            )
+        extraction = (
+            _semantic_extraction_kwargs(
+                definition, provider, previous, reset_state=reset_state,
+                initial_slots=initial_slots, user_text=user_text,
+                history=history, language=language,
+            ) if llm is not None else None
+        )
+        ahead_outcome = None
+        prepared = None
+        if extraction_ahead is not None:
+            try:
+                prepared = await extraction_ahead
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+            except Exception:  # noqa: BLE001 — the ahead start failed: extract here
+                logger.exception("workflow extraction ahead failed to start")
+        if extraction is not None:
+            if prepared is not None and prepared.key == _extraction_key(extraction):
+                ahead_outcome = "used"
+                try:
+                    invocation["semantic_extraction"] = await prepared.task
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    ahead_outcome = "cancelled"
+                except Exception:  # noqa: BLE001 — provider errors are handled inside extract
+                    logger.exception("workflow extraction ahead failed")
+                    ahead_outcome = "failed"
+            elif prepared is not None:
+                ahead_outcome = "mismatch"
+            if invocation["semantic_extraction"] is None:
+                invocation["semantic_extraction"] = await provider.extract(llm, **extraction)
+        if prepared is not None and ahead_outcome != "used":
+            prepared.task.cancel()
+            ahead_outcome = ahead_outcome or "unused"
         if context_values is not None:
             invocation["context_values"] = dict(context_values)
         if initial_slots is not None:
@@ -1962,6 +2079,10 @@ class WorkflowEngine:
             "workflowId": (definition or {}).get("id"),
             "trace": list(state.get("trace") or []),
             "slots": dict(state.get("slots") or {}),
+            # How a semantic extraction started ahead of the decision was
+            # used (used | mismatch | unused | failed | cancelled), None
+            # when none was started.
+            "extractionAhead": ahead_outcome,
             "extractionUsage": ({**{key: invocation["semantic_extraction"].get(key, 0)
                                     for key in ("input_tokens", "output_tokens", "requests",
                                                 "cached_tokens", "reasoning_tokens")},
