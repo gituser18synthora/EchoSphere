@@ -227,6 +227,7 @@ from voice_runtime.identifier_capture import (
 )
 from voice_runtime.announcements import strip_recording_announcement
 from voice_runtime.recording import SessionRecorder, TurnRecord
+from voice_runtime.speculative_reply import SpeculativeReply
 from voice_runtime.stt_events import final_event_key, segment_audio_seconds
 from voice_runtime.silence_policy import (
     NO_RESPONSE_END_REASON,
@@ -933,6 +934,11 @@ class ConversationBrain(FrameProcessor):
         self._deterministic_answers = (
             llm_settings_early.get("deterministic_answers") is True
         )
+        # Reply generation started at dispatch, in parallel with the decision,
+        # and released only when the decision confirms it
+        # (llm_settings.speculative_reply, default off).
+        self._speculative_reply = llm_settings_early.get("speculative_reply") is True
+        self._speculation: SpeculativeReply | None = None
         # Guarded goal state for bots WITHOUT a dedicated domain policy —
         # identity, required slots and scope counters move only through
         # validated decisions (the collections policy keeps its own machine).
@@ -3397,6 +3403,90 @@ class ConversationBrain(FrameProcessor):
             usage = (*usage, meta)
         return classification, usage
 
+    def _start_speculative_reply(self, text: str, route: RouteDecision) -> None:
+        """Start the reply generation this turn would run after a plain chat
+        decision, while the decision is still being made (speculative_reply).
+
+        Only where the reply LLM is the likely answer: a router CHAT / INTENT
+        turn with no workflow running or about to start (opening question
+        pending), no collections policy, and no decision already in hand (a
+        finished prefetch). The request is built by the same code the turn
+        uses after the decision, on the history the turn will have by then.
+        """
+        if (
+            not self._speculative_reply
+            or self._llm is None
+            or self._closing
+            or self._policy is not None
+            or self._active_workflow is not None
+            or route.kind not in (RouteKind.CHAT, RouteKind.INTENT)
+            or self._pending_opening_question()
+        ):
+            return
+        prefetch = self._decision_prefetch
+        if prefetch is not None and prefetch[0] == text and prefetch[1].done():
+            return
+        self._discard_speculation("superseded")
+        system, turn_instruction, _opening, _question = self._reply_prompt(route)
+        history = [*self._history, {"role": "user", "content": text}][-_HISTORY_MAX_TURNS:]
+        self._speculation = SpeculativeReply(
+            self._llm,
+            messages=self._generation_messages(turn_instruction, history=history),
+            system=system,
+            temperature=self._llm_temperature,
+            max_tokens=self._llm_max_tokens,
+            assumed_route=route.kind.value,
+            create_task=self.create_task,
+        )
+
+    def _take_speculation(
+        self, messages: list[dict], system: str,
+    ) -> SpeculativeReply | None:
+        """The speculative reply for this exact request, or None (a different
+        request cancels it: the decision changed what the reply is built on)."""
+        speculation = self._speculation
+        if speculation is None:
+            return None
+        if not speculation.matches(
+            messages, system, self._llm_temperature, self._llm_max_tokens,
+        ):
+            self._discard_speculation("prompt")
+            return None
+        self._speculation = None
+        now = time.monotonic()
+        self._recorder.add_event(
+            "speculative_reply_kept",
+            # How long the speculation ran before the turn wanted it: the
+            # reply time the decision no longer adds.
+            lead_ms=round((now - speculation.started_at) * 1000, 1),
+            first_token_ready=speculation.first_token_at is not None,
+            buffered_chars=speculation.generated_chars,
+        )
+        return speculation
+
+    def _discard_speculation(self, reason: str) -> None:
+        """Cancel the speculative reply; record what it had generated."""
+        speculation, self._speculation = self._speculation, None
+        if speculation is None:
+            return
+        speculation.cancel()
+        chars = speculation.generated_chars
+        usage = self._recorder.usage
+        usage["speculative_discarded_requests"] = (
+            usage.get("speculative_discarded_requests", 0) + 1
+        )
+        # A cancelled stream reports no usage: ~4 characters per token.
+        usage["speculative_discarded_output_tokens_est"] = (
+            usage.get("speculative_discarded_output_tokens_est", 0) + chars // 4
+        )
+        self._recorder.add_event(
+            "speculative_reply_discarded",
+            reason=reason,
+            ran_ms=round((time.monotonic() - speculation.started_at) * 1000, 1),
+            generated_chars=chars,
+            completed=speculation.done and speculation.error is None,
+        )
+
     async def _take_decision(self, text: str) -> ConversationDecision | None:
         """The turn's Goal Engine decision — from the prefetch when it matches.
 
@@ -4052,6 +4142,7 @@ class ConversationBrain(FrameProcessor):
     async def _cancel_generation(self, reason: str) -> None:
         generation, self._generation = self._generation, None
         self._discard_kb_prefetch()
+        self._discard_speculation("cancelled")
         # No reply will come from the cancelled turn: nothing to cover.
         await self._cancel_latency_filler(reason)
         if reason != "late_transcript_merge":
@@ -4979,6 +5070,7 @@ class ConversationBrain(FrameProcessor):
         await self._stop_backchannel_monitor()
         self._end_backchannel_window()
         await self._cancel_finalize()
+        self._discard_speculation("cleanup")
         for slot in ("_decision_prefetch", "_classify_prefetch"):
             prefetch = getattr(self, slot)
             setattr(self, slot, None)
@@ -5333,6 +5425,7 @@ class ConversationBrain(FrameProcessor):
                             reason="identity_explicit_reask", signal="affirm",
                         )
             else:
+                self._start_speculative_reply(text, decision)
                 orchestrated = await self._take_decision(text)
             if orchestrated is not None:
                 # The decision carries language explicitly: what the caller
@@ -5520,6 +5613,17 @@ class ConversationBrain(FrameProcessor):
             and self._account_tool
             and not self._closing
         )
+        if self._speculation is not None:
+            # The speculative reply assumed a plain in-scope chat reply; any
+            # other outcome stops it now instead of at the end of the turn.
+            if decision.kind.value != self._speculation.assumed_route:
+                self._discard_speculation(f"route_{decision.kind.value}")
+            elif scope != SCOPE_IN:
+                self._discard_speculation("scope")
+            elif signal == "hold":
+                self._discard_speculation("hold")
+            elif plan is not None or goal_close or will_run_tool or will_refresh_account:
+                self._discard_speculation("policy_or_tool")
         # Naturalness is planned only after route, validated caller signal,
         # policy action and tool intent are known. This prevents a streamed
         # preface from escaping before a high-risk response category is known.
@@ -5947,6 +6051,9 @@ class ConversationBrain(FrameProcessor):
         except Exception:  # noqa: BLE001 - one bad turn must not kill the call
             logger.exception("turn handling failed")
             await self._say(canned("error", self._conversation_language))
+        # The turn was answered without the reply LLM (direct decision reply,
+        # workflow, re-ask, …): the speculation was never needed.
+        self._discard_speculation("not_reply_turn")
         # Deliberately NOT in a finally: when the generation is cancelled the
         # markers must survive so a late-final merge can rewind this turn.
         # A record of None means this turn errored before its record was
@@ -7753,12 +7860,13 @@ class ConversationBrain(FrameProcessor):
             self._config.greeting, self._placeholder_values(),
         ))
 
-    async def _generate_reply(
-        self, text: str, decision: RouteDecision, started: float,
-        extra_system: str = "", fallback_text: str = "",
-        *, question_response: bool = False,
-        pending_question: str = "",
-    ) -> None:
+    def _reply_prompt(
+        self, decision: RouteDecision, extra_system: str = "",
+        *, question_response: bool = False, pending_question: str = "",
+    ) -> tuple[str, str, bool, str]:
+        """(system, turn_instruction, opening_pending, pending_question) of one
+        reply generation. No side effects: a speculative reply builds its
+        request here before the decision, the turn builds it again after."""
         # Generic bots carry their guarded goal state (identity gating,
         # missing slots, scope) into every generation — the response stage
         # follows the validated decision state, it never redefines it.
@@ -7823,8 +7931,21 @@ class ConversationBrain(FrameProcessor):
                 + json.dumps(self._last_bot_reply or None, ensure_ascii=False)
             )
             system += "\n\n# Current question — response task\n" + turn_instruction
+        return system, turn_instruction, bool(opening_pending), pending_question
+
+    async def _generate_reply(
+        self, text: str, decision: RouteDecision, started: float,
+        extra_system: str = "", fallback_text: str = "",
+        *, question_response: bool = False,
+        pending_question: str = "",
+    ) -> None:
+        system, turn_instruction, opening_pending, pending_question = self._reply_prompt(
+            decision, extra_system,
+            question_response=question_response, pending_question=pending_question,
+        )
+        if turn_instruction:
             self._recorder.add_event(
-                "context_question_reply", opening_pending=bool(opening_pending),
+                "context_question_reply", opening_pending=opening_pending,
                 workflow_paused=bool(self._active_workflow),
             )
         kb_sources: list[dict] = []
@@ -8085,7 +8206,9 @@ class ConversationBrain(FrameProcessor):
             usage["llm_usage_estimated"] = 1
         self._note_llm_call(tier=(getattr(self._llm, "last_response_meta", None) or {}).get("service_tier"))
 
-    def _generation_messages(self, turn_instruction: str = "") -> list[dict]:
+    def _generation_messages(
+        self, turn_instruction: str = "", history: list[dict] | None = None,
+    ) -> list[dict]:
         """The message list one generation runs on.
 
         While the caller speaks a language OTHER than the bot's authored
@@ -8098,13 +8221,14 @@ class ConversationBrain(FrameProcessor):
         so script examples and earlier mistaken refusals do not define the
         current answer. The note contains no caller-supplied instructions.
         """
+        history = self._history if history is None else history
         label = language_label(self._conversation_language)
         notes = [turn_instruction] if turn_instruction else []
         if label and self._conversation_language != self._config.language:
             notes.append(f"The caller is speaking {label}; your entire reply must be in {label}.")
-        if not notes or not self._history or self._history[-1]["role"] != "user":
-            return self._history
-        messages = [dict(m) for m in self._history]
+        if not notes or not history or history[-1]["role"] != "user":
+            return history
+        messages = [dict(m) for m in history]
         messages[-1]["content"] += (
             "\n\n[Platform note — not the caller's words: " + " ".join(notes) + "]"
         )
@@ -8205,12 +8329,23 @@ class ConversationBrain(FrameProcessor):
             try:
                 self._latency.mark_llm_request()
                 request_at = time.monotonic()
-                stream = self._llm.stream(
-                    self._generation_messages(turn_instruction),
-                    system=system,
-                    temperature=self._llm_temperature,
-                    max_tokens=self._llm_max_tokens,
-                ).__aiter__()
+                messages = self._generation_messages(turn_instruction)
+                speculation = (
+                    self._take_speculation(messages, system) if attempts == 1 else None
+                )
+                if speculation is not None:
+                    # The same request, started at dispatch: its buffered
+                    # tokens play now, the first-token deadline counts from
+                    # when it was really sent.
+                    request_at = speculation.started_at
+                    stream = speculation.replay().__aiter__()
+                else:
+                    stream = self._llm.stream(
+                        messages,
+                        system=system,
+                        temperature=self._llm_temperature,
+                        max_tokens=self._llm_max_tokens,
+                    ).__aiter__()
                 pending = asyncio.ensure_future(anext(stream))
                 hinted = False
                 while True:

@@ -302,6 +302,8 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
     "deterministic_answers",
     # the decision writes its routing fields first and no reason.
     "decision_fast_output",
+    # the reply LLM starts at dispatch, in parallel with the decision.
+    "speculative_reply",
 )
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,
