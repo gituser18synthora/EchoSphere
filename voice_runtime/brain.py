@@ -911,6 +911,9 @@ class ConversationBrain(FrameProcessor):
             intents=config.intents,
             enabled=engine_enabled,
             include_response_text=self._decision_writes_reply_text(config, llm_settings_early),
+            # Routing fields first, no reason (llm_settings.decision_fast_output,
+            # default off).
+            fast_output=llm_settings_early.get("decision_fast_output") is True,
             # Defaults come from the engine's own budget constants — the
             # decision budget per decision model; per-bot overrides
             # (llm_settings) win and are clamped to the shared safe ranges

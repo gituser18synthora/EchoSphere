@@ -300,6 +300,8 @@ _PLATFORM_LLM_BOOLEAN_KEYS = (
     # Phase 4 latency switches (each default off; voice_runtime.brain):
     # a short answer to a paused workflow question skips the decision LLM.
     "deterministic_answers",
+    # the decision writes its routing fields first and no reason.
+    "decision_fast_output",
 )
 _PLATFORM_LLM_STRING_KEYS = {
     "orchestration_provider": 40,

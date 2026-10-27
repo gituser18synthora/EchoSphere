@@ -540,6 +540,7 @@ class GoalEngine:
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
         include_response_text: bool = True,
+        fast_output: bool = False,
     ) -> None:
         self._llm = llm
         self.policy = policy or BotGoalPolicy()
@@ -550,6 +551,12 @@ class GoalEngine:
         # turns it off there and keeps it for collections and prompt-only
         # bots, whose direct-reply path speaks it.
         self._include_response_text = bool(include_response_text)
+        # Routing-first output without ``reason`` (llm_settings.
+        # decision_fast_output, live calls only): the fields that route the
+        # turn are generated first and the free-text reason — 16 of ~70
+        # output tokens on the demo replay — is not generated at all.
+        # Offline / debug engines keep the reason.
+        self._fast_output = bool(fast_output)
         self._intents = [i for i in (intents or []) if i.get("name")]
         self._enabled = enabled and llm is not None
         # Clamped to the shared safe ranges: a misconfigured bot must never
@@ -837,27 +844,62 @@ class GoalEngine:
                     + (" (required)" if spec.required else "")
                 )
 
+        intent_line = (
+            "intent: a configured name, identity_confirmation, or null. "
+            "signal: " + ", ".join(PLATFORM_SIGNALS) + ", or null."
+        )
+        decision_line = (
+            "decision: ONLY for the pending confirmation (identity or yes/no "
+            "gate): confirmed, denied, ambiguous, unrelated, needs_clarification; otherwise null."
+        )
+        slots_line = (
+            'slots: {"slot_name":{"status":"provided","value":"literal caller value"}}. '
+            "Allowed statuses: provided, exists_claimed, unavailable, refused, unclear. "
+            "Include value ONLY for provided; absent observations stay omitted."
+        )
+        actions = (
+            "continue_workflow, ask_identity_confirmation, request_slot_value, "
+            "clarify, answer, answer_from_knowledge, redirect_to_goal, call_tool, "
+            "escalate_to_human, end_call"
+        )
+        response_field = ',"response_text":""}' if self._include_response_text else "}"
+        if self._fast_output:
+            # Routing fields first, in the order the runtime reads them.
+            output = [
+                '{"intent":null,"signal":null,"decision":null,'
+                '"next_action":"answer","scope":"in_scope","context_question":false,'
+                '"slots":{},"confidence":0.0,"needs_clarification":false'
+                + response_field,
+                "Replace the example values with this turn's decision. All string "
+                "values, including enum values, MUST be JSON-quoted. Never emit "
+                "bare question, in_scope or answer.",
+                intent_line,
+                decision_line,
+                f"next_action: {actions}.",
+                "scope: in_scope, out_of_scope, injection_attempt. "
+                "context_question: boolean.",
+                slots_line,
+                "confidence: 0..1. needs_clarification: boolean.",
+            ]
+        else:
+            output = [
+                '{"intent":null,"signal":null,"decision":null,"scope":"in_scope",'
+                '"confidence":0.0,"reason":"","slots":{},"next_action":"answer",'
+                '"needs_clarification":false,"context_question":false'
+                + response_field,
+                "Replace the example values with this turn's decision. All string "
+                "values, including enum values, MUST be JSON-quoted. Never emit "
+                "bare question, in_scope or answer. Keep reason to at most 12 words.",
+                intent_line,
+                decision_line,
+                "scope: in_scope, out_of_scope, injection_attempt. confidence: 0..1.",
+                slots_line,
+                f"next_action: {actions}. needs_clarification/context_question: booleans.",
+            ]
         lines += [
             "",
             "# Output — reply with ONLY this JSON object, no prose, no fences",
-            '{"intent":null,"signal":null,"decision":null,"scope":"in_scope",'
-            '"confidence":0.0,"reason":"","slots":{},"next_action":"answer",'
-            '"needs_clarification":false,"context_question":false'
-            + (',"response_text":""}' if self._include_response_text else "}"),
-            "Replace the example values with this turn's decision. All string "
-            "values, including enum values, MUST be JSON-quoted. Never emit "
-            "bare question, in_scope or answer. Keep reason to at most 12 words.",
-            "intent: a configured name, identity_confirmation, or null. "
-            "signal: " + ", ".join(PLATFORM_SIGNALS) + ", or null.",
-            "decision: ONLY for the pending confirmation (identity or yes/no "
-            "gate): confirmed, denied, ambiguous, unrelated, needs_clarification; otherwise null.",
-            "scope: in_scope, out_of_scope, injection_attempt. confidence: 0..1.",
-            'slots: {"slot_name":{"status":"provided","value":"literal caller value"}}. '
-            "Allowed statuses: provided, exists_claimed, unavailable, refused, unclear. "
-            "Include value ONLY for provided; absent observations stay omitted.",
-            "next_action: continue_workflow, ask_identity_confirmation, request_slot_value, "
-            "clarify, answer, answer_from_knowledge, redirect_to_goal, call_tool, "
-            "escalate_to_human, end_call. needs_clarification/context_question: booleans.",
+            *output,
             (
                 "response_text: one or two SHORT sentences in the caller's "
                 "language, following bot goals and live state, or empty. "
