@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type {
-  ApiConnection, ApiTestResult, Intent, RuntimeContextConfig, RuntimeContextField,
+  ApiConnection, ApiTestResult, IdentityConfirmationMode, Intent, RuntimeContextConfig,
+  RuntimeContextField,
   RuntimeContextFieldType, RuntimeContextRecord, RuntimeContextValidateResult,
   VoiceBot, Workflow,
 } from "@/types/domain";
@@ -868,6 +869,9 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
   const [apiConnectionId, setApiConnectionId] = useState(config.apiConnectionId ?? "");
   const [responsePath, setResponsePath] = useState(config.responsePath ?? "");
   const [domainPolicy, setDomainPolicy] = useState<"generic" | "collections">(config.domainPolicy);
+  const [identityMode, setIdentityMode] = useState<IdentityConfirmationMode | "">(
+    config.identityConfirmationMode ?? "",
+  );
   const [fields, setFields] = useState<RuntimeContextField[]>(
     () => config.fields.map((f) => ({ ...f })),
   );
@@ -1000,6 +1004,7 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
         testPayload,
         missingValuePolicy: missingValuePolicy.trim() || null,
         domainPolicy,
+        identityConfirmationMode: identityMode || null,
       });
       toast("Runtime context saved");
       onSaved();
@@ -1032,6 +1037,21 @@ function RuntimeContextEditor({ bot, config, connections, canManage, managePermT
           <select className="select" value={domainPolicy} onChange={(e) => setDomainPolicy(e.target.value as "generic" | "collections")}>
             <option value="generic">Generic (prompt-driven)</option>
             <option value="collections">Collections (deterministic call policy)</option>
+          </select>
+        </Field>
+        <Field
+          label="Identity confirmation"
+          hint={identityMode === "strict" || (!identityMode && domainPolicy === "collections")
+            ? "A reply that only says go ahead (“haan boliye”) gets one explicit re-ask (“Kya aap hi … bol rahe hain?”); a plain yes or “main hi bol raha hoon” confirms."
+            : "A yes, also “haan boliye” or “main hi bol raha hoon”, confirms the identity question. Negations, “galat number” and someone else answering never do."}
+        >
+          <select
+            className="select" aria-label="Identity confirmation" value={identityMode}
+            onChange={(e) => setIdentityMode(e.target.value as IdentityConfirmationMode | "")}
+          >
+            <option value="">Default ({domainPolicy === "collections" ? "strict" : "standard"} for this domain policy)</option>
+            <option value="standard">Standard</option>
+            <option value="strict">Strict</option>
           </select>
         </Field>
         {sourceMode === "api" && (

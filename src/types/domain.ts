@@ -1054,9 +1054,14 @@ export interface RuntimeContextConfig {
   testPayload: Record<string, unknown> | null;
   missingValuePolicy: string | null;
   domainPolicy: "generic" | "collections";
+  /** How a reply to the identity question counts; null = the domain
+   *  policy's default (strict for collections, standard otherwise). */
+  identityConfirmationMode?: IdentityConfirmationMode | null;
   status: string;
   configured: boolean;
 }
+
+export type IdentityConfirmationMode = "standard" | "strict";
 
 /** One effective context value with provenance — sensitive values arrive masked. */
 export interface RuntimeContextValue {

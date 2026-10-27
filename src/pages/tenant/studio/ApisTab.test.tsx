@@ -100,3 +100,46 @@ describe("ApisTab runtime-context test user form", () => {
     expect(screen.getByText("Prompt variable: {policy_number}")).toBeInTheDocument();
   });
 });
+
+describe("ApisTab runtime-context identity confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listApis).mockResolvedValue([]);
+    vi.mocked(api.listIntents).mockResolvedValue([]);
+    vi.mocked(api.listWorkflows).mockResolvedValue([]);
+    vi.mocked(api.saveRuntimeContext).mockResolvedValue({ ...CONFIG, configured: true });
+  });
+
+  it("defaults by domain policy and saves no mode when left on default", async () => {
+    vi.mocked(api.getRuntimeContext).mockResolvedValue({ ...CONFIG, domainPolicy: "collections" });
+    const user = userEvent.setup();
+    render(<ApisTab bot={BOT} />);
+    await user.click(await screen.findByText("Runtime context / User details"));
+
+    const select = screen.getByLabelText("Identity confirmation") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(screen.getByText("Default (strict for this domain policy)")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save test user details" }));
+    await waitFor(() => expect(api.saveRuntimeContext).toHaveBeenCalledTimes(1));
+    expect(api.saveRuntimeContext).toHaveBeenCalledWith(BOT.id, expect.objectContaining({
+      domainPolicy: "collections", identityConfirmationMode: null,
+    }));
+  });
+
+  it("saves the chosen mode next to the domain policy", async () => {
+    vi.mocked(api.getRuntimeContext).mockResolvedValue({ ...CONFIG, identityConfirmationMode: "standard" });
+    const user = userEvent.setup();
+    render(<ApisTab bot={BOT} />);
+    await user.click(await screen.findByText("Runtime context / User details"));
+
+    const select = screen.getByLabelText("Identity confirmation") as HTMLSelectElement;
+    expect(select.value).toBe("standard");
+    expect(screen.getByText("Default (standard for this domain policy)")).toBeInTheDocument();
+    await user.selectOptions(select, "strict");
+    await user.click(screen.getByRole("button", { name: "Save test user details" }));
+    await waitFor(() => expect(api.saveRuntimeContext).toHaveBeenCalledTimes(1));
+    expect(api.saveRuntimeContext).toHaveBeenCalledWith(BOT.id, expect.objectContaining({
+      identityConfirmationMode: "strict",
+    }));
+  });
+});

@@ -435,6 +435,7 @@ async def _run_call(
             record_id=runtime_context.record_id,
             source_mode=runtime_context.source_mode,
             domain_policy=runtime_context.domain_policy,
+            identity_confirmation_mode=runtime_context.identity_confirmation_mode,
             values=len(runtime_context.values),
             # Per-source counts (session = signed dialer variables): shows at
             # a glance whether the dialer's values or the API/fixture won.

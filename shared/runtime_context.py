@@ -449,6 +449,9 @@ class RuntimeContext:
     field_definitions: list = field(default_factory=list)
     missing_value_policy: str | None = None
     domain_policy: str = "generic"
+    # standard | strict, or None for the domain policy's default (see
+    # shared.orchestration.identity_confirmation).
+    identity_confirmation_mode: str | None = None
     source_mode: str | None = None       # api | manual | record | legacy
     record_id: str | None = None         # stored record / legacy context row id
     schema_id: str | None = None
@@ -685,6 +688,7 @@ def build_runtime_context(
     allow_additional: bool = True,
     missing_value_policy: str | None = None,
     domain_policy: str = "generic",
+    identity_confirmation_mode: str | None = None,
     source_mode: str | None = None,
     record_id: str | None = None,
     schema_id: str | None = None,
@@ -703,7 +707,9 @@ def build_runtime_context(
         tenant_id=tenant_id, bot_id=bot_id,
         field_definitions=list(field_definitions or []),
         missing_value_policy=missing_value_policy,
-        domain_policy=domain_policy, source_mode=source_mode,
+        domain_policy=domain_policy,
+        identity_confirmation_mode=identity_confirmation_mode,
+        source_mode=source_mode,
         record_id=record_id, schema_id=schema_id, load_error=load_error,
         api_skipped=api_skipped,
     )
@@ -802,6 +808,7 @@ def _load_schema_sync(tenant_id: str, bot_id: str):
             "test_payload": row.test_payload,
             "missing_value_policy": row.missing_value_policy,
             "domain_policy": row.domain_policy or "generic",
+            "identity_confirmation_mode": row.identity_confirmation_mode,
             "response_path": row.response_path,
             "api": None if api_row is None else {
                 "id": api_row.id,
@@ -988,6 +995,7 @@ async def load_runtime_context(
         allow_additional=schema["allow_additional"],
         missing_value_policy=schema.get("missing_value_policy"),
         domain_policy=schema.get("domain_policy") or "generic",
+        identity_confirmation_mode=schema.get("identity_confirmation_mode"),
         source_mode=schema["source_mode"],
         record_id=found_record_id,
         schema_id=schema["id"],

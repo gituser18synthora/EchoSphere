@@ -42,6 +42,9 @@ from shared.models import (
     VoiceBot,
 )
 from backend.serializers import serialize_scenario
+from shared.orchestration.identity_confirmation import (
+    resolve_identity_confirmation_mode,
+)
 from shared.orchestration.speech_style import spoken_reply_instruction
 from shared.orchestration.time_context import (
     TIME_CONTEXT_SETTING,
@@ -1134,6 +1137,7 @@ async def simulate_turn(
         allow_additional=bool(schema.allow_additional) if schema else True,
         missing_value_policy=schema.missing_value_policy if schema else None,
         domain_policy=(schema.domain_policy if schema else "generic") or "generic",
+        identity_confirmation_mode=schema.identity_confirmation_mode if schema else None,
         source_mode=body.context_source,
         schema_id=schema.id if schema else None,
     )
@@ -1168,6 +1172,9 @@ async def simulate_turn(
         policy = CollectionCallPolicy(
             context=collection_snapshot_from_context(runtime_ctx),
             language=simulation_language,
+            identity_mode=resolve_identity_confirmation_mode(
+                runtime_ctx.identity_confirmation_mode, runtime_ctx.domain_policy,
+            ),
         )
         policy.tools_available = bool(body.mock_tool_results)
         # Replay the prior conversation through the policy so its state

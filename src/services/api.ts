@@ -12,7 +12,7 @@ import type {
   DocumentStatus, DocumentUploadResult, EntityDef,
   BotEffectiveGuardrails,
   EffectiveGuardrails, EntityExtraction, Guardrail, GuardrailProfile,
-  GuardrailTrigger, HealthMetric, Intent, IntentTestResult,
+  GuardrailTrigger, HealthMetric, IdentityConfirmationMode, Intent, IntentTestResult,
   Integration, Invoice, KnowledgeDetail, KnowledgeGap, KnowledgeSource, OnboardingOptions,
   PhoneNumber, PlatformAlert, Prompt, PromptCompileResult, PromptRenderResult, PromptTestResult,
   Release, RoleInfo, RuntimeContextConfig, RuntimeContextField, RuntimeContextRecord,
@@ -387,6 +387,7 @@ export const saveRuntimeContext = (botId: string, body: {
   responsePath?: string | null; fields: RuntimeContextField[]; allowAdditional: boolean;
   testPayload?: Record<string, unknown> | null; missingValuePolicy?: string | null;
   domainPolicy: "generic" | "collections";
+  identityConfirmationMode?: IdentityConfirmationMode | null;
 }): Promise<RuntimeContextConfig> => http.put(`/bots/${botId}/runtime-context`, body);
 /** Validate a payload against the schema (or unsaved `fields`) and return the
     effective, source-tagged, masked context a live call would see. */

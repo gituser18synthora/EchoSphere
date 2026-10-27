@@ -93,6 +93,12 @@ class RuntimeContextSchema(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin,
     # how the bot should handle values that are missing on a call.
     missing_value_policy: Mapped[str | None] = mapped_column(String(500), nullable=True)
     domain_policy: Mapped[str] = mapped_column(String(30), default="generic", nullable=False)
+    # How a reply to the bot's identity question counts: "standard" | "strict"
+    # (shared.orchestration.identity_confirmation). NULL = the domain policy's
+    # default — strict for collections, standard otherwise.
+    identity_confirmation_mode: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
 
 

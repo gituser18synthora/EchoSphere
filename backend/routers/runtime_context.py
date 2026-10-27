@@ -32,6 +32,7 @@ from shared.customer_context import phone_tail
 from shared.db.mysql import get_db
 from shared.errors import ApiError, NotFoundError
 from shared.ids import new_id
+from shared.orchestration.identity_confirmation import IDENTITY_CONFIRMATION_MODES
 from shared.models import (
     ApiConnection,
     RuntimeContextRecord,
@@ -89,6 +90,7 @@ def _serialize_schema(row: RuntimeContextSchema | None, bot: VoiceBot) -> dict:
             "sourceMode": "manual", "apiConnectionId": None, "responsePath": None,
             "fields": [], "allowAdditional": True, "testPayload": None,
             "missingValuePolicy": None, "domainPolicy": "generic",
+            "identityConfirmationMode": None,
             "status": "active", "configured": False,
         }
     return {
@@ -98,7 +100,9 @@ def _serialize_schema(row: RuntimeContextSchema | None, bot: VoiceBot) -> dict:
         "allowAdditional": bool(row.allow_additional),
         "testPayload": row.test_payload,
         "missingValuePolicy": row.missing_value_policy,
-        "domainPolicy": row.domain_policy, "status": row.status,
+        "domainPolicy": row.domain_policy,
+        "identityConfirmationMode": row.identity_confirmation_mode,
+        "status": row.status,
         "configured": True,
     }
 
@@ -139,6 +143,10 @@ class SchemaPayload(BaseModel):
         default=None, alias="missingValuePolicy", max_length=500
     )
     domain_policy: str = Field(default="generic", alias="domainPolicy")
+    # None keeps the domain policy's default (strict for collections).
+    identity_confirmation_mode: str | None = Field(
+        default=None, alias="identityConfirmationMode"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -170,6 +178,11 @@ def upsert_runtime_context_config(
     if body.domain_policy not in DOMAIN_POLICIES:
         errors.append({"field": "domainPolicy",
                        "message": f"Must be one of {list(DOMAIN_POLICIES)}."})
+    if body.identity_confirmation_mode not in (None, *IDENTITY_CONFIRMATION_MODES):
+        errors.append({"field": "identityConfirmationMode",
+                       "message": "Must be one of "
+                                  f"{list(IDENTITY_CONFIRMATION_MODES)}, or empty "
+                                  "for the domain policy's default."})
     for item in body.fields:
         if isinstance(item, dict) and item.get("type") not in (None, *CONTEXT_FIELD_TYPES):
             pass  # already reported by validate_field_definitions
@@ -212,6 +225,7 @@ def upsert_runtime_context_config(
     row.test_payload = body.test_payload
     row.missing_value_policy = body.missing_value_policy
     row.domain_policy = body.domain_policy
+    row.identity_confirmation_mode = body.identity_confirmation_mode
     row.updated_by = user.id
     record_audit(
         db, user=user,
@@ -219,7 +233,8 @@ def upsert_runtime_context_config(
         entity_type="runtime_context_schema", entity_id=row.id,
         target_label=f"{bot.name} runtime context", tenant_id=bot.tenant_id,
         new_value={"sourceMode": row.source_mode, "fields": len(row.fields or []),
-                   "domainPolicy": row.domain_policy},
+                   "domainPolicy": row.domain_policy,
+                   "identityConfirmationMode": row.identity_confirmation_mode},
         request=request,
     )
     db.commit()

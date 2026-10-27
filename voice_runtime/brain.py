@@ -804,9 +804,13 @@ class ConversationBrain(FrameProcessor):
         )
         # How a reply to the identity question counts (standard | strict):
         # the bot's setting, else strict for collections, standard otherwise.
-        identity_mode = resolve_identity_confirmation_mode(
-            getattr(runtime_context, "identity_confirmation_mode", None),
-            runtime_context.domain_policy if runtime_context is not None else None,
+        identity_mode = (
+            resolve_identity_confirmation_mode(
+                runtime_context.identity_confirmation_mode,
+                runtime_context.domain_policy,
+            )
+            if runtime_context is not None
+            else resolve_identity_confirmation_mode(None, None)
         )
         self._identity = IdentityConfirmation(
             mode=identity_mode, subject_name=self._identity_subject_name(),
