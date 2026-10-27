@@ -951,6 +951,14 @@ class ConversationBrain(FrameProcessor):
         # (text, workflow name, task resolving to the engine's prepared
         # extraction) for the turn being decided.
         self._extraction_ahead: tuple[str, str, asyncio.Task] | None = None
+        # One short acknowledgement when no reply audio is ready this many
+        # ms after dispatch (llm_settings.early_ack_ms, default off).
+        early_ack_ms = llm_settings_early.get("early_ack_ms")
+        self._early_ack_ms: int | None = (
+            int(early_ack_ms)
+            if isinstance(early_ack_ms, int) and not isinstance(early_ack_ms, bool)
+            and early_ack_ms > 0 else None
+        )
         # Guarded goal state for bots WITHOUT a dedicated domain policy —
         # identity, required slots and scope counters move only through
         # validated decisions (the collections policy keeps its own machine).
@@ -1048,6 +1056,10 @@ class ConversationBrain(FrameProcessor):
         # ``awaitingSignals``); None while the flow waits elsewhere.
         self._pending_hub_signals: frozenset[str] | None = None
         self._open_turn_pending_hub_signals: frozenset[str] | None = None
+        # Whether an exact-wording / compliance line can follow the paused
+        # workflow step (engine ``awaitingExactAhead``).
+        self._pending_exact_ahead = False
+        self._open_turn_pending_exact_ahead = False
         self._last_bot_reply: str = ""
         self._conversation_language: str = config.language
         # Language continuity: the previous call's dominant customer language
@@ -3701,6 +3713,7 @@ class ConversationBrain(FrameProcessor):
                 self._pending_workflow_question = self._open_turn_pending_question
                 self._pending_ask_shape = self._open_turn_pending_ask_shape
                 self._pending_hub_signals = self._open_turn_pending_hub_signals
+                self._pending_exact_ahead = self._open_turn_pending_exact_ahead
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
@@ -4850,6 +4863,11 @@ class ConversationBrain(FrameProcessor):
         allow_voiced = bool(plan.verbal) if plan is not None else True
         if resume:
             allow_voiced = False
+        early_ack_ms = (
+            self._early_ack_ms
+            if not resume and self._early_ack_ms and self._early_ack_allowed(text)
+            else None
+        )
         try:
             await filler.arm(
                 turn_id=self._latency_filler_turn_id,
@@ -4874,7 +4892,11 @@ class ConversationBrain(FrameProcessor):
                 cue_selection=cue_selection,
                 allow_voiced=allow_voiced,
                 cue_after_ms=getattr(plan, "delay_ms", None),
-                acknowledgement=self._plan_early_ack(text) if not resume else None,
+                acknowledgement=(
+                    self._plan_early_ack(text, force=early_ack_ms is not None)
+                    if not resume else None
+                ),
+                **({"ack_after_ms": early_ack_ms} if early_ack_ms is not None else {}),
             )
         except Exception:  # noqa: BLE001 — decoration must never break a turn
             logger.debug("latency filler could not be armed", exc_info=True)
@@ -4977,7 +4999,23 @@ class ConversationBrain(FrameProcessor):
             return "answer"
         return "information"
 
-    def _plan_early_ack(self, text: str) -> dict | None:
+    def _early_ack_allowed(self, text: str) -> bool:
+        """Whether this turn may get the bot's early acknowledgement
+        (``early_ack_ms``). Never when the short answer resolves without the
+        decision (deterministic_answers: the reply comes at once), never in
+        front of an identity question — pending identity, the opening
+        question, a collections call (its lines are scripted disclosures) —
+        and never when the flow's next line can be an exact-wording or
+        compliance line. No two consecutive turns: the planner's hard rule."""
+        if self._policy is not None:
+            return False
+        if self._identity.pending(self._last_bot_reply) or self._pending_opening_question():
+            return False
+        if self._active_workflow is not None and self._pending_exact_ahead:
+            return False
+        return self._deterministic_answer(text) is None
+
+    def _plan_early_ack(self, text: str, *, force: bool = False) -> dict | None:
         """Plan an optional cached acknowledgement for the latency deadline.
 
         Withheld when the reply cannot be far (the speculative decision is
@@ -5045,6 +5083,8 @@ class ConversationBrain(FrameProcessor):
             serious=is_serious_caller_state(self._latest_caller_signal),
             critical=contains_critical_content(text),
             commit=False,
+            # early_ack_ms: every slow turn may get its word (no roll).
+            **({"force": True} if force else {}),
         )
         if not token:
             return
@@ -7095,6 +7135,7 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_pending_question = self._pending_workflow_question
         self._open_turn_pending_ask_shape = self._pending_ask_shape
         self._open_turn_pending_hub_signals = self._pending_hub_signals
+        self._open_turn_pending_exact_ahead = self._pending_exact_ahead
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -7170,6 +7211,9 @@ class ConversationBrain(FrameProcessor):
         self._pending_hub_signals = (
             frozenset(str(s) for s in hub_signals)
             if isinstance(hub_signals, list) and not result["done"] else None
+        )
+        self._pending_exact_ahead = bool(
+            result.get("awaitingExactAhead") and not result["done"]
         )
         self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)

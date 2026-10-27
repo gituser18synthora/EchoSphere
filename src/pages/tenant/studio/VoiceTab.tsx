@@ -126,7 +126,7 @@ const PLATFORM_LLM_SETTING_KEYS = [
   "memory_greeting_timeout_seconds", "orchestration_max_tokens",
   "max_output_characters", "reply_service_tier", "reply_reasoning_effort",
   "deterministic_answers", "decision_fast_output", "speculative_reply",
-  "parallel_extraction",
+  "parallel_extraction", "early_ack_ms",
 ];
 
 function preservePlatformLlmSettings(next: ProviderSettings, previous: ProviderSettings): ProviderSettings {

@@ -1495,7 +1495,7 @@ class SpeechNaturalnessPlanner:
     def plan_early_ack(self, *, language: str, identity: VoiceIdentity | None = None,
                        context: str = "answer", turn_index: int = 0,
                        serious: bool = False, critical: bool = False,
-                       commit: bool = True) -> str:
+                       commit: bool = True, force: bool = False) -> str:
         """One short spoken acknowledgement for the turn just dispatched.
 
         Planned when the caller's turn closes, then eligible only after the
@@ -1525,7 +1525,9 @@ class SpeechNaturalnessPlanner:
         slowest of the call), pool rotation with no-repeat, one token only
         (never stacked), and nothing for greetings or unsupported languages.
         Returns "" when no acknowledgement should be spoken;
-        :attr:`last_early_ack_reason` says why.
+        :attr:`last_early_ack_reason` says why. ``force`` (a bot's
+        ``early_ack_ms``) skips the probability roll — every slow turn may get
+        its word — and keeps every other rule.
         """
         cfg = self._config
         self._last_early_ack_reason = ""
@@ -1556,7 +1558,7 @@ class SpeechNaturalnessPlanner:
             # First reply after the greeting: the slowest turn of the call
             # gets the best odds of a spoken beat while the system thinks.
             probability = min(1.0, probability * _FIRST_REPLY_PREFACE_BOOST)
-        if self._rng.random() >= probability:
+        if not force and self._rng.random() >= probability:
             return _withhold("roll")
         heard_last_turn = frozenset(
             text for text, turn in self._spoken_turns.items() if turn == turn_index - 1

@@ -336,6 +336,9 @@ _PLATFORM_LLM_INTEGER_BOUNDS = {
     # Provider-independent spoken-output cap. Runtime also derives a native
     # provider token budget from it and enforces the character ceiling.
     "max_output_characters": (120, 2000),
+    # Phase 4: one short acknowledgement when no reply audio is ready this
+    # many ms after dispatch (voice_runtime.brain; unset = off).
+    "early_ack_ms": (300, 3000),
 }
 PLATFORM_LLM_SETTING_KEYS = frozenset(
     (*_PLATFORM_LLM_BOOLEAN_KEYS, *_PLATFORM_LLM_STRING_KEYS,

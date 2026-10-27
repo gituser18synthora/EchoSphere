@@ -28,6 +28,7 @@ from shared.config import get_settings
 from shared.orchestration.async_tools import to_thread_abandonable
 from shared.orchestration.phrases import canned
 from shared.orchestration.response_modes import (
+    RESPONSE_MODE_EXACT,
     RESPONSE_MODE_FIXED,
     RESPONSE_MODE_GROUNDED,
     aggregate_response_mode,
@@ -287,6 +288,42 @@ def _awaiting_edge_signals(definition: dict | None, node: dict | None) -> list[s
         if str(e.get("from") or "") == node_id and str(e.get("to") or "") in ids
     ]
     return sorted({s for _edge, _tokens, signals in _edge_meta(edges) for s in signals})
+
+
+# Nodes that pause the flow for the caller: the walk below stops at them.
+_PAUSING_KINDS = frozenset({"ask", "intent", "end", "handover"})
+_EXACT_AHEAD_MAX_NODES = 12
+
+
+def _exact_wording_ahead(definition: dict | None, node: dict | None) -> bool:
+    """``awaitingExactAhead`` for the result payload: whether a node the flow
+    can speak next — from the paused node's edges through any chain of
+    non-pausing nodes up to the next pause — is an exact-wording line
+    (response mode ``exact``) or carries an approved compliance wording
+    (``{{…}}``). The brain plays no early acknowledgement in front of one."""
+    if not isinstance(node, dict) or not definition:
+        return False
+    nodes = {str(n.get("id")): n for n in definition.get("nodes") or [] if n.get("id")}
+    edges_from: dict[str, list[str]] = {}
+    for edge in definition.get("edges") or []:
+        edges_from.setdefault(str(edge.get("from") or ""), []).append(str(edge.get("to") or ""))
+    frontier, seen = list(edges_from.get(str(node.get("id")), [])), set()
+    while frontier and len(seen) < _EXACT_AHEAD_MAX_NODES:
+        node_id = frontier.pop(0)
+        if node_id in seen or node_id not in nodes:
+            continue
+        seen.add(node_id)
+        nxt = nodes[node_id]
+        config = _node_config(nxt)
+        if str(config.get("responseMode") or "").lower() == RESPONSE_MODE_EXACT:
+            return True
+        texts = [config.get(key) for key in ("question", "prompt", "text")]
+        texts += list((config.get("textByLanguage") or {}).values()) if isinstance(config.get("textByLanguage"), dict) else []
+        if any(isinstance(t, str) and "{{" in t for t in texts):
+            return True
+        if nxt.get("kind") not in _PAUSING_KINDS:
+            frontier.extend(edges_from.get(node_id, []))
+    return False
 
 
 @dataclass(frozen=True)
@@ -2127,6 +2164,8 @@ class WorkflowEngine:
             "awaitingAsk": _awaiting_ask_shape(awaiting_node),
             # Signals the paused intent hub's edges carry (None elsewhere).
             "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
+            # An exact-wording / compliance line can follow the paused step.
+            "awaitingExactAhead": _exact_wording_ahead(definition, awaiting_node),
             # A node spoken this turn that declares ``coversKnowledgeQuestion``
             # (the flow's own document explanation): the runtime must not add a
             # separate KB answer for the same question in the same turn.

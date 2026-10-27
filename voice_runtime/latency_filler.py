@@ -656,6 +656,10 @@ class _ArmedTurn:
     # breath only at the same deadline, and only when its cached PCM is ready.
     acknowledgement: dict | None = None
     playing_acknowledgement: bool = False
+    # Monotonic time of the bot's early acknowledgement slot (early_ack_ms
+    # after dispatch); None → the acknowledgement keeps the first deadline.
+    ack_at: float | None = None
+    early_slot: bool = False
     cue_after_s: float | None = None
     reply_pending: bool = False
     cue_window_open: bool = False
@@ -819,6 +823,7 @@ class LatencyFillerProcessor(FrameProcessor):
         allow_voiced: bool = True,
         acknowledgement: dict | None = None,
         cue_after_ms: int | None = None,
+        ack_after_ms: int | None = None,
     ) -> None:
         """A reply is now in flight for ``turn_id``.
 
@@ -830,6 +835,11 @@ class LatencyFillerProcessor(FrameProcessor):
         breath rung is skipped (the bot just spoke) and the voiced rungs are
         held at least ``_AFTER_ACK_GAP_S`` from now. Without a ladder there is
         nothing left to play, so a resume then arms nothing.
+
+        ``ack_after_ms`` (the bot's ``early_ack_ms``) moves a planned
+        acknowledgement to that long after dispatch — only when its rendered
+        clip is ready then; otherwise the schedule stays as it was, and never
+        does anything but the acknowledgement play that early.
         """
         await self._cut("rearmed")
         if resume and not self.ladder_enabled:
@@ -865,6 +875,9 @@ class LatencyFillerProcessor(FrameProcessor):
         self._armed = armed
         if armed.cue_after_s is not None:
             armed.fire_at = max(origin + armed.cue_after_s, now)
+        if armed.acknowledgement and ack_after_ms is not None and not resume:
+            start = dispatched_at if dispatched_at is not None else now
+            armed.ack_at = start + max(0, int(ack_after_ms)) / 1000.0
         if armed.acknowledgement and self._cue_library is not None:
             # Prime the existing cache without awaiting a render or touching
             # the answer's TTS queue. Playback remains behind the deadline.
@@ -1066,6 +1079,21 @@ class LatencyFillerProcessor(FrameProcessor):
 
     async def _run(self, armed: _ArmedTurn) -> None:
         try:
+            if armed.ack_at is not None and armed.ack_at < armed.fire_at:
+                # The early acknowledgement slot: at that moment the first
+                # opportunity fires — with the acknowledgement — only when its
+                # clip is ready; otherwise the regular schedule stands.
+                regular = armed.fire_at
+                armed.fire_at = armed.ack_at
+                if not await self._wait_for_rung(armed):
+                    return
+                if armed.reply_pending:
+                    return
+                if self._acknowledgement_clip(armed):
+                    armed.early_slot = True
+                else:
+                    armed.fire_at = regular
+                    self._event("early_ack_not_ready", turn=armed.turn_id)
             # Adaptive turns have ONE initial opportunity: a ready contextual
             # acknowledgement/cue, or a breath if no eligible cue is ready.
             # Never queue a breath in front of the 1.5–2.5 s cue window.
@@ -1198,6 +1226,8 @@ class LatencyFillerProcessor(FrameProcessor):
                         "early_ack_played", turn=armed.turn_id,
                         context=armed.acknowledgement.get("context", "answer"),
                         language=armed.language, waited_ms=round(waited_ms, 1),
+                        # In the bot's early_ack_ms slot (measured from dispatch).
+                        early=armed.early_slot,
                     )
                     if self.acknowledgement_hook is not None:
                         self.acknowledgement_hook(armed.turn_id)
