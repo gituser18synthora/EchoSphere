@@ -26,7 +26,7 @@ import time
 from shared.bot_config import ResolvedBotConfig
 from shared.orchestration.phrases import canned as platform_canned
 from voice_runtime.brain import ConversationBrain
-from voice_runtime.call_policy import canned
+from voice_runtime.identity_confirmation import identity_reask
 
 from tests.unit.test_agentic_orchestration import (
     IDENTITY_QUESTION,
@@ -397,9 +397,7 @@ class TestTimeoutFallback:
         fallbacks = events(brain, "orchestration_fallback")
         assert fallbacks and fallbacks[-1]["reason"] == "timeout"
         # Deterministic fallback answered the turn (scripted identity re-ask).
-        assert bot_replies(brain)[-1] == canned(
-            "collections_identity_reask", "hi-IN"
-        ).format(name="Ramesh Kumar")
+        assert bot_replies(brain)[-1] == identity_reask(0, "hi-IN", "Ramesh Kumar")
         # Immediate: decision deadline + scheduling, nowhere near a second
         # sequential timeout window.
         assert elapsed < 2.0, f"fallback took {elapsed:.2f}s"

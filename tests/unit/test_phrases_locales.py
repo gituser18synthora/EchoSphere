@@ -9,6 +9,7 @@ import re
 from shared.guardrails.engine import _GUARDRAIL_PHRASES
 from shared.orchestration.phrases import _PHRASES, canned, entry_question_retry
 from voice_runtime.call_policy import _COLLECTIONS_FALLBACKS, canned as collections_fallback
+from voice_runtime.identity_confirmation import identity_reask
 
 MALAYALAM = re.compile(r"[ഀ-ൿ]")
 TAMIL = re.compile(r"[஀-௿]")
@@ -53,7 +54,8 @@ def test_entry_retry_prefix_follows_the_locale():
 
 
 def test_collections_fallback_speaks_malayalam_and_tamil():
-    hi = collections_fallback("collections_identity_reask", "hi-IN") if callable(collections_fallback) else None
-    if hi is not None:
-        assert MALAYALAM.search(collections_fallback("collections_identity_reask", "ml-IN"))
-        assert TAMIL.search(collections_fallback("collections_identity_reask", "ta-IN"))
+    assert MALAYALAM.search(collections_fallback("collections_identity_unverified_close", "ml-IN"))
+    assert TAMIL.search(collections_fallback("collections_identity_unverified_close", "ta-IN"))
+    for rung in range(3):
+        assert MALAYALAM.search(identity_reask(rung, "ml-IN", "Ravi"))
+        assert TAMIL.search(identity_reask(rung, "ta-IN", "Ravi"))

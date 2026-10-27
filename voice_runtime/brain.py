@@ -102,12 +102,18 @@ from shared.orchestration.delivery import delivery_instructions
 from shared.orchestration.phrases import canned
 from shared.orchestration.placeholders import (
     StreamingPlaceholderFilter,
+    iter_placeholders,
+    normalize_placeholder_key,
     resolve_placeholders,
     sanitize_spoken_text,
 )
 from shared.orchestration.decision_schema import (
     SCOPE_IN,
     ConversationDecision,
+)
+from shared.orchestration.identity_confirmation import (
+    decision_prompt_rule,
+    resolve_identity_confirmation_mode,
 )
 from shared.orchestration.goal_engine import (
     _DEFAULT_MAX_TOKENS as GOAL_ENGINE_DEFAULT_MAX_TOKENS,
@@ -186,6 +192,14 @@ from shared.runtime_context import (
 from voice_runtime.call_policy import (
     CollectionCallPolicy,
     is_valid_transaction_reference,
+)
+from voice_runtime.identity_confirmation import (
+    CONFIRM as IDENTITY_CONFIRM,
+    EXPLICIT_REASK as IDENTITY_EXPLICIT_REASK,
+    REASK_RUNGS as IDENTITY_REASK_RUNGS,
+    IdentityConfirmation,
+    identity_question_sentences,
+    reask_has_language,
 )
 from voice_runtime.endpointing import (
     is_filler_only,
@@ -788,6 +802,17 @@ class ConversationBrain(FrameProcessor):
         self._voice_context = voice_context_values(
             active_voice_identity(config.tts, config.language)
         )
+        # How a reply to the identity question counts (standard | strict):
+        # the bot's setting, else strict for collections, standard otherwise.
+        identity_mode = resolve_identity_confirmation_mode(
+            getattr(runtime_context, "identity_confirmation_mode", None),
+            runtime_context.domain_policy if runtime_context is not None else None,
+        )
+        self._identity = IdentityConfirmation(
+            mode=identity_mode, subject_name=self._identity_subject_name(),
+        )
+        if self._policy is not None:
+            self._policy.identity_mode = identity_mode
         # Telephony control events (transfer/stop) are deferred until the bot
         # has finished SPEAKING the accompanying announcement — pushing them
         # immediately would race ahead of the still-rendering TTS audio and
@@ -5241,13 +5266,28 @@ class ConversationBrain(FrameProcessor):
                 # consumes it directly. Ambiguous, compound or off-question
                 # turns return None here and are judged by the Goal Engine as
                 # before.
-                fast_path = self._deterministic_fast_path(text)
+                fast_path = self._deterministic_fast_path(text, decision)
             if fast_path is not None:
                 if fast_path != "identifier_capture":
                     self._discard_decision_prefetch("deterministic_fast_path")
                     self._recorder.add_event(
                         "deterministic_fast_path", rule=fast_path,
                     )
+                if self._policy is None and fast_path.startswith("identity_"):
+                    self._recorder.add_event(
+                        "identity_rule", outcome=fast_path,
+                        mode=self._identity.mode,
+                        explicit_asked=self._identity.explicit_asked,
+                    )
+                    if fast_path == "identity_confirmed":
+                        # The decision this rule stands in for; the turn
+                        # then runs exactly as a confirmed decision would.
+                        orchestrated = self._identity_rule_decision()
+                    else:
+                        decision = RouteDecision(
+                            kind=RouteKind.CHAT, confidence=1.0,
+                            reason="identity_explicit_reask", signal="affirm",
+                        )
             else:
                 orchestrated = await self._take_decision(text)
             if orchestrated is not None:
@@ -5316,6 +5356,7 @@ class ConversationBrain(FrameProcessor):
         )
         if (
             decision.kind == RouteKind.CHAT and signal == "affirm"
+            and decision.reason != "identity_explicit_reask"
             and (orchestrated is None or (
                 orchestrated.scope == SCOPE_IN and not orchestrated.slots
                 and not orchestrated.tool_request
@@ -5325,6 +5366,33 @@ class ConversationBrain(FrameProcessor):
             # Acknowledgement that did not route into the configured workflow
             # must not let free chat invent its first business question.
             decision = replace(decision, reason="entry_resume")
+        identity = self._identity
+        if (
+            self._policy is None and orchestrated is not None
+            and identity.pending(self._last_bot_reply)
+        ):
+            # Generic bots: the identity question's outcome, from the rule or
+            # the validated decision (the collections policy keeps its own).
+            if orchestrated.decision == "confirmed":
+                identity.confirm(self._turn_counter)
+            elif orchestrated.decision == "denied":
+                identity.denied = True
+            elif (
+                orchestrated.decision in ("ambiguous", "needs_clarification")
+                # The schema turns an unclear answer's next action into
+                # 'clarify' unless the model named identity_confirmation.
+                and orchestrated.next_action in (
+                    "ask_identity_confirmation", "clarify",
+                )
+                and decision.kind in (
+                    RouteKind.CHAT, RouteKind.INTENT, RouteKind.CLARIFY,
+                )
+                and self._active_workflow is None
+                and identity.reasks < IDENTITY_REASK_RUNGS
+            ):
+                # The re-ask is the next ladder rung, never the decision's
+                # own wording (cv_6d46f8de094d: the same question three times).
+                decision = replace(decision, reason="identity_reask")
         if (
             self._active_workflow is not None
             and self._runtime_context is not None
@@ -5565,9 +5633,12 @@ class ConversationBrain(FrameProcessor):
                         text, decision, started,
                         extra_system=plan.instruction + tool_instruction,
                     )
-                elif orchestrated is None:
+                elif orchestrated is None or plan.action == "ask_identity_confirmation":
                     # Fallback path (no validated decision this turn): the
-                    # deterministic scripted reply speaks, as before.
+                    # deterministic scripted reply speaks, as before. An
+                    # identity re-ask speaks its ladder rung on either path:
+                    # the decision's own wording repeated the question
+                    # verbatim (cv_6d46f8de094d).
                     self._recorder.add_event(
                         "policy_scripted_reply",
                         phase=self._policy.phase,
@@ -5622,6 +5693,19 @@ class ConversationBrain(FrameProcessor):
                         text, decision, started,
                         extra_system=plan.instruction + tool_instruction,
                     )
+            elif decision.reason in ("identity_explicit_reask", "identity_reask"):
+                reask = self._identity.next_reask(self._conversation_language)
+                if reask and not reask_has_language(self._conversation_language):
+                    reask = await self._adapt_scripted_ask(reask) or reask
+                self._recorder.add_event(
+                    "identity_reask", reason=decision.reason,
+                    mode=self._identity.mode, rung=self._identity.reasks - 1,
+                    ladder_used_up=not reask,
+                )
+                if reask:
+                    await self._say(reask)
+                else:
+                    await self._generate_reply(text, decision, started)
             elif decision.kind == RouteKind.WORKFLOW and self._workflows is not None:
                 await self._handle_workflow(
                     decision, text, started, signal=signal,
@@ -5901,19 +5985,109 @@ class ConversationBrain(FrameProcessor):
             return self._goal_session.stage
         return "conversation"
 
-    def _deterministic_fast_path(self, text: str) -> str | None:
+    def _deterministic_fast_path(
+        self, text: str, route: RouteDecision | None = None
+    ) -> str | None:
         """Whether the current pending question resolves this turn without an LLM.
 
-        Collections-policy bots only: the policy holds the pending-question
-        state (identity, transaction reference, agent offer, payment ask) the
-        rules are gated on. Deterministic routes (hang-up, DNC, transfer,
-        safety) are already decided before the engine ever runs.
+        Collections-policy bots: the policy holds the pending-question state
+        (identity, transaction reference, agent offer, payment ask) the rules
+        are gated on. Every other bot: a reply to the identity question the
+        identity rule reads deterministically (see _identity_fast_path).
+        Deterministic routes (hang-up, DNC, transfer, safety) are already
+        decided before the engine ever runs. ``route`` is the router's
+        decision for the turn (None while prefetching, before it exists).
         """
         if self._policy is None:
-            return None
+            return self._identity_fast_path(text, route)
         return self._policy.deterministic_turn_resolution(
             text, classify_user_signal(text)
         )
+
+    def _identity_fast_path(
+        self, text: str, route: RouteDecision | None
+    ) -> str | None:
+        """Identity rule for bots without a domain policy (identity_mode).
+
+        The bot's last utterance asked who it is speaking with and nothing
+        else has started: a plain affirm-led reply confirms without the
+        decision LLM — unless a workflow entry is configured for the opening
+        answer, whose routing stays with the router/decision as before. In
+        strict mode a bare go-ahead earns the one explicit re-ask (on any
+        route). Everything else is judged by the decision LLM, which the
+        decision prompt gives the same rule.
+        """
+        identity = self._identity
+        if self._active_workflow is not None or not identity.pending(
+            self._last_bot_reply
+        ):
+            return None
+        outcome = identity.rule(text)
+        if outcome == IDENTITY_EXPLICIT_REASK:
+            return "identity_explicit_reask"
+        if (
+            outcome == IDENTITY_CONFIRM
+            and (route is None or route.kind != RouteKind.WORKFLOW)
+            and self._router.affirm_entry is None
+        ):
+            return "identity_confirmed"
+        return None
+
+    def _identity_reply_note(self) -> str:
+        """Reply-generation note for the identity question: confirmed on this
+        turn (go on, never ask again), or already asked twice verbatim (any
+        further ask must be worded differently)."""
+        identity = self._identity
+        if self._policy is None and identity.confirmed_turn == self._turn_counter:
+            who = identity.subject_name or "the intended person"
+            return (
+                "\n\n# Identity confirmed\nThe caller has just confirmed they "
+                f"are {who}. Continue with the call's next step; never ask who "
+                "you are speaking with again."
+            )
+        open_question = (
+            not self._policy.verified if self._policy is not None
+            else identity.pending(self._last_bot_reply)
+        )
+        if open_question and identity.repeated_wordings():
+            return (
+                "\n\n# Identity question\nThe identity question was already "
+                "asked twice in the same words. Never ask it in those words "
+                "again; if it must be asked, use clearly different words."
+            )
+        return ""
+
+    def _identity_rule_decision(self) -> ConversationDecision:
+        """The decision the identity rule stands in for: a confirmed answer
+        to the pending identity question (no reply text — the reply is
+        generated under the bot's prompt)."""
+        return ConversationDecision(
+            intent=None, signal="affirm", decision="confirmed",
+            confidence=1.0, reason="identity rule: affirm-led reply",
+            next_action="continue_workflow", source="identity_rule",
+        )
+
+    def _identity_subject_name(self) -> str:
+        """Who the identity question asks for: the customer on record, else
+        the value of the placeholder in the greeting's identity question
+        ("क्या मेरी बात {customer_name} जी से हो रही है?")."""
+        if self._policy is not None:
+            context = self._policy.context
+            return (context.customer_name if context is not None else "") or ""
+        values = {
+            normalize_placeholder_key(str(k)): str(v)
+            for k, v in self._placeholder_values().items() if v is not None
+        }
+        keys = [
+            p["key"]
+            for sentence in identity_question_sentences(self._config.greeting or "")
+            for p in iter_placeholders(sentence)
+        ]
+        for key in (*keys, "customer_name", "name", "full_name", "caller_name"):
+            value = values.get(key, "").strip()
+            if value and "XXX" not in value.upper() and "*" not in value:
+                return value
+        return ""
 
     async def _decide_turn(
         self, text: str, *, mark: bool = True
@@ -6014,7 +6188,11 @@ class ConversationBrain(FrameProcessor):
             elif policy.awaiting_identity and not policy.verified:
                 state["pending_question"] = (
                     "identity confirmation — is the bot speaking with the "
-                    "intended person? (intent: identity_confirmation)"
+                    "intended person? (intent: identity_confirmation)."
+                    + decision_prompt_rule(
+                        policy.identity_mode,
+                        explicit_asked=policy.identity_explicit_asked,
+                    )
                 )
             known: list[str] = []
             if policy.context is not None and policy.context.customer_name:
@@ -6035,6 +6213,19 @@ class ConversationBrain(FrameProcessor):
             state["pending_question"] = self._pending_workflow_question
         elif policy is None and (question := self._pending_opening_question()):
             state["pending_question"] = question
+        if policy is None and self._identity.pending(self._last_bot_reply):
+            # The identity question is what the caller is answering: the
+            # decision gets the same rule the runtime applies first.
+            state["pending_question"] = (
+                (state.get("pending_question") or (
+                    "identity confirmation — is the bot speaking with the "
+                    "intended person?"
+                ))
+                + decision_prompt_rule(
+                    self._identity.mode,
+                    explicit_asked=self._identity.explicit_asked,
+                )
+            )
         # What kind of answer the pending question expects (and the options
         # the bot just offered): a bare "haan", "2 baje" or "pehla" is judged
         # against it instead of being labelled unrelated or unclear.
@@ -7465,6 +7656,7 @@ class ConversationBrain(FrameProcessor):
         # follows the validated decision state, it never redefines it.
         if self._goal_session is not None:
             extra_system = self._goal_session.turn_instruction() + extra_system
+        extra_system += self._identity_reply_note()
         opening_pending = (
             not self._workflow_ever_routed and self._active_workflow is None
             and self._router.affirm_entry is not None and self._config.greeting
@@ -7724,6 +7916,7 @@ class ConversationBrain(FrameProcessor):
             self._last_bot_reply = reply
             if self._policy is not None:
                 self._policy.observe_bot(reply)
+            self._identity.observe_bot(reply)
             self._history.append({"role": "assistant", "content": reply})
             record = TurnRecord(
                 role="bot",
@@ -8041,6 +8234,18 @@ class ConversationBrain(FrameProcessor):
                 text,
                 active_voice_identity(self._config.tts, self._conversation_language),
             )
+        if text:
+            # An identity question already spoken twice in these words (an
+            # authored opening re-prompt, a co-generated re-ask) is asked in
+            # the next re-ask wording instead — never a third time verbatim.
+            rephrased = self._identity.rephrase_repeated(
+                text, self._conversation_language
+            )
+            if rephrased:
+                self._recorder.add_event(
+                    "identity_question_rephrased", rung=self._identity.reasks - 1,
+                )
+                text = rephrased
         if text and not guardrail_exempt:
             check = self._guardrails.check_output_text(text)
             if check.blocked:
@@ -8060,6 +8265,7 @@ class ConversationBrain(FrameProcessor):
         self._last_bot_reply = text
         if self._policy is not None:
             self._policy.observe_bot(text)
+        self._identity.observe_bot(text)
         self._history.append({"role": "assistant", "content": text})
         record = TurnRecord(role="bot", text=text)
         self._recorder.add_turn(record)

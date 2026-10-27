@@ -9,8 +9,8 @@ reply) and asserts the refactor's guarantees:
     utterances the legacy regexes could never match;
 2.  a ``denied`` decision wins even when the utterance carries affirmative
     tokens (negation priority is semantic, not lexical);
-3.  an ``ambiguous`` decision re-asks with GENERATED wording — the canned
-    phrase is not the normal path;
+3.  an ``ambiguous`` decision re-asks with the next re-ask ladder rung —
+    never the decision's own wording, so the question is never repeated;
 4.  "हाँ, नंबर है" (``exists_claimed``) asks for the actual number and never
     records/captures anything;
 5.  out-of-scope requests (a joke) are redirected to the configured goal,
@@ -33,7 +33,7 @@ from shared.bot_config import ResolvedBotConfig
 from shared.orchestration.goal_engine import _WARMUP_MAX_TOKENS
 from shared.runtime_context import build_runtime_context
 from voice_runtime.brain import ConversationBrain
-from voice_runtime.call_policy import canned
+from voice_runtime.identity_confirmation import identity_reask
 
 from tests.unit.test_brain_collection_policy import (
     GRACE,
@@ -171,7 +171,7 @@ class TestIdentityDecisions:
         assert brain._policy.evaluate_completion() == (True, "wrong_person_closed")
         assert "4,850" not in brain._policy.turn_instruction()
 
-    async def test_ambiguous_decision_reasks_with_generated_wording(self):
+    async def test_ambiguous_decision_reasks_with_the_ladder_wording(self):
         reask = "माफ़ कीजिए, क्या मेरी बात Ramesh Kumar जी से हो रही है?"
         llm = _AgenticLLMStub([{
             "intent": "identity_confirmation", "decision": "ambiguous",
@@ -184,14 +184,12 @@ class TestIdentityDecisions:
         await turn(brain, "hello hello कौन?")
         assert not brain._policy.verified
         assert brain._policy.identity_unclear_count == 1
-        # The re-ask is the decision's generated wording — NOT the canned
-        # fallback phrase (which remains reserved for agentic-path failure).
-        assert bot_replies(brain)[-1] == reask
-        assert canned("collections_identity_reask", "hi-IN").format(
-            name="Ramesh Kumar"
-        ) not in bot_replies(brain)
-        planned = events(brain, "policy_reply_planned")
-        assert planned and planned[-1]["direct"] is True
+        # The re-ask is the next rung of the re-ask ladder, never the
+        # decision's own wording: a co-generated re-ask repeated the identity
+        # question verbatim (cv_6d46f8de094d).
+        assert bot_replies(brain)[-1] == identity_reask(0, "hi-IN", "Ramesh Kumar")
+        assert reask not in bot_replies(brain)
+        assert events(brain, "policy_scripted_reply")
 
 
 # ── 4 + 8: slots move only through provided values and tool results ─────────
@@ -364,9 +362,7 @@ class TestFallbackOnEngineFailure:
         await turn(brain, "बोलिए।")
         assert brain._policy.identity_unclear_count == 1
         assert brain._policy.last_interpretation_source == "regex"
-        assert bot_replies(brain)[-1] == canned(
-            "collections_identity_reask", "hi-IN"
-        ).format(name="Ramesh Kumar")
+        assert bot_replies(brain)[-1] == identity_reask(0, "hi-IN", "Ramesh Kumar")
         fallbacks = events(brain, "orchestration_fallback")
         assert fallbacks and fallbacks[-1]["reason"] == "provider_error"
         assert events(brain, "policy_scripted_reply")

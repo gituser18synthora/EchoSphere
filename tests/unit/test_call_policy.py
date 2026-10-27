@@ -16,6 +16,7 @@ from voice_runtime.call_policy import (
     PAYMENT_ALREADY_MADE,
     WRONG_PARTY,
 )
+from voice_runtime.identity_confirmation import identity_reask
 
 
 def snapshot(**overrides) -> CustomerContextSnapshot:
@@ -441,7 +442,8 @@ class TestPolicyLanguageOwnership:
         plan = policy.plan_turn("പറഞ്ഞോളൂ", None)
         assert plan.action == "ask_identity_confirmation"
         # The re-ask is spoken in the CALL language, never the stored preference.
-        assert "ക്ഷമിക്കണം" in plan.scripted_reply and "Ramesh Kumar" in plan.scripted_reply
+        assert plan.scripted_reply == identity_reask(0, "ml-IN", "Ramesh Kumar")
+        assert "തന്നെയാണോ" in plan.scripted_reply
         assert "माफ़" not in plan.scripted_reply
 
     def test_colloquial_malayalam_yes_confirms_identity(self):

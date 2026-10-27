@@ -72,8 +72,19 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 
 from shared.customer_context import CustomerContextSnapshot
 from shared.orchestration.decision_schema import SCOPE_IN, ConversationDecision
+from shared.orchestration.identity_confirmation import STRICT
 from shared.orchestration.phrases import resolve_phrase
 from shared.orchestration.spoken_numbers import verbalized_digits
+from voice_runtime.identity_confirmation import (
+    CONFIRM,
+    EXPLICIT_REASK,
+    IDENTITY_QUESTION as _IDENTITY_QUESTION,
+    OTHER_PERSON as _OTHER_PERSON,
+    classify_identity_reply,
+    identity_reask,
+    identity_reply_outcome,
+    mentions_go_ahead,
+)
 
 # ── phases ───────────────────────────────────────────────────────────────────
 GREETING = "greeting"
@@ -138,10 +149,6 @@ _COLLECTIONS_FALLBACKS: dict[str, dict[str, str]] = {
             "आपके अकाउंट पर {amount} का payment overdue है। मैं इसी payment "
             "के लिए call कर रहा हूँ — क्या आप आज payment कर पाएंगे?"
         ),
-    },
-    "collections_identity_reask": {
-        "en": "Sorry — am I speaking with {name}?",
-        "hi": "माफ़ कीजिए, क्या मैं {name} जी से बात कर रहा हूँ?",
     },
     "collections_identity_unverified_close": {
         "en": (
@@ -249,10 +256,6 @@ _COLLECTIONS_FALLBACKS_ML_TA: dict[str, dict[str, str]] = {
                "ആ പേയ്‌മെന്റിനെക്കുറിച്ചാണ് ഞാൻ വിളിക്കുന്നത് — ഇന്ന് പേയ്‌മെന്റ് ചെയ്യാൻ കഴിയുമോ?"),
         "ta": ("உங்கள் கணக்கில் {amount} பேமெண்ட் நிலுவையில் உள்ளது. "
                "அந்தப் பேமெண்ட் குறித்துதான் அழைக்கிறேன் — இன்று பேமெண்ட் செய்ய முடியுமா?"),
-    },
-    "collections_identity_reask": {
-        "ml": "ക്ഷമിക്കണം — ഞാൻ {name} നോടാണോ സംസാരിക്കുന്നത്?",
-        "ta": "மன்னிக்கவும் — நான் {name} உடன் பேசுகிறேனா?",
     },
     "collections_identity_unverified_close": {
         "ml": ("ക്ഷമിക്കണം, ശരിയായ ആളോടാണ് സംസാരിക്കുന്നതെന്ന് ഉറപ്പാക്കാൻ കഴിഞ്ഞില്ല, അതിനാൽ "
@@ -380,28 +383,6 @@ _AGENT_OFFER = re.compile(
     r"|hamare agent|हमारे (?:agent|एजेंट)",
     re.I,
 )
-_IDENTITY_QUESTION = re.compile(
-    r"(?:baat|बात)[^।?!]{0,50}(?:ho rah|kar rah|हो रह|कर रह)"
-    r"|am i speaking|speaking (?:with|to)|is (?:this|that)\s+\S+"
-    r"|account holder|अकाउंट होल्डर"
-    r"|(?:aap|आप)[^।?!]{0,20}(?:hi|ही)\s*(?:bol|बोल)"
-    # Malayalam / Tamil greeting forms ("ഞാൻ X ജിയോടാണോ സംസാരിക്കുന്നത്?",
-    # "X തന്നെയാണോ?", "நான் X உடன் பேசுகிறேனா?", "X தானா பேசுவது?"). Without
-    # these the policy never armed awaiting_identity on a Malayalam greeting,
-    # so no identity/refusal/hardship fast path ever fired for such callers.
-    r"|(?:ഓടാണോ|യോടാണോ|ജിയോടാണോ|ആണോ)\s*സംസാരിക്കുന്നത്|സംസാരിക്കുന്നത്[^?]{0,30}ആണോ"
-    r"|തന്നെയാണോ|ആണോ\s*(?:ഞാൻ\s*)?സംസാരിക്കുന്ന"
-    # LLM-authored re-asks (seen on a memory-continued call where the greeting
-    # carried no identity question): "are you Gaurav Pandey?", "നിങ്ങൾ ഗൗരവ്
-    # ആണോ എന്ന്…", "…എന്നുള്ളത് ശരിയാണോ", "ദയവായി സ്ഥിരീകരിക്കുക — നിങ്ങൾ …",
-    # "நீங்கள் … தானா". Without these the gate never arms and the caller's
-    # yes is judged as a general turn instead of an identity answer.
-    r"|\bare you\s+(?!able|sure|there|okay|ok|still|ready|calling)[A-Za-z]"
-    r"|നിങ്ങൾ[^?]{0,40}(?:ആണോ|യാണോ|തന്നെയാണോ)|ആണോ\s*എന്ന്|എന്നുള്ളത്\s*ശരിയാ|സ്ഥിരീകരിക്ക[^?]{0,40}(?:ആണ്|ആണോ)"
-    r"|நீங்கள்[^?]{0,40}(?:தானா|ஆ\?)"
-    r"|உடன்\s*(?:தான்\s*)?பேசு|பேசுகிறேனா|பேசுறேனா|பேசுவது[^?]{0,30}(?:உடனா|தானா)|தானா\s*(?:பேசு|\?)",
-    re.I,
-)
 # How-much question about the account (total/overdue/minimum/penalty) —
 # domain-owned, independent of the platform signal bank: "कितना payment
 # करना है?" is an ASK for a figure, never a commitment and never a refusal.
@@ -521,6 +502,13 @@ _IDENTITY_AMBIGUOUS = re.compile(
     re.I,
 )
 
+# "मैं ही बोल रहा हूँ, बताइए" states the identity even though it also says go
+# ahead; only a go-ahead WITHOUT one waits for the strict explicit re-ask.
+_SELF_REFERENCE = re.compile(
+    r"(?<![\wऀ-ॿ])(?:main|mai|मैं|speaking|this is|it'?s me)(?![\wऀ-ॿ])", re.I
+)
+
+
 def identity_answer_from_decision(decision: ConversationDecision) -> str | None:
     """Map a validated Goal Engine decision onto confirm/deny/unclear.
 
@@ -546,7 +534,8 @@ def classify_identity_answer(text: str, signal: str | None) -> str:
 
     One user turn answering the identity question → confirm/deny/unclear.
     ``deny`` needs explicit evidence (refusal/wrong-person signal, a name
-    mismatch, or a plain negation). ``confirm`` needs an anchored clear yes
+    mismatch, someone answering for the person, or a plain negation).
+    ``confirm`` needs an anchored clear yes
     with no negation and no ambiguity marker. EVERYTHING else — partial STT,
     background speech, "hello?", "बोलिए", "I mean बोल रहा हूँ" — is
     ``unclear`` and must be re-asked, never assumed.
@@ -554,7 +543,11 @@ def classify_identity_answer(text: str, signal: str | None) -> str:
     stripped = (text or "").strip()
     if not stripped:
         return "unclear"
-    if signal in ("refusal", "wrong_person") or _NAME_MISMATCH.search(stripped):
+    if (
+        signal in ("refusal", "wrong_person")
+        or _NAME_MISMATCH.search(stripped)
+        or _OTHER_PERSON.search(stripped)
+    ):
         return "deny"
     if _IDENTITY_NEGATION.search(stripped):
         return "deny" if len(stripped.split()) <= 4 else "unclear"
@@ -707,6 +700,13 @@ class CollectionCallPolicy:
     # How many identity answers were too unclear to act on (re-asked each
     # time, up to _MAX_IDENTITY_REASKS, then the call closes unverified).
     identity_unclear_count: int = 0
+    # How a reply to the identity question counts (shared.orchestration.
+    # identity_confirmation): strict by default for collections — a reply
+    # that only says "go ahead" earns one explicit re-ask first.
+    identity_mode: str = STRICT
+    # A re-ask (always explicit: "क्या आप ही X जी बोल रहे हैं?") was spoken;
+    # from then on any affirm confirms, in either mode.
+    identity_explicit_asked: bool = False
     dispute_raised: bool = False
     payment_claimed: bool = False
     payment_claim_stage: int = 0  # 0 none, 1 reference pending, 2 resolved/closed
@@ -866,16 +866,28 @@ class CollectionCallPolicy:
             # a payment claim, "unrelated" …) are not answers to the identity
             # question — they fall through to their own handling below with
             # identity still unconfirmed.
+            #
+            # The identity rule (identity_mode) comes first, deterministically
+            # and ahead of any decision: a plain affirm-led reply confirms;
+            # in strict mode a bare go-ahead earns the explicit re-ask. The
+            # decision prompt states the same rule, so both agree.
             answer: str | None = None
             regex_eligible = signal in (
                 None, "affirm", "refusal", "wrong_person", "clarify",
             )
-            if decision is not None and decision.decision is not None:
+            rule = self.identity_rule(stripped)
+            if rule == CONFIRM:
+                answer = "confirm"
+            elif rule == EXPLICIT_REASK:
+                answer = "unclear"
+            elif decision is not None and decision.decision is not None:
                 answer = identity_answer_from_decision(decision)
             elif (
                 decision is None or decision.scope == SCOPE_IN
             ) and regex_eligible:
                 answer = classify_identity_answer(stripped, signal)
+                if answer == "confirm" and self._strict_go_ahead(stripped):
+                    answer = "unclear"
             if answer is not None:
                 if answer == "deny":
                     self.awaiting_identity = False
@@ -1234,6 +1246,29 @@ class CollectionCallPolicy:
 
     # ── decisions ────────────────────────────────────────────────────────
 
+    def identity_rule(self, text: str) -> str | None:
+        """The deterministic outcome (CONFIRM / EXPLICIT_REASK) for a reply
+        to the pending identity question under ``identity_mode``, or None
+        when the reply is for the decision to judge."""
+        if not self.awaiting_identity or self.verified:
+            return None
+        name = (self.context.customer_name if self.context else "") or ""
+        return identity_reply_outcome(
+            classify_identity_reply(text, name),
+            mode=self.identity_mode,
+            explicit_asked=self.identity_explicit_asked,
+        )
+
+    def _strict_go_ahead(self, text: str) -> bool:
+        """Strict mode, before the explicit re-ask: a reply that says go ahead
+        without stating who is speaking never confirms on regex alone."""
+        return (
+            self.identity_mode == STRICT
+            and not self.identity_explicit_asked
+            and mentions_go_ahead(text)
+            and not _SELF_REFERENCE.search(text)
+        )
+
     def preempts_turn(self, text: str) -> bool:
         """Whether the policy will consume this turn deterministically.
 
@@ -1339,8 +1374,17 @@ class CollectionCallPolicy:
         if self.awaiting_identity and not self.verified:
             if words > self._FAST_PATH_MAX_WORDS or "?" in stripped:
                 return None
+            rule = self.identity_rule(stripped)
+            if rule == CONFIRM:
+                return "identity_confirmed"
+            if rule == EXPLICIT_REASK:
+                return "identity_explicit_reask"
             answer = classify_identity_answer(stripped, signal)
             if answer == "confirm" and signal in (None, "affirm"):
+                if self._strict_go_ahead(stripped):
+                    # A go-ahead the rule could not read ("हाँ जी बताइए ना
+                    # भाई"): the engine judges it under the strict rule.
+                    return None
                 return "identity_confirmed"
             if answer == "deny" and signal in ("refusal", "wrong_person"):
                 return "identity_denied"
@@ -1450,11 +1494,14 @@ class CollectionCallPolicy:
             return plan
 
         if self._identity_unclear_turn and not self.verified:
-            # The identity answer was ambiguous, partial or noise. The reply
-            # is fully determined and NEVER left to the LLM (which is exactly
-            # how "जी हाँ, मैं Devendra जी से ही बात कर रहा हूँ … आपकी मदद
-            # कैसे कर सकता हूँ?" happened): politely re-ask, up to the limit,
-            # then close without verification — and without any disclosure.
+            # The identity answer was ambiguous, partial or noise (or, in
+            # strict mode, only said "go ahead"). The reply is fully
+            # determined and NEVER left to the LLM (which is exactly how "जी
+            # हाँ, मैं Devendra जी से ही बात कर रहा हूँ … आपकी मदद कैसे कर
+            # सकता हूँ?" happened): an explicit re-ask, each one worded
+            # differently (the re-ask ladder — no wording is spoken a third
+            # time), up to the limit, then close without verification — and
+            # without any disclosure.
             name = (self.context.customer_name if self.context else "") or ""
             if self.identity_unclear_count > _MAX_IDENTITY_REASKS:
                 plan.action = "close_unverified"
@@ -1464,17 +1511,13 @@ class CollectionCallPolicy:
                 plan.scripted_final = True
                 plan.close_after_reply = True
                 self.phase = CLOSING
-            elif name:
-                plan.action = "ask_identity_confirmation"
-                plan.scripted_reply = canned(
-                    "collections_identity_reask", self.language
-                ).format(name=name)
-                plan.scripted_final = True
             else:
-                # No customer record to name — the LLM re-asks generically
-                # under the unconfirmed-identity instruction.
                 plan.action = "ask_identity_confirmation"
-                plan.force_llm = True
+                plan.scripted_reply = identity_reask(
+                    self.identity_unclear_count - 1, self.language, name
+                )
+                plan.scripted_final = True
+                self.identity_explicit_asked = True
             plan.instruction = self.turn_instruction()
             return plan
         if self.wrong_party:

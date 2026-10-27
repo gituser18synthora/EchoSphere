@@ -104,9 +104,7 @@ class TestIdentityAnswers:
         plan = policy.plan_turn(text, signal)
         # Deterministic scripted re-ask — never a free LLM answer.
         assert plan.action == "ask_identity_confirmation"
-        assert plan.scripted_reply == (
-            "माफ़ कीजिए, क्या मैं Ramesh Kumar जी से बात कर रहा हूँ?"
-        )
+        assert plan.scripted_reply == "क्या आप ही Ramesh Kumar जी बोल रहे हैं?"
         assert plan.scripted_final and not plan.close_after_reply
         # The re-ask keeps waiting for the identity answer.
         policy.observe_bot(plan.scripted_reply)
@@ -158,9 +156,7 @@ class TestOutboundObjective:
         # generic assistant persona.
         assert llm.calls == []
         replies = bot_replies(brain)
-        assert replies[-1] == (
-            "माफ़ कीजिए, क्या मैं Ramesh Kumar जी से बात कर रहा हूँ?"
-        )
+        assert replies[-1] == "क्या आप ही Ramesh Kumar जी बोल रहे हैं?"
         assert not brain._policy.verified
 
     def test_prompt_prohibits_generic_assistance_and_identity_invention(self):
