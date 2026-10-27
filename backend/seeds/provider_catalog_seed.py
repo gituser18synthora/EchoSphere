@@ -30,9 +30,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.providers.tts.sarvam_voices import (
+    V4_DOCUMENTED_GENDERS,
     V4_TAG_LABELS,
+    V4_TAG_LOCALES,
     persona_parts,
     v4_catalog_personas,
+    v4_roster_personas,
 )
 
 from shared.ids import new_id
@@ -958,6 +961,38 @@ def sarvam_v4_persona_voices() -> list[dict]:
     return voices
 
 
+def sarvam_v4_roster_voices() -> list[dict]:
+    """Catalog rows of the rest of Sarvam's bulbul:v4-flash roster.
+
+    Every persona the reviewed mapping above does not cover
+    (``sarvam_voices.v4_roster_personas``), offered only for the language(s)
+    of its tag — Sarvam's roster is organised by language. A speaker that
+    also has a bulbul:v3 voice keeps that voice's catalog gender; a new
+    speaker takes the gender Sarvam publishes, else "neutral" (unpublished —
+    an operator sets it after listening). Shared with the catalog migration
+    f5b7d9e1a3c5, which inserts the same rows on existing databases.
+    """
+    voices = []
+    for persona in v4_roster_personas():
+        speaker, tag, style = persona_parts(persona)
+        style_label = style.replace("_", " ").capitalize()
+        if speaker in SARVAM_SPEAKERS:
+            gender = "female" if speaker in _SARVAM_FEMALE else "male"
+        else:
+            gender = V4_DOCUMENTED_GENDERS.get(speaker, "neutral")
+        locales = list(V4_TAG_LOCALES[tag])
+        voices.append({
+            "id": f"vp-sv4-{persona}",
+            "name": f"{speaker.title()} · {V4_TAG_LABELS[tag]} · {style_label}",
+            "gender": gender,
+            "locale": locales[0],
+            "languages": locales,
+            "style": style_label,
+            "provider_voice_id": persona,
+        })
+    return voices
+
+
 def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) -> dict:
     """Idempotent catalog seed; never overwrites operator edits.
 
@@ -1109,6 +1144,22 @@ def seed_provider_catalog(db: Session, *, include_dev_providers: bool = True) ->
                 provider_settings={"pace": 1.0},
                 is_default=False,
                 sort_order=len(SARVAM_SPEAKERS) + i,
+            ))
+            created["provider_voices"] += 1
+
+    roster_start = len(SARVAM_SPEAKERS) + len(v4_catalog_personas())
+    for i, voice in enumerate(sarvam_v4_roster_voices()):
+        if db.get(VoiceProfile, voice["id"]) is None:
+            db.add(VoiceProfile(
+                id=voice["id"], name=voice["name"], gender=voice["gender"],
+                languages=list(voice["languages"]), locale=voice["locale"],
+                accent="Indian", styles=[voice["style"]], latency_ms=150, premium=False,
+                sample_text=_SAMPLE_TEXT, provider="sarvam",
+                provider_voice_id=voice["provider_voice_id"],
+                model_codes=["bulbul:v4-flash"],
+                provider_settings={"pace": 1.0},
+                is_default=False,
+                sort_order=roster_start + i,
             ))
             created["provider_voices"] += 1
 

@@ -20,7 +20,14 @@ from backend.routers.providers import provider_voices
 from backend.seeds import provider_catalog_seed as catalog_seed
 from shared.models import ProviderDef, ProviderModel, SupportedLanguage, VoiceProfile
 from shared.models.base import Base
-from shared.providers.tts.sarvam_voices import V3_TO_V4_PERSONA, is_v4_persona, v4_catalog_personas
+from shared.providers.tts.sarvam_voices import (
+    V3_TO_V4_PERSONA,
+    V4_FLASH_PERSONAS,
+    is_v4_persona,
+    persona_parts,
+    v4_catalog_personas,
+    v4_roster_personas,
+)
 
 V4 = "bulbul:v4-flash"
 
@@ -64,13 +71,20 @@ def test_every_v4_flash_language_lists_at_least_one_voice():
         assert all(is_v4_persona(v["providerVoiceId"]) and v["modelCodes"] == [V4] for v in voices)
 
 
-def test_the_catalog_personas_are_the_mapping_hindi_and_english_ones():
+def test_the_catalog_lists_sarvams_whole_v4_flash_roster():
     db = _db()
     _seed(db)
     voices = list_voices(db, "sarvam", model=V4)
-    assert sorted(v.provider_voice_id for v in voices) == sorted(v4_catalog_personas())
+    # 222 personas (live API speaker list == docs voice catalog, 2026-10-26):
+    # the 36 mapping personas plus the rest of the roster, each once.
+    assert len(V4_FLASH_PERSONAS) == len(set(V4_FLASH_PERSONAS)) == 222
+    assert sorted(v.provider_voice_id for v in voices) == sorted(V4_FLASH_PERSONAS)
+    assert set(v4_catalog_personas()) <= set(V4_FLASH_PERSONAS)
+    assert len(v4_roster_personas()) == 222 - len(v4_catalog_personas()) == 186
+    # Assamese personas exist on the API but v4-flash rejects as-IN.
+    assert not any("_as_" in p for p in V4_FLASH_PERSONAS)
     mapped = {row.get(lang) for row in V3_TO_V4_PERSONA.values() for lang in ("hi", "en")} - {None}
-    assert {v.provider_voice_id for v in voices} == mapped
+    assert mapped == set(v4_catalog_personas())
     for voice in voices:
         assert voice.id == f"vp-sv4-{voice.provider_voice_id}"
         assert "ml-IN" not in voice.languages and "or-IN" not in voice.languages
@@ -78,6 +92,44 @@ def test_the_catalog_personas_are_the_mapping_hindi_and_english_ones():
     shubh = next(v for v in voices if v.provider_voice_id == "shubh_hi_customer")
     assert (shubh.name, shubh.gender, shubh.locale) == ("Shubh · Hindi · Customer", "male", "hi-IN")
     assert next(v for v in voices if v.provider_voice_id == "ritu_hi_customer").gender == "female"
+
+
+def test_roster_personas_are_offered_for_their_own_language_only():
+    db = _db()
+    _seed(db)
+    by_wire = {v.provider_voice_id: v for v in list_voices(db, "sarvam", model=V4)}
+    expected = {"hi": ["hi-IN"], "enhi": ["hi-IN", "en-IN"], "en": ["en-IN"], "bn": ["bn-IN"],
+                "gu": ["gu-IN"], "kn": ["kn-IN"], "mr": ["mr-IN"], "pa": ["pa-IN"],
+                "ta": ["ta-IN"], "te": ["te-IN"]}
+    for persona in v4_roster_personas():
+        voice = by_wire[persona]
+        _speaker, tag, _style = persona_parts(persona)
+        assert voice.languages == expected[tag], persona
+        assert voice.locale == expected[tag][0]
+        assert voice.is_default is False and voice.status == "active"
+    aparna = by_wire["aparna_hi_customer"]
+    assert (aparna.id, aparna.name) == ("vp-sv4-aparna_hi_customer", "Aparna · Hindi · Customer")
+    assert by_wire["simran_enhi_banking_expressive"].name == "Simran · Hinglish · Banking expressive"
+    tamil = [v.provider_voice_id for v in list_voices(db, "sarvam", model=V4, language="ta-IN")]
+    assert {"aravind_ta_ads", "aravind_ta_suspense", "gokul_ta_narration", "vijay_ta_narration"} <= set(tamil)
+    assert "aparna_hi_customer" not in tamil
+
+
+def test_roster_gender_comes_from_the_v3_voice_or_sarvams_docs_never_a_guess():
+    db = _db()
+    _seed(db)
+    by_wire = {v.provider_voice_id: v for v in list_voices(db, "sarvam", model=V4)}
+    # Same speaker as a bulbul:v3 catalog voice -> that voice's gender.
+    assert by_wire["ritu_hi_sales"].gender == "female"
+    assert by_wire["shubh_en_narration"].gender == "male"
+    # Gender published on Sarvam's featured voice cards.
+    assert by_wire["aparna_hi_kyc"].gender == "female"
+    assert by_wire["ashok_hi_news"].gender == "male"
+    assert by_wire["sanchita_hi_banking"].gender == "female"
+    assert by_wire["shalini_en_customer"].gender == "female"
+    # Unpublished: neutral until an operator sets it.
+    assert by_wire["aarti_hi_customer"].gender == "neutral"
+    assert by_wire["zarina_en_conversation"].gender == "neutral"
 
 
 def test_malayalam_and_odia_get_no_v4_voice():
@@ -119,7 +171,8 @@ def test_long_lived_database_gets_the_voices_without_a_second_default():
     rows = {m.code: m.is_default for m in db.query(ProviderModel).filter_by(provider_code="sarvam", capability="tts")}
     assert rows["bulbul:v3"] is True and rows[V4] is False
     assert db.get(VoiceProfile, "vp-sv-shubh").model_codes == ["bulbul:v3"]
-    assert len(list_voices(db, "sarvam", model=V4, language="hi-IN")) == len(v4_catalog_personas())
+    hindi = [p for p in v4_roster_personas() if persona_parts(p)[1] in ("hi", "enhi")]
+    assert len(list_voices(db, "sarvam", model=V4, language="hi-IN")) == len(v4_catalog_personas()) + len(hindi)
 
 
 @pytest.mark.parametrize("language", ["hi-IN", "en-IN"])
@@ -129,3 +182,39 @@ def test_lists_start_with_shubh_and_include_native_personas(language):
     voices = list_voices(db, "sarvam", model=V4, language=language)
     assert voices[0].provider_voice_id == "shubh_hi_customer"   # the v3 default voice's persona
     assert any(v.locale == language for v in voices)
+
+
+@pytest.mark.parametrize("persona, locale, name, gender", [
+    ("aparna_hi_customer", "hi-IN", "Aparna", "female"),
+    ("shalini_enhi_customer", "en-IN", "Shalini", "female"),
+    ("aravind_ta_ads", "ta-IN", "Aravind", "neutral"),
+    ("ritu_hi_sales", "hi-IN", "Ritu", "female"),
+])
+def test_a_roster_voice_resolves_to_its_persona_for_the_runtime(persona, locale, name, gender):
+    """Saved catalog id -> wire speaker + prompt identity, as the live call uses them."""
+    from backend.core.provider_catalog import find_voice
+    from shared import bot_config
+    from shared.orchestration.voice_identity import active_voice_identity
+    from shared.providers.tts.sarvam_voices import v4_speaker
+
+    db = _db()
+    _seed(db)
+    voice_id = f"vp-sv4-{persona}"
+    row = find_voice(db, "sarvam", voice_id)
+    assert row is not None and V4 in row.model_codes and locale in row.languages  # validation inputs
+    wire = bot_config._wire_voice(db, "sarvam", voice_id, "tn-x")
+    assert wire == persona and v4_speaker(wire, locale) == persona
+    identity = bot_config._voice_identity(db, "sarvam", voice_id, "tn-x")
+    resolved = active_voice_identity(
+        {"provider": "sarvam", "model": V4, "voice": wire,
+         "voice_name": identity.name, "voice_gender": identity.gender}, locale)
+    assert (resolved.name, resolved.gender) == (name, gender)
+
+
+def test_every_roster_persona_is_sent_to_sarvam_unchanged():
+    from shared.providers.tts.sarvam_voices import v4_speaker
+
+    for persona in V4_FLASH_PERSONAS:
+        _speaker, tag, _style = persona_parts(persona)
+        assert is_v4_persona(persona)
+        assert v4_speaker(persona, "hi-IN" if tag in ("hi", "enhi") else "en-IN") == persona

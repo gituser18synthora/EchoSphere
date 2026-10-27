@@ -6,6 +6,8 @@ records used by tenants/bots/subscriptions can be deactivated or archived but
 never permanently deleted.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_, select
@@ -321,7 +323,8 @@ _TYPES: dict[str, dict] = {
     ),
     "voices": dict(
         model=VoiceProfile, serializer=serialize_voice, usage=_voice_usage,
-        perm="manage_master_data", label="Voice", search=("name", "provider", "accent"),
+        perm="manage_master_data", label="Voice",
+        search=("name", "provider", "accent", "provider_voice_id"),
     ),
     "currencies": dict(
         model=Currency, serializer=serialize_currency, usage=_currency_usage,
@@ -594,6 +597,7 @@ def _validate_payload(db: Session, mtype: str, payload: dict, current=None) -> N
                     "field": _camel(model_field),
                     "message": f"Model '{model}' does not belong to provider '{provider}'.{detail}",
                 })
+        _validate_profile_default_voice(db, payload, effective, errors, current)
 
     if mtype == "provider-models":
         _validate_provider_model_payload(db, payload, effective, errors, current)
@@ -955,6 +959,48 @@ def _validate_provider_model_payload(db: Session, payload: dict, effective, erro
             errors.append({"field": "streaming", "message": "Must be true or false."})
 
 
+def _validate_profile_default_voice(
+    db: Session, payload: dict, effective, errors: list[dict], current,
+) -> None:
+    """An AI profile's default voice is an active platform voice of the
+    profile's TTS provider that supports its TTS model.
+
+    Checked only when the voice, provider or model changes, so a profile saved
+    before this rule still saves while an unrelated field is edited."""
+    from backend.core.provider_catalog import find_voice
+
+    def _norm(value):
+        return (str(value).strip() or None) if isinstance(value, str) else value
+
+    changed = current is None or any(
+        field in payload and _norm(payload[field]) != _norm(getattr(current, field, None))
+        for field in ("tts_provider", "tts_model", "default_voice")
+    )
+    voice = effective("default_voice")
+    if not voice or not changed:
+        return
+    provider = effective("tts_provider")
+    model = effective("tts_model")
+    if not provider:
+        errors.append({
+            "field": "defaultVoice",
+            "message": "Select a TTS provider before choosing a default voice.",
+        })
+        return
+    row = find_voice(db, provider, voice)  # no tenant: platform voices only
+    if row is None:
+        errors.append({
+            "field": "defaultVoice",
+            "message": f"'{voice}' is not an active {provider} platform voice.",
+        })
+    elif model and row.model_codes and model not in row.model_codes:
+        errors.append({
+            "field": "defaultVoice",
+            "message": f"Voice '{row.name}' does not support {provider}/{model} — "
+                       "choose one of the voices listed for this model.",
+        })
+
+
 def _validate_voice_payload(db: Session, payload: dict, effective, errors: list[dict]) -> None:
     """Provider-aware voice validation: the selected provider decides which
     models, languages and settings are legal. Settings are checked against the
@@ -1112,6 +1158,7 @@ def list_master(
     provider: str | None = Query(None),  # voices + provider-models + provider-pricing
     gender: str | None = Query(None),  # voices only
     language: str | None = Query(None),  # voices only (locale prefix or languages[])
+    model_code: str | None = Query(None, alias="model", max_length=80),  # voices only
     status_filter: str | None = Query(None, alias="status", pattern="^(active|inactive|archived)$"),
     include_inactive: bool = Query(True, alias="includeInactive"),
     params: PageParams = Depends(page_params),
@@ -1146,6 +1193,14 @@ def list_master(
             stmt = stmt.where(or_(
                 VoiceProfile.locale.like(f"{language}%"),
                 func.json_contains(VoiceProfile.languages, f'"{language}"'),
+            ))
+        if model_code:
+            # Same rule as the runtime catalog (provider_catalog.list_voices):
+            # a voice without model codes works with every model of its provider.
+            stmt = stmt.where(or_(
+                VoiceProfile.model_codes.is_(None),
+                func.json_length(VoiceProfile.model_codes) == 0,
+                func.json_contains(VoiceProfile.model_codes, json.dumps(model_code)),
             ))
     if status_filter:
         if mtype in _STATUSLESS:

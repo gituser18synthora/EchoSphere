@@ -112,6 +112,17 @@ export const listInvoices = async (): Promise<Invoice[]> =>
 /* ---------- Bots ---------- */
 export const listBots = async (tenantId?: string): Promise<VoiceBot[]> =>
   (await http.getPaged<VoiceBot>(`/bots?pageSize=200${tenantId ? `&tenantId=${tenantId}` : ""}`)).items;
+/** Every bot the caller can see, across as many 200-row pages as it takes —
+    a platform-wide table that filters client-side must never search a
+    truncated first page. */
+export const listAllBots = async (): Promise<VoiceBot[]> => {
+  const first = await http.getPaged<VoiceBot>("/bots?pageSize=200");
+  const rows = [...first.items];
+  for (let page = 2; page <= first.meta.totalPages; page++) {
+    rows.push(...(await http.getPaged<VoiceBot>(`/bots?pageSize=200&page=${page}`)).items);
+  }
+  return rows;
+};
 export const getBot = (id: string): Promise<VoiceBot> => http.get(`/bots/${id}`);
 export const createBot = (body: { name: string; useCase?: string; description?: string; languages?: string[] }) =>
   http.post<VoiceBot>("/bots", body);
@@ -783,6 +794,8 @@ export const listMaster = <T = Record<string, unknown>>(
     kind?: string; includeInactive?: boolean;
     /** Voices + provider-models server-side filters. */
     provider?: string; gender?: string; status?: string; language?: string;
+    /** Voices-only filter: catalog model code (voices without models match every model). */
+    model?: string;
     /** Provider-models-only filter (stt | tts | llm | embedding). */
     capability?: string;
   },
@@ -797,6 +810,7 @@ export const listMaster = <T = Record<string, unknown>>(
   if (opts?.gender) params.set("gender", opts.gender);
   if (opts?.status) params.set("status", opts.status);
   if (opts?.language) params.set("language", opts.language);
+  if (opts?.model) params.set("model", opts.model);
   if (opts?.capability) params.set("capability", opts.capability);
   if (opts?.includeInactive === false) params.set("includeInactive", "false");
   return http.getPaged<T>(`/master/${mtype}?${params}`);

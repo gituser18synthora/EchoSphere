@@ -102,6 +102,21 @@ class TestWebSocketAdapter:
         assert config["enable_preprocessing"] is True
         assert "pitch" not in config  # v2-only
 
+    @pytest.mark.parametrize("persona, language", [
+        ("aparna_hi_customer", "hi-IN"), ("aravind_ta_ads", "ta-IN"),
+        ("simran_enhi_banking_expressive", "en-IN"),
+    ])
+    async def test_a_roster_persona_reaches_the_wire_unchanged(self, monkeypatch, persona, language):
+        async with MockSarvamTTSServer() as server:
+            monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)
+            provider = SarvamWebSocketTTSProvider(sarvam_settings(
+                model="bulbul:v4-flash", voice=persona, language=language))
+            await provider.connect()
+            await provider.close()
+        assert server.queries[0]["model"] == "bulbul:v4-flash"
+        assert server.configs[0]["speaker"] == persona
+        assert server.configs[0]["language_code"] == language
+
     async def test_v3_keeps_the_short_name(self, monkeypatch):
         async with MockSarvamTTSServer() as server:
             monkeypatch.setattr(sarvam_ws, "_WS_URL", server.url)

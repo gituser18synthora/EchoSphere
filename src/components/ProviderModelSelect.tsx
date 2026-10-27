@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { ProviderModelInfo, VoiceCapability } from "@/types/domain";
-import { getProviderCatalog, listProviderModels } from "@/services/api";
+import type { ProviderModelInfo, VoiceCapability, VoiceOption } from "@/types/domain";
+import { getProviderCatalog, listProviderModels, listProviderVoices } from "@/services/api";
+import { SearchableSelect, type SearchableSelectOption } from "@/components/ui";
 
 /* Provider → model dependent selection, shared by every AI-configuration form
    (Platform Configuration AI profiles, and reusable by voice/tenant config).
@@ -24,6 +25,7 @@ export interface ModelOption {
    several fields on one form share the same capability. */
 const providerCache = new Map<string, Promise<ProviderOption[]>>();
 const modelCache = new Map<string, Promise<ProviderModelInfo[]>>();
+const voiceCache = new Map<string, Promise<VoiceOption[]>>();
 
 function fetchProviders(capability: VoiceCapability): Promise<ProviderOption[]> {
   let cached = providerCache.get(capability);
@@ -47,10 +49,22 @@ function fetchModels(capability: VoiceCapability, provider: string): Promise<Pro
   return cached;
 }
 
+function fetchVoices(provider: string, model: string): Promise<VoiceOption[]> {
+  const key = `${provider}:${model}`;
+  let cached = voiceCache.get(key);
+  if (!cached) {
+    cached = listProviderVoices(provider, model ? { model } : undefined);
+    voiceCache.set(key, cached);
+    cached.catch(() => voiceCache.delete(key));
+  }
+  return cached;
+}
+
 /** Test hook: drop all cached catalog responses. */
 export function clearProviderCatalogCache() {
   providerCache.clear();
   modelCache.clear();
+  voiceCache.clear();
 }
 
 export function useProviderOptions(capability: VoiceCapability) {
@@ -166,5 +180,88 @@ export function ModelSelect({ capability, provider, value, onChange, disabled, l
         </option>
       ))}
     </select>
+  );
+}
+
+/** Active platform catalog voices of a TTS provider that support ``model``
+    (every model when empty). Tenant voice clones are left out: a platform
+    default must not point at one tenant's clone. */
+export function usePlatformVoices(provider: string | null | undefined, model: string | null | undefined) {
+  const [voices, setVoices] = useState<VoiceOption[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setError(null);
+    if (!provider) {
+      setVoices([]);
+      return () => { alive = false; };
+    }
+    setVoices(null);
+    fetchVoices(provider, model ?? "")
+      .then((v) => { if (alive) setVoices(v.filter((voice) => (voice.source ?? "platform") === "platform")); })
+      .catch((e: Error) => { if (alive) { setError(e.message); setVoices([]); } });
+    return () => { alive = false; };
+  }, [provider, model]);
+  return { voices, loading: provider ? voices === null && !error : false, error };
+}
+
+/** Third step of provider -> model -> voice: lists only the catalog voices of
+    the selected provider that support the selected model. The value is the
+    voice profile id (e.g. vp-sv-shubh); a saved value that no longer fits the
+    provider/model stays visible and flagged — the backend rejects it on save. */
+export function VoiceSelect({ provider, model, value, onChange, disabled, label, invalid }: {
+  provider: string;
+  model: string;
+  value: string;
+  onChange: (voiceId: string) => void;
+  disabled?: boolean;
+  label?: string;
+  invalid?: boolean;
+}) {
+  const { models, loading: modelsLoading } = useModelOptions("tts", provider || null);
+  /* A provider with catalog models needs its model first; one without any
+     (voices used as-is) lists all of its voices. */
+  const needsModel = (models ?? []).length > 0;
+  const ready = Boolean(provider) && !modelsLoading && (!needsModel || Boolean(model));
+  const { voices, loading, error } = usePlatformVoices(ready ? provider : null, model);
+  const current = (voices ?? []).find((v) => v.id === value || v.providerVoiceId === value);
+  const stale = Boolean(value) && ready && !loading && !error && !current;
+
+  const options: SearchableSelectOption[] = [
+    { value: "", label: "No default voice" },
+    ...(stale ? [{ value, label: `${value} — not available for ${model || provider}` }] : []),
+    ...(voices ?? []).map((v) => ({
+      value: v.id,
+      label: v.name,
+      sub: [v.providerVoiceId, v.gender, v.languages.length ? v.languages.join(", ") : "all languages"]
+        .filter(Boolean).join(" · "),
+    })),
+  ];
+  const placeholder = !provider ? "Select a TTS provider first"
+    : modelsLoading || (ready && loading) ? "Loading voices…"
+    : needsModel && !model ? "Select a TTS model first"
+    : error ? "Failed to load voices"
+    : (voices ?? []).length === 0 ? "No voices for this model"
+    : "Select a voice";
+  return (
+    <div className="col gap-4">
+      <SearchableSelect
+        options={ready && !loading ? options : []}
+        value={ready && !loading ? (current?.id ?? value) : ""}
+        onChange={onChange}
+        placeholder={placeholder}
+        searchPlaceholder="Search voices…"
+        ariaLabel={label ?? "Voice"}
+        invalid={invalid || stale}
+        disabled={disabled || !ready || loading}
+      />
+      {ready && !loading && !error && (
+        <span className="t-micro">
+          {stale
+            ? `The saved voice does not support ${model || provider} — pick one of the ${(voices ?? []).length} listed.`
+            : `${(voices ?? []).length} voice${(voices ?? []).length === 1 ? "" : "s"} for ${model ? `${provider} / ${model}` : provider}`}
+        </span>
+      )}
+    </div>
   );
 }

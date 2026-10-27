@@ -216,6 +216,25 @@ model alone was switched. `bulbul:v3` remains the default model. Fresh installs 
 the personas from the catalog seed (also run by the API at start-up where
 `startup_seed_enabled`), existing databases from migration `c2e4a6b8d0f1`.
 
+The rest of Sarvam's roster is in the catalog too (`V4_FLASH_PERSONAS`, 222
+personas: the live API's speaker list, identical to the docs' voice catalog,
+2026-10-26). The 186 personas beyond the table above are voices
+`vp-sv4-<persona>` offered only for their tag's language (`enhi` = hi-IN and
+en-IN; `ta` = ta-IN, …). Gender comes from the same speaker's v3 voice, else
+from Sarvam's featured voice cards (aparna, sanchita, shalini female; ashok
+male), else `neutral`: Sarvam does not publish it, and pitch measurement could
+not separate the known v3 voices reliably, so operators set it in Platform
+Configuration → Voices after listening. The two Assamese personas the API also
+lists are left out: bulbul:v4-flash rejects `as-IN`. Sarvam has no plain
+`bulbul:v4` model (the API accepts bulbul:v2, v3-beta, v3, v4-flash). Fresh
+installs get them from the seed, existing databases from migration
+`f5b7d9e1a3c5` (insert-only).
+
+Platform Configuration chains provider → model → voice: the AI profile's
+default voice lists only the provider's platform voices that support the
+selected model (validated on save when any of the three changes), and the
+Voices tab has a model filter once a provider is chosen.
+
 ### Sarvam loudness: every bulbul model
 
 `loudness` is a gain multiplier, API default 1.0, offered on every bulbul

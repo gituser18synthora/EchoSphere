@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAsync } from "@/hooks/useAsync";
 import {
-  listBots, listChannelsSummary, listPhoneNumbers, listSipTrunks, listTenants,
+  listAllBots, listChannelsSummary, listPhoneNumbers, listSipTrunks, listTenants,
   setPhoneNumberActive, updatePhoneNumber,
 } from "@/services/api";
-import type { PhoneNumber } from "@/types/domain";
+import type { PhoneNumber, VoiceBot } from "@/types/domain";
 import { DataTable } from "@/components/DataTable";
 import {
   Button, Health, StatusChip, Tabs, Callout, CardSkeleton, ConfirmModal,
@@ -43,19 +43,107 @@ export default function VoicePlatform() {
   );
 }
 
+/* ---------- Client-side search ----------
+   Both tabs load their complete list once (bots across every page, numbers
+   unpaginated), so typing filters in memory and never calls the API. */
+
+/** Bot search: case-insensitive partial match on the bot name or bot ID. */
+export function botMatches(bot: VoiceBot, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return bot.name.toLowerCase().includes(q) || bot.id.toLowerCase().includes(q);
+}
+
+const phoneDigits = (v: string) => v.replace(/\D/g, "");
+
+/** Phone-number search. A query with digits matches the number on digits
+    alone, so spaces, dashes and brackets never matter. A leading "+" or
+    "00" means a country code and anchors at the start ("+91" finds Indian
+    numbers only); otherwise the digits match anywhere ("8047133" finds
+    +918047133650), and a national trunk "0" ("080 4713…") is tolerated.
+    Without digits, one or two letters are a country code ("IN" = country IN
+    exactly, never "Finance"); longer text matches the country, tenant, bot
+    or carrier. */
+export function phoneNumberMatches(n: PhoneNumber, query: string): boolean {
+  const q = query.trim();
+  if (!q) return true;
+  const digits = phoneDigits(q);
+  if (digits) {
+    const number = phoneDigits(n.number);
+    if (q.startsWith("+")) return number.startsWith(digits);
+    if (digits.startsWith("00")) return number.startsWith(digits.slice(2));
+    return number.includes(digits)
+      || (digits.length > 1 && digits.startsWith("0") && number.includes(digits.slice(1)));
+  }
+  const text = q.toLowerCase();
+  if (text.length <= 2) return (n.country ?? "").toLowerCase() === text;
+  return [n.country, n.tenant, n.bot, n.provider].some((v) => (v ?? "").toLowerCase().includes(text));
+}
+
+function TableSearch({ value, onChange, placeholder, label, shown, total, noun }: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+  label: string;
+  shown: number;
+  total: number | null;
+  noun: string;
+}) {
+  return (
+    <div className="row gap-12" style={{ flexWrap: "wrap", alignItems: "center", flex: "1 1 280px" }}>
+      <div className="search-box" style={{ width: "min(340px, 100%)" }}>
+        <Icon name="search" size={14} />
+        <input className="input" type="search" placeholder={placeholder} value={value}
+          aria-label={label} onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") onChange(""); }} />
+      </div>
+      {value.trim() && total !== null && (
+        <span className="t-micro" role="status" style={{ fontVariantNumeric: "tabular-nums" }}>
+          {shown} of {total} {noun}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AllBots() {
-  const botsQ = useAsync(listBots, []);
+  const botsQ = useAsync(listAllBots, []);
   const tenantsQ = useAsync(listTenants, []);
   const navigate = useNavigate();
+  const [query, setQuery] = useState("");
   const tenantName = (id: string) => tenantsQ.data?.find((t) => t.id === id)?.name ?? id;
+  const rows = useMemo(
+    () => (botsQ.data ? botsQ.data.filter((b) => botMatches(b, query)) : null),
+    [botsQ.data, query],
+  );
+  const searching = query.trim() !== "";
   return (
     <div className="card">
+      <div className="card-header">
+        <TableSearch value={query} onChange={setQuery} label="Search voice bots"
+          placeholder="Search by bot name or bot ID…" noun="bots"
+          shown={rows?.length ?? 0} total={botsQ.data?.length ?? null} />
+      </div>
       <DataTable
-        loading={botsQ.loading} error={botsQ.error} onRetry={botsQ.reload} rows={botsQ.data}
+        loading={botsQ.loading} error={botsQ.error} onRetry={botsQ.reload} rows={rows}
         onRowClick={(b) => navigate(`/admin/tenants/${b.tenantId}`)}
-        empty={{ icon: "bot", title: "No bots on the platform" }}
+        empty={searching
+          ? {
+              icon: "search", title: `No bots match “${query.trim()}”`,
+              body: "Search looks at bot names and bot IDs (for example bot_59a8). Check the spelling or clear the search.",
+              action: <Button size="sm" icon="x" onClick={() => setQuery("")}>Clear search</Button>,
+            }
+          : { icon: "bot", title: "No bots on the platform" }}
         columns={[
-          { key: "name", header: "Bot", sortValue: (b) => b.name, render: (b) => <div><div className="t-strong">{b.name}</div><div className="t-micro">{tenantName(b.tenantId)}</div></div> },
+          {
+            key: "name", header: "Bot", sortValue: (b) => b.name,
+            render: (b) => (
+              <div>
+                <div className="t-strong">{b.name}</div>
+                <div className="t-micro"><code>{b.id}</code> · {tenantName(b.tenantId)}</div>
+              </div>
+            ),
+          },
           { key: "status", header: "Status", sortValue: (b) => b.status, render: (b) => <StatusChip status={b.status} /> },
           { key: "health", header: "Health", sortValue: (b) => b.health, render: (b) => <Health level={b.health} /> },
           { key: "version", header: "Live", render: (b) => <code>{b.liveVersion ?? "—"}</code> },
@@ -74,6 +162,12 @@ function Numbers() {
   const [editing, setEditing] = useState<PhoneNumber | null>(null);
   const [confirmOff, setConfirmOff] = useState<PhoneNumber | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const rows = useMemo(
+    () => (q.data ? q.data.filter((n) => phoneNumberMatches(n, query)) : null),
+    [q.data, query],
+  );
+  const searching = query.trim() !== "";
 
   const toggleActive = async (n: PhoneNumber, active: boolean) => {
     setBusyId(n.id);
@@ -90,13 +184,22 @@ function Numbers() {
 
   return (
     <div className="card">
-      <div className="card-header">
+      <div className="card-header" style={{ flexWrap: "wrap", gap: 12 }}>
         <span className="card-title">Phone number inventory</span>
+        <TableSearch value={query} onChange={setQuery} label="Search phone numbers"
+          placeholder="Search number or country code, e.g. +91 80…" noun="numbers"
+          shown={rows?.length ?? 0} total={q.data?.length ?? null} />
         <Button size="sm" variant="primary" icon="plus" onClick={() => toast("Number purchase flow requires carrier API credentials (TODO_BACKEND)", "info")}>Buy number</Button>
       </div>
       <DataTable
-        loading={q.loading} error={q.error} onRetry={q.reload} rows={q.data}
-        empty={{ icon: "phone", title: "No numbers provisioned" }}
+        loading={q.loading} error={q.error} onRetry={q.reload} rows={rows}
+        empty={searching
+          ? {
+              icon: "search", title: `No numbers match “${query.trim()}”`,
+              body: "Search matches any part of the number — spaces and dashes are ignored, and a leading + or 00 matches the country code. Two letters match a country (IN, US); longer text matches the tenant, bot or carrier.",
+              action: <Button size="sm" icon="x" onClick={() => setQuery("")}>Clear search</Button>,
+            }
+          : { icon: "phone", title: "No numbers provisioned" }}
         columns={[
           { key: "number", header: "Number", sortValue: (n) => n.number, render: (n) => <code className="t-strong" style={{ fontSize: 12.5 }}>{n.number}</code> },
           { key: "country", header: "Country" },

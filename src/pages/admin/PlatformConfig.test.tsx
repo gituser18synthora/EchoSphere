@@ -16,6 +16,7 @@ vi.mock("@/services/api", () => ({
   setMasterStatus: vi.fn(),
   getProviderCatalog: vi.fn(),
   listProviderModels: vi.fn(),
+  listProviderVoices: vi.fn(() => Promise.resolve([])),
   // The Industries form's default-guardrail-profile select loads lazily.
   listGuardrailProfiles: vi.fn(() => Promise.resolve([])),
 }));
@@ -268,6 +269,194 @@ describe("PlatformConfig — Voices section", () => {
       expect(voiceCalls.at(-1)?.[1]).toMatchObject({ provider: "sarvam", gender: "female" });
     });
     expect(await screen.findByText(/no voices match the current filters/i)).toBeInTheDocument();
+  });
+});
+
+/* ---------- TTS provider -> model -> voice ---------- */
+
+const SARVAM_MODELS = [
+  { code: "bulbul:v3", displayName: "Bulbul v3 (streaming)", isDefault: true },
+  { code: "bulbul:v4-flash", displayName: "Bulbul v4 Flash (streaming)", isDefault: false },
+].map((m) => ({
+  ...m, description: null, provider: "sarvam", capability: "tts", languages: ["hi-IN"],
+  codecs: [], sampleRates: [], streaming: true, paramsSchema: {},
+}));
+
+const catalogVoice = (id: string, name: string, wire: string, model: string, gender = "female") => ({
+  id, name, gender, provider: "sarvam", providerVoiceId: wire, languages: ["hi-IN"],
+  modelCodes: [model], locale: "hi-IN", premium: false, isDefault: false, status: "active",
+  providerSettings: {}, sampleText: null, source: "platform" as const,
+});
+
+const VOICES_BY_MODEL: Record<string, ReturnType<typeof catalogVoice>[]> = {
+  "bulbul:v3": [catalogVoice("vp-sv-shubh", "Shubh", "shubh", "bulbul:v3", "male")],
+  "bulbul:v4-flash": [
+    catalogVoice("vp-sv4-aparna_hi_customer", "Aparna · Hindi · Customer", "aparna_hi_customer", "bulbul:v4-flash"),
+    catalogVoice("vp-sv4-shubh_hi_customer", "Shubh · Hindi · Customer", "shubh_hi_customer", "bulbul:v4-flash", "male"),
+  ],
+};
+
+function installVoiceCatalogMocks() {
+  vi.mocked(api.getProviderCatalog).mockImplementation((capability) =>
+    Promise.resolve({
+      [String(capability)]: capability === "tts"
+        ? [{ code: "sarvam", name: "Sarvam AI" }, { code: "elevenlabs", name: "ElevenLabs" }]
+        : [{ code: "openai", name: "OpenAI" }],
+    } as never));
+  vi.mocked(api.listProviderModels).mockImplementation((capability, code) =>
+    Promise.resolve((capability === "tts" && code === "sarvam" ? SARVAM_MODELS : []) as never));
+  vi.mocked(api.listProviderVoices).mockImplementation((code, filters) =>
+    Promise.resolve((code === "sarvam" ? VOICES_BY_MODEL[filters?.model ?? ""] ?? [] : []) as never));
+}
+
+describe("PlatformConfig — AI profile TTS provider, model and voice", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+    installVoiceCatalogMocks();
+  });
+
+  async function openAddProfile(user: ReturnType<typeof userEvent.setup>) {
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("AI Profiles"));
+    await user.click(await screen.findByRole("button", { name: /add ai configuration profile/i }));
+    return screen.findByRole("dialog", { name: "Add AI configuration profile" });
+  }
+
+  it("a TTS provider unlocks its models, and a model lists only its own voices", async () => {
+    const user = userEvent.setup();
+    const dialog = await openAddProfile(user);
+    const voice = within(dialog).getByRole("combobox", { name: "Default voice" });
+    expect(voice).toHaveAttribute("aria-disabled", "true");
+    expect(voice).toHaveTextContent("Select a TTS provider first");
+
+    await user.selectOptions(within(dialog).getByLabelText("TTS provider"), ["sarvam"]);
+    const model = within(dialog).getByLabelText("TTS model");
+    await waitFor(() => expect(model).toBeEnabled());
+    expect(within(model).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "—", "Bulbul v3 (streaming) · default", "Bulbul v4 Flash (streaming)",
+    ]);
+    expect(voice).toHaveTextContent("Select a TTS model first");
+
+    await user.selectOptions(model, ["bulbul:v4-flash"]);
+    await waitFor(() => expect(voice).not.toHaveAttribute("aria-disabled"));
+    expect(api.listProviderVoices).toHaveBeenLastCalledWith("sarvam", { model: "bulbul:v4-flash" });
+    expect(within(dialog).getByText("2 voices for sarvam / bulbul:v4-flash")).toBeInTheDocument();
+    await user.click(voice);
+    const labels = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(labels.some((l) => l?.includes("Aparna · Hindi · Customer"))).toBe(true);
+    expect(labels.some((l) => l?.startsWith("Shubhshubh"))).toBe(false); // the bulbul:v3 voice is not offered
+    await user.click(screen.getByRole("option", { name: /Aparna · Hindi · Customer/ }));
+
+    await user.type(within(dialog).getByLabelText("Code"), "v4_profile");
+    await user.type(within(dialog).getByLabelText("Name"), "V4 profile");
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(createMaster).toHaveBeenCalledTimes(1));
+    expect(createMaster.mock.calls[0]).toEqual(["ai-profiles", expect.objectContaining({
+      ttsProvider: "sarvam", ttsModel: "bulbul:v4-flash", defaultVoice: "vp-sv4-aparna_hi_customer",
+    })]);
+  });
+
+  it("an existing profile loads its saved voice; a provider change clears it on save", async () => {
+    const user = userEvent.setup();
+    const profile = {
+      id: "aip_1", code: "balanced", name: "Balanced", status: "active", sortOrder: 0,
+      ttsProvider: "sarvam", ttsModel: "bulbul:v3", defaultVoice: "vp-sv-shubh",
+    };
+    listMaster.mockImplementation((mt: string) =>
+      Promise.resolve(paged(mt === "ai-profiles" ? [profile] : []) as never));
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("AI Profiles"));
+    await screen.findByText("Balanced");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit AI configuration profile" });
+    const voice = within(dialog).getByRole("combobox", { name: "Default voice" });
+    await waitFor(() => expect(voice).toHaveTextContent("Shubh"));
+    expect(api.listProviderVoices).toHaveBeenCalledWith("sarvam", { model: "bulbul:v3" });
+
+    await user.selectOptions(within(dialog).getByLabelText("TTS provider"), ["elevenlabs"]);
+    await waitFor(() => expect(voice).not.toHaveTextContent("Shubh"));
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateMaster).toHaveBeenCalledTimes(1));
+    expect(updateMaster.mock.calls[0][2]).toMatchObject({
+      ttsProvider: "elevenlabs", ttsModel: "", defaultVoice: "",
+    });
+  });
+
+  it("a model change keeps the saved voice visible but flags it when the model lacks it", async () => {
+    const user = userEvent.setup();
+    const profile = {
+      id: "aip_1", code: "balanced", name: "Balanced", status: "active", sortOrder: 0,
+      ttsProvider: "sarvam", ttsModel: "bulbul:v3", defaultVoice: "vp-sv-shubh",
+    };
+    listMaster.mockImplementation((mt: string) =>
+      Promise.resolve(paged(mt === "ai-profiles" ? [profile] : []) as never));
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("AI Profiles"));
+    await screen.findByText("Balanced");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit AI configuration profile" });
+    await user.selectOptions(within(dialog).getByLabelText("TTS model"), ["bulbul:v4-flash"]);
+    const voice = within(dialog).getByRole("combobox", { name: "Default voice" });
+    await waitFor(() => expect(voice).toHaveTextContent("vp-sv-shubh — not available for bulbul:v4-flash"));
+    expect(voice).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getByText(/The saved voice does not support bulbul:v4-flash/)).toBeInTheDocument();
+  });
+});
+
+describe("PlatformConfig — Voices model filter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearProviderCatalogCache();
+    installDefaultMocks();
+    installVoiceCatalogMocks();
+  });
+
+  it("a provider shows its model filter; the model narrows the list server-side", async () => {
+    const user = userEvent.setup();
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Voices"));
+    await screen.findByText("Shubh");
+    expect(screen.queryByLabelText("Filter voices by model")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Filter voices by provider"), ["Sarvam AI"]);
+    const modelFilter = await screen.findByLabelText("Filter voices by model");
+    expect(within(modelFilter).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "All models", "Bulbul v3 (streaming) · default", "Bulbul v4 Flash (streaming)",
+    ]);
+    await user.selectOptions(modelFilter, ["bulbul:v4-flash"]);
+    await waitFor(() => {
+      const voiceCalls = listMaster.mock.calls.filter(([mtype]) => mtype === "voices");
+      expect(voiceCalls.at(-1)?.[1]).toMatchObject({ provider: "sarvam", model: "bulbul:v4-flash" });
+    });
+    expect(screen.getByText("2 filters active")).toBeInTheDocument();
+
+    // A different provider drops the model of the previous one.
+    await user.selectOptions(screen.getByLabelText("Filter voices by provider"), ["ElevenLabs"]);
+    await waitFor(() => {
+      const voiceCalls = listMaster.mock.calls.filter(([mtype]) => mtype === "voices");
+      expect(voiceCalls.at(-1)?.[1]).toMatchObject({ provider: "elevenlabs" });
+      expect(voiceCalls.at(-1)?.[1]?.model).toBeUndefined();
+    });
+    expect(screen.queryByLabelText("Filter voices by model")).not.toBeInTheDocument();
+  });
+
+  it("lists each voice's models", async () => {
+    const user = userEvent.setup();
+    listMaster.mockImplementation((mtype: string) =>
+      Promise.resolve(paged(mtype === "voices" ? [
+        { ...VOICE_ROW, modelCodes: ["bulbul:v3"] },
+        { ...VOICE_ROW, id: "vp-sv4-aparna_hi_customer", name: "Aparna · Hindi · Customer",
+          modelCodes: ["bulbul:v4-flash"], isDefault: false },
+        { ...VOICE_ROW, id: "vp_any", name: "Any model voice", modelCodes: [], isDefault: false },
+      ] : []) as never));
+    render(<PlatformConfig />);
+    await user.click(screen.getByText("Voices"));
+    const aparna = (await screen.findByText("Aparna · Hindi · Customer")).closest("tr")!;
+    expect(screen.getByRole("columnheader", { name: "Models" })).toBeInTheDocument();
+    expect(within(aparna).getByText("bulbul:v4-flash")).toBeInTheDocument();
+    expect(within(screen.getByText("Any model voice").closest("tr")!).getByText("All models")).toBeInTheDocument();
   });
 });
 

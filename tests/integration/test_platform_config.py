@@ -293,6 +293,104 @@ class TestProviderModelValidation:
         assert "text-embedding-3-small" in [m["code"] for m in models]
 
 
+class TestProfileDefaultVoice:
+    """TTS provider -> model -> default voice: the voice must be an active
+    platform voice of the provider that supports the model."""
+
+    def _create(self, client, headers, **overrides):
+        payload = {"code": f"aipv_{uuid.uuid4().hex[:8]}", "name": "Voice profile", **overrides}
+        return client.post(f"{API}/master/ai-profiles", headers=headers, json=payload)
+
+    def test_voice_of_the_model_is_saved_and_loaded(self, client, super_admin):
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v4-flash",
+                                     defaultVoice="vp-sv4-shubh_hi_customer"))
+        _track("ai_config_profiles", created["id"])
+        listing = _data(client.get(f"{API}/master/ai-profiles?search={created['code']}",
+                                   headers=super_admin))
+        loaded = next(r for r in listing if r["id"] == created["id"])
+        assert (loaded["ttsProvider"], loaded["ttsModel"], loaded["defaultVoice"]) == (
+            "sarvam", "bulbul:v4-flash", "vp-sv4-shubh_hi_customer")
+
+    def test_voice_of_another_model_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, ttsProvider="sarvam",
+                                ttsModel="bulbul:v4-flash", defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "does not support sarvam/bulbul:v4-flash" in _field_errors(response)["defaultVoice"]
+
+    def test_voice_of_another_provider_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, ttsProvider="elevenlabs",
+                                ttsModel="eleven_flash_v2_5", defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "not an active elevenlabs platform voice" in _field_errors(response)["defaultVoice"]
+
+    def test_voice_without_provider_rejected(self, client, super_admin):
+        response = self._create(client, super_admin, defaultVoice="vp-sv-shubh")
+        assert response.status_code == 422
+        assert "TTS provider" in _field_errors(response)["defaultVoice"]
+
+    def test_model_change_revalidates_the_stored_voice(self, client, super_admin):
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v3", defaultVoice="vp-sv-shubh"))
+        _track("ai_config_profiles", created["id"])
+        bad = client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                           json={"ttsModel": "bulbul:v4-flash"})
+        assert bad.status_code == 422 and "defaultVoice" in _field_errors(bad)
+        good = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                  json={"ttsModel": "bulbul:v4-flash",
+                                        "defaultVoice": "vp-sv4-shubh_hi_customer"}))
+        assert good["defaultVoice"] == "vp-sv4-shubh_hi_customer"
+        cleared = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                     json={"defaultVoice": ""}))
+        assert not cleared["defaultVoice"]
+
+    def test_unrelated_edit_keeps_a_legacy_voice(self, client, super_admin):
+        # A profile stored before the voice rule (wrong model for its voice)
+        # still saves while an unrelated field changes.
+        created = _data(self._create(client, super_admin, ttsProvider="sarvam",
+                                     ttsModel="bulbul:v3", defaultVoice="vp-sv-shubh"))
+        _track("ai_config_profiles", created["id"])
+        from sqlalchemy import text as sa_text
+
+        from shared.db.mysql import get_engine
+
+        with get_engine().begin() as conn:
+            conn.execute(sa_text("UPDATE ai_config_profiles SET tts_model = 'bulbul:v4-flash' "
+                                 "WHERE id = :id"), {"id": created["id"]})
+        renamed = _data(client.patch(f"{API}/master/ai-profiles/{created['id']}", headers=super_admin,
+                                     json={"name": "Renamed", "ttsProvider": "sarvam",
+                                           "ttsModel": "bulbul:v4-flash",
+                                           "defaultVoice": "vp-sv-shubh"}))
+        assert renamed["name"] == "Renamed" and renamed["defaultVoice"] == "vp-sv-shubh"
+
+
+class TestVoiceModelFilter:
+    def test_model_filter_lists_only_that_models_voices(self, client, super_admin):
+        v4 = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v4-flash"
+                              f"&pageSize=200", headers=super_admin))
+        assert v4 and all("bulbul:v4-flash" in (v["modelCodes"] or ["bulbul:v4-flash"]) for v in v4)
+        assert "vp-sv4-shubh_hi_customer" in {v["id"] for v in v4}
+        assert "vp-sv-shubh" not in {v["id"] for v in v4}
+        v3 = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v3&pageSize=200",
+                              headers=super_admin))
+        assert "vp-sv-shubh" in {v["id"] for v in v3}
+        assert not any(v["id"].startswith("vp-sv4-") for v in v3)
+
+    def test_voice_without_models_matches_every_model(self, client, super_admin):
+        created = _data(client.post(f"{API}/master/voices", headers=super_admin, json={
+            "name": f"Any model {_SUFFIX}", "provider": "sarvam", "gender": "female",
+        }))
+        _track("voice_profiles", created["id"])
+        listing = _data(client.get(f"{API}/master/voices?provider=sarvam&model=bulbul:v4-flash"
+                                   f"&search=Any%20model%20{_SUFFIX}", headers=super_admin))
+        assert [v["id"] for v in listing] == [created["id"]]
+
+    def test_search_matches_the_provider_voice_id(self, client, super_admin):
+        listing = _data(client.get(f"{API}/master/voices?search=shubh_hi_customer",
+                                   headers=super_admin))
+        assert "vp-sv4-shubh_hi_customer" in {v["id"] for v in listing}
+
+
 # ── Voices: filters + sort order ─────────────────────────────────────────────
 
 

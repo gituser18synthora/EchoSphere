@@ -25,7 +25,9 @@ import {
   MultiSelect, NumberInput, StatusChip, Tabs, Toggle,
   type MultiSelectOption,
 } from "@/components/ui";
-import { ModelSelect, ProviderSelect, useModelInfos } from "@/components/ProviderModelSelect";
+import {
+  ModelSelect, ProviderSelect, VoiceSelect, useModelInfos, useModelOptions,
+} from "@/components/ProviderModelSelect";
 import { ParamFields, reconcileSettings, schemaDefaults } from "@/components/ProviderParams";
 import { DataTable, type Column } from "@/components/DataTable";
 
@@ -47,7 +49,7 @@ type Row = Record<string, unknown> & {
 interface FieldDef {
   key: string;
   label: string;
-  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voiceProvider" | "datetime" | "guardrailProfile";
+  type: "text" | "textarea" | "number" | "toggle" | "select" | "country" | "currency" | "provider" | "model" | "voice" | "voiceProvider" | "datetime" | "guardrailProfile";
   options?: { value: string; label: string }[];
   required?: boolean;
   /** Required only while creating; legacy records can still be edited. */
@@ -64,8 +66,10 @@ interface FieldDef {
   /** provider/model fields whose capability is itself a form value (pricing):
       the form key holding the selected capability. */
   capabilityKey?: string;
-  /** model fields: the form key holding the selected provider. */
+  /** model and voice fields: the form key holding the selected provider. */
   providerKey?: string;
+  /** voice fields: the form key holding the selected model. */
+  modelKey?: string;
   /** Initial value in the add form (overrides the per-type defaults). */
   defaultValue?: string;
   /** An explicit empty value is submitted on edit to clear the column. */
@@ -341,7 +345,9 @@ const ALL_SPECS: TypeSpec[] = [
       { key: "llmModel", label: "LLM model", type: "model", capability: "llm", providerKey: "llmProvider", section: "Language model" },
       { key: "ttsProvider", label: "TTS provider", type: "provider", capability: "tts", section: "Text to speech" },
       { key: "ttsModel", label: "TTS model", type: "model", capability: "tts", providerKey: "ttsProvider", section: "Text to speech" },
-      text("defaultVoice", "Default voice", { section: "Text to speech" }),
+      { key: "defaultVoice", label: "Default voice", type: "voice", providerKey: "ttsProvider",
+        modelKey: "ttsModel", section: "Text to speech",
+        hint: "Only voices of the selected TTS provider that support the selected model are listed." },
       { key: "embeddingProvider", label: "Embedding provider", type: "provider", capability: "embedding", section: "Retrieval" },
       { key: "embeddingModel", label: "Embedding model", type: "model", capability: "embedding", providerKey: "embeddingProvider", section: "Retrieval" },
       num("embeddingDimension", "Embedding dimension", { section: "Retrieval" }),
@@ -421,6 +427,12 @@ const ALL_SPECS: TypeSpec[] = [
     columns: [
       { ...nameCol, render: (r) => <span className="row gap-8"><span className="t-strong">{String(r.name ?? "")}</span>{Boolean(r.isDefault) && <span className="tag">Default</span>}</span> },
       { key: "provider", header: "Provider", render: (r) => <span>{String(r.provider ?? "platform")}</span> },
+      { key: "modelCodes", header: "Models", render: (r) => {
+        const codes = (r.modelCodes as string[] | undefined) ?? [];
+        return codes.length
+          ? <span className="row gap-4" style={{ flexWrap: "wrap" }}>{codes.map((c) => <span key={c} className="tag">{c}</span>)}</span>
+          : <span className="t-micro">All models</span>;
+      } },
       { key: "languages", header: "Languages", render: (r) => <span className="t-micro">{((r.languages as string[]) ?? []).join(", ") || String(r.locale ?? "")}</span> },
       { key: "gender", header: "Gender", render: (r) => <span>{String(r.gender ?? "")}</span> },
       { key: "speakingRate", header: "Rate", align: "right", render: (r) => <span>{Number(r.speakingRate ?? 1).toFixed(2)}×</span> },
@@ -673,7 +685,7 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
     // A provider change invalidates its dependent model selection; a
     // capability change invalidates both downstream selections (pricing).
     for (const f of spec.fields) {
-      if (f.type === "model" && f.providerKey === key && form[f.key]) patch[f.key] = "";
+      if ((f.type === "model" || f.type === "voice") && f.providerKey === key && form[f.key]) patch[f.key] = "";
       if (f.capabilityKey === key && form[f.key]) patch[f.key] = "";
     }
     onChange(patch);
@@ -712,7 +724,7 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
         if (f.type === "number") value = value === "" || value === null ? undefined : Number(value);
         // Provider/model and explicitly clearable fields submit on edit so an
         // emptied value clears the stored column instead of being skipped.
-        const clearable = f.type === "provider" || f.type === "model" || Boolean(f.clearable);
+        const clearable = f.type === "provider" || f.type === "model" || f.type === "voice" || Boolean(f.clearable);
         if ((value === "" && !(row && clearable)) || value === undefined) continue;
         payload[f.key] = value;
       }
@@ -828,6 +840,14 @@ function MasterEditor({ spec, row, form, onChange, onReset, onClose, onSaved }: 
       return (
         <GuardrailProfileSelect value={String(form[f.key] ?? "")} label={f.label}
           disabled={locked} onChange={(id) => set(f.key, id)} />
+      );
+    }
+    if (f.type === "voice" && f.providerKey) {
+      return (
+        <VoiceSelect provider={String(form[f.providerKey] ?? "")}
+          model={f.modelKey ? String(form[f.modelKey] ?? "") : ""}
+          value={String(form[f.key] ?? "")} label={f.label} disabled={locked}
+          invalid={Boolean(fieldErrors[f.key])} onChange={(id) => set(f.key, id)} />
       );
     }
     if (f.type === "model" && f.capability && f.providerKey) {
@@ -1499,26 +1519,41 @@ function PricingFilters({ value, onChange }: {
 
 interface VoiceFilterState {
   provider: string;
+  /** Catalog model of the selected provider; cleared with the provider. */
+  model: string;
   gender: string;
   status: string;
 }
 
-const EMPTY_VOICE_FILTERS: VoiceFilterState = { provider: "", gender: "", status: "" };
+const EMPTY_VOICE_FILTERS: VoiceFilterState = { provider: "", model: "", gender: "", status: "" };
 
 function VoiceFilters({ value, onChange }: {
   value: VoiceFilterState;
   onChange: (next: VoiceFilterState) => void;
 }) {
   const providers = useVoiceProviders();
+  /* The model filter appears once a provider is chosen and lists that
+     provider's catalog models; "platform"/"voice"-kind catalogs have none. */
+  const { models } = useModelOptions("tts", value.provider || null);
   const active = Object.values(value).filter(Boolean).length;
   return (
     <>
       <select className="select" style={{ width: 170 }} value={value.provider}
         aria-label="Filter voices by provider"
-        onChange={(e) => onChange({ ...value, provider: e.target.value })}>
+        onChange={(e) => onChange({ ...value, provider: e.target.value, model: "" })}>
         <option value="">All providers</option>
         {providers.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
       </select>
+      {value.provider && (models ?? []).length > 0 && (
+        <select className="select" style={{ width: "auto", minWidth: 200 }} value={value.model}
+          aria-label="Filter voices by model"
+          onChange={(e) => onChange({ ...value, model: e.target.value })}>
+          <option value="">All models</option>
+          {(models ?? []).map((m) => (
+            <option key={m.code} value={m.code}>{m.displayName}{m.isDefault ? " · default" : ""}</option>
+          ))}
+        </select>
+      )}
       <select className="select" style={{ width: 130 }} value={value.gender}
         aria-label="Filter voices by gender"
         onChange={(e) => onChange({ ...value, gender: e.target.value })}>
@@ -1599,6 +1634,7 @@ function MasterPanel({ spec, addDraft, onAddDraftChange }: {
         provider: spec.voiceFilters ? voiceFilters.provider || undefined
           : spec.pricingFilters ? pricingFilters.provider || undefined : undefined,
         gender: spec.voiceFilters ? voiceFilters.gender || undefined : undefined,
+        model: spec.voiceFilters ? voiceFilters.model || undefined : undefined,
         status: spec.voiceFilters ? voiceFilters.status || undefined : undefined,
         capability: spec.pricingFilters ? pricingFilters.capability || undefined : undefined,
       });
