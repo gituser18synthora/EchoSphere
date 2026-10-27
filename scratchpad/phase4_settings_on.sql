@@ -22,7 +22,8 @@
 -- run changes 0 rows and a later Studio edit of any of them is never overwritten. One transaction: an
 -- error ends the client before COMMIT and nothing is applied.
 --
--- Run (after the code is deployed and the services are restarted):
+-- Run after the code is pulled (no migration; the code before Phase 4 ignores these keys), before the
+-- restart:
 --   mysql -h 192.168.60.132 -u webuser -p voice_bot < scratchpad/phase4_settings_on.sql
 -- Expected: 4 rows changed. Then clear the four bots' cached configs (the API does this on a Studio save,
 -- SQL does not; otherwise they apply within 5 minutes):
