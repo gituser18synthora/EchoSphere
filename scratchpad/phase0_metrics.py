@@ -24,12 +24,21 @@ Event shapes used (all written by voice_runtime/brain.py):
   (stt/tts/llm/decision) and ``usage.llm_cached_tokens`` / ``llm_input_tokens``
   the reply calls' prompt-cache share. ``tts_cold_connect`` (``reason``,
   ``waited_ms``) and ``filler_only_dropped`` are counted.
+- Phase 4: ``decision_skipped_deterministic`` (resolver, ask_kind),
+  ``speculative_reply_kept`` / ``speculative_reply_discarded`` (reason,
+  generated_chars), ``extraction_ahead`` (outcome), ``workflow_timing`` (ms of
+  the workflow step after the decision), ``workflow_reply_grounded`` /
+  ``workflow_grounded_fallback`` (``first_ms`` = first spoken sentence of a
+  grounded rewrite), ``early_ack_played`` (``early`` = the bot's early_ack_ms
+  slot) and ``early_ack_not_ready``. The response is split by the path the
+  turn took; the MDND stage split covers bot_59a84478f155 (``--mdnd-bot``).
 
 Usage:
     env/bin/python scratchpad/phase0_metrics.py --days 14
     env/bin/python scratchpad/phase0_metrics.py --since 2026-10-22T00:00:00+05:30   # overrides --days
     env/bin/python scratchpad/phase0_metrics.py --days 7 --mongo-uri mongodb://host:27017/?directConnection=true --db voice_bot
     env/bin/python scratchpad/phase0_metrics.py --days 14 --channel all   # include browser sessions
+    env/bin/python scratchpad/phase0_metrics.py --days 2 --bot bot_59a84478f155   # one bot
 
 Connection: ``MONGODB_URI`` / ``MONGODB_DATABASE`` from .env via shared.config
 unless overridden on the command line. The script only issues ``find`` queries.
@@ -81,8 +90,30 @@ def _word_count(text: str) -> int:
     return len([w for w in (text or "").replace("।", " ").split() if w.strip(".,!?")])
 
 
+PATHS = ("deterministic", "LLM decision", "speculative kept", "speculative discarded",
+         "decision fallback")
+
+
+def _turn_path(bucket: list[dict]) -> str | None:
+    """The path a turn took, from the events between two turn_timing records."""
+    kinds = {e.get("kind") for e in bucket}
+    if "decision_skipped_deterministic" in kinds or "deterministic_fast_path" in kinds:
+        return "deterministic"
+    if "speculative_reply_kept" in kinds:
+        return "speculative kept"
+    if "speculative_reply_discarded" in kinds:
+        return "speculative discarded"
+    if "orchestration_decision" in kinds:
+        return "LLM decision"
+    if any(e.get("kind") == "orchestration_fallback"
+           and e.get("reason") not in ("engine_disabled", "empty_turn") for e in bucket):
+        return "decision fallback"
+    return None
+
+
 async def collect(uri: str, database: str, days: int, channel: str,
-                  since: datetime | None = None) -> dict:
+                  since: datetime | None = None, bot: str | None = None,
+                  mdnd_bot: str = "bot_59a84478f155") -> dict:
     client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=8000)
     try:
         db = client[database]
@@ -93,6 +124,8 @@ async def collect(uri: str, database: str, days: int, channel: str,
             query["channel"] = {"$ne": "browser"}
         elif channel != "all":
             query["channel"] = channel
+        if bot:
+            query["bot_id"] = bot
         projection = {"session_id": 1, "channel": 1, "bot_id": 1, "events": 1,
                       "turns.role": 1, "turns.text": 1, "turns.route": 1,
                       "models": 1, "usage": 1, "tts_usage": 1}
@@ -133,6 +166,20 @@ async def collect(uri: str, database: str, days: int, channel: str,
     stt_models: dict[str, int] = {}
     cold_connects: dict[str, list[float]] = {}      # reason -> waited_ms
     filler_only_dropped = 0
+    # Phase 4.
+    path_response: dict[str, list[float]] = {name: [] for name in PATHS}
+    skipped_by: dict[str, int] = {}                 # resolver/ask_kind -> turns
+    decision_turns = 0                              # turns that awaited or skipped a decision
+    discard_reasons: dict[str, int] = {}
+    discard_chars = 0
+    kept_lead: list[float] = []
+    ahead_outcomes: dict[str, int] = {}
+    early_acks = early_acks_slot = early_ack_not_ready = 0
+    out_tokens_by_schema: dict[str, list[float]] = {"with reason": [], "without reason": []}
+    mdnd_stages: dict[str, list[float]] = {
+        "decision": [], "workflow after decision": [], "rewrite first sentence": [],
+        "tts first audio": [], "response": [],
+    }
 
     for doc in docs:
         channels[str(doc.get("channel"))] = channels.get(str(doc.get("channel")), 0) + 1
@@ -153,8 +200,54 @@ async def collect(uri: str, database: str, days: int, channel: str,
         decided = False
         disabled = False
         attempted = False
+        bucket: list[dict] = []
         for ev in events:
             kind = ev.get("kind")
+            if kind != "turn_timing":
+                bucket.append(ev)
+            if kind == "turn_timing":
+                turn_events, bucket = bucket, []
+                ms = ev.get("spans_ms") or {}
+                path = _turn_path(turn_events)
+                if (ev.get("turn_id") or 0) >= 1 and path is not None:
+                    decision_turns += 1
+                    if isinstance(ms.get("response"), (int, float)):
+                        path_response[path].append(float(ms["response"]))
+                for e in turn_events:
+                    if e.get("kind") == "decision_skipped_deterministic":
+                        key = f"{e.get('resolver')}/{e.get('ask_kind')}"
+                        skipped_by[key] = skipped_by.get(key, 0) + 1
+                if doc.get("bot_id") == mdnd_bot and (ev.get("turn_id") or 0) >= 1:
+                    dispatched = ev.get("turn_dispatched_at") or 0
+                    classified = ev.get("classify_completed_at") or 0
+                    if dispatched and classified:
+                        mdnd_stages["decision"].append(classified - dispatched)
+                    for e in turn_events:
+                        if e.get("kind") == "workflow_timing" and isinstance(e.get("ms"), (int, float)):
+                            mdnd_stages["workflow after decision"].append(float(e["ms"]))
+                        if e.get("kind") in ("workflow_reply_grounded", "workflow_grounded_fallback") \
+                                and isinstance(e.get("first_ms"), (int, float)):
+                            mdnd_stages["rewrite first sentence"].append(float(e["first_ms"]))
+                    if ev.get("tts_started_at") and ev.get("first_audio_sent_at"):
+                        mdnd_stages["tts first audio"].append(
+                            ev["first_audio_sent_at"] - ev["tts_started_at"])
+                    if isinstance(ms.get("response"), (int, float)):
+                        mdnd_stages["response"].append(float(ms["response"]))
+            elif kind == "speculative_reply_discarded":
+                reason = str(ev.get("reason") or "unknown")
+                discard_reasons[reason] = discard_reasons.get(reason, 0) + 1
+                discard_chars += int(ev.get("generated_chars") or 0)
+            elif kind == "speculative_reply_kept":
+                if isinstance(ev.get("lead_ms"), (int, float)):
+                    kept_lead.append(float(ev["lead_ms"]))
+            elif kind == "extraction_ahead":
+                outcome = str(ev.get("outcome"))
+                ahead_outcomes[outcome] = ahead_outcomes.get(outcome, 0) + 1
+            elif kind == "early_ack_played":
+                early_acks += 1
+                early_acks_slot += bool(ev.get("early"))
+            elif kind == "early_ack_not_ready":
+                early_ack_not_ready += 1
             if kind == "turn_timing":
                 turns_with_timing += 1
                 ms = ev.get("spans_ms") or {}
@@ -192,6 +285,8 @@ async def collect(uri: str, database: str, days: int, channel: str,
                     decision_ms.setdefault(engine, []).append(float(ev["latency_ms"]))
                 if isinstance(ev.get("output_tokens"), (int, float)):
                     decision_out_tokens.append(float(ev["output_tokens"]))
+                    out_tokens_by_schema["with reason" if ev.get("reason") else "without reason"].append(
+                        float(ev["output_tokens"]))
                     decision_in += int(ev.get("input_tokens") or 0)
                     decision_cached += int(ev.get("cached_tokens") or 0)
                 decisions_total += 1
@@ -262,6 +357,11 @@ async def collect(uri: str, database: str, days: int, channel: str,
         "reply_in": reply_in, "reply_cached": reply_cached,
         "ttfb_by_model": ttfb_by_model, "stt_models": stt_models,
         "cold_connects": cold_connects, "filler_only_dropped": filler_only_dropped,
+        "path_response": path_response, "skipped_by": skipped_by, "decision_turns": decision_turns,
+        "discard_reasons": discard_reasons, "discard_chars": discard_chars, "kept_lead": kept_lead,
+        "ahead_outcomes": ahead_outcomes, "early_acks": early_acks, "early_acks_slot": early_acks_slot,
+        "early_ack_not_ready": early_ack_not_ready, "out_tokens_by_schema": out_tokens_by_schema,
+        "mdnd_stages": mdnd_stages,
     }
 
 
@@ -326,6 +426,33 @@ def print_report(r: dict, channel: str) -> None:
         f"{k}={len(v)} ({_fmt(_pct(sorted(v), 0.5))} ms)" for k, v in sorted(r["cold_connects"].items())))
     print(f"{'filler_only_dropped events':<44}{r['filler_only_dropped']}")
     print()
+    print("Phase 4 — decision off the critical path")
+    print(f"{'response (ms) by path':<44}{'p50':>9}{'p90':>9}{'n':>8}")
+    for name in PATHS:
+        values = sorted(r["path_response"][name])
+        print(f"  {name:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
+    skipped = sum(r["skipped_by"].values())
+    print(f"{'decision_skipped_deterministic share':<44}{_share(skipped, r['decision_turns'])}  "
+          + ", ".join(f"{k}={v}" for k, v in sorted(r["skipped_by"].items(), key=lambda kv: -kv[1])))
+    for schema, values in r["out_tokens_by_schema"].items():
+        values = sorted(values)
+        print(f"{'decision output tokens ' + schema:<44}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
+    kept = len(r["kept_lead"])
+    discarded = sum(r["discard_reasons"].values())
+    print(f"{'speculative reply kept':<44}{_share(kept, kept + discarded)}  lead p50 "
+          f"{_fmt(_pct(sorted(r['kept_lead']), 0.5))} ms")
+    print(f"{'speculative reply discarded (reasons)':<44}{discarded}  " + ", ".join(
+        f"{k}={v}" for k, v in sorted(r["discard_reasons"].items(), key=lambda kv: -kv[1]))
+          + f"  ~{r['discard_chars'] // 4} output tokens")
+    print(f"{'extraction_ahead outcomes':<44}" + (", ".join(
+        f"{k}={v}" for k, v in sorted(r["ahead_outcomes"].items())) or "-"))
+    print(f"{'early_ack_played (in the early_ack_ms slot)':<44}{r['early_acks']} ({r['early_acks_slot']})"
+          f"   early_ack_not_ready={r['early_ack_not_ready']}")
+    print(f"{'MDND stage split (ms)':<44}{'p50':>9}{'p90':>9}{'n':>8}")
+    for name, values in r["mdnd_stages"].items():
+        values = sorted(values)
+        print(f"  {name:<42}{_fmt(_pct(values, 0.5)):>9}{_fmt(_pct(values, 0.9)):>9}{len(values):>8}")
+    print()
     print("notes: the route reason IS recorded (route_decision.reason); turns.route='clarify' on a <=2-word")
     print("       user turn is the canned too_short path outside a workflow. Medians per span do not sum to the")
     print("       response median. Decision attempts exclude engine_disabled/empty_turn fallbacks.")
@@ -340,6 +467,9 @@ def main() -> int:
     parser.add_argument("--db", default=None, help="override MONGODB_DATABASE from .env")
     parser.add_argument("--channel", default="telephony",
                         help="telephony (default: every channel except browser) | all | an exact channel name")
+    parser.add_argument("--bot", default=None, help="only this bot id")
+    parser.add_argument("--mdnd-bot", default="bot_59a84478f155",
+                        help="bot whose turns make up the MDND stage split")
     args = parser.parse_args()
     uri, database = args.mongo_uri, args.db
     if uri is None or database is None:
@@ -353,7 +483,8 @@ def main() -> int:
         since = datetime.fromisoformat(args.since)
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
-    report = asyncio.run(collect(uri, database, args.days, args.channel, since=since))
+    report = asyncio.run(collect(uri, database, args.days, args.channel, since=since,
+                                 bot=args.bot, mdnd_bot=args.mdnd_bot))
     print_report(report, args.channel)
     print(f"notes: 1st-turn timeout counts reasons {TIMEOUT_REASONS}; the first orchestration event of a call is its first turn's attempt.")
     return 0

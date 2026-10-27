@@ -15,7 +15,15 @@ For the newest call of a bot since ``--since`` (default: the last 2 hours) print
   tts_ttfb and response time;
 - ``tts_startup_connect`` (how long the start waited for the first socket),
   ``tts_cold_connect`` (reason, waited ms) and ``filler_only_dropped`` events;
-- usage counters for reply and decision calls.
+- usage counters for reply and decision calls;
+- Phase 4: per turn the path it took (deterministic / LLM decision /
+  speculative kept / speculative discarded / decision fallback) next to its
+  response time; ``decision_skipped_deterministic`` (resolver, ask kind),
+  ``speculative_reply_kept`` (lead) / ``_discarded`` (reason, chars),
+  ``extraction_ahead`` outcomes, ``workflow_timing`` (workflow step after the
+  decision) and grounded-rewrite ``first_ms`` (the MDND stage split),
+  ``early_ack_played`` (``early`` = the early_ack_ms slot) and
+  ``early_ack_not_ready``; the speculative-discard usage counters.
 
 Usage (on the server, from the checkout):
     env/bin/python scratchpad/phase3_first_call.py --bot bot_59a84478f155
@@ -29,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -99,12 +108,45 @@ def main() -> int:
     for ev in by_kind.get("stt_keyterms", []):
         print(f"stt_keyterms: model={ev.get('model')} sent={ev.get('sent')} source={ev.get('source')} "
               f"count={ev.get('count')} reason={ev.get('reason')}")
-    print("turns (first-audio engine, tts_ttfb, response):")
-    for ev in by_kind.get("turn_timing", []):
+    print("turns (path, first-audio engine, tts_ttfb, response; MDND stages):")
+    bucket: list[dict] = []
+    for ev in events:
+        if ev.get("kind") != "turn_timing":
+            bucket.append(ev)
+            continue
+        turn_events, bucket = bucket, []
+        kinds = {e.get("kind") for e in turn_events}
+        path = ("deterministic" if kinds & {"decision_skipped_deterministic", "deterministic_fast_path"}
+                else "speculative kept" if "speculative_reply_kept" in kinds
+                else "speculative discarded" if "speculative_reply_discarded" in kinds
+                else "LLM decision" if "orchestration_decision" in kinds
+                else "decision fallback" if "orchestration_fallback" in kinds else "-")
         spans = ev.get("spans_ms") or {}
-        print(f"  turn {ev.get('turn_id')}: tts_model={ev.get('tts_model')} "
+        dispatched, classified = ev.get("turn_dispatched_at") or 0, ev.get("classify_completed_at") or 0
+        workflow = next((e.get("ms") for e in turn_events if e.get("kind") == "workflow_timing"), None)
+        rewrite = next((e.get("first_ms") for e in turn_events if e.get("kind") in (
+            "workflow_reply_grounded", "workflow_grounded_fallback")), None)
+        print(f"  turn {ev.get('turn_id')}: path={path} tts_model={ev.get('tts_model')} "
               f"tts_ttfb={_ms(spans.get('tts_ttfb'))} ms response={_ms(spans.get('response'))} ms "
-              f"endpoint_by={ev.get('endpoint_by')}")
+              f"endpoint_by={ev.get('endpoint_by')} | decision="
+              f"{_ms(classified - dispatched) if dispatched and classified else '-'} "
+              f"workflow={_ms(workflow)} rewrite_first={_ms(rewrite)}")
+    for ev in by_kind.get("decision_skipped_deterministic", []):
+        print(f"decision_skipped_deterministic: resolver={ev.get('resolver')} ask_kind={ev.get('ask_kind')} "
+              f"signal={ev.get('signal')} value={ev.get('value')}")
+    for ev in by_kind.get("speculative_reply_kept", []):
+        print(f"speculative_reply_kept: lead={_ms(ev.get('lead_ms'))} ms "
+              f"first_token_ready={ev.get('first_token_ready')} chars={ev.get('buffered_chars')}")
+    for ev in by_kind.get("speculative_reply_discarded", []):
+        print(f"speculative_reply_discarded: reason={ev.get('reason')} ran={_ms(ev.get('ran_ms'))} ms "
+              f"chars={ev.get('generated_chars')} completed={ev.get('completed')}")
+    ahead = Counter(str(ev.get("outcome")) for ev in by_kind.get("extraction_ahead", []))
+    print("extraction_ahead:", dict(ahead) or "-")
+    acks = by_kind.get("early_ack_played", [])
+    print(f"early_ack_played: {len(acks)} (early_ack_ms slot: {sum(bool(e.get('early')) for e in acks)})"
+          f"  early_ack_not_ready: {len(by_kind.get('early_ack_not_ready', []))}" + "".join(
+              f"\n  turn={e.get('turn')} waited={_ms(e.get('waited_ms'))} ms early={e.get('early')} "
+              f"context={e.get('context')}" for e in acks))
     for ev in by_kind.get("tts_startup_connect", []):
         print(f"tts_startup_connect: held the start {_ms(ev.get('held_ms'))} ms timed_out={ev.get('timed_out')}")
     cold = by_kind.get("tts_cold_connect", [])
@@ -118,7 +160,10 @@ def main() -> int:
           f"{usage.get('llm_requests')}/{usage.get('llm_input_tokens')}/{usage.get('llm_output_tokens')}/"
           f"{usage.get('llm_cached_tokens')}  decision requests/in/out/cached="
           f"{usage.get('decision_llm_requests')}/{usage.get('decision_llm_input_tokens')}/"
-          f"{usage.get('decision_llm_output_tokens')}/{usage.get('decision_llm_cached_tokens')}")
+          f"{usage.get('decision_llm_output_tokens')}/{usage.get('decision_llm_cached_tokens')}"
+          f"  speculative discarded requests/~output tokens="
+          f"{usage.get('speculative_discarded_requests', 0)}/"
+          f"{usage.get('speculative_discarded_output_tokens_est', 0)}")
     errors = [k for k in by_kind if k in ("tts_fatal", "tts_failure", "llm_error", "generation_failed")]
     if errors:
         print("ERRORS:", {k: len(by_kind[k]) for k in errors})

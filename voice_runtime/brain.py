@@ -7136,6 +7136,7 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_pending_ask_shape = self._pending_ask_shape
         self._open_turn_pending_hub_signals = self._pending_hub_signals
         self._open_turn_pending_exact_ahead = self._pending_exact_ahead
+        workflow_started = time.perf_counter()
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -7159,6 +7160,14 @@ class ConversationBrain(FrameProcessor):
             **({"extraction_ahead": extraction_ahead} if extraction_ahead is not None else {}),
         )
         self._open_turn_workflow_committed = True
+        # Stage timing for the latency reports: the workflow step (with its
+        # semantic extraction, unless that ran ahead) after the decision.
+        self._recorder.add_event(
+            "workflow_timing", workflow=workflow_name,
+            ms=round((time.perf_counter() - workflow_started) * 1000, 1),
+            extraction_requests=(result.get("extractionUsage") or {}).get("requests", 0),
+            extraction_ahead=result.get("extractionAhead"),
+        )
         if extraction_ahead is not None and result.get("extractionAhead"):
             self._recorder.add_event(
                 "extraction_ahead", outcome=result["extractionAhead"],
@@ -7622,7 +7631,9 @@ class ConversationBrain(FrameProcessor):
                     verified_context=result.get("slots") or {},
                 )
                 return
+            rewrite_started = time.perf_counter()
             generated = await self._constrained_generate(reply, system)
+            rewrite_ms = round((time.perf_counter() - rewrite_started) * 1000, 1)
             if generated is not None and validate_grounded_reply(
                 reply, generated, self._conversation_language,
                 require_question=bool(pending_question),
@@ -7633,6 +7644,7 @@ class ConversationBrain(FrameProcessor):
                 self._recorder.add_event(
                     "workflow_reply_grounded",
                     workflow=workflow_name, mode="constrained",
+                    first_ms=rewrite_ms, ms=rewrite_ms,
                 )
                 # A constrained rewrite is still an authored workflow line;
                 # enforce the catalog-selected speaker grammar at delivery as
@@ -7646,6 +7658,7 @@ class ConversationBrain(FrameProcessor):
                     "workflow_grounded_fallback",
                     workflow=workflow_name,
                     reason="provider" if generated is None else "validation",
+                    ms=rewrite_ms,
                 )
                 # The authored fallback is not the utterance the node's
                 # directive promised (a readout fallback carries no ticket
@@ -7686,6 +7699,8 @@ class ConversationBrain(FrameProcessor):
             + voice_identity_instruction(identity, language)
         )
         cap = grounded_reply_cap(script)
+        rewrite_started = time.perf_counter()
+        first_ms: float | None = None
         generated = ""
         cursor = 0          # generated characters already spoken
         spoken: list[str] = []
@@ -7693,10 +7708,12 @@ class ConversationBrain(FrameProcessor):
         opened = False
 
         async def _speak(piece: str) -> None:
-            nonlocal opened
+            nonlocal opened, first_ms
             text = self._spoken_form(piece)
             if not text:
                 return
+            if first_ms is None:
+                first_ms = round((time.perf_counter() - rewrite_started) * 1000, 1)
             if not opened:
                 opened = True
                 self._turn_reply_queued = True
@@ -7760,10 +7777,12 @@ class ConversationBrain(FrameProcessor):
             if opened:
                 await self.push_frame(LLMFullResponseEndFrame())
         self._record_llm_usage(generated)
+        total_ms = round((time.perf_counter() - rewrite_started) * 1000, 1)
         if failure is not None:
             self._recorder.add_event(
                 "workflow_grounded_fallback", workflow=workflow_name,
                 reason=failure if not spoken else f"{failure}_after_release",
+                first_ms=first_ms, ms=total_ms,
             )
             # The flow's directive was not delivered as promised: never count
             # these nodes as heard.
@@ -7774,6 +7793,7 @@ class ConversationBrain(FrameProcessor):
         else:
             self._recorder.add_event(
                 "workflow_reply_grounded", workflow=workflow_name, mode="constrained_stream",
+                first_ms=first_ms, ms=total_ms,
             )
         await self._record_bot_text(" ".join(spoken))
 
