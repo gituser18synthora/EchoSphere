@@ -21,6 +21,7 @@ import re
 from datetime import datetime, timezone
 
 from shared.orchestration.goal_engine import BotGoalPolicy
+from shared.orchestration.time_context import resolve_zone
 from shared.post_call.nba import allowed_next_actions, decide_next_best_action
 from shared.post_call.schema import (
     NextBestAction,
@@ -38,6 +39,8 @@ _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 _MAX_TURN_CHARS = 300
 _MAX_TRANSCRIPT_TURNS = 60
 _MAX_TOKENS = 900
+_MAX_DETAIL_TURN_CHARS = 4000
+_MAX_DETAIL_OUTPUT_TOKENS = 2600
 _DEFAULT_TIMEOUT_SECONDS = 25.0
 
 # Event kinds worth showing the analyst (verified facts and platform
@@ -78,13 +81,18 @@ def build_analysis_llm(config):
     ))
 
 
-def _transcript_block(turns: list[dict]) -> str:
+def _transcript_block(turns: list[dict], *, detailed: bool = False) -> str:
     lines: list[str] = []
-    for turn in turns[-_MAX_TRANSCRIPT_TURNS:]:
+    # Opt-in extraction needs early corrections and full addresses. Keep the
+    # existing compact context for all other bots.
+    for index, turn in enumerate(turns if detailed else turns[-_MAX_TRANSCRIPT_TURNS:]):
         role = "Customer" if turn.get("role") == "user" else "Bot"
-        text = " ".join(str(turn.get("text") or "").split())[:_MAX_TURN_CHARS]
+        text = " ".join(str(turn.get("text") or "").split())[
+            :_MAX_DETAIL_TURN_CHARS if detailed else _MAX_TURN_CHARS
+        ]
         if text:
-            lines.append(f"{role}: {text}")
+            prefix = f"[turn {index + 1}] " if detailed else ""
+            lines.append(f"{prefix}{role}: {text}")
     return "\n".join(lines) or "(no spoken turns)"
 
 
@@ -126,13 +134,35 @@ def _policy_block(policy: BotGoalPolicy) -> str:
 
 
 def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
+    # Opt-in date extraction uses the configured call locale, not the UTC
+    # day of a delayed worker. Individual field references are also rendered.
+    local_date_spec = next((
+        spec for spec in policy.summary_fields
+        if spec.evidence_required and spec.type == "date" and spec.timezone
+    ), None)
+    if local_date_spec is not None:
+        reference = reference.astimezone(resolve_zone(local_date_spec.timezone))
     actions = ", ".join(allowed_next_actions(policy))
+    detailed = any(spec.evidence_required for spec in policy.summary_fields)
     weekday = reference.strftime("%A")
-    structured_block = summary_fields_prompt_block(policy)
+    structured_block = summary_fields_prompt_block(policy, reference=reference)
     structured_json = (
         '  "structured_fields": {<field name>: <allowed value or null>},\n'
         if structured_block else ""
     )
+    if detailed:
+        field_keys = ", ".join(
+            f'"{spec.name}": <allowed value or null>'
+            for spec in policy.summary_fields if spec.allow_llm and not spec.derived_from
+        )
+        structured_json = '  "structured_fields": {' + field_keys + '},\n'
+        evidence_keys = ", ".join(
+            f'"{spec.name}": <Customer turn number as integer, or null>'
+            for spec in policy.summary_fields if spec.evidence_required and spec.allow_llm
+        )
+        structured_json += (
+            '  "structured_field_evidence": {' + evidence_keys + '},\n'
+        )
     return (
         "You are the POST-CALL analyst for a phone voice agent. The call has "
         "ended. From the transcript and the recorded platform facts, produce "
@@ -141,7 +171,7 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "Hindi, English or mixed Hinglish.\n\n"
         "# The bot whose call you are analyzing\n"
         + _policy_block(policy)
-        + (("\n\n" + structured_block) if structured_block else "")
+        + (("\n\n" + structured_block) if structured_block and not detailed else "")
         + f"\n\n# Time reference\nThe call happened on {reference.date().isoformat()} "
         f"({weekday}). Resolve every relative date the customer used "
         "(tomorrow, Monday, कल, परसों, अगले हफ़्ते…) to an ABSOLUTE ISO date "
@@ -186,12 +216,25 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "is a claim, not a verified fact — unless the platform facts below "
         "show a successful backend verification, keep verification in "
         "unresolved_items and never report the claim as completed.\n"
-        "- Commitments: capture amount/date exactly as spoken; resolve the "
+        + (
+            "- For configured structured_fields, clear customer-reported claims "
+            "MUST still be extracted as the field's rules define, with customer evidence. "
+            "They report what the customer said, not backend verification. "
+            "This caveat must not turn a clear customer statement into null. "
+            "Emit EVERY listed structured_fields key, including nulls. Every "
+            "non-null evidenceRequired field MUST have its OWN source Customer "
+            "turn number in structured_field_evidence; repeat the number under "
+            "multiple keys when one customer turn supports several fields. "
+            "Never cite a Bot turn.\n"
+            if detailed else ""
+        )
+        + "- Commitments: capture amount/date exactly as spoken; resolve the "
         "date to ISO using the time reference; status is always 'promised' "
         "for new commitments.\n"
         "- Choose next_best_action ONLY from the allowed list.\n"
         "- No sensitive values: never include OTPs, card numbers, or full "
         "account numbers anywhere in the output."
+        + (("\n\n" + structured_block) if detailed else "")
     )
 
 
@@ -212,8 +255,9 @@ async def analyze_call(
         if value not in (None, "", [], {})
     ]
     facts = _fact_events_block(events or [])
+    detailed = any(spec.evidence_required for spec in policy.summary_fields)
     user = (
-        "# Transcript\n" + _transcript_block(turns)
+        "# Transcript\n" + _transcript_block(turns, detailed=detailed)
         + "\n\n# Platform facts recorded during the call (authoritative)\n"
         + ("\n".join(state_lines) or "- (none)")
         + (("\n" + facts) if facts else "")
@@ -225,7 +269,7 @@ async def analyze_call(
                 [{"role": "user", "content": user}],
                 system=_build_system(policy, reference=reference),
                 temperature=0.0,
-                max_tokens=_MAX_TOKENS,
+                max_tokens=_MAX_DETAIL_OUTPUT_TOKENS if detailed else _MAX_TOKENS,
             ),
             timeout=timeout_seconds,
         )
@@ -246,6 +290,20 @@ async def analyze_call(
     except ValueError:
         logger.warning("post-call analysis returned invalid JSON: %r", raw[:120])
         return None, usage
+    # Turn references avoid asking the model to reproduce/translate quotes.
+    # Expand only genuine customer references; persistence keeps transcript
+    # text, not model-written evidence. Legacy quote output remains supported.
+    raw_evidence = parsed.get("structured_field_evidence", parsed.get("structuredFieldEvidence")) if isinstance(parsed, dict) else None
+    if isinstance(raw_evidence, dict):
+        expanded = {}
+        for name, value in raw_evidence.items():
+            if type(value) is int:
+                turn = turns[value - 1] if 1 <= value <= len(turns) else {}
+                if turn.get("role") == "user":
+                    expanded[name] = " ".join(str(turn.get("text") or "").split())[:_MAX_DETAIL_TURN_CHARS]
+            elif isinstance(value, str):
+                expanded[name] = value
+        parsed["structured_field_evidence"] = expanded
     analysis = parse_analysis(parsed)
     if analysis is None:
         return None, usage

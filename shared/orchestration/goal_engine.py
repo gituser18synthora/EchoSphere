@@ -219,13 +219,20 @@ class SummaryFieldSpec(BaseModel):
     options: list[str] = Field(default_factory=list)
     values: dict[str, str] = Field(default_factory=dict)
     allow_llm: bool = Field(default=True, alias="allowLlm")
+    # Optional analyst-only guidance/evidence. Defaults preserve existing bots.
+    extraction_instructions: str = Field(default="", alias="extractionInstructions", max_length=6000)
+    evidence_required: bool = Field(default=False, alias="evidenceRequired")
+    max_length: int = Field(default=120, alias="maxLength", ge=1, le=1000)
+    # Optional one-hop projection from another summary field (e.g. a status
+    # to Yes/No), using the existing values mapping. No extra LLM decision.
+    derived_from: str = Field(default="", alias="derivedFrom")
     # Consistency guard: this field is reported only when another field's
     # final value is one of the listed options, e.g. drop_location requires
     # handover_type in ["place"] and hand_over_to requires ["person"] — a
     # stale/analyst value can never contradict the decided handover type.
     requires: dict[str, list[str]] = Field(default_factory=dict)
 
-    @field_validator("name", "source", "timezone", mode="before")
+    @field_validator("name", "source", "timezone", "derived_from", mode="before")
     @classmethod
     def _clean_key(cls, v):
         return str(v or "").strip()[:64]

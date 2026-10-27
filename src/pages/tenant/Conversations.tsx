@@ -639,13 +639,20 @@ function AiSummarySection({ summary, loading }: {
                       {structuredLabels[key] || key.replace(/_/g, " ")}
                     </span>
                     {sourceLabel && <span className="t-micro" style={{ fontSize: 10.5 }}>from {sourceLabel}</span>}
+                    {summary.structuredFieldEvidence?.[key] && (
+                      <span className="t-micro" style={{ overflowWrap: "anywhere" }}>
+                        Customer: “{summary.structuredFieldEvidence[key]}”
+                      </span>
+                    )}
                   </span>
                   <span
                     role="cell"
                     className="row gap-6"
                     style={{
                       alignItems: "center",
-                      flexShrink: 0,
+                      flexShrink: 1,
+                      maxWidth: "65%",
+                      overflowWrap: "anywhere",
                       fontWeight: value == null ? 400 : 600,
                       fontStyle: value == null ? "italic" : "normal",
                       textTransform: value == null || isYes || isNo || structuredDisplay[key] ? "none" : "capitalize",

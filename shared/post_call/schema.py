@@ -206,6 +206,7 @@ class PostCallAnalysis(BaseModel):
     # analyst supplied each value.
     structured_fields: dict[str, str | None] = Field(default_factory=dict)
     structured_field_sources: dict[str, str] = Field(default_factory=dict)
+    structured_field_evidence: dict[str, str] = Field(default_factory=dict)
     next_best_action: NextBestAction = Field(default_factory=NextBestAction)
     follow_up_required: bool = True
     confidence: float = 0.0
@@ -261,8 +262,21 @@ class PostCallAnalysis(BaseModel):
             if value is None or isinstance(value, (dict, list)):
                 out[name] = None
             else:
-                out[name] = _clean_text(value, _MAX_SLOT_VALUE_CHARS) or None
+                # Individual field specs retain their own (default 120) limit
+                # at merge time; long addresses must survive parsing intact.
+                out[name] = _clean_text(value, 1000) or None
         return out
+
+    @field_validator("structured_field_evidence", mode="before")
+    @classmethod
+    def _clean_evidence(cls, v):
+        if not isinstance(v, dict):
+            return {}
+        return {
+            _clean_text(k, 64): _clean_text(value, 4000)
+            for k, value in list(v.items())[:32]
+            if _clean_text(k, 64) and isinstance(value, str) and value.strip()
+        }
 
     @field_validator("structured_field_sources", mode="before")
     @classmethod
@@ -359,6 +373,7 @@ def parse_analysis(raw: object) -> PostCallAnalysis | None:
         "collectedSlots": "collected_slots",
         "missingSlots": "missing_slots",
         "structuredFields": "structured_fields",
+        "structuredFieldEvidence": "structured_field_evidence",
         "nextBestAction": "next_best_action",
         "followUpRequired": "follow_up_required",
         "dominantLanguage": "dominant_language",

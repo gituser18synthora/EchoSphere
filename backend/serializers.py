@@ -780,7 +780,7 @@ def _ordered_structured_fields(
 
 
 def serialize_conversation_memory(m, summary_fields: list[dict] | None = None) -> dict:
-    """Post-call intelligence for one conversation (camelCase, PII-free).
+    """Post-call intelligence for one tenant-scoped conversation (camelCase).
 
     Mirrors src/types/domain.ts ConversationAiSummary. The structured memory
     JSON is already validated/bounded at persistence time. ``summary_fields``
@@ -815,6 +815,7 @@ def serialize_conversation_memory(m, summary_fields: list[dict] | None = None) -
         # keys, None where the call did not settle a field, plus provenance.
         "structuredFields": structured_fields,
         "structuredFieldSources": memory.get("structured_field_sources") or {},
+        "structuredFieldEvidence": memory.get("structured_field_evidence") or {},
         # Human-readable field names from the same configuration ({} when
         # the bot's fields carry no labels).
         "structuredFieldLabels": structured_labels,

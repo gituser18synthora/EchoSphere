@@ -653,6 +653,38 @@ describe("AI call summary display", () => {
     expect(within(section).getByText("not determined")).toBeInTheDocument();
   });
 
+  it("renders pickup, address and refund fields with supporting customer quotes", async () => {
+    const address = "Flat B_21, Lotus Apartments, Sector 62, Noida, Uttar Pradesh 201301";
+    vi.mocked(api.getConversation).mockResolvedValue({
+      ...DETAIL,
+      summary: {
+        ...SUMMARY,
+        structuredFields: {
+          already_picked_up: "Yes", address_update_status: "requested",
+          address_change_requested: "Yes", updated_address: address,
+          address_update_date: "2026-10-26", refund_status: "status_inquiry",
+          refund_requested: "Yes",
+        },
+        structuredFieldLabels: {
+          already_picked_up: "Device already collected", updated_address: "Updated address (customer provided)",
+          refund_status: "Refund status (customer reported)",
+        },
+        structuredFieldSources: { already_picked_up: "analysis", refund_status: "analysis" },
+        structuredFieldEvidence: { already_picked_up: "Pickup ho chuka hai.", refund_status: "Refund kab milega?" },
+        structuredFieldDisplay: { address_update_date: "26 Oct 2026", updated_address: address },
+      },
+    } as never);
+    const user = userEvent.setup();
+    const dialog = await openDrawer(user);
+    const section = await within(dialog).findByTestId("structured-summary");
+    expect(within(section).getByText("Device already collected")).toBeInTheDocument();
+    expect(within(section).getByText(address)).toBeInTheDocument();
+    expect(within(section).getByText("status inquiry")).toBeInTheDocument();
+    expect(within(section).getByText("Customer: “Pickup ho chuka hai.”")).toBeInTheDocument();
+    expect(within(section).getByText("Customer: “Refund kab milega?”")).toBeInTheDocument();
+    expect(within(section).getByText("26 Oct 2026")).toBeInTheDocument();
+  });
+
   it("shows normalized date/time fields in their display form, keeping the value on hover", async () => {
     vi.mocked(api.getConversation).mockResolvedValue({
       ...DETAIL,

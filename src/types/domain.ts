@@ -1845,6 +1845,8 @@ export interface ConversationAiSummary {
   missingSlots: string[];
   /** Bot-configured structured summary (goal policy summaryFields): stable keys, null = not determined. */
   structuredFields?: Record<string, string | null>;
+  /** Verbatim customer quotes supporting analyst-extracted fields. */
+  structuredFieldEvidence?: Record<string, string>;
   /** Per-field provenance: "workflow" (guided-flow answer) or "analysis" (post-call analyst). */
   structuredFieldSources?: Record<string, string>;
   /** Display labels from goal policy summaryFields; keys without one are shown humanised. */

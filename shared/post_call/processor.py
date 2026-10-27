@@ -33,7 +33,7 @@ from shared.post_call.analyzer import (
     fallback_analysis,
 )
 from shared.post_call.nba import decide_next_best_action
-from shared.post_call.structured import merge_structured_fields
+from shared.post_call.structured import customer_evidence, merge_structured_fields
 
 logger = logging.getLogger(__name__)
 
@@ -471,8 +471,18 @@ async def process_memory_row(row_id: str) -> bool:
             merge_structured_fields(
                 policy, final_state.get("workflow_slots") or {},
                 analysis.structured_fields,
+                evidence=analysis.structured_field_evidence,
+                turns=turns,
             )
         )
+        raw_evidence = {name.strip().lower(): quote for name, quote in analysis.structured_field_evidence.items()}
+        analysis.structured_field_evidence = {
+            spec.name: quote for spec in policy.summary_fields
+            if analysis.structured_field_sources.get(spec.name) == "analysis"
+            and (quote := customer_evidence(
+                raw_evidence.get((spec.derived_from or spec.name).lower()), turns
+            ))
+        }
 
         await asyncio.to_thread(
             _persist_result_sync,
