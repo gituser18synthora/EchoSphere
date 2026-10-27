@@ -30,6 +30,8 @@ from shared.post_call.schema import (
 )
 from shared.post_call.structured import (
     derive_structured_fields,
+    evidence_field_specs,
+    evidence_fields_prompt_block,
     summary_fields_prompt_block,
 )
 
@@ -39,8 +41,10 @@ _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 _MAX_TURN_CHARS = 300
 _MAX_TRANSCRIPT_TURNS = 60
 _MAX_TOKENS = 900
-_MAX_DETAIL_TURN_CHARS = 4000
-_MAX_DETAIL_OUTPUT_TOKENS = 2600
+# The focused evidence request reads EVERY turn, whole (a correction early in
+# a long call, a full address), and answers with a handful of keys.
+_EVIDENCE_TURN_CHARS = 4000
+_EVIDENCE_MAX_TOKENS = 800
 _DEFAULT_TIMEOUT_SECONDS = 25.0
 
 # Event kinds worth showing the analyst (verified facts and platform
@@ -81,19 +85,58 @@ def build_analysis_llm(config):
     ))
 
 
-def _transcript_block(turns: list[dict], *, detailed: bool = False) -> str:
+def _transcript_block(turns: list[dict], *, numbered: bool = False) -> str:
+    """The transcript as the analyst sees it.
+
+    Compact by default (the last 60 turns, 300 characters each — enough for
+    a narrative). ``numbered`` is the evidence request's form: every turn,
+    whole, prefixed ``[turn N]`` so the model can cite a customer turn by
+    number (N counts every recorded turn, spoken or not, so the citation maps
+    straight back onto ``turns``).
+    """
     lines: list[str] = []
-    # Opt-in extraction needs early corrections and full addresses. Keep the
-    # existing compact context for all other bots.
-    for index, turn in enumerate(turns if detailed else turns[-_MAX_TRANSCRIPT_TURNS:]):
+    for index, turn in enumerate(turns if numbered else turns[-_MAX_TRANSCRIPT_TURNS:]):
         role = "Customer" if turn.get("role") == "user" else "Bot"
         text = " ".join(str(turn.get("text") or "").split())[
-            :_MAX_DETAIL_TURN_CHARS if detailed else _MAX_TURN_CHARS
+            :_EVIDENCE_TURN_CHARS if numbered else _MAX_TURN_CHARS
         ]
         if text:
-            prefix = f"[turn {index + 1}] " if detailed else ""
+            prefix = f"[turn {index + 1}] " if numbered else ""
             lines.append(f"{prefix}{role}: {text}")
     return "\n".join(lines) or "(no spoken turns)"
+
+
+def _expand_turn_references(raw, turns: list[dict]) -> dict[str, str]:
+    """``{field: cited customer turn text}`` from the model's evidence map.
+
+    A turn number is expanded to that turn's text only when the turn is the
+    customer's (a bot citation is dropped, so the field fails closed); a
+    string is kept as a legacy verbatim quote for customer_evidence to check.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    expanded: dict[str, str] = {}
+    for name, value in raw.items():
+        if type(value) is int:
+            turn = turns[value - 1] if 1 <= value <= len(turns) else {}
+            if turn.get("role") == "user":
+                expanded[str(name)] = " ".join(str(turn.get("text") or "").split())[:_EVIDENCE_TURN_CHARS]
+        elif isinstance(value, str) and value.strip():
+            expanded[str(name)] = value
+    return expanded
+
+
+def _local_reference(policy: BotGoalPolicy, reference: datetime) -> datetime:
+    """The call moment in the configured locale when an evidence-backed date
+    field names a timezone — a delayed worker's UTC day would otherwise shift
+    'kal' by one; other bots keep the reference as given."""
+    local_date_spec = next((
+        spec for spec in policy.summary_fields
+        if spec.evidence_required and spec.type == "date" and spec.timezone
+    ), None)
+    if local_date_spec is None:
+        return reference
+    return reference.astimezone(resolve_zone(local_date_spec.timezone))
 
 
 def _fact_events_block(events: list[dict]) -> str:
@@ -134,35 +177,14 @@ def _policy_block(policy: BotGoalPolicy) -> str:
 
 
 def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
-    # Opt-in date extraction uses the configured call locale, not the UTC
-    # day of a delayed worker. Individual field references are also rendered.
-    local_date_spec = next((
-        spec for spec in policy.summary_fields
-        if spec.evidence_required and spec.type == "date" and spec.timezone
-    ), None)
-    if local_date_spec is not None:
-        reference = reference.astimezone(resolve_zone(local_date_spec.timezone))
+    reference = _local_reference(policy, reference)
     actions = ", ".join(allowed_next_actions(policy))
-    detailed = any(spec.evidence_required for spec in policy.summary_fields)
     weekday = reference.strftime("%A")
     structured_block = summary_fields_prompt_block(policy, reference=reference)
     structured_json = (
         '  "structured_fields": {<field name>: <allowed value or null>},\n'
         if structured_block else ""
     )
-    if detailed:
-        field_keys = ", ".join(
-            f'"{spec.name}": <allowed value or null>'
-            for spec in policy.summary_fields if spec.allow_llm and not spec.derived_from
-        )
-        structured_json = '  "structured_fields": {' + field_keys + '},\n'
-        evidence_keys = ", ".join(
-            f'"{spec.name}": <Customer turn number as integer, or null>'
-            for spec in policy.summary_fields if spec.evidence_required and spec.allow_llm
-        )
-        structured_json += (
-            '  "structured_field_evidence": {' + evidence_keys + '},\n'
-        )
     return (
         "You are the POST-CALL analyst for a phone voice agent. The call has "
         "ended. From the transcript and the recorded platform facts, produce "
@@ -171,7 +193,7 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "Hindi, English or mixed Hinglish.\n\n"
         "# The bot whose call you are analyzing\n"
         + _policy_block(policy)
-        + (("\n\n" + structured_block) if structured_block and not detailed else "")
+        + (("\n\n" + structured_block) if structured_block else "")
         + f"\n\n# Time reference\nThe call happened on {reference.date().isoformat()} "
         f"({weekday}). Resolve every relative date the customer used "
         "(tomorrow, Monday, कल, परसों, अगले हफ़्ते…) to an ABSOLUTE ISO date "
@@ -216,25 +238,55 @@ def _build_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
         "is a claim, not a verified fact — unless the platform facts below "
         "show a successful backend verification, keep verification in "
         "unresolved_items and never report the claim as completed.\n"
-        + (
-            "- For configured structured_fields, clear customer-reported claims "
-            "MUST still be extracted as the field's rules define, with customer evidence. "
-            "They report what the customer said, not backend verification. "
-            "This caveat must not turn a clear customer statement into null. "
-            "Emit EVERY listed structured_fields key, including nulls. Every "
-            "non-null evidenceRequired field MUST have its OWN source Customer "
-            "turn number in structured_field_evidence; repeat the number under "
-            "multiple keys when one customer turn supports several fields. "
-            "Never cite a Bot turn.\n"
-            if detailed else ""
-        )
-        + "- Commitments: capture amount/date exactly as spoken; resolve the "
+        "- Commitments: capture amount/date exactly as spoken; resolve the "
         "date to ISO using the time reference; status is always 'promised' "
         "for new commitments.\n"
         "- Choose next_best_action ONLY from the allowed list.\n"
         "- No sensitive values: never include OTPs, card numbers, or full "
         "account numbers anywhere in the output."
-        + (("\n\n" + structured_block) if detailed else "")
+    )
+
+
+def _build_evidence_system(policy: BotGoalPolicy, *, reference: datetime) -> str:
+    """The focused evidence request: customer-reported facts only.
+
+    One short prompt per call, separate from the narrative analysis — the
+    fields' rules are the bulk of it and the model's whole job is to read
+    every customer turn and classify, which the narrative request (summary,
+    commitments, next action, slots) demonstrably crowds out: in-flow remarks
+    ("mera refund kab milega?" while the bot asked for a visit date) came back
+    null from the combined prompt and settled from this one.
+    """
+    reference = _local_reference(policy, reference)
+    specs = evidence_field_specs(policy)
+    keys = ", ".join(f'"{spec.name}": <allowed value or null>' for spec in specs)
+    cites = ", ".join(f'"{spec.name}": <Customer turn number as integer, or null>' for spec in specs)
+    return (
+        "You extract CUSTOMER-REPORTED facts from the transcript of a finished phone "
+        "call handled by a voice agent. The customer may speak Hindi, English or mixed "
+        "Hinglish. Only what the customer actually said counts; the bot's questions, "
+        "readbacks, promises or refusals never establish a fact.\n\n"
+        f"# The call\n- Agent role: {policy.role or 'voice assistant'}"
+        + (f"\n- Domain: {policy.domain}" if policy.domain else "")
+        + f"\n\n# Time reference\nThe call happened on {reference.date().isoformat()} "
+        f"({reference.strftime('%A')}). Resolve a relative day from this date AND the tense of "
+        "its clause: 'kal'/'कल' is the day before with a past-tense verb (kiya tha, diya tha, ho "
+        "gaya) and the day after with a future one (karna, karunga, aayenge); 'parso'/'परसों' "
+        "likewise two days away.\n\n"
+        "# Method\n"
+        "1. Read EVERY Customer turn in order. A fact mentioned in passing — while the "
+        "bot was asking about something else, or that the bot ignored or deflected — "
+        "still counts.\n"
+        "2. For each field, find the Customer turn(s) that speak to it and apply the "
+        "field's rules; a later clear correction wins.\n"
+        "3. A field with no supporting Customer turn is null. Never guess, never infer "
+        "from a booking or a bot line.\n\n"
+        "# Output — ONLY this JSON object, no prose, no fences\n"
+        "{\n"
+        f'  "structured_fields": {{{keys}}},\n'
+        f'  "structured_field_evidence": {{{cites}}}\n'
+        "}\n\n"
+        + evidence_fields_prompt_block(policy, reference=reference)
     )
 
 
@@ -255,9 +307,8 @@ async def analyze_call(
         if value not in (None, "", [], {})
     ]
     facts = _fact_events_block(events or [])
-    detailed = any(spec.evidence_required for spec in policy.summary_fields)
     user = (
-        "# Transcript\n" + _transcript_block(turns, detailed=detailed)
+        "# Transcript\n" + _transcript_block(turns)
         + "\n\n# Platform facts recorded during the call (authoritative)\n"
         + ("\n".join(state_lines) or "- (none)")
         + (("\n" + facts) if facts else "")
@@ -269,7 +320,7 @@ async def analyze_call(
                 [{"role": "user", "content": user}],
                 system=_build_system(policy, reference=reference),
                 temperature=0.0,
-                max_tokens=_MAX_DETAIL_OUTPUT_TOKENS if detailed else _MAX_TOKENS,
+                max_tokens=_MAX_TOKENS,
             ),
             timeout=timeout_seconds,
         )
@@ -290,25 +341,80 @@ async def analyze_call(
     except ValueError:
         logger.warning("post-call analysis returned invalid JSON: %r", raw[:120])
         return None, usage
-    # Turn references avoid asking the model to reproduce/translate quotes.
-    # Expand only genuine customer references; persistence keeps transcript
-    # text, not model-written evidence. Legacy quote output remains supported.
-    raw_evidence = parsed.get("structured_field_evidence", parsed.get("structuredFieldEvidence")) if isinstance(parsed, dict) else None
-    if isinstance(raw_evidence, dict):
-        expanded = {}
-        for name, value in raw_evidence.items():
-            if type(value) is int:
-                turn = turns[value - 1] if 1 <= value <= len(turns) else {}
-                if turn.get("role") == "user":
-                    expanded[name] = " ".join(str(turn.get("text") or "").split())[:_MAX_DETAIL_TURN_CHARS]
-            elif isinstance(value, str):
-                expanded[name] = value
-        parsed["structured_field_evidence"] = expanded
     analysis = parse_analysis(parsed)
     if analysis is None:
         return None, usage
     analysis.resolve_dates(reference=reference)
     return analysis, usage
+
+
+async def extract_evidence_fields(
+    llm,
+    *,
+    policy: BotGoalPolicy,
+    turns: list[dict],
+    reference: datetime,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[dict[str, str | None] | None, dict[str, str] | None, tuple[int, int]]:
+    """The focused request for the evidence-required fields.
+
+    Returns ``(proposed, evidence, usage)``: one proposed value per evidence
+    field (None = unsettled) and the cited customer turn's text per field,
+    both still to be validated by merge_structured_fields (vocabulary,
+    attribution, topic clause). ``(None, None, usage)`` when the model failed
+    or answered without JSON — the caller decides whether to retry. A policy
+    without evidence fields costs nothing: ``({}, {}, (0, 0))``.
+    """
+    specs = evidence_field_specs(policy)
+    if not specs:
+        return {}, {}, (0, 0)
+    user = (
+        "# Transcript\n" + _transcript_block(turns, numbered=True)
+        + "\n\nProduce the JSON object now."
+    )
+    try:
+        result = await asyncio.wait_for(
+            llm.generate(
+                [{"role": "user", "content": user}],
+                system=_build_evidence_system(policy, reference=reference),
+                temperature=0.0,
+                max_tokens=_EVIDENCE_MAX_TOKENS,
+            ),
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 — the processor retries/falls back
+        logger.warning("post-call evidence extraction LLM failed: %s", exc)
+        return None, None, (0, 0)
+    usage = (
+        int(getattr(result, "input_tokens", 0) or 0),
+        int(getattr(result, "output_tokens", 0) or 0),
+    )
+    raw = (getattr(result, "text", "") or "").strip()
+    match = _JSON_BLOCK.search(raw)
+    if match is None:
+        logger.warning("post-call evidence extraction returned no JSON: %r", raw[:120])
+        return None, None, usage
+    try:
+        parsed = json.loads(match.group(0))
+    except ValueError:
+        logger.warning("post-call evidence extraction returned invalid JSON: %r", raw[:120])
+        return None, None, usage
+    if not isinstance(parsed, dict):
+        return None, None, usage
+    fields_raw = parsed.get("structured_fields", parsed.get("structuredFields"))
+    fields_raw = fields_raw if isinstance(fields_raw, dict) else {}
+    lowered = {str(key).strip().lower(): value for key, value in fields_raw.items()}
+    proposed: dict[str, str | None] = {}
+    for spec in specs:
+        value = lowered.get(spec.name.lower())
+        if value is None or isinstance(value, (dict, list, bool)):
+            proposed[spec.name] = None
+        else:
+            proposed[spec.name] = " ".join(str(value).split())[:1000] or None
+    evidence = _expand_turn_references(
+        parsed.get("structured_field_evidence", parsed.get("structuredFieldEvidence")), turns,
+    )
+    return proposed, evidence, usage
 
 
 def fallback_analysis(
@@ -361,6 +467,7 @@ def fallback_analysis(
 __all__ = [
     "analyze_call",
     "build_analysis_llm",
+    "extract_evidence_fields",
     "fallback_analysis",
     "NextBestAction",
 ]

@@ -226,6 +226,13 @@ class SummaryFieldSpec(BaseModel):
     # Optional one-hop projection from another summary field (e.g. a status
     # to Yes/No), using the existing values mapping. No extra LLM decision.
     derived_from: str = Field(default="", alias="derivedFrom")
+    # Deterministic guard for an evidence-required analyst field: the value
+    # is kept only when the cited customer turn mentions one of these words
+    # (a "No" cited on a turn about something else is dropped) and, for a
+    # ``date`` field, only when a clause of that turn carries a topic word
+    # together with the date expression — so a date the caller gave for
+    # another event (the pickup day, a callback) is never attached here.
+    topic_words: list[str] = Field(default_factory=list, alias="topicWords")
     # Consistency guard: this field is reported only when another field's
     # final value is one of the listed options, e.g. drop_location requires
     # handover_type in ["place"] and hand_over_to requires ["person"] — a
@@ -259,6 +266,18 @@ class SummaryFieldSpec(BaseModel):
             if text and text not in out:
                 out.append(text)
         return out[:24]
+
+    @field_validator("topic_words", mode="before")
+    @classmethod
+    def _clean_topic_words(cls, v):
+        if not isinstance(v, (list, tuple)):
+            return []
+        out: list[str] = []
+        for item in v:
+            text = " ".join(str(item or "").split()).lower()[:40]
+            if text and text not in out:
+                out.append(text)
+        return out[:40]
 
     @field_validator("values", mode="before")
     @classmethod

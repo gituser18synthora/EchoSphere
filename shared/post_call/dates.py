@@ -56,6 +56,19 @@ _DAY_MONTH_RE = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-zऀ-ॿ]+)|"
     r"\b([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\b"
 )
+_DAY_THEN_MONTH_RE = re.compile(r"\b\d{1,2}(?:st|nd|rd|th)?\s+([A-Za-zऀ-ॿ]+)")
+_MONTH_THEN_DAY_RE = re.compile(r"\b([A-Za-z]+)\s+\d{1,2}(?:st|nd|rd|th)?\b")
+# Date words resolve_relative_date does not resolve (it is forward-looking)
+# but that still name a date: past-looking words, "DD tarikh", numeric dates.
+# Devanagari words carry their own boundaries (\b does not know the script).
+_DATE_MENTION_RE = re.compile(
+    r"\b(?:yesterday|last\s+week|this\s+week|pichh?le\s+(?:hafte|saptah)|is\s+hafte|"
+    r"\d{1,2}\s*(?:tarikh|tareekh|taarikh))\b|"
+    r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
+    r"(?<![\u0900-\u097f])(?:कल|परसों|आज|पिछले\s*(?:हफ़्ते|हफ्ते|सप्ताह)|इस\s*(?:हफ़्ते|हफ्ते|सप्ताह)|"
+    r"\d{1,2}\s*(?:तारीख़|तारीख|तारिख))(?![\u0900-\u097f])",
+    re.I,
+)
 
 
 def _month_number(word: str) -> int | None:
@@ -133,3 +146,75 @@ def resolve_relative_date(
                     return None
             return resolved
     return None
+
+
+
+# Tense markers that disambiguate "kal"/"कल" (yesterday or tomorrow) and
+# "parso"/"परसों" (two days either way) inside one clause.
+_PAST_TENSE_RE = re.compile(
+    r"\b(?:tha|thi|the|diya|diye|di|kiya|kiye|ki|gaya|gaye|gayi|hua|hui|hue|chuka|chuki|chuke|liya|"
+    r"updated|changed|did|was|were|had|already|yesterday)\b"
+    r"|(?<![\u0900-\u097f])(?:था|थी|थे|दिया|दिये|दी|किया|किये|की|गया|गये|गई|हुआ|हुई|हुए|चुका|चुकी|चुके|लिया)(?![\u0900-\u097f])",
+    re.I,
+)
+_FUTURE_TENSE_RE = re.compile(
+    r"\b(?:karna|karunga|karungi|karenge|karega|karegi|kar\s+do|kar\s+dena|kar\s+dijiye|karo|kijiye|"
+    r"dena|dunga|denge|hoga|hogi|will|shall|going\s+to|tomorrow)\b"
+    r"|(?<![\u0900-\u097f])(?:करना|करूँगा|करूंगा|करेंगे|करेगा|कर\s*दो|कर\s*देना|कर\s*दीजिए|करो|कीजिए|देना|दूँगा|दूंगा|देंगे|होगा|होगी)(?![\u0900-\u097f])",
+    re.I,
+)
+_RELATIVE_DAY_RE = re.compile(
+    r"\b(?:tomorrow|yesterday|kal|parso|parson)\b|(?<![\u0900-\u097f])(?:कल|परसों)(?![\u0900-\u097f])", re.I,
+)
+
+
+def relative_day_offset(text: str | None) -> int | None:
+    """Days from the reference day that a clause's relative day word means.
+
+    "tomorrow" → +1, "yesterday" → −1; "kal"/"कल" → +1 with a future-tense
+    clause ("kal update karna"), −1 with a past-tense one ("kal update kar
+    diya tha"); "parso"/"परसों" likewise ±2. None when the clause has no such
+    word, or its tense is missing or mixed — the caller then cannot check.
+    """
+    if not text:
+        return None
+    s = " ".join(str(text).split())
+    match = _RELATIVE_DAY_RE.search(s)
+    if match is None:
+        return None
+    word = match.group(0).lower()
+    if word == "tomorrow":
+        return 1
+    if word == "yesterday":
+        return -1
+    magnitude = 2 if word in ("parso", "parson", "परसों") else 1
+    past, future = bool(_PAST_TENSE_RE.search(s)), bool(_FUTURE_TENSE_RE.search(s))
+    if past == future:
+        return None
+    return -magnitude if past else magnitude
+
+
+def contains_date_expression(text: str | None) -> bool:
+    """Whether the text names a date at all: everything resolve_relative_date
+    understands (today/tomorrow words, weekdays, next week, month end, "in N
+    days", ISO, day + month) plus past-looking words (yesterday, last week,
+    पिछले हफ्ते), "DD tarikh" and numeric dates. Used to check that a date the
+    analyst attached to a field was actually said in the clause it cites."""
+    if not text:
+        return False
+    s = " ".join(str(text).split())
+    if (
+        _ISO_DATE_RE.search(s) or _NEXT_WEEK_RE.search(s) or _MONTH_END_RE.search(s)
+        or _IN_N_DAYS_RE.search(s) or _DATE_MENTION_RE.search(s)
+    ):
+        return True
+    tokens = set(re.findall(r"[a-zऀ-ॿ']+", s.lower()))
+    if tokens & (_TODAY_WORDS | _TOMORROW_WORDS | _DAY_AFTER_WORDS) or tokens & set(_WEEKDAYS):
+        return True
+    # Day + month in either order, scanned separately: the combined pattern's
+    # leftmost match ("address 25") would hide a later "25 October".
+    return any(
+        _month_number(match.group(1))
+        for pattern in (_DAY_THEN_MONTH_RE, _MONTH_THEN_DAY_RE)
+        for match in pattern.finditer(s)
+    )

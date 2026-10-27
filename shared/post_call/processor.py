@@ -30,10 +30,15 @@ from shared.orchestration.goal_engine import compile_goal_policy
 from shared.post_call.analyzer import (
     analyze_call,
     build_analysis_llm,
+    extract_evidence_fields,
     fallback_analysis,
 )
 from shared.post_call.nba import decide_next_best_action
-from shared.post_call.structured import customer_evidence, merge_structured_fields
+from shared.post_call.structured import (
+    customer_evidence,
+    evidence_field_specs,
+    merge_structured_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +272,7 @@ def _persist_result_sync(
     error: str | None,
     usage: tuple[int, int] | None,
     engine_conf: dict | None,
+    requests: int = 1,
 ) -> None:
     """Write the analysis onto the row + conversation, one transaction.
 
@@ -314,7 +320,7 @@ def _persist_result_sync(
                     provider_code=engine_conf.get("provider") or "openai",
                     model_code=engine_conf.get("model") or "",
                     request_id=f"{row.session_id}:llm:postcall",
-                    requests=1,
+                    requests=requests,
                     input_tokens=usage[0],
                     output_tokens=usage[1],
                     usage_source="provider",
@@ -431,6 +437,7 @@ async def process_memory_row(row_id: str) -> bool:
                 pass
 
         llm = build_analysis_llm(config)
+        timeout_seconds = get_settings().post_call_llm_timeout_seconds
         analysis, usage = await analyze_call(
             llm,
             policy=policy,
@@ -443,10 +450,27 @@ async def process_memory_row(row_id: str) -> bool:
                             "call_state")
             },
             reference=reference,
-            timeout_seconds=get_settings().post_call_llm_timeout_seconds,
+            timeout_seconds=timeout_seconds,
         )
         if analysis is None:
             raise RuntimeError("analysis_unavailable")
+        llm_requests = 1
+        if evidence_field_specs(policy):
+            # Evidence-required fields come from their own focused request
+            # (customer-reported facts with a cited customer turn); a failed
+            # request is retried like the analysis itself rather than
+            # silently persisting "not determined" for every such field.
+            proposed, evidence, extra_usage = await extract_evidence_fields(
+                llm, policy=policy, turns=turns, reference=reference,
+                timeout_seconds=timeout_seconds,
+            )
+            llm_requests += 1
+            if usage is not None:
+                usage = (usage[0] + extra_usage[0], usage[1] + extra_usage[1])
+            if proposed is None:
+                raise RuntimeError("evidence_extraction_unavailable")
+            analysis.structured_fields = {**analysis.structured_fields, **proposed}
+            analysis.structured_field_evidence = evidence or {}
 
         # Deterministic reconciliation: recorded platform state outranks the
         # model's proposal, and unknown actions never persist.
@@ -473,6 +497,7 @@ async def process_memory_row(row_id: str) -> bool:
                 analysis.structured_fields,
                 evidence=analysis.structured_field_evidence,
                 turns=turns,
+                reference=reference,
             )
         )
         raw_evidence = {name.strip().lower(): quote for name, quote in analysis.structured_field_evidence.items()}
@@ -492,6 +517,7 @@ async def process_memory_row(row_id: str) -> bool:
             error=None,
             usage=usage,
             engine_conf=_analysis_engine_conf(config),
+            requests=llm_requests,
         )
         logger.info(
             "post_call_completed %s",
