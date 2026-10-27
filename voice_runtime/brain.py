@@ -99,6 +99,12 @@ from shared.guardrails import (
 from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
 from shared.orchestration.delivery import delivery_instructions
+from shared.orchestration.deterministic_answers import (
+    SIGNAL_NO as DETERMINISTIC_NO,
+    SIGNAL_YES as DETERMINISTIC_YES,
+    DeterministicAnswer,
+    resolve_short_answer,
+)
 from shared.orchestration.phrases import canned
 from shared.orchestration.placeholders import (
     StreamingPlaceholderFilter,
@@ -918,6 +924,12 @@ class ConversationBrain(FrameProcessor):
                 "orchestration_max_tokens", GOAL_ENGINE_DEFAULT_MAX_TOKENS
             ),
         )
+        # Short answers to a paused workflow question ("हाँ", "नहीं", "पहला",
+        # "कल") resolved without the decision LLM (llm_settings.
+        # deterministic_answers, default off; never on a collections bot).
+        self._deterministic_answers = (
+            llm_settings_early.get("deterministic_answers") is True
+        )
         # Guarded goal state for bots WITHOUT a dedicated domain policy —
         # identity, required slots and scope counters move only through
         # validated decisions (the collections policy keeps its own machine).
@@ -1011,6 +1023,10 @@ class ConversationBrain(FrameProcessor):
         # rewound turn restores both.
         self._pending_ask_shape: dict | None = None
         self._open_turn_pending_ask_shape: dict | None = None
+        # Signals the edges of the paused workflow INTENT hub carry (engine
+        # ``awaitingSignals``); None while the flow waits elsewhere.
+        self._pending_hub_signals: frozenset[str] | None = None
+        self._open_turn_pending_hub_signals: frozenset[str] | None = None
         self._last_bot_reply: str = ""
         self._conversation_language: str = config.language
         # Language continuity: the previous call's dominant customer language
@@ -3306,7 +3322,10 @@ class ConversationBrain(FrameProcessor):
             # active workflow (see _handle_turn) — no Goal Engine request is
             # spent on it, per fragment or at dispatch.
             return
-        if self._deterministic_fast_path(text) is not None:
+        if (
+            self._deterministic_fast_path(text) is not None
+            or self._deterministic_answer(text) is not None
+        ):
             # This utterance resolves without a decision call; speculating
             # would only spend tokens the dispatched turn will never consume.
             return
@@ -3576,6 +3595,7 @@ class ConversationBrain(FrameProcessor):
                 self._active_workflow = previous_active
                 self._pending_workflow_question = self._open_turn_pending_question
                 self._pending_ask_shape = self._open_turn_pending_ask_shape
+                self._pending_hub_signals = self._open_turn_pending_hub_signals
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
             return
@@ -5271,7 +5291,24 @@ class ConversationBrain(FrameProcessor):
                 # turns return None here and are judged by the Goal Engine as
                 # before.
                 fast_path = self._deterministic_fast_path(text, decision)
-            if fast_path is not None:
+            if fast_path is None and (
+                answer := self._deterministic_answer(text, decision)
+            ) is not None:
+                # The paused workflow question resolves this short reply
+                # deterministically (deterministic_answers): the workflow takes
+                # its edge / fills its slot without the decision LLM.
+                fast_path = "deterministic_answer"
+                self._discard_decision_prefetch("deterministic_answer")
+                self._recorder.add_event(
+                    "decision_skipped_deterministic",
+                    resolver=answer.resolver, ask_kind=answer.kind,
+                    signal=answer.signal,
+                    # Yes/no and option labels only — never a spoken number,
+                    # day or time.
+                    value=answer.value if answer.kind in ("yes_no", "choice") else None,
+                )
+                orchestrated = self._deterministic_answer_decision(answer)
+            elif fast_path is not None:
                 if fast_path != "identifier_capture":
                     self._discard_decision_prefetch("deterministic_fast_path")
                     self._recorder.add_event(
@@ -6036,6 +6073,64 @@ class ConversationBrain(FrameProcessor):
         ):
             return "identity_confirmed"
         return None
+
+    def _deterministic_answer(
+        self, text: str, route: RouteDecision | None = None
+    ) -> DeterministicAnswer | None:
+        """A short reply the paused workflow question resolves without the
+        decision LLM (``deterministic_answers``), or None.
+
+        Only inside an active workflow: outside one the decision also names
+        the configured intent that routes the turn, and the opening question
+        is the call's identity/consent gate. The workflow question is the
+        engine's ask (yes_no | choice | number | date | time) or an intent hub
+        whose edges carry affirm/refusal — read as a yes/no question whose
+        answer must have its edge. Collections bots never take this path.
+        ``route`` is the router's decision (None while prefetching).
+        """
+        if (
+            not self._deterministic_answers
+            or self._policy is not None
+            or (
+                self._runtime_context is not None
+                and self._runtime_context.domain_policy == "collections"
+            )
+            or self._active_workflow is None
+            or self._identifier_capture is not None
+            or (route is not None and route.kind != RouteKind.WORKFLOW)
+            or self._identity.pending(self._last_bot_reply)
+        ):
+            return None
+        pending = self._pending_ask()
+        hub = self._pending_hub_signals if self._pending_ask_shape is None else None
+        kind = pending.kind
+        if hub is not None:
+            kind = "yes_no" if hub & {DETERMINISTIC_YES, DETERMINISTIC_NO} else "none"
+        answer = resolve_short_answer(
+            text, kind, options=pending.options, question=pending.question,
+        )
+        if answer is None:
+            return None
+        if hub is not None:
+            wanted = (
+                {DETERMINISTIC_YES, "payment_intent"}
+                if answer.signal == DETERMINISTIC_YES else {DETERMINISTIC_NO}
+            )
+            if not hub & wanted:
+                return None
+        return answer
+
+    def _deterministic_answer_decision(
+        self, answer: DeterministicAnswer
+    ) -> ConversationDecision:
+        """The decision a deterministic short answer stands in for: the
+        workflow continues on the answer's signal (yes/no) or reads the value
+        from the words itself (choice / number / date / time)."""
+        return ConversationDecision(
+            intent=None, signal=answer.signal, decision=None,
+            confidence=1.0, reason=f"deterministic answer: {answer.resolver}",
+            next_action="continue_workflow", source="deterministic",
+        )
 
     def _identity_reply_note(self) -> str:
         """Reply-generation note for the identity question: confirmed on this
@@ -6809,6 +6904,7 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_workflow = (workflow_name, self._active_workflow, text)
         self._open_turn_pending_question = self._pending_workflow_question
         self._open_turn_pending_ask_shape = self._pending_ask_shape
+        self._open_turn_pending_hub_signals = self._pending_hub_signals
         result = await self._workflows.handle_turn_detailed(
             signal=signal or decision.signal,
             session_id=self._recorder.session_id,
@@ -6874,6 +6970,11 @@ class ConversationBrain(FrameProcessor):
         shape = result.get("awaitingAsk")
         self._pending_ask_shape = (
             dict(shape) if isinstance(shape, dict) and not result["done"] else None
+        )
+        hub_signals = result.get("awaitingSignals")
+        self._pending_hub_signals = (
+            frozenset(str(s) for s in hub_signals)
+            if isinstance(hub_signals, list) and not result["done"] else None
         )
         self._workflow_ever_routed = True
         self._sync_identifier_capture(workflow_name, result)

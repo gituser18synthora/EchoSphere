@@ -271,6 +271,22 @@ def _awaiting_ask_shape(node: dict | None) -> dict | None:
     return ask_answer_shape(node, variable)
 
 
+def _awaiting_edge_signals(definition: dict | None, node: dict | None) -> list[str] | None:
+    """``awaitingSignals`` for the result payload: the semantic signals the
+    outgoing edges of the paused INTENT hub carry (sorted), None when the
+    flow waits elsewhere. The brain reads a hub with an affirm and a refusal
+    edge as a yes/no question for its deterministic short answers."""
+    if not isinstance(node, dict) or node.get("kind") != "intent":
+        return None
+    node_id = str(node.get("id"))
+    ids = {str(n.get("id")) for n in (definition or {}).get("nodes") or []}
+    edges = [
+        e for e in (definition or {}).get("edges") or []
+        if str(e.get("from") or "") == node_id and str(e.get("to") or "") in ids
+    ]
+    return sorted({s for _edge, _tokens, signals in _edge_meta(edges) for s in signals})
+
+
 def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
     config = _node_config(node)
     for key in keys:
@@ -1871,6 +1887,7 @@ class WorkflowEngine:
                 "awaitingIdentifier": previous.get("awaiting_identifier"),
                 "awaitingKind": pending.get("kind"), "signal": signal,
                 "awaitingAsk": _awaiting_ask_shape(pending),
+                "awaitingSignals": _awaiting_edge_signals(definition, pending),
                 "spokenNodes": [],
             }
         invocation = {
@@ -1987,6 +2004,8 @@ class WorkflowEngine:
             # Expected answer of a paused ask ({kind, options}) — the brain's
             # PendingAsk for its reply prompt, router and Goal Engine state.
             "awaitingAsk": _awaiting_ask_shape(awaiting_node),
+            # Signals the paused intent hub's edges carry (None elsewhere).
+            "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
             # A node spoken this turn that declares ``coversKnowledgeQuestion``
             # (the flow's own document explanation): the runtime must not add a
             # separate KB answer for the same question in the same turn.
