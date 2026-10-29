@@ -156,124 +156,10 @@
   }
  },
  {
-  "id": "address_complete",
-  "customer": "Address change kar do: Flat 21, Lotus Apartments, Sector 62, Noida, UP 201301.",
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "Flat 21, Lotus Apartments, Sector 62, Noida, UP 201301"
-  }
- },
- {
-  "id": "address_partial",
-  "customer": "Purana address galat hai, ab Sector 14 hai, baaki details abhi nahi hain.",
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "Sector 14"
-  }
- },
- {
-  "id": "address_request_no_address",
-  "customer": "मेरा पता बदलना है। नया पता अभी नहीं बता सकता।",
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes"
-  }
- },
- {
-  "id": "address_incorrect",
-  "customer": "Purana address galat hai.",
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes"
-  }
- },
- {
-  "id": "address_already_updated",
-  "customer": "Address already updated hai.",
-  "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No"
-  }
- },
- {
-  "id": "address_completed_yesterday",
-  "customer": "मैंने कल पता अपडेट कर दिया था, नया पता 14 MG Road, Pune है।",
-  "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No",
-   "updated_address": "14 MG Road, Pune",
-   "address_update_date": "2026-10-26"
-  }
- },
- {
-  "id": "address_future_tomorrow",
-  "customer": "Kal address update karna: 12 Park Road, Delhi.",
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "12 Park Road, Delhi",
-   "address_update_date": "2026-10-28"
-  }
- },
- {
-  "id": "address_explicit_date",
-  "customer": "Address 25 October 2026 ko update kiya tha.",
-  "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No",
-   "address_update_date": "2026-10-25"
-  }
- },
- {
   "id": "address_pickup_date_unrelated",
   "customer": "Address badal do, naya pata baad mein bataunga. Pickup kal karna.",
   "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
    "already_picked_up": null
-  }
- },
- {
-  "id": "address_unknown_date",
-  "customer": "Kab update kiya yaad nahi, lekin address already update ho chuka hai.",
-  "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No"
-  }
- },
- {
-  "id": "address_bot_promised",
-  "turns": [
-   {
-    "role": "user",
-    "text": "Address change kar do."
-   },
-   {
-    "role": "bot",
-    "text": "I will update it today."
-   }
-  ],
-  "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes"
-  }
- },
- {
-  "id": "address_retracted",
-  "customer": "Address badal do—nahi, rehne do, purana hi sahi hai.",
-  "expected": {
-   "address_update_status": "not_requested",
-   "address_change_requested": "No"
-  }
- },
- {
-  "id": "address_confirmed_current",
-  "customer": "Registered address bilkul sahi hai, change nahi chahiye.",
-  "expected": {
-   "address_update_status": "not_requested",
-   "address_change_requested": "No"
   }
  },
  {
@@ -423,8 +309,6 @@
   "customer": "Device already collected. Address already updated hai. I want my money back.",
   "expected": {
    "already_picked_up": "Yes",
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No",
    "refund_status": "requested",
    "refund_requested": "Yes"
   }
@@ -433,15 +317,5 @@
   "id": "no_mentions",
   "customer": "अभी busy हूँ, बाद में बात करेंगे।",
   "expected": {}
- },
- {
-  "id": "address_local_midnight",
-  "reference": "2026-10-26T20:30:00+00:00",
-  "customer": "Kal address update kar diya tha.",
-  "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No",
-   "address_update_date": "2026-10-26"
-  }
  }
 ]

@@ -11,19 +11,21 @@ Two fixture sets: tests/fixtures/jeeves_summary_intents.json (one or two
 customer lines per case) and tests/fixtures/jeeves_summary_calls.json (whole
 simulated Jeeves calls — the bot's real v21 flow with the customer's remark
 made in passing, plus the final workflow slots — where the combined
-narrative prompt used to miss in-flow statements and invent dates).
+narrative prompt used to miss in-flow statements and invent dates; and the
+recorded cv_21df0c56facf with the slots the fixed flow writes).
 """
 
 import asyncio
 import json
 import os
+import runpy
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from jeeves.summary_intents import BOT_ID, INTENT_SUMMARY_FIELDS, enhance_summary_fields
+from jeeves.summary_intents import BOT_ID, INTENT_SUMMARY_FIELDS
 from shared.orchestration.goal_engine import compile_goal_policy
 from shared.post_call.analyzer import build_analysis_llm, extract_evidence_fields
 from shared.post_call.structured import merge_structured_fields
@@ -41,8 +43,12 @@ async def _policy_and_config():
     assert get_settings().mysql_host in {"127.0.0.1", "localhost"}, "Evaluation requires local bot configuration"
     config = await resolve_bot_config(BOT_ID, require_published=False)
     assert config.bot_id == BOT_ID
+    # The same field list jeeves/setup/03_summary_intents.py --apply writes
+    # (01's slot fields refreshed + the analyst fields, retired ones dropped),
+    # so the evaluation matches the deployed configuration even before apply.
+    setup_03 = runpy.run_path(str(Path(__file__).parents[2] / "jeeves/setup/03_summary_intents.py"), run_name="jeeves_setup_03")
     policy = compile_goal_policy(
-        {**config.goal_policy, "summaryFields": enhance_summary_fields(config.goal_policy.get("summaryFields", []))},
+        {**config.goal_policy, "summaryFields": setup_03["target_summary_fields"](config.goal_policy.get("summaryFields", []))},
         bot_name=config.bot_name, system_prompt=config.system_prompt, intents=config.intents,
     )
     return policy, config
@@ -62,7 +68,7 @@ async def _evaluate(case, *, policy, config, turns, slots, reference, details):
     fields, _ = merge_structured_fields(policy, slots, proposed, evidence=evidence, turns=turns, reference=reference)
     details[case["id"]] = {"fields": fields, "raw": proposed, "evidence": evidence}
     expected = {f["name"]: None for f in INTENT_SUMMARY_FIELDS}
-    expected.update(case["expected"])
+    expected.update(case["expected"])          # includes the flow-derived address fields where given
     errors = []
     for name, value in expected.items():
         actual = fields[name]

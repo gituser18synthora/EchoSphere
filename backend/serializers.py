@@ -757,8 +757,10 @@ def _ordered_structured_fields(
     The memory row is a MySQL JSON column, which normalises object keys (by
     length, then alphabetically) — so the stored order is meaningless and the
     review page showed "call cx" before "reach customer location". The bot's
-    goal_policy.summaryFields list is the authoritative order; fields the
-    config no longer declares keep their values and follow at the end.
+    goal_policy.summaryFields list is the authoritative order; a field the
+    config no longer declares keeps its value and follows at the end when it
+    HAS one — a retired field that was never determined is left out, so a
+    configuration change does not add "not determined" rows to older calls.
     """
     stored = memory.get("structured_fields") or {}
     labels: dict[str, str] = {}
@@ -775,7 +777,8 @@ def _ordered_structured_fields(
         if label and name in stored:
             labels[name] = label
     for name, value in stored.items():
-        ordered.setdefault(name, value)
+        if value is not None:
+            ordered.setdefault(name, value)
     return ordered, labels
 
 

@@ -46,8 +46,19 @@ def test_fields_dropped_from_config_keep_their_values_at_the_end():
         {"structured_fields": STORED}, SPECS[:2]
     )
     assert list(fields)[:2] == ["reach_customer_location", "call_customer"]
-    assert set(fields) == set(STORED)          # nothing recorded is lost
+    # nothing recorded is lost — except a retired field that was never
+    # determined (call_cx is None): it would only add a "not determined" row
+    assert set(fields) == set(STORED) - {"call_cx"}
+    assert fields["hand_over_to"] == "mother"
     assert set(labels) == {"reach_customer_location", "call_customer"}
+
+
+def test_retired_field_without_a_value_is_left_out_but_a_declared_one_stays():
+    stored = {"address_update_status": None, "updated_address": "Sector 14", "already_picked_up": None}
+    specs = [{"name": "already_picked_up", "label": "Already Picked Up"}]
+    fields, labels = _ordered_structured_fields({"structured_fields": stored}, specs)
+    assert fields == {"already_picked_up": None, "updated_address": "Sector 14"}
+    assert labels == {"already_picked_up": "Already Picked Up"}
 
 
 def test_configured_field_missing_from_the_row_is_not_invented():
@@ -59,7 +70,7 @@ def test_configured_field_missing_from_the_row_is_not_invented():
 
 def test_serializer_without_specs_keeps_stored_order_and_no_labels():
     payload = serialize_conversation_memory(_memory_row())
-    assert list(payload["structuredFields"]) == list(STORED)
+    assert list(payload["structuredFields"]) == [k for k, v in STORED.items() if v is not None]
     assert payload["structuredFieldLabels"] == {}
 
 
@@ -74,7 +85,7 @@ def test_malformed_specs_are_ignored():
     fields, labels = _ordered_structured_fields(
         {"structured_fields": STORED}, [None, "x", {"label": "no name"}, {"name": "  "}]
     )
-    assert set(fields) == set(STORED) and labels == {}
+    assert set(fields) == set(STORED) - {"call_cx"} and labels == {}
 
 
 DATE_SPECS = [

@@ -10,7 +10,9 @@ What this stage does (dry-run by default, idempotent):
          date_pending | callback_requested | address_mismatch | wrong_person |
          not_disconnected, set right before the matching end node.
        - ``address_verified``: "yes" on the explicit yes-edge of the address
-         question, "no" on the mismatch branch; unset otherwise.
+         question, "no" on the mismatch branch; unset otherwise. (The imported
+         v22 flow also sets "changed" before asking for the new address; the
+         summary field ``address_changed`` reads all three.)
        - ``visit_day`` / ``visit_time`` always hold the FINALLY confirmed
          values: the "change the date" branch clears them and the second
          date ask captures into them again (the readback keeps its own
@@ -132,6 +134,9 @@ if _ROOT not in sys.path:
 VISIT_STATUS_OPTIONS = [
     "booked", "date_pending", "callback_requested", "address_mismatch",
     "wrong_person", "not_disconnected", "incomplete",
+    # Set by the imported v22 flow (2026-10-28): the customer said the router
+    # was already collected / wants the refund settled before any pickup.
+    "already_picked_up", "refund_first",
 ]
 
 NORMALIZED_SLOTS = {"normalizedDayVariable": "visit_date_iso",
@@ -184,21 +189,46 @@ NORMALIZED_CALLBACK_FIELDS = {
 
 SUMMARY_FIELDS_SPOKEN = [
     {
-        "name": "address_verified",
-        "label": "Address verified",
+        # The flow's address_verified slot: "yes" (customer confirmed the
+        # registered address), "changed" (customer said it is wrong / they
+        # moved — the v22 flow then asks for the new one), "no" (said it is
+        # wrong and could not or would not give a usable new one: the
+        # address-mismatch end). "changed" and "no" both mean the customer
+        # confirmed a DIFFERENCE from the registered address; neither means
+        # the record was updated. Unset (not asked / unclear) → not determined.
+        "name": "address_changed",
+        "label": "Address Changed",
         "type": "yes_no",
         "source": "address_verified",
+        "values": {"changed": "Yes", "no": "Yes", "yes": "No"},
         "allowLlm": False,
         "description": (
-            "Did the customer explicitly confirm the registered address for "
-            "the uninstallation visit? Yes only on an explicit confirmation, "
-            "No only when the customer said the address is wrong; otherwise "
-            "not determined."
+            "Did the customer say the registered service address is not the "
+            "right one (moved / wrong / changed)? Yes when they did, No when "
+            "they confirmed the registered address; not determined when the "
+            "flow never settled it. A customer statement, never a record update."
+        ),
+    },
+    {
+        # The cleaned address the customer gave at the address hub (slot
+        # new_address: verbatim spans of their words, filler removed by the
+        # jeeves_address_v1 provider). Empty when the customer rejected the
+        # registered address but gave no usable new one.
+        "name": "updated_address",
+        "label": "Updated Address",
+        "type": "text",
+        "source": "new_address",
+        "allowLlm": False,
+        "maxLength": 300,
+        "requires": {"address_changed": ["Yes"]},
+        "description": (
+            "The new address exactly as the customer spoke it (components "
+            "only, their own script); empty when none was given."
         ),
     },
     {
         "name": "appointment_booked",
-        "label": "Pickup confirmed",
+        "label": "Pickup Visit Booked",
         "type": "yes_no",
         "source": "visit_status",
         "values": {"booked": "Yes", "*": "No"},
@@ -1074,11 +1104,17 @@ def main(argv: list[str] | None = None) -> None:
     settings = _check(c.get(f"/bots/{BOT_ID}/voice-settings"), "read voice settings")
     policy = dict(settings.get("goalPolicy") or {})
     current = policy.get("summaryFields")
-    if current == SUMMARY_FIELDS:
+    # Fields this script does not own (the analyst-filled ones added by
+    # jeeves/setup/03_summary_intents.py) are kept, after the workflow fields.
+    owned = {spec["name"] for spec in SUMMARY_FIELDS}
+    kept = [spec for spec in (current or []) if isinstance(spec, dict) and spec.get("name") not in owned]
+    target = SUMMARY_FIELDS + kept
+    if current == target:
         print("     summaryFields already in place — nothing to change")
     else:
         print(f"     goalPolicy keys now: {sorted(policy) or '(none)'}; "
-              f"summaryFields: {len(current or [])} → {len(SUMMARY_FIELDS)}")
+              f"summaryFields: {len(current or [])} → {len(target)}"
+              + (f" (keeping {len(kept)} analyst fields)" if kept else ""))
         for spec in SUMMARY_FIELDS:
             print(f"       {spec['name']:<22} {spec['type']:<7} ← {spec['source']}"
                   + (f" ({spec['timezone']})" if spec.get("timezone") else "")
@@ -1087,9 +1123,9 @@ def main(argv: list[str] | None = None) -> None:
               "runtime with normalized-companion support writes (stage 5 code); on an older "
               "runtime Pickup date/time stay empty — deploy the code first.")
         if args.apply:
-            policy["summaryFields"] = SUMMARY_FIELDS
+            policy["summaryFields"] = target
             _check(c.put(f"/bots/{BOT_ID}/voice-settings", json={"goalPolicy": policy}),
-                   f"goalPolicy.summaryFields ({len(SUMMARY_FIELDS)})")
+                   f"goalPolicy.summaryFields ({len(target)})")
     if not args.apply:
         print("dry run — re-run with --apply to write")
 

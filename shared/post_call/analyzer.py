@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 from shared.orchestration.goal_engine import BotGoalPolicy
@@ -106,21 +107,64 @@ def _transcript_block(turns: list[dict], *, numbered: bool = False) -> str:
     return "\n".join(lines) or "(no spoken turns)"
 
 
-def _expand_turn_references(raw, turns: list[dict]) -> dict[str, str]:
-    """``{field: cited customer turn text}`` from the model's evidence map.
+# Quotation marks a model wraps its quote in are not part of the utterance.
+_QUOTE_WRAPPERS = "\"'“”‘’«»`"
 
-    A turn number is expanded to that turn's text only when the turn is the
-    customer's (a bot citation is dropped, so the field fails closed); a
-    string is kept as a legacy verbatim quote for customer_evidence to check.
+
+def _normalized_words(text) -> str:
+    return " ".join(unicodedata.normalize("NFC", str(text or "")).casefold().split())
+
+
+def _span_in_turn(quote, turn_text: str) -> str | None:
+    """The quote as it occurs in the turn (verbatim up to case, Unicode form,
+    whitespace and surrounding punctuation), else None."""
+    if not isinstance(quote, str):
+        return None
+    wanted = _normalized_words(quote.strip().strip(_QUOTE_WRAPPERS).strip(" .!?,।॥"))
+    if not wanted:
+        return None
+    text = " ".join(str(turn_text or "").split())
+    folded = _normalized_words(text)
+    if len(folded) != len(text):
+        # Case folding changed the length (rare scripts): fall back to a
+        # whole-turn match, the attribution check still holds.
+        return text if wanted in folded else None
+    start = folded.find(wanted)
+    return text[start:start + len(wanted)] if start >= 0 else None
+
+
+def _expand_turn_references(raw, turns: list[dict]) -> dict[str, str]:
+    """``{field: cited customer text}`` from the model's evidence map.
+
+    The preferred form is ``{"turn": N, "quote": "<words>"}``: the turn must
+    be the customer's and the quote must occur verbatim in THAT turn — the
+    quote, as it reads in the transcript, becomes the evidence (a bot turn or
+    a quote the cited turn does not contain drops the entry, so the field
+    fails closed). A bare turn number (older prompt shape) expands to the
+    whole customer turn; a bare string is kept for customer_evidence to check.
     """
     if not isinstance(raw, dict):
         return {}
     expanded: dict[str, str] = {}
     for name, value in raw.items():
+        quote = None
+        if isinstance(value, dict):
+            quote = value.get("quote")
+            value = value.get("turn")
+            if isinstance(value, str) and value.strip().isdigit():
+                value = int(value.strip())
         if type(value) is int:
             turn = turns[value - 1] if 1 <= value <= len(turns) else {}
-            if turn.get("role") == "user":
-                expanded[str(name)] = " ".join(str(turn.get("text") or "").split())[:_EVIDENCE_TURN_CHARS]
+            if turn.get("role") != "user":
+                continue
+            text = " ".join(str(turn.get("text") or "").split())[:_EVIDENCE_TURN_CHARS]
+            if isinstance(quote, str) and quote.strip():
+                span = _span_in_turn(quote, text)
+                if span is None:
+                    continue
+                expanded[str(name)] = span
+            else:
+                expanded[str(name)] = text
         elif isinstance(value, str) and value.strip():
             expanded[str(name)] = value
     return expanded
@@ -260,7 +304,11 @@ def _build_evidence_system(policy: BotGoalPolicy, *, reference: datetime) -> str
     reference = _local_reference(policy, reference)
     specs = evidence_field_specs(policy)
     keys = ", ".join(f'"{spec.name}": <allowed value or null>' for spec in specs)
-    cites = ", ".join(f'"{spec.name}": <Customer turn number as integer, or null>' for spec in specs)
+    cites = ", ".join(
+        f'"{spec.name}": {{"turn": <Customer turn number as integer>, '
+        '"quote": <exact words from that turn>} or null'
+        for spec in specs
+    )
     return (
         "You extract CUSTOMER-REPORTED facts from the transcript of a finished phone "
         "call handled by a voice agent. The customer may speak Hindi, English or mixed "
@@ -278,7 +326,8 @@ def _build_evidence_system(policy: BotGoalPolicy, *, reference: datetime) -> str
         "bot was asking about something else, or that the bot ignored or deflected — "
         "still counts.\n"
         "2. For each field, find the Customer turn(s) that speak to it and apply the "
-        "field's rules; a later clear correction wins.\n"
+        "field's rules; a later clear correction wins — cite the turn that settles the "
+        "final value and quote its words.\n"
         "3. A field with no supporting Customer turn is null. Never guess, never infer "
         "from a booking or a bot line.\n\n"
         "# Output — ONLY this JSON object, no prose, no fences\n"

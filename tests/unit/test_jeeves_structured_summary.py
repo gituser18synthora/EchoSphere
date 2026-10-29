@@ -10,7 +10,8 @@ Two guarantees:
 2. The final slots — and the summary fields derived from them — reflect the
    actual outcome: Yes/No only where a slot records it, null otherwise, the
    appointment date/time only for a confirmed booking, callback details only
-   for a callback.
+   for a callback. ``address_changed`` reads the address_verified slot the
+   other way round: "yes" (confirmed) → No, "no"/"changed" (rejected) → Yes.
 """
 
 import runpy
@@ -56,7 +57,7 @@ SCENARIOS = {
         turns=OPEN + [HI_YES, ADDRESS_YES, FIRST_DATE, HI_YES],
         slots={"visit_status": "booked", "address_verified": "yes",
                "visit_day": "कल", "visit_time": "सुबह 10 बजे"},
-        fields={"address_verified": "Yes", "appointment_booked": "Yes",
+        fields={"address_changed": "No", "appointment_booked": "Yes",
                 "appointment_date": "कल", "appointment_time": "सुबह 10 बजे",
                 "call_result": "booked"},
     ),
@@ -90,7 +91,7 @@ SCENARIOS = {
     "second_confirmation_declined": dict(
         turns=OPEN + [HI_YES, ADDRESS_YES, "कल", "नहीं", "parso", "नहीं"],
         slots={"visit_status": "date_pending", "address_verified": "yes", "visit_day": "parso"},
-        fields={"address_verified": "Yes", "appointment_booked": "No",
+        fields={"address_changed": "No", "appointment_booked": "No",
                 "appointment_date": None, "appointment_time": None,
                 "call_result": "date_pending"},
     ),
@@ -104,7 +105,7 @@ SCENARIOS = {
         turns=OPEN + ["नहीं अभी busy हूँ", "परसों शाम 5 बजे call karna"],
         slots={"visit_status": "callback_requested", "callback_date": "परसों",
                "callback_time": "शाम", "callback_preference": "परसों शाम 5 बजे call karna"},
-        fields={"address_verified": None, "appointment_booked": "No",
+        fields={"address_changed": None, "appointment_booked": "No",
                 "appointment_date": None, "call_result": "callback_requested",
                 "callback_date": "परसों", "callback_time": "शाम",
                 "callback_preference": "परसों शाम 5 बजे call karna"},
@@ -112,20 +113,20 @@ SCENARIOS = {
     "wrong_person": dict(
         turns=["नहीं गलत नंबर है"],
         slots={"visit_status": "wrong_person", "identity_answer": "no"},
-        fields={"address_verified": None, "appointment_booked": "No",
+        fields={"address_changed": None, "appointment_booked": "No",
                 "call_result": "wrong_person"},
     ),
     "address_mismatch": dict(
         turns=OPEN + [HI_YES, "नहीं मैं shift हो गया हूँ"],
         slots={"visit_status": "address_mismatch", "address_verified": "no",
                "sub_disposition": "Address Mismatch"},
-        fields={"address_verified": "No", "appointment_booked": "No",
+        fields={"address_changed": "Yes", "appointment_booked": "No",
                 "appointment_date": None, "call_result": "address_mismatch"},
     ),
     "today_branch": dict(
         turns=OPEN + ["आज कर दो", "ठीक है", ADDRESS_YES, HI_YES],
         slots={"visit_status": "booked", "address_verified": "yes", "visit_day": "आज"},
-        fields={"address_verified": "Yes", "appointment_booked": "Yes",
+        fields={"address_changed": "No", "appointment_booked": "Yes",
                 "appointment_date": "आज", "appointment_time": None,
                 "call_result": "booked"},
     ),
@@ -133,21 +134,21 @@ SCENARIOS = {
         context=NOT_DISCONNECTED,
         turns=OPEN + [HI_YES],
         slots={"visit_status": "not_disconnected"},
-        fields={"address_verified": None, "appointment_booked": "No",
+        fields={"address_changed": None, "appointment_booked": "No",
                 "call_result": "not_disconnected"},
     ),
     "call_dropped_at_address_question": dict(
         turns=OPEN + [HI_YES],
         done=False,
         slots={"visit_status": "incomplete"},
-        fields={"address_verified": None, "appointment_booked": "No",
+        fields={"address_changed": None, "appointment_booked": "No",
                 "appointment_date": None, "call_result": "incomplete"},
     ),
     "address_answer_unclear_is_not_verified": dict(
         turns=OPEN + [HI_YES, "मेरा router kharab hai"],
         done=False,
         slots={"visit_status": "incomplete"},
-        fields={"address_verified": None, "call_result": "incomplete"},
+        fields={"address_changed": None, "call_result": "incomplete"},
     ),
 }
 
@@ -263,10 +264,10 @@ class TestDerivationRules:
         slot is empty, so nothing is reported without workflow evidence."""
         fields, sources = merge_structured_fields(
             _policy(), {"visit_status": "incomplete"},
-            {"address_verified": "Yes", "appointment_date": "tomorrow",
+            {"address_changed": "No", "appointment_date": "tomorrow",
              "appointment_booked": "Yes", "call_result": "booked"},
         )
-        assert fields["address_verified"] is None
+        assert fields["address_changed"] is None
         assert fields["appointment_booked"] == "No"
         assert fields["appointment_date"] is None
         assert fields["call_result"] == "incomplete"

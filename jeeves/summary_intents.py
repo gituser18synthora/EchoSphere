@@ -1,20 +1,33 @@
-"""Opt-in post-call extraction for bot_44a50e8c4146; no live-flow changes.
+"""Analyst-filled summary fields for bot_44a50e8c4146; no live-flow changes.
 
-Seven analyst-filled fields on top of the eight workflow-slot fields of
-jeeves/setup/01_structured_summary.py: device collection status, address
-change status (+ derived Yes/No, the new address, the update date) and
-refund status (+ derived Yes/No). They are evidence-required, so the
-post-call processor extracts them with its own focused request
-(shared.post_call.analyzer.extract_evidence_fields) and keeps a value only
-when the analyst cites a customer turn that carries it. Yes/No/null matches
-the platform's existing summary contract; status fields distinguish an
-outstanding request from a customer-reported completion.
+Three fields on top of the slot-only fields of
+jeeves/setup/01_structured_summary.py (which owns the workflow-derived
+ones, including "Address changed" / "Updated address" since 2026-10-29):
+
+- ``already_picked_up`` — the device's collection status as the CUSTOMER
+  stated it. The flow records it when the customer says so at one of its
+  hubs (``visit_status`` = ``already_picked_up`` → Yes); for every other
+  outcome the field stays open (``openWhenUnmapped``) and the post-call
+  analyst may settle it from an explicit statement: Yes (already collected /
+  handed over), No (explicitly not yet), null (never stated). A booked or
+  pending visit is NOT evidence either way — a scheduled pickup never shows
+  as a completed one.
+- ``refund_status`` / ``refund_requested`` — the customer's refund position,
+  classified from their own words; the derived Yes/No projects it.
+
+The analyst fields are evidence-required: the post-call processor extracts
+them with its own focused request (shared.post_call.analyzer
+.extract_evidence_fields) and keeps a value only when the analyst cites a
+Customer turn AND quotes words that occur verbatim in that turn. The keyword
+``topicWords`` guard that used to sit on top of this was removed on
+2026-10-29: it discarded a correct value cited on a Devanagari "location
+change" turn (cv_21df0c56facf); meaning is the analyst's job, attribution is
+the platform's.
 
 The rules were tuned on simulated Jeeves calls (tests/fixtures/
 jeeves_summary_calls.json): statements made in passing while the flow asks
 for a visit date must still be read, a booking alone never settles the
-device status, a plain address confirmation is not a change request, and a
-date said for the pickup or the handover is never the address-update date.
+device status, and a later clear correction wins.
 """
 
 import copy
@@ -29,69 +42,25 @@ PICKUP_RULES = (
     "collection status from ALL customer turns (a later clear correction wins). "
     "Yes = the customer states the device has ALREADY been collected / handed over / taken away "
     "(by a courier, engineer or family member): 'maine device already de diya hai', 'kal pickup "
-    "ho gaya tha', 'courier wala phone le gaya', 'device already collected', 'phone pehle hi "
-    "handover kar diya', 'मैंने डिवाइस पहले ही दे दिया'. "
+    "ho gaya tha', 'courier wala phone le gaya', 'device already collected', 'pickup ho chuka hai', "
+    "'phone pehle hi handover kar diya', 'मैंने डिवाइस पहले ही दे दिया', 'राउटर पहले ही ले गए'. "
     "No = the customer EXPLICITLY states the device has not been collected yet: nobody has come "
     "for the pickup, the pickup did not happen, or the device is still with them: 'abhi tak koi "
-    "pickup karne nahi aaya', 'pickup nahi hua', 'router abhi mere paas hai'. "
+    "pickup karne nahi aaya', 'pickup nahi hua', 'router abhi mere paas hai', 'अभी तक कोई लेने नहीं आया'. "
     "null = the customer never states the current status. Booking or confirming a visit day, "
-    "giving a date or time, asking whether or when the engineer will come ('kal aayenge na?'), "
-    "or promising to hand it over ('kal device de dunga') is NOT a status statement => null. "
-    "Also null for genuine uncertainty ('shayad le gaye, confirm nahi'), only disconnection/"
-    "uninstallation talk, an unrelated parcel, or only a bot statement. Never infer Yes or No "
-    "from a booking, a readback or a bot claim. "
-    "Corrections: 'de diya tha... nahi, doosra parcel tha, router mere paas hai' => No. 'abhi nahi "
-    "liya', later 'sorry, wife ne kal engineer ko de diya tha' => Yes, citing the later turn."
-)
-ADDRESS_RULES = (
-    "The bot reads back the registered service address and asks the customer to confirm it. "
-    "Classify the customer's FINAL position on CHANGING that address by the WORDS they used — "
-    "decide by the verb/phrase, not by what the bot asked next: "
-    "(1) completion words => reported_updated: 'update kar diya tha', 'update kar diya', 'kar diya "
-    "tha', 'kiya tha', 'ho gaya', 'already updated', 'updated hai', 'badal diya', 'बदल दिया', "
-    "'अपडेट कर दिया' — the change was ALREADY done (by them or by support), whoever did it, "
-    "whatever follows in the same turn ('naya address hi sahi hai' = the new one is correct). "
-    "Examples: 'maine kal address update kar diya tha' / 'kal address update kar diya tha' / "
-    "'address 25 October ko update kiya tha' / 'address already updated hai' / 'पता पहले ही बदल "
-    "दिया है' => reported_updated. A customer claim, not verification. "
-    "(2) wanting/wrongness words => requested: 'change kar do', 'badal do', 'update kar do', "
-    "'update karna hai', 'galat hai', 'ye mera address nahi hai', 'shift ho gaya hoon', 'I moved', "
-    "'the address is wrong', 'naya address X hai, update kar do' — with or without a new address, "
-    "even if the bot says it cannot change it on this call. "
-    "(3) a retraction or refusal after a change was discussed => not_requested: 'badal do — nahi, "
-    "rehne do', 'change nahi chahiye'. ('purana address galat hai' is requested, not this.) "
-    "(4) null: a plain confirmation of the registered address with no change discussed ('haan "
-    "address sahi hai', 'yes that's correct' — the flow records that separately; never output "
-    "not_requested for it), 'agent ne update karne ko bola tha' alone, 'update hua kya?' alone, "
-    "no mention. A later clear correction supersedes an earlier answer; a NEW request after an "
-    "earlier completed update is requested."
-)
-UPDATED_ADDRESS_RULES = (
-    "Only the replacement/correction address the CUSTOMER spoke, with every component they gave, "
-    "in the original script; partial details are fine. The value must name a PLACE (an area, "
-    "locality, road, building, flat, city or PIN). Words ABOUT the address that name no place are "
-    "not an address => null: 'naya address hi sahi hai', 'address galat hai', 'wahi purana', 'the "
-    "address on record is right', 'baad mein bataunga'. Example: Customer \"maine kal address update "
-    "kar diya tha, naya address hi sahi hai\" => updated_address null (no place named). null also "
-    "when a change is requested or reported complete without a new address. Never copy the "
-    "registered address from the bot's readback or the locality, never fill in a missing city/PIN/"
-    "house number, never use a rejected/superseded address, a pickup day or a callback date. "
-    "Example: Customer \"नया पता 9 Lake Road, Jaipur है, बदल दीजिए\" => \"9 Lake Road, Jaipur\"; cite "
-    "that Customer turn as updated_address evidence (its own entry, even when address_update_status "
-    "cites the same turn)."
-)
-ADDRESS_DATE_RULES = (
-    "The date the customer gave for the ADDRESS update or address-change request ONLY. The date "
-    "words must be in the same sentence/clause as the address change: 'maine kal address update kar "
-    "diya tha' => yesterday; 'kal address update karna' => tomorrow; 'address 25 October ko update "
-    "kiya tha' => 2026-10-25. Resolve relative words with the call date in Asia/Kolkata and the "
-    "tense (past 'kiya tha' = before the call; future 'karna/karunga' = after the call). A date "
-    "attached to ANY other event — the pickup/visit day, a callback, when the router was handed over, "
-    "a payment — is NOT this date: 'I moved to Powai. I handed over the router last week' => null; "
-    "'address badal do, pickup kal karna' => null. Never use the call date, the word 'already' or a "
-    "guess; unknown or unclear day/month/year => null. Cite the Customer turn that contains the date "
-    "words. A date here always goes with address_update_status requested or reported_updated — a "
-    "past-tense update date means reported_updated."
+    "giving a date or time, agreeing to a readback, asking whether or when the engineer will come "
+    "('kal aayenge na?'), or promising to hand it over ('kal device de dunga') is NOT a status "
+    "statement => null. Also null for genuine uncertainty ('shayad le gaye, confirm nahi'), only "
+    "disconnection/uninstallation talk, an unrelated parcel, or only a bot statement. Never infer "
+    "Yes or No from a booking, a readback or a bot claim. "
+    "Negation and corrections: read the whole clause — 'nahi, abhi tak nahi liya' => No; 'de diya "
+    "tha... nahi, doosra parcel tha, router mere paas hai' => No; 'abhi nahi liya', later 'sorry, "
+    "wife ne kal engineer ko de diya tha' => Yes, citing the later turn; two statements that still "
+    "contradict each other at the end => null. "
+    "Answers: a short reply to the bot's direct question about the collection status is the "
+    "customer's own statement — read it together with the question it answers: bot 'kya aap device "
+    "pehle hi engineer ko de chuke hain?' + customer 'haan, de diya' => Yes; customer 'nahi, abhi "
+    "mere paas hai' => No. A bare 'haan' to any other bot question is null."
 )
 REFUND_RULES = (
     "Refund = money back for the broadband connection/deposit/payment. The bot cannot handle refunds "
@@ -99,8 +68,9 @@ REFUND_RULES = (
     "words regardless of the bot's reply, even when said in passing at any step (a refund question "
     "asked before the customer answers the bot's question still counts). Decide by the phrase: "
     "(1) demand words => requested: 'paise wapas chahiye', 'wapas kar do', 'wapas karo', 'return kar "
-    "do', 'refund chahiye', 'रिफंड चाहिए', 'पैसे वापस', 'I want my money back'. A demand wins over a "
-    "complaint in the same breath: 'refund nahi mila, paise wapas karo' => requested. "
+    "do', 'refund chahiye', 'रिफंड चाहिए', 'पैसे वापस', 'I want my money back', 'pehle refund do phir "
+    "router le jao'. A demand wins over a complaint in the same breath: 'refund nahi mila, paise wapas "
+    "karo' => requested. "
     "(2) asking/complaining words without a new demand => status_inquiry: 'refund kab milega', "
     "'kab aayega', 'abhi tak nahi aaya', 'status kya hai', 'request di thi', 'approve hua bola tha, "
     "kab milega', 'रिफंड कब मिलेगा'. Examples: 'mera refund kab milega?' => status_inquiry; 'refund "
@@ -115,17 +85,17 @@ REFUND_RULES = (
     "already disconnected. A new demand after an earlier completed refund is requested. Follow the "
     "final clear correction."
 )
-# Topic words (shared.post_call.structured.mentions_topic /
-# date_in_topic_clause): the cited customer turn must mention the field's
-# subject — the analyst cannot hang "device not collected" on a refund line
-# — and an address-update date must share a clause with an address word.
-PICKUP_TOPIC_WORDS = [
-    "device", "router", "pickup", "pick up", "pick-up", "phone", "modem", "equipment", "collect",
-    "handover", "hand over", "handed", "uninstall", "le gaya", "le gaye", "le liya", "de diya", "de di",
-    "mere paas", "डिवाइस", "राउटर", "पिकअप", "दे दिया", "दे दी", "ले गया", "ले गए", "ले लिया", "कलेक्ट", "मेरे पास",
-]
-ADDRESS_TOPIC_WORDS = ["address", "pata", "पता", "update", "badal", "बदल", "change", "shift", "moved", "correct"]
-REFUND_TOPIC_WORDS = ["refund", "paise", "paisa", "payment", "money", "wapas", "return", "रिफंड", "पैसे", "पैसा", "वापस", "पेमेंट"]
+
+#: Fields earlier revisions of this module added and this one retires (the
+#: address change is now read from the flow's own slots, see 01's
+#: ``address_changed`` / ``updated_address``). Removed from the bot's
+#: configuration on apply; values stored on older calls stay in their rows.
+RETIRED_FIELDS = (
+    "address_verified",
+    "address_update_status",
+    "address_change_requested",
+    "address_update_date",
+)
 
 
 def _field(name, label, kind, instructions, **extra):
@@ -137,23 +107,16 @@ def _field(name, label, kind, instructions, **extra):
 
 
 INTENT_SUMMARY_FIELDS = [
-    _field("already_picked_up", "Device already collected", "yes_no", PICKUP_RULES,
-           topicWords=PICKUP_TOPIC_WORDS),
-    _field("address_update_status", "Address update status", "choice", ADDRESS_RULES,
-           options=["requested", "reported_updated", "not_requested"], topicWords=ADDRESS_TOPIC_WORDS),
-    _field("address_change_requested", "Address change requested", "yes_no",
-           "Computed by the platform from address_update_status: requested => Yes; "
-           "reported_updated or not_requested => No; unknown => null.",
-           allowLlm=False, derivedFrom="address_update_status",
-           values={"requested": "Yes", "reported_updated": "No", "not_requested": "No"}),
-    _field("updated_address", "Updated address (customer provided)", "text", UPDATED_ADDRESS_RULES,
-           maxLength=1000, requires={"address_update_status": ["requested", "reported_updated"]}),
-    _field("address_update_date", "Address update date", "date", ADDRESS_DATE_RULES,
-           timezone="Asia/Kolkata", topicWords=ADDRESS_TOPIC_WORDS,
-           requires={"address_update_status": ["requested", "reported_updated"]}),
+    _field("already_picked_up", "Already Picked Up", "yes_no", PICKUP_RULES,
+           source="visit_status", values={"already_picked_up": "Yes"}, openWhenUnmapped=True,
+           description=(
+               "Was the device already collected / handed over, as the customer stated it? "
+               "Yes from the flow when the customer said so at a hub, otherwise only from an "
+               "explicit customer statement; No only when the customer explicitly said it has "
+               "not been collected; a booked or pending visit decides nothing."
+           )),
     _field("refund_status", "Refund status (customer reported)", "choice", REFUND_RULES,
-           options=["requested", "status_inquiry", "reported_refunded", "withdrawn"],
-           topicWords=REFUND_TOPIC_WORDS),
+           options=["requested", "status_inquiry", "reported_refunded", "withdrawn"]),
     _field("refund_requested", "Refund requested / outstanding", "yes_no",
            "Computed by the platform from refund_status: requested or status_inquiry => Yes; "
            "reported_refunded or withdrawn => No; unknown => null.",
@@ -163,9 +126,12 @@ INTENT_SUMMARY_FIELDS = [
 
 
 def enhance_summary_fields(existing: list[dict]) -> list[dict]:
-    """Preserve existing fields exactly; append/update only this feature's keys."""
+    """The bot's full summaryFields from an existing list: every field this
+    module does not own is preserved exactly and in place, retired fields are
+    dropped, and this module's fields are refreshed in place or appended."""
     additions = {f["name"]: f for f in INTENT_SUMMARY_FIELDS}
-    fields = [copy.deepcopy(additions.get(f.get("name"), f)) for f in existing]
+    fields = [copy.deepcopy(additions.get(f.get("name"), f)) for f in existing
+              if isinstance(f, dict) and f.get("name") not in RETIRED_FIELDS]
     names = {f["name"] for f in fields}
     fields.extend(copy.deepcopy(f) for f in INTENT_SUMMARY_FIELDS if f["name"] not in names)
     return fields

@@ -350,7 +350,7 @@ def _semantic_extraction_kwargs(
         "text": user_text,
         "slots": provider.canonical_slots(dict(initial_slots or prior.get("slots") or {})),
         "pending_question": _node_text(pending, "question", "prompt", "text", fallback_label=False),
-        "pending_variable": str(_node_config(pending).get("variable") or ""),
+        "pending_variable": _pending_variable(pending),
         "joint_variables": [str(v) for v in (_node_config(pending).get("jointYesNo") or [])],
         "history": history,
         "language": language or "",
@@ -359,6 +359,42 @@ def _semantic_extraction_kwargs(
 
 def _extraction_key(kwargs: dict) -> str:
     return json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _pending_variable(node: dict) -> str:
+    """The slot the pending node collects: an ask's ``variable``, or — for an
+    ``elseIsAnswer`` hub that opted into ``semanticCapture`` — its
+    ``captureVariable``, so the semantic-slots provider knows which free-text
+    answer this turn is."""
+    config = _node_config(node)
+    variable = str(config.get("variable") or "").strip()
+    if not variable and config.get("semanticCapture"):
+        variable = str(config.get("captureVariable") or "").strip()
+    return variable
+
+
+def _capture_max_retries(config: dict) -> int:
+    """How many times a ``semanticCapture`` hub asks again when the provider
+    finds no usable value in the answer (``captureMaxRetries``, default 2)."""
+    try:
+        return max(0, min(int(config.get("captureMaxRetries", 2)), 5))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _capture_clarification(config: dict, lang: str) -> str:
+    """The re-ask spoken when a ``semanticCapture`` hub's answer carried no
+    usable value: ``captureClarificationByLanguage[<base language>]`` or the
+    plain ``captureClarification``; '' when neither is authored."""
+    by_language = config.get("captureClarificationByLanguage")
+    base = (lang or "").split("-")[0].lower()
+    if isinstance(by_language, dict):
+        for key in (lang, base):
+            value = by_language.get(key) if key else None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    value = config.get("captureClarification")
+    return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
 def _node_text(node: dict, *keys: str, fallback_label: bool = True) -> str:
@@ -1269,12 +1305,66 @@ def build_definition_graph(definition: dict, checkpointer) -> Any:
                         else_edge = _else_edge_of(awaiting)
                         if else_edge is not None:
                             capture = str(config.get("captureVariable") or "").strip()
-                            if capture and not str(slots.get(capture) or "").strip():
-                                slots[capture] = text
-                            audit.append({"action": "else_answer", "node": awaiting,
-                                          "variable": capture or None})
-                            chosen, why = else_edge, "else_answer"
-                    if chosen is None:
+                            if capture and config.get("semanticCapture"):
+                                # The semantic-slots provider owns this answer
+                                # (``semanticCapture``). Only a value IT verified
+                                # and stored this turn is the answer. Everything
+                                # else — the reader found no place, timed out,
+                                # answered unreadably or never ran — leaves the
+                                # slot untouched: the raw utterance is never the
+                                # value (a readback repeated the caller's filler
+                                # as the address, cv_21df0c56facf). The hub asks
+                                # again (bounded), then takes its authored
+                                # fallback with the address still unresolved.
+                                if capture in semantic_decided and str(slots.get(capture) or "").strip():
+                                    audit.append({"action": "else_answer", "node": awaiting,
+                                                  "variable": capture, "source": "semantic"})
+                                    chosen, why = else_edge, "else_answer"
+                                else:
+                                    reason = (
+                                        "reader_empty" if capture in semantic_decided
+                                        else "reader_failed"
+                                        if semantic_active and semantic.get("failed")
+                                        else "no_reader"
+                                    )
+                                    # The spoken words are kept for audit only,
+                                    # under their own name; nothing reads them
+                                    # as the address.
+                                    slots[f"{capture}_raw"] = " ".join(text.split())[:300]
+                                    attempts = node_retries.get(awaiting, 0) + 1
+                                    node_retries[awaiting] = attempts
+                                    audit.append({"action": "capture_unverified", "node": awaiting,
+                                                  "variable": capture, "reason": reason,
+                                                  "attempt": attempts})
+                                    clarification = _capture_clarification(config, lang)
+                                    # The hub names its own fallback target
+                                    # (``captureFallbackTo``): an edge label
+                                    # token would read as an else edge here.
+                                    fallback_to = str(config.get("captureFallbackTo") or "").strip()
+                                    fallback_edge = next(
+                                        (e for e in out_edges if str(e.get("to")) == fallback_to),
+                                        None,
+                                    ) if fallback_to else None
+                                    if attempts <= _capture_max_retries(config) and clarification:
+                                        fixed_reply = clarification
+                                    elif fallback_edge is not None:
+                                        audit.append({"action": "capture_fallback", "node": awaiting,
+                                                      "variable": capture, "attempt": attempts,
+                                                      "target": str(fallback_edge.get("to"))})
+                                        chosen, why = fallback_edge, "capture_fallback"
+                                    else:
+                                        # Nothing authored to say or to take:
+                                        # the brain answers the words in
+                                        # context and the hub keeps waiting.
+                                        # The slot stays empty.
+                                        why = "off_script"
+                            else:
+                                if capture and not str(slots.get(capture) or "").strip():
+                                    slots[capture] = text
+                                audit.append({"action": "else_answer", "node": awaiting,
+                                              "variable": capture or None})
+                                chosen, why = else_edge, "else_answer"
+                    if chosen is None and not fixed_reply and why == "no_match":
                         lookahead = _lookahead_answer(awaiting, text, signal)
                         if lookahead is not None:
                             walked, chosen, hub_id = lookahead

@@ -8,4 +8,5 @@ BUILTIN_EXTENSIONS: tuple[str, ...] = (
     "shared.orchestration.extensions.reference_flows",
     "shared.orchestration.extensions.mpokket",
     "shared.orchestration.extensions.zepto_mdnd",
+    "shared.orchestration.extensions.jeeves_address",
 )

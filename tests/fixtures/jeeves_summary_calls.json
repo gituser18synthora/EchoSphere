@@ -57,8 +57,9 @@
   },
   "expected": {
    "already_picked_up": "Yes",
-   "address_update_status": null,
-   "refund_status": null
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -127,8 +128,9 @@
   },
   "expected": {
    "already_picked_up": "No",
-   "address_update_status": null,
-   "refund_status": null
+   "refund_status": null,
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -173,11 +175,9 @@
    "address_verified": "no"
   },
   "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "contains:Andheri East",
-   "address_update_date": null,
-   "already_picked_up": null
+   "already_picked_up": null,
+   "address_changed": "Yes",
+   "updated_address": null
   }
  },
  {
@@ -253,11 +253,9 @@
    "visit_time_spoken_en": "at 11 AM"
   },
   "expected": {
-   "address_update_status": "reported_updated",
-   "address_change_requested": "No",
-   "updated_address": null,
-   "address_update_date": "yesterday",
-   "already_picked_up": null
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -328,7 +326,8 @@
    "refund_status": "requested",
    "refund_requested": "Yes",
    "already_picked_up": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -407,7 +406,8 @@
    "refund_status": "status_inquiry",
    "refund_requested": "Yes",
    "already_picked_up": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -478,7 +478,8 @@
    "refund_status": "reported_refunded",
    "refund_requested": "No",
    "already_picked_up": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -524,11 +525,9 @@
   },
   "expected": {
    "already_picked_up": "Yes",
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "contains:Powai",
-   "address_update_date": null,
-   "refund_status": null
+   "refund_status": null,
+   "address_changed": "Yes",
+   "updated_address": null
   }
  },
  {
@@ -575,12 +574,10 @@
   },
   "expected": {
    "already_picked_up": null,
-   "address_update_status": null,
-   "address_change_requested": null,
-   "updated_address": null,
-   "address_update_date": null,
    "refund_status": null,
-   "refund_requested": null
+   "refund_requested": null,
+   "address_changed": null,
+   "updated_address": null
   }
  },
  {
@@ -650,7 +647,8 @@
   "expected": {
    "already_picked_up": null,
    "refund_status": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   },
   "allowed": {
    "already_picked_up": [
@@ -734,7 +732,9 @@
   "expected": {
    "refund_status": null,
    "refund_requested": null,
-   "already_picked_up": null
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
   },
   "allowed": {
    "refund_status": [
@@ -813,7 +813,8 @@
   },
   "expected": {
    "already_picked_up": "No",
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -892,7 +893,8 @@
    "refund_status": "status_inquiry",
    "refund_requested": "Yes",
    "already_picked_up": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -960,11 +962,9 @@
    "visit_time_spoken_en": "at 5 PM"
   },
   "expected": {
-   "address_update_status": "requested",
-   "address_change_requested": "Yes",
-   "updated_address": "contains:B-12",
-   "address_update_date": null,
-   "already_picked_up": null
+   "already_picked_up": null,
+   "address_changed": "No",
+   "updated_address": null
   }
  },
  {
@@ -1018,7 +1018,85 @@
   "expected": {
    "already_picked_up": "Yes",
    "refund_status": null,
-   "address_update_status": null
+   "address_changed": "No",
+   "updated_address": null
+  }
+ },
+ {
+  "id": "cv_21df0c56facf",
+  "note": "Real local browser test call, 2026-10-29 05:52 UTC, workflow v22, gpt-6-luna. The customer rejected the registered address, gave the new one with conversational filler, booked the visit for tomorrow. Before the fix the structured summary showed every analyst field null and the readback repeated the filler as the address.",
+  "turns": [
+   {
+    "role": "bot",
+    "text": "हेलो, क्या मेरी बात Rahul जी से हो रही है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ जी।"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद। हम आपके address Sector 62, Noida वाले Airtel Broadband connection के संबंध में कॉल कर रहे हैं। Rahul जी, आपका broadband connection disconnect हो चुका है। इसलिए device के uninstallation और pickup के लिए engineer की visit schedule करनी है। क्या अभी बात करने का सही समय है?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ बोलिए।"
+   },
+   {
+    "role": "bot",
+    "text": "धन्यवाद Rahul जी। जैसा कि मैंने आपको बताया, आपका broadband connection disconnect हो चुका है। अब बस आपके घर से device का uninstallation और pickup करवाना बाकी है। Uninstallation आपके registered address Sector 62, Noida पर होना है। क्या ये location सही है?"
+   },
+   {
+    "role": "user",
+    "text": "नहीं नहीं, मैं लोकेशन चेंज कर दिया हूँ।"
+   },
+   {
+    "role": "bot",
+    "text": "कोई बात नहीं। आप please अपना सही address pincode के साथ बताइए, जहाँ से device का uninstallation और pickup होना है।"
+   },
+   {
+    "role": "user",
+    "text": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041."
+   },
+   {
+    "role": "bot",
+    "text": "आप बताइए, router का uninstallation और pickup आप किस दिन करवाना चाहेंगे?"
+   },
+   {
+    "role": "user",
+    "text": "कल कर दो।"
+   },
+   {
+    "role": "bot",
+    "text": "हमारे इंजीनियर कल आपके नए पते, मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041, पर Airtel Broadband डिवाइस हटाने और लेने आएँगे। आने का सही समय इंजीनियर आपको कॉल करके बताएँगे। क्या ये आपके लिए ठीक रहेगा?"
+   },
+   {
+    "role": "user",
+    "text": "हाँ ठीक रहेगा।"
+   },
+   {
+    "role": "bot",
+    "text": "Device uninstallation और pickup के लिए engineer allocate करने देने के लिए धन्यवाद। आपका दिन शुभ रहे।"
+   }
+  ],
+  "slots": {
+   "locality": "Sector 62, Noida",
+   "visit_day": "कल",
+   "new_address": "थाने सेक्टर 16, 404041",
+   "new_address_raw": "मेरा इस समय करंट एड्रेस है। थाने सेक्टर 16। पिन कोड है। 404041.",
+   "visit_status": "booked",
+   "visit_date_iso": "2026-10-30",
+   "identity_answer": "yes",
+   "address_verified": "changed",
+   "visit_day_spoken_en": "tomorrow",
+   "visit_day_spoken_hi": "कल"
+  },
+  "expected": {
+   "already_picked_up": null,
+   "refund_status": null,
+   "refund_requested": null,
+   "address_changed": "Yes",
+   "updated_address": "थाने सेक्टर 16, 404041"
   }
  }
 ]

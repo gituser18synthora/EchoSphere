@@ -226,13 +226,20 @@ class SummaryFieldSpec(BaseModel):
     # Optional one-hop projection from another summary field (e.g. a status
     # to Yes/No), using the existing values mapping. No extra LLM decision.
     derived_from: str = Field(default="", alias="derivedFrom")
-    # Deterministic guard for an evidence-required analyst field: the value
-    # is kept only when the cited customer turn mentions one of these words
-    # (a "No" cited on a turn about something else is dropped) and, for a
-    # ``date`` field, only when a clause of that turn carries a topic word
-    # together with the date expression — so a date the caller gave for
-    # another event (the pickup day, a callback) is never attached here.
+    # Deprecated (2026-10-29): the keyword "topic" guard this configured was
+    # removed from merge_structured_fields — it discarded a correct value
+    # cited on a Devanagari "location change" turn (cv_21df0c56facf). The key
+    # is still accepted so stored configurations keep loading; it does nothing.
     topic_words: list[str] = Field(default_factory=list, alias="topicWords")
+    # Precedence opt-in for a field with a ``source`` slot: normally ANY value
+    # in the slot settles the field (an unmapped value = "not determined" and
+    # the analyst is not consulted). With ``openWhenUnmapped`` a slot value the
+    # ``values`` map does not cover (and that the field's own parser cannot
+    # read) leaves the field open for the analyst — e.g. Jeeves'
+    # already_picked_up reads visit_status: ``already_picked_up`` → Yes from
+    # the flow, any other outcome → the customer's explicit words, if any. An
+    # explicit ``values[x] = ""`` ("not applicable") still settles it.
+    open_when_unmapped: bool = Field(default=False, alias="openWhenUnmapped")
     # Consistency guard: this field is reported only when another field's
     # final value is one of the listed options, e.g. drop_location requires
     # handover_type in ["place"] and hand_over_to requires ["person"] — a

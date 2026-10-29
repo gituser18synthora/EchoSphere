@@ -1,9 +1,14 @@
-"""Jeeves (bot_44a50e8c4146): add / refresh the analyst-filled summary fields.
+"""Jeeves (bot_44a50e8c4146): bring the bot's summaryFields up to date.
 
-Dry run by default: shows what would change in the bot's goal_policy
-.summaryFields (the eight workflow-slot fields are never touched). Writes
-through the normal voice-settings API — the same path the Studio uses — so
-nothing is applied to a database directly.
+The full list = the workflow-slot fields of jeeves/setup/01_structured_summary.py
+(``SUMMARY_FIELDS``, refreshed in place: labels, options and the Address
+Changed / Updated Address fields) + the analyst fields of jeeves/summary_intents.py,
+minus the fields that module retired. Any other field found on the bot is kept.
+Since the 2026-10-28 import the bot runs workflow v22, which 01 does not
+recognise, so this script is the one that writes the fields.
+
+Dry run by default. Writes through the normal voice-settings API — the same
+path the Studio uses — so nothing is applied to a database directly.
 
     env/bin/python jeeves/setup/03_summary_intents.py                 # dry run against local
     env/bin/python jeeves/setup/03_summary_intents.py --apply         # write (local by default)
@@ -28,7 +33,20 @@ import requests
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from jeeves.summary_intents import BOT_ID, INTENT_SUMMARY_FIELDS, enhance_summary_fields  # noqa: E402
+from jeeves.summary_intents import BOT_ID, INTENT_SUMMARY_FIELDS, RETIRED_FIELDS, enhance_summary_fields  # noqa: E402
+
+
+def workflow_fields() -> list[dict]:
+    """The slot-only fields 01 owns, at its target stage (no API, no workflow check)."""
+    return runpy.run_path(str(ROOT / "jeeves/setup/01_structured_summary.py"), run_name="jeeves_fields")["SUMMARY_FIELDS"]
+
+
+def target_summary_fields(existing: list[dict]) -> list[dict]:
+    """01's fields first (refreshed), then every other field the bot carries
+    (analyst fields refreshed, retired ones dropped), then missing analyst fields."""
+    owned = {f["name"]: f for f in workflow_fields()}
+    rest = [f for f in existing if isinstance(f, dict) and f.get("name") not in owned]
+    return enhance_summary_fields([*owned.values(), *rest])
 
 
 def _client(base: str) -> requests.Session:
@@ -56,7 +74,7 @@ def _check(r, what: str):
 
 def _describe(before: list[dict], after: list[dict]) -> list[str]:
     old = {f.get("name"): f for f in before}
-    lines = []
+    lines = [f"- {name:<26} retired" for name in old if name in RETIRED_FIELDS]
     for spec in after:
         name = spec.get("name")
         if name not in old:
@@ -78,10 +96,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.dump:
-        policy = json.loads(args.policy.read_text()) if args.policy else {
-            "summaryFields": runpy.run_path(str(ROOT / "jeeves/setup/01_structured_summary.py"))["SUMMARY_FIELDS"]
-        }
-        policy["summaryFields"] = enhance_summary_fields(policy.get("summaryFields", policy.get("summary_fields", [])))
+        policy = json.loads(args.policy.read_text()) if args.policy else {"summaryFields": []}
+        policy["summaryFields"] = target_summary_fields(policy.get("summaryFields", policy.get("summary_fields", [])))
         policy.pop("summary_fields", None)
         args.dump.write_text(json.dumps({"botId": BOT_ID, "goalPolicy": policy}, ensure_ascii=False, indent=2) + "\n")
         print(f"Wrote local policy patch for {BOT_ID}: {args.dump}")
@@ -91,9 +107,10 @@ def main(argv: list[str] | None = None) -> None:
     settings = _check(c.get(f"/bots/{BOT_ID}/voice-settings"), "read voice settings")
     policy = dict(settings.get("goalPolicy") or {})
     before = [f for f in (policy.get("summaryFields") or []) if isinstance(f, dict)]
-    after = enhance_summary_fields(before)
+    after = target_summary_fields(before)
     if before == after:
-        print(f"     summaryFields already carry the {len(INTENT_SUMMARY_FIELDS)} analyst fields — nothing to change")
+        print(f"     summaryFields already up to date ({len(after)} fields, "
+              f"{len(INTENT_SUMMARY_FIELDS)} analyst) — nothing to change")
         return
     print(f"     summaryFields: {len(before)} → {len(after)}")
     for line in _describe(before, after):
