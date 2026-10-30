@@ -729,11 +729,10 @@ class ConversationBrain(FrameProcessor):
         super().__init__()
         self._config = config
         # Smart Turn ends the call's turns (voice_runtime.smart_turn): the
-        # endpoint is ~150 ms, so the decision prefetch has nothing to overlap
-        # and mostly ran against text that was still growing (see
+        # decision prefetch then runs only for a settled final the turn is
+        # still holding, never for text that is still growing (see
         # _start_decision_prefetch).
         self._smart_turn_active = bool(smart_turn_active)
-        self._prefetch_disabled_noted = False
         # Continuation vs new turn while a reply is still unheard (see
         # _CONTINUATION_GAP_MIN_S): derived from the tenant's pause window.
         self._continuation_gap_s = min(
@@ -1528,6 +1527,12 @@ class ConversationBrain(FrameProcessor):
                     time.monotonic() - self._vad_started_at, 2
                 )
                 self._vad_started_at = None
+            if self._turn_active and self._pending_segments and self._episode_final_in():
+                # The caller paused with this episode's final already in hand
+                # (the STT's endpointing beat the VAD stop): the Smart Turn
+                # inference and the dispatch are still ahead — overlap them.
+                # A prefetch already running for this text is kept.
+                self._start_decision_prefetch()
             await self.push_frame(frame, direction)
             return
 
@@ -3349,21 +3354,29 @@ class ConversationBrain(FrameProcessor):
         """
         if self._closing:
             return
-        if self._smart_turn_active:
-            # With Smart Turn the endpoint is ~150 ms (demo 2026-10-23..29,
-            # 196 calls): the prefetch finished before dispatch on 62 of 962
-            # turns (6 %), and of the decisions it started 109 of 724
-            # completed for text the turn never used (a straggler changed the
-            # buffer, a late final merged the turn) and ~230 more were
-            # cancelled in flight — ~40 unused decision calls a day, each
-            # competing with the real decision under the same cache key. The
-            # turn's decision therefore starts at dispatch, once.
-            if not self._prefetch_disabled_noted:
-                self._prefetch_disabled_noted = True
+        if self._smart_turn_active and text_override is None:
+            # With Smart Turn a confident verdict dispatches the final within
+            # ~15 ms of its arrival (demo 2026-10-27..30: verdict +105 ms,
+            # final +145 ms, dispatch +161 ms after the VAD stop), so the
+            # prefetch pays only while a settled final is HELD: Smart Turn
+            # said incomplete and the brain's own endpoint or the pause
+            # window is running (head start p90 600 ms), or Sarvam's final
+            # beat the VAD stop and the verdict is still computing (~100 ms).
+            # Text that is still growing is never speculated on — the
+            # mid-utterance segments (the VAD still hears the caller) and the
+            # buffers without this speech episode's final were Phase 4's ~40
+            # discarded decision calls a day (109 of 724 completed decisions
+            # unused, ~230 cancelled in flight).
+            if self._physical_speech_active:
                 self._recorder.add_event(
-                    "decision_prefetch_disabled", reason="smart_turn",
+                    "decision_prefetch_skipped", reason="speech_active",
                 )
-            return
+                return
+            if not self._episode_final_in():
+                self._recorder.add_event(
+                    "decision_prefetch_skipped", reason="final_pending",
+                )
+                return
         engine_on = self._goal_engine.enabled
         if not engine_on and not self._intent_pipeline.llm_enabled:
             return
@@ -3671,6 +3684,11 @@ class ConversationBrain(FrameProcessor):
             self._recorder.add_event(
                 "adaptive_endpoint_cancelled", reason="speech_resumed",
             )
+        if self._smart_turn_active:
+            # The buffer is about to grow: whatever was speculated for it is
+            # stale. Cancelled now rather than at dispatch, so the wasted
+            # call is short and the discard is on record.
+            self._discard_decision_prefetch("speech_resumed")
         if (
             self._open_turn_text is not None
             and not self._reply_audio_started
