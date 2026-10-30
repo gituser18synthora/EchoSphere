@@ -109,3 +109,7 @@ storage/models/
 
 # Windows / WSL download markers (NTFS alternate data streams)
 *:Zone.Identifier
+
+# Database dumps never belong in the repo (history purged 2026-10-30).
+backups/
+*.sql.gz
