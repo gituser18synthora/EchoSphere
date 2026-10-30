@@ -58,7 +58,7 @@ Then the generator, which prints the per-bot migration SQL for THIS database
 and runs no write: `env/bin/python scratchpad/prod_model_migration.py >
 /tmp/model_migration.sql` (section 5).
 
-**Loudness** (7d7602f83 makes Sarvam `loudness` take effect on bulbul:v3 and
+**Loudness** (27b3be7f2 makes Sarvam `loudness` take effect on bulbul:v3 and
 bulbul:v4-flash; before it only bulbul:v2 applied it, so a bot that stored a
 value on v3 would change volume at deploy):
 
@@ -84,13 +84,19 @@ defaults apply).
 
 ## 1. Preconditions
 
+- **History rewritten on 2026-10-30.** Two MySQL dumps under `backups/` were
+  purged from the branch with git filter-repo and `origin/voice-improvements`
+  was force-pushed: every branch commit after 2026-07 has a new id (the
+  Jeeves commits `ebd960630` / `ddfae3576` / `4462308c7` are now
+  `9fb8b856e` / `15271e2bc` / `d4f91724c`; prod's `93199f3` is `65af50ebd`).
+  Every clone, demo included, must `git fetch origin && git reset --hard
+  origin/voice-improvements` before any further work (first step of
+  `scratchpad/prod_runbook_commands.md`). The old dump commit is still
+  reachable on `origin/pipecat-1.12-upgrade`.
 - **Local tree clean.** `git status --porcelain` on the developer machine shows
-  nothing. On 2026-10-30 it was clean; the three commits on top of Phase 4
-  (`ebd960630`, `ddfae3576`, `4462308c7`, Jeeves summary work from another
-  session) are already on `origin/voice-improvements`. If another session has
-  uncommitted work in the tree, commit or stash it before merging — nothing
-  uncommitted reaches the server anyway, but the merge must be made from a
-  known state.
+  nothing. If another session has uncommitted work in the tree, commit or
+  stash it before merging — nothing uncommitted reaches the server anyway,
+  but the merge must be made from a known state.
 - **One alembic head.** `env/bin/alembic -c backend/alembic.ini heads` prints
   exactly `4d8b2f6a9c1e (head)`; `-c backend/alembic_pg.ini heads` prints
   `b2c4e6f8a0d1 (head)` (no PG migration on the branch). Two heads = stop and
@@ -113,11 +119,19 @@ defaults apply).
 
 ## 2. Merge `voice-improvements` → `main`
 
-`main` (70c41bf5d) is an ancestor of `voice-improvements` with no commits of
-its own, and prod's `93199f3` is an ancestor too, so both are fast-forwards:
+Checked 2026-10-30 after the rewrite: the branch's merge-base with `main` is
+still `70c41bf5d`, but `origin/main` (`5565e8b76`) carries two commits the
+branch never got (`873f1c6c` "Delete VoiceBot directory", 2026-07-13, and
+the PR #2 merge commit), so the merge is NOT a fast-forward: it needs a
+merge commit made from a fetched `origin/main` (expect the deleted
+`VoiceBot/` directory to show up in the diff; resolve by keeping it deleted).
+Prod's `93199f3` is no longer an ancestor of the branch either (rewritten
+to `65af50ebd`), so the server pull is a reset (step 3.2), not `--ff-only`.
 
 ```bash
-git checkout main && git merge --ff-only voice-improvements && git push origin main
+git fetch origin main && git checkout -B main origin/main
+git merge --no-ff voice-improvements      # resolve, review the merge commit's diff
+git push origin main
 git checkout voice-improvements
 ```
 
@@ -136,10 +150,14 @@ Stop here if any step fails; the rollback for that step is in section 7.
 2. **Pull the code** (as root, umask 022 so new files stay readable):
    ```bash
    cd /var/www/html/EchoSphere && umask 022
-   git fetch --no-tags origin main </dev/null && git merge --ff-only <merged SHA> && git sparse-checkout reapply
+   git fetch --no-tags origin main </dev/null && git reset --hard <merged SHA> && git sparse-checkout reapply
    chgrp -R echosphere . && chmod -R g+rX,o-rwx . && chmod 640 .env
    ```
    Services keep running the old code until restarted — nothing changes yet.
+   `reset --hard`, not `--ff-only`: prod's `93199f3` is not an ancestor of
+   the rewritten branch. It only touches tracked files; `env/`, `.env` and
+   `dist*` are untracked and stay. The rollback row below still works (the
+   `93199f3` object is the server's own HEAD).
 3. **Dependencies** (venv, Python 3.12): `env/bin/pip install -r
    requirements.txt && env/bin/pip check`. Expect pipecat-ai 1.13.0 and a clean
    `pip check`.

@@ -7,6 +7,25 @@ services as user `echosphere`) unless marked *local*. Nothing here has been run
 against prod. Replace `<merged SHA>` once step 2 is done; `$MYSQL` stands for
 `mysql -h 127.0.0.1 -u echosphere_prod -p voice_bot`.
 
+## Before anything: reset demo (and every clone) to the rewritten branch
+
+`voice-improvements` was rewritten on 2026-10-30 (the database dumps were
+purged from its history) and force-pushed: every branch commit after 2026-07
+has a new id. Demo runs the old `072c32aa8` (now `b169069c3`); nothing on
+disk changes until the reset, and the services keep the old code until the
+restart. The same reset applies to any developer clone.
+
+```bash
+# demo (echosphere-live), as root
+cd /var/www/html/EchoSphere && git status --porcelain       # expect nothing
+git fetch origin && git reset --hard origin/voice-improvements
+git rev-parse --short HEAD                                    # the tip reported with the rewrite
+curl -s localhost:9002/health                                 # wait for active_sessions: 0
+systemctl restart echosphere-api echosphere-voice echosphere-gateway
+# any developer clone
+git fetch origin && git checkout voice-improvements && git reset --hard origin/voice-improvements
+```
+
 ## 0. Read-only first (prod)
 
 ```bash
@@ -59,8 +78,13 @@ env/bin/python -m pytest tests/unit -q                   # green (~10 min)
 
 ## 2. Merge (*local*)
 
+Not a fast-forward: `origin/main` has two commits the branch lacks (runbook
+section 2), and prod's `93199f3` was rewritten to `65af50ebd`.
+
 ```bash
-git checkout main && git merge --ff-only voice-improvements && git push origin main
+git fetch origin main && git checkout -B main origin/main
+git merge --no-ff voice-improvements                     # resolve, review the diff
+git push origin main
 git rev-parse --short main                               # = <merged SHA>
 git checkout voice-improvements
 ```
@@ -80,7 +104,7 @@ env/bin/alembic -c backend/alembic.ini current >> /root/echosphere-prep/pre-depl
 
 ```bash
 cd /var/www/html/EchoSphere && umask 022
-git fetch --no-tags origin main </dev/null && git merge --ff-only <merged SHA> && git sparse-checkout reapply
+git fetch --no-tags origin main </dev/null && git reset --hard <merged SHA> && git sparse-checkout reapply   # reset: 93199f3 is not an ancestor any more
 chgrp -R echosphere . && chmod -R g+rX,o-rwx . && chmod 640 .env
 git rev-parse --short HEAD                                # = <merged SHA>
 ```
