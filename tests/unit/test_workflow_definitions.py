@@ -681,6 +681,15 @@ SEMINAR = {
 }
 
 
+def _seminar_variant(*, hub_config):
+    """SEMINAR with extra config on the reason-of-call hub."""
+    import copy
+
+    definition = copy.deepcopy(SEMINAR)
+    next(n for n in definition["nodes"] if n["id"] == "n_hub_open")["config"].update(hub_config)
+    return definition
+
+
 async def _seminar_turn(engine, text, session):
     return await engine.handle_turn_detailed(
         session_id=session, tenant_id="tn_x", bot_id="bot_x",
@@ -758,6 +767,35 @@ class TestUpcomingAnswerLookahead:
         result = await _seminar_turn(engine, "haan ji", "sl-6")
         assert result["trace"] == ["n_start", "n_hub_open"]
         assert "eligibility check" in result["reply"]
+
+    # The lookahead is gated on a plain no-match: an off-script label and an
+    # authored unmatchedReply hold the turn at the hub, before and after the
+    # semanticCapture work (d4f91724c, whose inner guard only covers its own
+    # branch). Pinned here for the Frankfinn seminar flow.
+    async def test_an_off_script_label_holds_the_turn_at_the_hub(self, engine, monkeypatch):
+        """The classifier labelled the qualification statement a question:
+        the reason-of-call hub has no edge for that label, so the turn goes
+        off-script and the lookahead does not run — the same words without
+        a label still jump to the graduate track."""
+        _use_definition(monkeypatch, SEMINAR)
+        await _seminar_turn(engine, "haan bol raha hoon", "sl-7")
+        held = await engine.handle_turn_detailed(
+            session_id="sl-7", tenant_id="tn_x", bot_id="bot_x", workflow_name="wf_seminar",
+            user_text="graduation complete ho chuki hai", language="hi-IN", signal="question",
+        )
+        assert held["offScript"] is True and held["trace"] == ["n_hub_open"]
+        result = await _seminar_turn(engine, "graduation complete ho chuki hai", "sl-7")
+        assert result["trace"] == ["n_hub_open", "n_hub_qual", "n_msg_grad", "n_hub_area"]
+        assert result["offScript"] is False and "eight-month" in result["reply"]
+
+    async def test_an_authored_unmatched_reply_holds_the_turn(self, engine, monkeypatch):
+        """A hub with ``unmatchedReply`` is a deterministic gate: the fixed
+        reply answers an unmatched turn and no later hub may claim it."""
+        _use_definition(monkeypatch, _seminar_variant(hub_config={"unmatchedReply": "Bas haan ya nahi boliye."}))
+        await _seminar_turn(engine, "haan bol raha hoon", "sl-8")
+        result = await _seminar_turn(engine, "graduation complete ho chuki hai", "sl-8")
+        assert result["trace"] == ["n_hub_open"] and result["offScript"] is False
+        assert result["reply"] == "Bas haan ya nahi boliye."
 
     async def test_city_containing_baad_mein_is_not_a_callback(
         self, engine, monkeypatch
