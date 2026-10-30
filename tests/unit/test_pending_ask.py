@@ -323,7 +323,10 @@ class TestAskAnswerShape:
     def test_choice_options_follow_the_spoken_order(self):
         node = _ask_node({"question": "partial karenge ya poora?", "entityType": "list",
                           "synonyms": {"full": ["poora", "पूरा"], "partial": ["partial", "aadha"]}})
-        assert ask.ask_answer_shape(node, "v") == {"kind": "choice", "options": ["partial", "full"]}
+        shape = ask.ask_answer_shape(node, "v")
+        assert (shape["kind"], shape["options"]) == ("choice", ["partial", "full"])
+        # The authored surfaces ride along (deterministic short answers read them).
+        assert shape["synonyms"] == {"full": ["poora", "पूरा"], "partial": ["partial", "aadha"]}
 
     def test_allowed_values_unmentioned_keep_declaration_order(self):
         node = _ask_node({"allowedValues": ["cash", "upi", "card"]})
@@ -367,7 +370,10 @@ class TestEngineReportsAwaitingAsk:
             session_id="s", tenant_id="tn", bot_id="bot", workflow_name="ask_wf",
             user_text="start", language="hi-IN", reset_state=True)
         assert result["nodePrompt"] == "Poora ya partial?"
-        assert result["awaitingAsk"] == {"kind": "choice", "options": ["full", "partial"]}
+        assert result["awaitingAsk"] == {
+            "kind": "choice", "options": ["full", "partial"],
+            "synonyms": {"full": ["poora"], "partial": ["partial", "aadha"]},
+        }
 
     async def test_finished_flow_reports_none(self, monkeypatch):
         engine = _engine(monkeypatch, _definition({"synonyms": {"full": ["poora"], "partial": ["partial"]}}))

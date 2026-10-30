@@ -338,16 +338,26 @@ def choice_options(entity: dict, prompt_text: str = "") -> list[str]:
 
 
 def ask_answer_shape(node: dict, variable: str) -> dict:
-    """``{"kind", "options"}`` for an ask node: yes_no | choice | number |
-    date | time | free_text. A yes/no-shaped synonym set is yes_no before it
-    is a choice; a digit-expecting entity is a number."""
+    """``{"kind", "options"[, "synonyms"]}`` for an ask node: yes_no | choice |
+    number | date | time | free_text. A yes/no-shaped synonym set is yes_no
+    before it is a choice; a digit-expecting entity is a number."""
     entity = _ask_entity(node, variable)
     data_type = str(entity.get("dataType") or entity.get("data_type") or "text")
     if _yes_no_canonicals(entity) is not None:
         return {"kind": ASK_KIND_YES_NO, "options": []}
     options = choice_options(entity, ask_prompt_text(node))
     if options:
-        return {"kind": ASK_KIND_CHOICE, "options": options}
+        synonyms = entity.get("synonyms") if isinstance(entity.get("synonyms"), dict) else {}
+        return {
+            "kind": ASK_KIND_CHOICE, "options": options,
+            # The authored surfaces of each option, so a short reply naming one
+            # ("guard ko") resolves without the decision model.
+            "synonyms": {
+                str(c): [str(x) for x in (surfaces or []) if str(x).strip()]
+                for c, surfaces in synonyms.items()
+                if str(c) in options and isinstance(surfaces, (list, tuple))
+            },
+        }
     if data_type in _DATE_DATA_TYPES:
         return {"kind": ASK_KIND_DATE, "options": []}
     if data_type in _TIME_DATA_TYPES:

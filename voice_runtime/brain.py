@@ -100,8 +100,7 @@ from shared.knowledge.schemas import RetrievalRequest
 from shared.knowledge.security import sanitize_for_context
 from shared.orchestration.delivery import delivery_instructions
 from shared.orchestration.deterministic_answers import (
-    SIGNAL_NO as DETERMINISTIC_NO,
-    SIGNAL_YES as DETERMINISTIC_YES,
+    ASK_KIND_HUB,
     DeterministicAnswer,
     resolve_short_answer,
 )
@@ -1063,6 +1062,9 @@ class ConversationBrain(FrameProcessor):
         # ``awaitingSignals``); None while the flow waits elsewhere.
         self._pending_hub_signals: frozenset[str] | None = None
         self._open_turn_pending_hub_signals: frozenset[str] | None = None
+        # The paused hub's edges ({tokens, signals}; engine ``awaitingEdges``).
+        self._pending_hub_edges: list[dict] | None = None
+        self._open_turn_pending_hub_edges: list[dict] | None = None
         # Whether an exact-wording / compliance line can follow the paused
         # workflow step (engine ``awaitingExactAhead``).
         self._pending_exact_ahead = False
@@ -3735,6 +3737,7 @@ class ConversationBrain(FrameProcessor):
                 self._pending_workflow_question = self._open_turn_pending_question
                 self._pending_ask_shape = self._open_turn_pending_ask_shape
                 self._pending_hub_signals = self._open_turn_pending_hub_signals
+                self._pending_hub_edges = self._open_turn_pending_hub_edges
                 self._pending_exact_ahead = self._open_turn_pending_exact_ahead
                 self._recorder.add_event("workflow_turn_rolled_back", workflow=name)
         if not text:
@@ -5475,9 +5478,12 @@ class ConversationBrain(FrameProcessor):
                     "decision_skipped_deterministic",
                     resolver=answer.resolver, ask_kind=answer.kind,
                     signal=answer.signal,
-                    # Yes/no and option labels only — never a spoken number,
-                    # day or time.
-                    value=answer.value if answer.kind in ("yes_no", "choice") else None,
+                    # Yes/no, option labels and authored edge tokens only —
+                    # never a spoken number, day or time.
+                    value=(
+                        answer.value if answer.kind in ("yes_no", "choice", ASK_KIND_HUB)
+                        else None
+                    ),
                 )
                 orchestrated = self._deterministic_answer_decision(answer)
             elif fast_path is not None:
@@ -6271,9 +6277,10 @@ class ConversationBrain(FrameProcessor):
         Only inside an active workflow: outside one the decision also names
         the configured intent that routes the turn, and the opening question
         is the call's identity/consent gate. The workflow question is the
-        engine's ask (yes_no | choice | number | date | time) or an intent hub
-        whose edges carry affirm/refusal — read as a yes/no question whose
-        answer must have its edge. Collections bots never take this path.
+        engine's ask (yes_no | choice | number | date | time; a choice with
+        its authored synonyms) or an intent hub read through its edges — a
+        yes/no needs an edge carrying that signal, an option-like reply must
+        equal one edge's token. Collections bots never take this path.
         ``route`` is the router's decision (None while prefetching).
         """
         if (
@@ -6290,23 +6297,19 @@ class ConversationBrain(FrameProcessor):
         ):
             return None
         pending = self._pending_ask()
-        hub = self._pending_hub_signals if self._pending_ask_shape is None else None
-        kind = pending.kind
-        if hub is not None:
-            kind = "yes_no" if hub & {DETERMINISTIC_YES, DETERMINISTIC_NO} else "none"
-        answer = resolve_short_answer(
-            text, kind, options=pending.options, question=pending.question,
+        if self._pending_ask_shape is None and (
+            self._pending_hub_edges is not None or self._pending_hub_signals is not None
+        ):
+            edges = self._pending_hub_edges
+            if edges is None:
+                # An engine reporting only the hub's signals: edges with no
+                # tokens, so only a yes / no can resolve.
+                edges = [{"tokens": [], "signals": [s]} for s in sorted(self._pending_hub_signals)]
+            return resolve_short_answer(text, ASK_KIND_HUB, edges=edges)
+        return resolve_short_answer(
+            text, pending.kind, options=pending.options, question=pending.question,
+            synonyms=(self._pending_ask_shape or {}).get("synonyms"),
         )
-        if answer is None:
-            return None
-        if hub is not None:
-            wanted = (
-                {DETERMINISTIC_YES, "payment_intent"}
-                if answer.signal == DETERMINISTIC_YES else {DETERMINISTIC_NO}
-            )
-            if not hub & wanted:
-                return None
-        return answer
 
     def _deterministic_answer_decision(
         self, answer: DeterministicAnswer
@@ -7157,6 +7160,7 @@ class ConversationBrain(FrameProcessor):
         self._open_turn_pending_question = self._pending_workflow_question
         self._open_turn_pending_ask_shape = self._pending_ask_shape
         self._open_turn_pending_hub_signals = self._pending_hub_signals
+        self._open_turn_pending_hub_edges = self._pending_hub_edges
         self._open_turn_pending_exact_ahead = self._pending_exact_ahead
         workflow_started = time.perf_counter()
         result = await self._workflows.handle_turn_detailed(
@@ -7242,6 +7246,11 @@ class ConversationBrain(FrameProcessor):
         self._pending_hub_signals = (
             frozenset(str(s) for s in hub_signals)
             if isinstance(hub_signals, list) and not result["done"] else None
+        )
+        hub_edges = result.get("awaitingEdges")
+        self._pending_hub_edges = (
+            [dict(e) for e in hub_edges if isinstance(e, dict)]
+            if isinstance(hub_edges, list) and not result["done"] else None
         )
         self._pending_exact_ahead = bool(
             result.get("awaitingExactAhead") and not result["done"]

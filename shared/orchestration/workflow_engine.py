@@ -274,6 +274,26 @@ def _awaiting_ask_shape(node: dict | None) -> dict | None:
     return ask_answer_shape(node, variable)
 
 
+def _awaiting_edges(definition: dict | None, node: dict | None) -> list[dict] | None:
+    """``awaitingEdges`` for the result payload: the paused INTENT hub's
+    non-else edges as ``{"tokens": [...], "signals": [...]}`` in authored
+    order, None when the flow waits elsewhere. The brain's deterministic short
+    answers read them: a yes/no needs an edge carrying that signal, an
+    option-like reply ("aaj", "wireline") must equal one edge's token."""
+    if not isinstance(node, dict) or node.get("kind") != "intent":
+        return None
+    node_id = str(node.get("id"))
+    ids = {str(n.get("id")) for n in (definition or {}).get("nodes") or []}
+    edges = [
+        e for e in (definition or {}).get("edges") or []
+        if str(e.get("from") or "") == node_id and str(e.get("to") or "") in ids
+    ]
+    return [
+        {"tokens": list(tokens), "signals": sorted(signals)}
+        for _edge, tokens, signals in _edge_meta(edges) if tokens
+    ]
+
+
 def _awaiting_edge_signals(definition: dict | None, node: dict | None) -> list[str] | None:
     """``awaitingSignals`` for the result payload: the semantic signals the
     outgoing edges of the paused INTENT hub carry (sorted), None when the
@@ -2110,6 +2130,7 @@ class WorkflowEngine:
                 "awaitingKind": pending.get("kind"), "signal": signal,
                 "awaitingAsk": _awaiting_ask_shape(pending),
                 "awaitingSignals": _awaiting_edge_signals(definition, pending),
+                "awaitingEdges": _awaiting_edges(definition, pending),
                 "spokenNodes": [],
             }
         invocation = {
@@ -2254,6 +2275,7 @@ class WorkflowEngine:
             "awaitingAsk": _awaiting_ask_shape(awaiting_node),
             # Signals the paused intent hub's edges carry (None elsewhere).
             "awaitingSignals": _awaiting_edge_signals(definition, awaiting_node),
+            "awaitingEdges": _awaiting_edges(definition, awaiting_node),
             # An exact-wording / compliance line can follow the paused step.
             "awaitingExactAhead": _exact_wording_ahead(definition, awaiting_node),
             # A node spoken this turn that declares ``coversKnowledgeQuestion``

@@ -50,8 +50,13 @@ from shared.orchestration.visit_datetime import (
 )
 
 MAX_WORDS = 4
+# A paused workflow INTENT hub, read through its edges (``edges``): a yes/no
+# needs an edge carrying that signal; an option-like reply must equal one
+# edge's authored token ("aaj", "wireline", "pata nahi").
+ASK_KIND_HUB = "hub"
 ANSWER_KINDS = frozenset({
     ASK_KIND_YES_NO, ASK_KIND_CHOICE, ASK_KIND_NUMBER, ASK_KIND_DATE, ASK_KIND_TIME,
+    ASK_KIND_HUB,
 })
 
 # Resolver names recorded on decision_skipped_deterministic.
@@ -59,6 +64,11 @@ RESOLVER_YES_NO = "yes_no_lexicon"
 RESOLVER_CHOICE = "ask_resolution"
 RESOLVER_NUMBER = "spoken_numbers"
 RESOLVER_DATETIME = "visit_datetime"
+RESOLVER_EDGE = "workflow_edge"
+# Signals a yes / no at a hub may take (the engine's compatible pairs).
+_YES_EDGE_SIGNALS = frozenset({"affirm", "payment_intent"})
+_NO_EDGE_SIGNALS = frozenset({"refusal"})
+_PHRASE_PUNCT = ".,!?;:\"'()[]-" + "।॥"
 
 SIGNAL_YES = "affirm"
 SIGNAL_NO = "refusal"
@@ -123,21 +133,90 @@ def yes_no_polarity(text: str) -> str | None:
     return "yes" if (yes or polite) else None
 
 
-def _choice(text: str, options: tuple[str, ...], question: str) -> str | None:
+def _phrase(text: str) -> str:
+    """The utterance as one comparable phrase: lower-cased, punctuation off,
+    one space between words."""
+    return " ".join(
+        t for t in (w.strip(_PHRASE_PUNCT).lower() for w in (text or "").split()) if t
+    )
+
+
+def _content(text: str) -> str:
+    """The reply minus fillers, courtesy words and yes words — what names an
+    option ("haan, guard ko" → "guard ko")."""
+    return " ".join(
+        t for t in _tokens(text) if t not in _NEUTRAL_WORDS and t not in _YES_WORDS
+    )
+
+
+def _choice(
+    text: str, options: tuple[str, ...], question: str,
+    synonyms: dict[str, list[str]] | None = None,
+) -> str | None:
     if not options:
         return None
     picked = positional_choice(text, {"allowedValues": list(options)}, question)
     if picked is not None:
         return picked
-    # The option itself, said alone (fillers / courtesy / a leading yes
-    # aside): "पहला" is positional above; "evening" / "शाम" match only an
-    # option spelled that way — synonyms stay with the workflow's matcher.
-    content = [t for t in _tokens(text) if t not in _NEUTRAL_WORDS and t not in _YES_WORDS]
-    if not content:
+    # The option itself, or one of its authored surfaces, said alone
+    # (fillers / courtesy / a leading yes aside): "पहला" is positional above.
+    said = _content(text)
+    if not said:
         return None
-    said = " ".join(content)
-    matches = [o for o in options if " ".join(_tokens(o)) == said]
+    matches = [o for o in options if _phrase(o) == said]
+    for option, surfaces in (synonyms or {}).items():
+        if option in options and option not in matches and any(_phrase(x) == said for x in surfaces):
+            matches.append(option)
     return matches[0] if len(matches) == 1 else None
+
+
+def _phrase_has_token(phrase: str, token: str) -> bool:
+    """Whether an edge token occurs in the phrase at a word start (the
+    engine's literal match, ``_token_in``)."""
+    token = _phrase(token)
+    if not token:
+        return False
+    at = phrase.find(token)
+    while at != -1:
+        if at == 0 or phrase[at - 1] == " ":
+            return True
+        at = phrase.find(token, at + 1)
+    return False
+
+
+def _hub(text: str, edges: list[dict]) -> DeterministicAnswer | None:
+    """A reply at an intent hub: a plain yes / no when an edge carries that
+    signal, else the one edge whose authored token the reply IS — the engine
+    then takes that edge on the literal match (signal None), as it would
+    after a decision that named no signal."""
+    polarity = yes_no_polarity(text)
+    if polarity is not None:
+        wanted = _YES_EDGE_SIGNALS if polarity == "yes" else _NO_EDGE_SIGNALS
+        if any(wanted & set(e.get("signals") or ()) for e in edges):
+            return DeterministicAnswer(
+                ASK_KIND_HUB, RESOLVER_YES_NO, polarity,
+                SIGNAL_YES if polarity == "yes" else SIGNAL_NO,
+            )
+        return None
+    said = _content(text)
+    if not said:
+        return None
+    exact = [
+        index for index, e in enumerate(edges)
+        if any(_phrase(t) == said for t in e.get("tokens") or ())
+    ]
+    if len(exact) != 1:
+        return None
+    # No other edge may read a token inside the reply ("aaj sham" names two
+    # edges' tokens on a time hub): the engine's longest-token rule would then
+    # decide, not the caller.
+    others = [
+        e for index, e in enumerate(edges) if index != exact[0]
+        and any(_phrase_has_token(said, t) for t in e.get("tokens") or ())
+    ]
+    if others:
+        return None
+    return DeterministicAnswer(ASK_KIND_HUB, RESOLVER_EDGE, said)
 
 
 def _number(text: str) -> str | None:
@@ -178,9 +257,13 @@ def resolve_short_answer(
     options: tuple[str, ...] = (),
     question: str = "",
     timezone: str | None = None,
+    synonyms: dict[str, list[str]] | None = None,
+    edges: list[dict] | None = None,
 ) -> DeterministicAnswer | None:
     """The deterministic reading of ``text`` as the answer to a pending ask of
-    ``kind``, or None when the reply needs the decision LLM."""
+    ``kind``, or None when the reply needs the decision LLM. ``synonyms`` are
+    a choice ask's authored surfaces per option; ``edges`` a hub's edges
+    (``{"tokens", "signals"}``, kind ``hub``)."""
     if kind not in ANSWER_KINDS:
         return None
     stripped = (text or "").strip()
@@ -199,12 +282,14 @@ def resolve_short_answer(
             kind, RESOLVER_YES_NO, polarity,
             SIGNAL_YES if polarity == "yes" else SIGNAL_NO,
         )
+    if kind == ASK_KIND_HUB:
+        return _hub(stripped, list(edges or ()))
     if yes_no_polarity(stripped) == "no":
         # "नहीं" at a choice / number / date ask refuses it; the model reads
         # what the caller means instead.
         return None
     if kind == ASK_KIND_CHOICE:
-        value = _choice(stripped, options, question)
+        value = _choice(stripped, options, question, synonyms)
         return DeterministicAnswer(kind, RESOLVER_CHOICE, value) if value else None
     if kind == ASK_KIND_NUMBER:
         value = _number(stripped)
